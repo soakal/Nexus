@@ -1,0 +1,6 @@
+{
+  "id": "hello_world_test",
+  "prompt": "Write a Python function that returns 'Hello, World!' and then call it to verify it works.",
+  "expected_steps": 3,
+  "expected_output_contains": "Hello, World!"
+}

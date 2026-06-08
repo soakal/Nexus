@@ -1,0 +1,31 @@
+# Secrets & vault
+.vault.key
+nexus.vault
+.env
+.env.local
+.nexus.pids
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+nexus.db
+
+# Frontend build & deps
+frontend/node_modules/
+frontend/dist/
+
+# Logs & runtime
+logs/
+*.log
+*.db
+
+# OS
+.DS_Store
+Thumbs.db

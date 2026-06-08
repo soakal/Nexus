@@ -1,0 +1,32 @@
+{
+  "ANTHROPIC_API_KEY": {
+    "last_set": "2026-06-08T00:27:19.028685"
+  },
+  "OPENROUTER_API_KEY": {
+    "last_set": "2026-06-08T00:28:36.082400"
+  },
+  "HASS_TOKEN": {
+    "last_set": "2026-06-08T00:31:03.043731"
+  },
+  "UNIFI_PASSWORD": {
+    "last_set": "2026-06-08T00:32:00.318130"
+  },
+  "UNRAID_API_KEY": {
+    "last_set": "2026-06-08T00:35:59.819837"
+  },
+  "ADGUARD_PASS": {
+    "last_set": "2026-06-08T00:37:26.073349"
+  },
+  "GITHUB_TOKEN": {
+    "last_set": "2026-06-08T00:40:16.396808"
+  },
+  "OBSIDIAN_TOKEN": {
+    "last_set": "2026-06-08T00:42:21.571943"
+  },
+  "OPENWEATHER_API_KEY": {
+    "last_set": "2026-06-08T00:46:06.191058"
+  },
+  "NEXUS_API_KEY": {
+    "last_set": "2026-06-08T01:00:18.522704"
+  }
+}

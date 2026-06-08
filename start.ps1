@@ -1,0 +1,108 @@
+# NEXUS Agentic OS — Start
+# Usage: .\start.ps1 [-dev] [-port 3000]
+param([switch]$dev, [int]$port = 3000)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path ".vault.key")) {
+    Write-Host "ERROR: .vault.key not found. Run .\setup.ps1 first." -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path "nexus.vault")) {
+    Write-Host "ERROR: nexus.vault not found. Run .\setup.ps1 first." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Starting NEXUS..." -ForegroundColor Cyan
+
+# Kill any existing NEXUS processes on these ports
+@(8000, $port) | ForEach-Object {
+    $p = $_
+    try {
+        $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+        if ($conn) {
+            Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
+    } catch {}
+}
+
+# Start backend
+# Redirect stdout/stderr to log files so startup failures are visible.
+$backendLog = ".\logs\backend.log"
+$backendErr = ".\logs\backend.err.log"
+New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
+$backendArgs = "-m uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+if ($dev) { $backendArgs += " --reload" }
+$backend = Start-Process -PassThru -WindowStyle Hidden `
+    -FilePath ".\venv\Scripts\python.exe" -ArgumentList $backendArgs `
+    -WorkingDirectory (Get-Location).Path `
+    -RedirectStandardOutput $backendLog -RedirectStandardError $backendErr
+
+# Wait for backend health check.
+# NOTE: use 127.0.0.1 (not "localhost"). On Windows, "localhost" resolves to
+# IPv6 ::1 first, but uvicorn binds --host 0.0.0.0 (IPv4 only), so a "localhost"
+# probe hangs until timeout on every iteration and never succeeds.
+$ready = $false
+Write-Host "  Waiting for backend..." -NoNewline
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep 1
+    # Fail fast if the backend process died during startup.
+    if ($backend.HasExited) {
+        Write-Host ""
+        Write-Host "ERROR: Backend process exited (code $($backend.ExitCode)) during startup." -ForegroundColor Red
+        if (Test-Path $backendErr) {
+            Write-Host "--- backend.err.log ---" -ForegroundColor DarkGray
+            Get-Content $backendErr -Tail 30 | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+        }
+        exit 1
+    }
+    try {
+        $r = Invoke-RestMethod "http://127.0.0.1:8000/api/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+        if ($r.status -in @("ok", "vault_empty")) { $ready = $true; break }
+    } catch {}
+    Write-Host "." -NoNewline
+}
+Write-Host ""
+
+if (-not $ready) {
+    Write-Host "ERROR: Backend failed to start. See $backendErr" -ForegroundColor Red
+    if (Test-Path $backendErr) {
+        Write-Host "--- backend.err.log (last 30 lines) ---" -ForegroundColor DarkGray
+        Get-Content $backendErr -Tail 30 | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+    }
+    Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+Write-Host "  Backend ready (pid $($backend.Id))" -ForegroundColor Green
+
+# Start frontend
+if ($dev) {
+    $frontend = Start-Process -PassThru -WindowStyle Hidden `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/c cd /d `"$(Get-Location)\frontend`" && npm run dev -- --port $port" `
+        -WorkingDirectory (Get-Location).Path
+} else {
+    # Serve the production build with vite preview (handles SPA routing)
+    $frontend = Start-Process -PassThru -WindowStyle Hidden `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/c cd /d `"$(Get-Location)\frontend`" && npx vite preview --port $port --host 0.0.0.0" `
+        -WorkingDirectory (Get-Location).Path
+}
+
+Start-Sleep -Seconds 2
+Write-Host "  Frontend ready (pid $($frontend.Id))" -ForegroundColor Green
+
+# Open browser
+Start-Process "http://localhost:$port"
+
+Write-Host ""
+Write-Host "NEXUS is running" -ForegroundColor Green
+Write-Host "  Dashboard : http://localhost:$port" -ForegroundColor Cyan
+Write-Host "  API       : http://localhost:8000" -ForegroundColor Cyan
+Write-Host "  Backend PID: $($backend.Id)  Frontend PID: $($frontend.Id)"
+Write-Host ""
+Write-Host "To stop: .\stop.ps1" -ForegroundColor DarkGray
+
+# Save PIDs for stop.ps1
+@{ backend = $backend.Id; frontend = $frontend.Id } | ConvertTo-Json | Set-Content ".nexus.pids"
