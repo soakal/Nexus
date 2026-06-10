@@ -2,7 +2,7 @@ import logging
 import pathlib
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import Depends, FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -71,7 +71,6 @@ app = FastAPI(title="NEXUS Agentic OS", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -117,15 +116,16 @@ app.include_router(unraid_api.router, prefix="/api/unraid", tags=["unraid"])
 app.include_router(homeassistant.router, prefix="/api/ha", tags=["homeassistant"])
 app.include_router(trigger_router, tags=["trigger"])
 
+from backend.auth import require_api_key  # noqa: E402
+
 
 @app.get("/api/weather")
-async def get_weather():
+async def get_weather(_=Depends(require_api_key)):
     from backend.integrations.weather import fetch
     try:
-        data = await fetch()
-        return data
+        return await fetch()
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=502, content={"error": str(e)})
 
 
 @app.websocket("/ws/logs")

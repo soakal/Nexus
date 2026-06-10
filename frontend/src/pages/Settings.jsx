@@ -10,12 +10,12 @@ function BrowserApiKey() {
   const save = () => {
     localStorage.setItem('nexus_api_key', value.trim())
     setSaved(true)
-    window.location.reload()
+    setTimeout(() => window.location.reload(), 600)
   }
 
   return (
-    <div className="bg-bg-card border border-accent-cyan rounded-lg p-4">
-      <h2 className="text-text-secondary text-xs uppercase tracking-wider mb-1">Browser Authentication</h2>
+    <div className="hud-panel p-4" style={{ boxShadow: '0 0 12px rgba(0,212,255,0.25), inset 0 0 20px rgba(0,212,255,0.04)' }}>
+      <h2 className="hud-label mb-1">Browser Authentication</h2>
       <p className="text-text-secondary text-xs mb-3">
         Stored in this browser only (localStorage). Required before any other settings will load.
       </p>
@@ -26,12 +26,12 @@ function BrowserApiKey() {
             value={value}
             onChange={e => { setValue(e.target.value); setSaved(false) }}
             placeholder="Paste your NEXUS API key..."
-            className="w-full bg-bg-secondary border border-border-dark rounded px-2 py-1.5 pr-8 text-sm text-text-primary font-mono"
+            className="hud-input w-full pr-8"
           />
           <button
             type="button"
             onClick={() => setVisible(v => !v)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-accent-cyan"
             title={visible ? 'Hide' : 'Show'}
           >
             {visible ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -40,12 +40,17 @@ function BrowserApiKey() {
         <button
           onClick={save}
           disabled={!value.trim()}
-          className="bg-accent-cyan text-bg-primary text-sm font-mono px-4 py-1.5 rounded disabled:opacity-40"
+          className="glow-btn disabled:opacity-40"
         >
           Save
         </button>
       </div>
-      {saved && <div className="text-accent-green text-xs mt-2">Saved. Reloading...</div>}
+      {saved && (
+        <div className="flex items-center gap-2 mt-2">
+          <span className="arc-dot" />
+          <span className="text-accent-green text-xs">Saved. Reloading...</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -96,12 +101,12 @@ const SECTIONS = [
 export default function Settings() {
   return (
     <div className="p-6 max-w-2xl">
-      <h1 className="font-mono text-accent-cyan text-xl font-bold mb-6">SETTINGS & SECRETS</h1>
+      <h1 className="page-header mb-6">SYSTEM CONFIGURATION</h1>
       <div className="space-y-6">
         <BrowserApiKey />
         {SECTIONS.map(section => (
-          <div key={section.title} className="bg-bg-card border border-border-dark rounded-lg p-4">
-            <h2 className="text-text-secondary text-xs uppercase tracking-wider mb-3">{section.title}</h2>
+          <div key={section.title} className="hud-panel p-4">
+            <h2 className="hud-label mb-3">{section.title}</h2>
             {section.secrets.map(s => (
               <SecretField key={s.key} secretKey={s.key} label={s.label} />
             ))}

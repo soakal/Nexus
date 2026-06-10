@@ -1,4 +1,16 @@
-const BASE = `http://127.0.0.1:8000/api`
+const _host = import.meta.env.VITE_API_BASE
+  ? new URL(import.meta.env.VITE_API_BASE).hostname
+  : (window.location.hostname || '127.0.0.1')
+
+export const API_HOST = _host
+
+const _base = import.meta.env.VITE_API_BASE
+  ? import.meta.env.VITE_API_BASE.replace(/\/$/, '')
+  : `${window.location.protocol}//${API_HOST}:8000`
+
+export const API_BASE = _base
+
+const BASE = `${_base}/api`
 
 function getKey() {
   return localStorage.getItem('nexus_api_key') || ''

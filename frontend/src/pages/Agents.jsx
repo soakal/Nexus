@@ -7,18 +7,26 @@ export default function Agents() {
   const [q, setQ] = useState('')
   useEffect(() => { api.agents.runs(q).then(setRuns).catch(() => {}) }, [q])
   return (
-    <div className="p-6 max-w-3xl">
-      <h1 className="font-mono text-accent-cyan text-xl font-bold mb-6">AGENT COMMAND CENTER</h1>
-      <div className="mb-4">
-        <h2 className="text-text-secondary text-xs uppercase tracking-wider mb-2">Live Log</h2>
+    <div className="p-6 max-w-3xl space-y-6">
+      <h1 className="page-header">AGENT COMMAND CENTER</h1>
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="arc-dot" />
+          <span className="hud-label">LIVE FEED</span>
+        </div>
         <AgentLog />
       </div>
-      <div className="mb-4">
+      <div>
         <input value={q} onChange={e => setQ(e.target.value)}
-          className="w-full bg-bg-card border border-border-dark rounded px-3 py-2 text-text-primary text-sm placeholder-text-secondary"
-          placeholder="Search run history..." />
+          className="hud-input w-full"
+          placeholder="SEARCH RUN HISTORY..." />
       </div>
-      <RunHistory runs={runs} />
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="hud-label">RUN HISTORY</span>
+        </div>
+        <RunHistory runs={runs} />
+      </div>
     </div>
   )
 }

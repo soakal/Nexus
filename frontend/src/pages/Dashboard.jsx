@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
+import { fmtTime } from '../lib/parseUTC'
 import WeatherCard from '../components/WeatherCard'
 import AdGuardToggle from '../components/AdGuardToggle'
 import SourceCard from '../components/SourceCard'
@@ -13,7 +15,9 @@ export default function Dashboard() {
   const [unraid, setUnraid] = useState(null)
   const [dockerOpen, setDockerOpen] = useState(false)
   const [briefingLoading, setBriefingLoading] = useState(false)
+  const [briefingError, setBriefingError] = useState(false)
   const [lastBriefing, setLastBriefing] = useState(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     const load = async () => {
@@ -31,79 +35,121 @@ export default function Dashboard() {
 
   const runBriefing = async () => {
     setBriefingLoading(true)
-    try { await api.briefing.trigger() } catch {}
-    setBriefingLoading(false)
+    setBriefingError(false)
+    try {
+      await api.briefing.trigger()
+      try {
+        const b = await api.briefing.latest()
+        setLastBriefing(b?.created_at)
+      } catch {}
+      navigate('/briefing')
+    } catch (e) {
+      setBriefingError(true)
+    } finally {
+      setBriefingLoading(false)
+    }
   }
 
   const restartDocker = async (id) => {
     try { await api.unraid.restartDocker(id) } catch {}
   }
 
+  const lastBriefingTime = fmtTime(lastBriefing)
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="font-mono text-accent-cyan text-xl font-bold tracking-wider">NEXUS COMMAND CENTER</h1>
+        <h1 className="page-header">NEXUS COMMAND CENTER</h1>
         <div className="text-right">
           <button onClick={runBriefing} disabled={briefingLoading}
-            className="bg-accent-cyan text-bg-primary font-mono text-sm px-4 py-2 rounded font-bold hover:opacity-90 disabled:opacity-50">
+            className="glow-btn px-4 py-2 disabled:opacity-50">
             {briefingLoading ? 'GENERATING...' : 'RUN BRIEFING'}
           </button>
-          {lastBriefing && <div className="text-text-secondary text-xs mt-1">Last: {new Date(lastBriefing.endsWith('Z') ? lastBriefing : lastBriefing + 'Z').toLocaleTimeString()}</div>}
+          {lastBriefingTime && (
+            <div className="hud-label mt-1">Last: {lastBriefingTime}</div>
+          )}
+          {briefingError && (
+            <div className="hud-label mt-1 text-accent-orange">BRIEFING FAILED — CHECK CONNECTION</div>
+          )}
         </div>
       </div>
 
       {/* Weather strip */}
-      {weather ? <WeatherCard data={weather} /> : <div className="bg-bg-card border border-border-dark rounded-lg p-4 text-text-secondary text-sm">Weather loading...</div>}
+      <div>
+        <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">ENVIRONMENT</div>
+        {weather && weather.temp_f != null
+          ? <WeatherCard data={weather} />
+          : <div className="hud-panel p-4 text-text-secondary text-sm">Weather loading...</div>
+        }
+      </div>
 
       {/* Source grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {Object.entries(sources).map(([name, data]) => (
-          <SourceCard key={name} name={name} healthy={data.healthy} lastChecked={data.last_checked} />
-        ))}
+      <div>
+        <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">SYSTEM SOURCES</div>
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {Object.entries(sources).map(([name, data]) => (
+            <SourceCard key={name} name={name} healthy={data.healthy} lastChecked={data.last_checked} />
+          ))}
+        </div>
       </div>
 
       {/* AdGuard card */}
       {adguard && (
-        <div className="bg-bg-card border border-border-dark rounded-lg p-4">
+        <div className="hud-panel p-4">
           <div className="flex items-center justify-between">
-            <span className="text-text-secondary text-xs uppercase tracking-wider">AdGuard Home</span>
+            <span className="hud-label border-l-2 border-accent-cyan pl-2">AdGuard Home</span>
             <AdGuardToggle enabled={adguard.filtering_enabled} />
           </div>
-          <div className="mt-2 font-mono text-text-primary">
+          <div className="mt-2 font-mono text-text-primary glow-cyan-text">
             {adguard.blocked_today} blocked ({adguard.blocked_pct}%)
           </div>
-          <div className="text-text-secondary text-xs">{adguard.queries_today} total queries today</div>
+          <div className="text-text-secondary text-xs font-mono">{adguard.queries_today} total queries today</div>
         </div>
       )}
 
       {/* Channels DVR card */}
       {channels && (
-        <div className="bg-bg-card border border-border-dark rounded-lg p-4">
-          <div className="text-text-secondary text-xs uppercase tracking-wider mb-2">Channels DVR</div>
+        <div className="hud-panel p-4">
+          <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">CHANNELS DVR</div>
           {channels.recording_now?.length > 0 ? (
-            <div className="space-y-2 mb-2">
+            <div className="space-y-2 mb-3">
               {channels.recording_now.map((r, i) => <RecordingCard key={i} recording={r} />)}
             </div>
           ) : (
-            <div className="text-text-secondary text-sm mb-2">Nothing recording</div>
+            <div className="hud-label mb-3 opacity-50">NOTHING RECORDING</div>
           )}
-          <div className="w-full bg-border-dark rounded-full h-2">
-            <div className="bg-accent-cyan h-2 rounded-full" style={{ width: `${channels.storage_total_gb ? (channels.storage_used_gb / channels.storage_total_gb * 100) : 0}%` }} />
-          </div>
-          <div className="text-text-secondary text-xs mt-1">{channels.storage_used_gb}GB / {channels.storage_total_gb}GB</div>
+          {channels.storage_total_gb > 0 ? (
+            <>
+              <div className="flex items-center justify-between mb-1">
+                <span className="hud-label">{channels.storage_used_gb}GB / {channels.storage_total_gb}GB</span>
+                <span className="hud-label">{Math.round(channels.storage_used_gb / channels.storage_total_gb * 100)}%</span>
+              </div>
+              <div className="w-full bg-bg-secondary border border-border-dark h-2">
+                <div
+                  className="bg-accent-cyan h-full"
+                  style={{ width: `${channels.storage_used_gb / channels.storage_total_gb * 100}%`, boxShadow: '0 0 8px rgba(0,212,255,0.6)' }}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="hud-label opacity-40">STORAGE DATA UNAVAILABLE</div>
+          )}
         </div>
       )}
 
       {/* Unraid card */}
       {unraid && (
-        <div className="bg-bg-card border border-border-dark rounded-lg p-4">
+        <div className="hud-panel p-4">
           <div className="flex items-center justify-between cursor-pointer" onClick={() => setDockerOpen(o => !o)}>
-            <span className="text-text-secondary text-xs uppercase tracking-wider">Unraid</span>
-            <span className={`text-xs font-mono ${unraid.array_status === 'started' ? 'text-accent-green' : 'text-accent-orange'}`}>
-              {unraid.array_status}
-            </span>
+            <span className="hud-label border-l-2 border-accent-cyan pl-2">Unraid</span>
+            <div className="flex items-center gap-1.5">
+              <span className={unraid.array_status === 'started' ? 'arc-dot' : 'arc-dot-warn'} />
+              <span className={`text-xs font-mono uppercase tracking-wider ${unraid.array_status === 'started' ? 'text-accent-green' : 'text-accent-orange'}`}>
+                {unraid.array_status}
+              </span>
+            </div>
           </div>
-          <div className="flex gap-4 mt-2 text-xs text-text-secondary">
+          <div className="flex gap-4 mt-2 text-xs text-text-secondary font-mono">
             {unraid.parity_status === 'running' && <span className="text-accent-orange">⚠ Parity running</span>}
             {unraid.mover_running && <span className="text-accent-cyan">● Mover active</span>}
             <span>{unraid.docker_containers?.length || 0} containers</span>

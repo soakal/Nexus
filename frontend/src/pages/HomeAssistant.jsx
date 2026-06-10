@@ -25,19 +25,22 @@ function EntityRow({ entity, onToggle, busy }) {
 
   if (TOGGLE_DOMAINS.has(domain)) {
     return (
-      <div className="flex items-center justify-between bg-bg-card border border-border-dark rounded px-3 py-2">
-        <div className="min-w-0">
-          <div className="text-text-primary text-sm truncate">{name}</div>
-          <div className="text-text-secondary text-xs font-mono truncate">{entity.entity_id}</div>
+      <div className="flex items-center justify-between hud-panel px-3 py-2">
+        <div className="min-w-0 flex items-center gap-2">
+          <span className={unavailable ? 'arc-dot-dim' : on ? 'arc-dot' : 'arc-dot-dim'} />
+          <div className="min-w-0">
+            <div className="text-text-primary text-sm truncate">{name}</div>
+            <div className="text-text-secondary text-xs font-mono truncate">{entity.entity_id}</div>
+          </div>
         </div>
         <button
           disabled={busy || unavailable}
           onClick={() => onToggle(entity, on)}
-          className={`ml-3 shrink-0 px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition-colors ${
+          className={`ml-3 shrink-0 px-3 py-1 rounded-none text-xs font-mono font-bold uppercase tracking-widest transition-colors ${
             unavailable
-              ? 'bg-border-dark text-text-secondary cursor-not-allowed'
+              ? 'bg-bg-secondary text-text-secondary border border-border-dark cursor-not-allowed'
               : on
-              ? 'bg-accent-green/20 text-accent-green border border-accent-green/50 hover:bg-accent-green/30'
+              ? 'bg-accent-green/15 text-accent-green border border-accent-green/50 hover:bg-accent-green/25'
               : 'bg-white/5 text-text-secondary border border-border-dark hover:text-text-primary'
           } ${busy ? 'opacity-50 cursor-wait' : ''}`}
         >
@@ -50,14 +53,17 @@ function EntityRow({ entity, onToggle, busy }) {
   // Sensors and everything else: read-only state display
   const unit = entity.attributes?.unit_of_measurement || ''
   return (
-    <div className="flex items-center justify-between bg-bg-card border border-border-dark rounded px-3 py-2">
-      <div className="min-w-0">
-        <div className="text-text-primary text-sm truncate">{name}</div>
-        <div className="text-text-secondary text-xs font-mono truncate">{entity.entity_id}</div>
+    <div className="flex items-center justify-between hud-panel px-3 py-2">
+      <div className="min-w-0 flex items-center gap-2">
+        <span className={unavailable ? 'arc-dot-err' : 'arc-dot-dim'} />
+        <div className="min-w-0">
+          <div className="text-text-primary text-sm truncate">{name}</div>
+          <div className="text-text-secondary text-xs font-mono truncate">{entity.entity_id}</div>
+        </div>
       </div>
       <div
         className={`ml-3 shrink-0 text-sm font-mono ${
-          unavailable ? 'text-accent-orange' : 'text-accent-cyan'
+          unavailable ? 'text-accent-orange' : 'text-accent-cyan glow-cyan-text'
         }`}
       >
         {state}{unit ? ` ${unit}` : ''}
@@ -141,7 +147,7 @@ export default function HomeAssistant() {
   return (
     <div className="p-6 max-w-3xl">
       <div className="flex items-baseline justify-between mb-4">
-        <h1 className="font-mono text-accent-cyan text-xl font-bold">HOME ASSISTANT</h1>
+        <h1 className="page-header">HOME SYSTEMS</h1>
         <span className="text-text-secondary text-xs font-mono">
           {entities.length} entities
           {alerts.length > 0 && (
@@ -155,24 +161,25 @@ export default function HomeAssistant() {
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
         placeholder="Filter by name or entity id..."
-        className="w-full mb-6 bg-bg-card border border-border-dark rounded px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary font-mono focus:outline-none focus:border-accent-cyan"
+        className="hud-input w-full mb-6"
       />
 
       {error && (
-        <div className="mb-4 bg-accent-orange/10 border border-accent-orange/40 rounded px-3 py-2 text-accent-orange text-sm">
-          {error}
+        <div className="mb-4 hud-panel border-accent-orange/40 px-3 py-2 flex items-center gap-2">
+          <span className="arc-dot-err" />
+          <span className="text-accent-orange text-sm">{error}</span>
         </div>
       )}
 
       {loading ? (
-        <div className="text-text-secondary">Loading...</div>
+        <div className="hud-label animate-pulse">LOADING...</div>
       ) : domains.length === 0 ? (
         <div className="text-text-secondary text-sm">No entities match.</div>
       ) : (
         <div className="space-y-6">
           {domains.map((d) => (
             <div key={d}>
-              <h2 className="text-text-secondary text-xs uppercase tracking-wider mb-2">
+              <h2 className="hud-label mb-2">
                 {d} <span className="text-text-secondary/60">({grouped[d].length})</span>
               </h2>
               <div className="space-y-2">

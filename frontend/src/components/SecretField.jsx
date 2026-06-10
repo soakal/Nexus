@@ -27,31 +27,44 @@ export default function SecretField({ secretKey, label, lastSet }) {
     <div className="flex items-center gap-3 py-2 border-b border-border-dark last:border-0">
       <div className="flex-1">
         <div className="text-text-primary text-sm">{label}</div>
-        {lastSet && <div className="text-text-secondary text-xs">Last set: {new Date(lastSet.endsWith('Z') ? lastSet : lastSet + 'Z').toLocaleDateString()}</div>}
+        {lastSet && <div className="text-text-secondary text-xs font-mono">Last set: {new Date(lastSet.endsWith('Z') ? lastSet : lastSet + 'Z').toLocaleDateString()}</div>}
       </div>
       {editing ? (
         <div className="flex gap-2 items-center">
-          <input type="password" value={value} onChange={e => setValue(e.target.value)}
-            className="bg-bg-secondary border border-border-dark rounded px-2 py-1 text-sm text-text-primary w-48 font-mono"
-            placeholder="New value..." />
-          <button onClick={save} className="text-accent-green text-xs">Save</button>
-          <button onClick={() => setEditing(false)} className="text-text-secondary text-xs">Cancel</button>
+          <div className="relative">
+            <input
+              type={visible ? 'text' : 'password'}
+              value={value}
+              onChange={e => setValue(e.target.value)}
+              className="hud-input w-48 pr-8"
+              placeholder="New value..."
+            />
+            <button
+              type="button"
+              onClick={() => setVisible(v => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-accent-cyan"
+              title={visible ? 'Hide' : 'Show'}
+            >
+              {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <button onClick={save} className="glow-btn text-xs px-2 py-1">Save</button>
+          <button onClick={() => setEditing(false)} className="hud-label hover:text-text-primary">Cancel</button>
         </div>
       ) : (
         <div className="flex gap-2 items-center">
-          <span className="font-mono text-text-secondary text-sm">••••••••</span>
-          <button onClick={() => setEditing(true)} className="text-accent-cyan text-xs hover:underline">Edit</button>
+          <span className="font-mono text-text-secondary text-sm tracking-widest">••••••••</span>
+          <button onClick={() => setEditing(true)} className="text-accent-cyan text-xs glow-on-hover">Edit</button>
           <button onClick={test} disabled={loading} className="text-text-secondary text-xs hover:text-text-primary">
             {loading ? '...' : 'Test'}
           </button>
           {testResult && (
             testResult.ok
               ? <CheckCircle size={14} className="text-accent-green" />
-              : <XCircle size={14} className="text-accent-orange" title={testResult.error} />
+              : <span title={testResult.error}><XCircle size={14} className="text-accent-red" /></span>
           )}
         </div>
       )}
     </div>
   )
 }
-
