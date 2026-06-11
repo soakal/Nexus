@@ -75,8 +75,10 @@ function EntityRow({ entity, onToggle, busy }) {
 export default function HomeAssistant() {
   const [entities, setEntities] = useState([])
   const [alerts, setAlerts] = useState([])
+  const [cloudAlerts, setCloudAlerts] = useState([])
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [reloading, setReloading] = useState(false)
   const [filter, setFilter] = useState('')
   const [busyIds, setBusyIds] = useState({})
 
@@ -85,6 +87,7 @@ export default function HomeAssistant() {
       const data = await api.ha.entities()
       setEntities(data.entities || [])
       setAlerts(data.alerts || [])
+      setCloudAlerts(data.cloud_alerts || [])
       setError(null)
     } catch (e) {
       setError(String(e.message || e))
@@ -92,6 +95,11 @@ export default function HomeAssistant() {
       setLoading(false)
     }
   }, [])
+
+  const reloadCloud = async () => {
+    setReloading(true)
+    try { await api.post('/ha/reload-cloud'); await load() } catch {} finally { setReloading(false) }
+  }
 
   useEffect(() => {
     load()
@@ -150,11 +158,40 @@ export default function HomeAssistant() {
         <h1 className="page-header">HOME SYSTEMS</h1>
         <span className="text-text-secondary text-xs font-mono">
           {entities.length} entities
+          {cloudAlerts.length > 0 && <span className="arc-dot-warn ml-2 inline-block" />}
           {alerts.length > 0 && (
             <span className="text-accent-orange ml-2">{alerts.length} unavailable</span>
           )}
         </span>
       </div>
+
+      {cloudAlerts.length > 0 && (
+        <div className="hud-panel mb-6 px-3 py-3" style={{ borderColor: 'rgba(255,149,0,0.4)' }}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="arc-dot-warn" />
+            <span className="hud-label text-accent-orange">HA CLOUD ALERT</span>
+          </div>
+          <div className="space-y-2">
+            {cloudAlerts.map((ca) => (
+              <div key={ca.entity} className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-text-primary text-sm">{ca.message}</div>
+                  <div className="text-text-secondary text-xs font-mono truncate">
+                    {ca.entity} · <span className="text-accent-orange">{ca.state}</span>
+                  </div>
+                </div>
+                <button
+                  disabled={reloading}
+                  onClick={reloadCloud}
+                  className={`glow-btn-gold shrink-0 ${reloading ? 'opacity-50 cursor-wait' : ''}`}
+                >
+                  {reloading ? 'RELOADING...' : 'RELOAD CLOUD'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <input
         type="text"
