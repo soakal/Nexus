@@ -74,6 +74,7 @@ async def fetch() -> ChannelsData:
                         "channel": j.get("channel") or (channels_list[0] if channels_list else ""),
                         "start": _epoch_to_iso(start_ts),
                         "end": _epoch_to_iso(end_ts),
+                        "program_id": str(j.get("id", "")),
                     }
                     if start_ts <= now < end_ts:
                         active.append((start_ts, entry))
