@@ -38,7 +38,7 @@ def nexus_client(tmp_path, monkeypatch):
     with patch("backend.database.create_db_and_tables"), \
          patch("backend.scheduler.setup_scheduler"), \
          patch("backend.scheduler.scheduler") as sched, \
-         patch("backend.agents.memo_watcher.start_watcher", new_callable=AsyncMock), \
+         patch("backend.agents.memo_watcher.start_watcher_blocking"), \
          patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
         sched.running = False
         from backend.main import app

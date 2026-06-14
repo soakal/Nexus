@@ -7,7 +7,7 @@ export default function Agents() {
   const [q, setQ] = useState('')
   useEffect(() => { api.agents.runs(q).then(setRuns).catch(() => {}) }, [q])
   return (
-    <div className="p-6 max-w-3xl space-y-6">
+    <div className="p-4 md:p-6 max-w-3xl space-y-6">
       <h1 className="page-header">AGENT COMMAND CENTER</h1>
       <div>
         <div className="flex items-center gap-2 mb-2">

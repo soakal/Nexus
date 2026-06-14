@@ -68,9 +68,9 @@ export default function Tasks() {
   }
 
   return (
-    <div className="p-6 max-w-2xl space-y-6">
+    <div className="p-4 md:p-6 max-w-2xl space-y-6">
       <h1 className="page-header">MISSION CONTROL</h1>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()}
           className="hud-input flex-1"
           placeholder="ENTER MISSION PARAMETERS..." />

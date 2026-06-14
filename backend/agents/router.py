@@ -16,19 +16,28 @@ def get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
 
 
+# Anthropic's hosted web search tool — the same live search Claude.ai uses. When
+# enabled, Claude decides when to search, runs it server-side, and returns the
+# final answer (with citations) in one call. max_uses caps searches per turn.
+_WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+
+
 def _extract_text(resp) -> str:
-    """Return the first text block from a Messages API response.
+    """Join all text blocks from a Messages API response.
 
-    Opus 4.8 can prepend non-text blocks (e.g. thinking) — never assume
-    content[0] is text.
+    Opus 4.8 can prepend non-text blocks (e.g. thinking), and the web search tool
+    interleaves text with server_tool_use / web_search_tool_result blocks — so we
+    collect every text block rather than assuming content[0] is the answer.
     """
-    for block in resp.content:
-        if getattr(block, "type", None) == "text":
-            return block.text
-    return ""
+    parts = [
+        block.text
+        for block in resp.content
+        if getattr(block, "type", None) == "text" and getattr(block, "text", "")
+    ]
+    return "\n".join(parts).strip()
 
 
-def _create_sync(model: str, max_tokens: int, prompt: str, system: str) -> str:
+def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False) -> str:
     """Blocking Anthropic call. Must be run in an executor, never on the loop."""
     client = get_client()
     kwargs = {
@@ -38,11 +47,13 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str) -> str:
     }
     if system:
         kwargs["system"] = system
+    if web_search:
+        kwargs["tools"] = [_WEB_SEARCH_TOOL]
     resp = client.messages.create(**kwargs)
     return _extract_text(resp)
 
 
-async def _run(model: str, max_tokens: int, prompt: str, system: str) -> str:
+async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False) -> str:
     """Run the blocking SDK call in the default thread-pool executor.
 
     The sync `anthropic.Anthropic` client wrapped in `run_in_executor` is more
@@ -50,16 +61,16 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str) -> str:
     event loop during briefings.
     """
     loop = asyncio.get_event_loop()
-    func = functools.partial(_create_sync, model, max_tokens, prompt, system)
+    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search)
     return await loop.run_in_executor(None, func)
 
 
-async def opus(prompt: str, system: str = "") -> str:
-    return await _run(OPUS_MODEL, 8192, prompt, system)
+async def opus(prompt: str, system: str = "", web_search: bool = False) -> str:
+    return await _run(OPUS_MODEL, 8192, prompt, system, web_search)
 
 
-async def sonnet(prompt: str, system: str = "") -> str:
-    return await _run(SONNET_MODEL, 8192, prompt, system)
+async def sonnet(prompt: str, system: str = "", web_search: bool = False) -> str:
+    return await _run(SONNET_MODEL, 8192, prompt, system, web_search)
 
 
 async def haiku(prompt: str, system: str = "") -> str:

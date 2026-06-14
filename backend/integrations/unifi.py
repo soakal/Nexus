@@ -5,6 +5,8 @@ from datetime import datetime
 import httpx
 from sqlmodel import Session, select
 
+from backend.cache import async_ttl_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,6 @@ async def fetch() -> UniFiData:
 
     # Check for new devices
     new_devices = []
-    known_macs = set()
     with Session(engine) as session:
         known = session.exec(select(KnownDevice)).all()
         known_macs = {d.mac for d in known}
@@ -81,6 +82,7 @@ async def fetch() -> UniFiData:
     )
 
 
+@async_ttl_cache(12)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

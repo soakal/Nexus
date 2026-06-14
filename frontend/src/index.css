@@ -4,6 +4,8 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+html, body { max-width: 100%; overflow-x: hidden; }
+
 body {
   background: #04080f;
   color: #cce5f0;
@@ -149,6 +151,9 @@ body::before {
   box-shadow: 0 0 12px rgba(0,212,255,0.2);
 }
 .hud-input::placeholder { color: #4d7c96; }
+@media (max-width: 767px) {
+  .hud-input { font-size: 16px; }
+}
 .page-header {
   font-family: 'Orbitron', sans-serif;
   font-size: 1.1rem;

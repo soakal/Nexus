@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from backend.cache import async_ttl_cache
+
 logger = logging.getLogger(__name__)
 
 _GQL_QUERY = """
@@ -31,6 +33,7 @@ class UnraidData:
     storage_total_gb: float = 0.0
 
 
+@async_ttl_cache(10)
 async def fetch() -> UnraidData:
     from backend.config import get_settings
     settings = get_settings()
@@ -79,6 +82,7 @@ async def fetch() -> UnraidData:
     return data
 
 
+@async_ttl_cache(12)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings
@@ -109,6 +113,9 @@ async def restart_docker(container_id: str) -> bool:
                 json={"query": mutation},
                 headers=headers,
             )
+            # Force the next dashboard poll to show the container's new state
+            # instead of the cached pre-restart snapshot.
+            fetch.invalidate()
             return resp.status_code == 200
     except Exception:
         return False

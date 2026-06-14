@@ -84,7 +84,7 @@ export default function Voice() {
   }, [])
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="p-4 md:p-6 max-w-2xl">
       <h1 className="page-header mb-6">VOICE INTERFACE</h1>
 
       {/* Drop zone */}
@@ -93,7 +93,7 @@ export default function Voice() {
         onDragLeave={() => setDragging(false)}
         onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) processFile(f) }}
         onClick={() => document.getElementById('voiceInput').click()}
-        className="hud-panel p-12 text-center cursor-pointer transition-all"
+        className="hud-panel p-8 md:p-12 text-center cursor-pointer transition-all"
         style={dragging ? { boxShadow: '0 0 30px rgba(0,212,255,0.3)' } : undefined}
       >
         <div className="flex justify-center mb-3">

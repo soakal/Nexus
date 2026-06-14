@@ -51,6 +51,11 @@ export const api = {
     timedDisable: (minutes) => req('POST', '/adguard/disable-timed', { minutes }),
   },
   trends: { get: (source, metric, days) => req('GET', `/trends/${source}/${metric}?days=${days || 7}`) },
+  uptime: {
+    summary: (days) => req('GET', `/uptime/summary?days=${days || 7}`),
+    history: (source, days) => req('GET', `/uptime/history/${source}?days=${days || 7}`),
+    speedtest: (days) => req('GET', `/uptime/speedtest?days=${days || 7}`),
+  },
   secrets: {
     list: () => req('GET', '/secrets/list'),
     set: (key, value) => req('POST', '/secrets/set', { key, value }),
@@ -72,6 +77,24 @@ export const api = {
       })
       if (!res.ok) throw new Error(await res.text())
       return res.json()
-    }
+    },
+    transcribe: async (file) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch(`${BASE}/voice/transcribe`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${getKey()}` },
+        body: fd,
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return res.json()
+    },
   },
+  chat: {
+    send: (message, conversationId) => req('POST', '/chat/', { message, conversation_id: conversationId ?? null }),
+    conversations: () => req('GET', '/chat/conversations'),
+    get: (id) => req('GET', `/chat/${id}`),
+    remove: (id) => req('DELETE', `/chat/${id}`),
+  },
+  today: { get: () => req('GET', '/today/') },
 }

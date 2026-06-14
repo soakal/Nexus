@@ -22,7 +22,7 @@ Write-Host "Starting NEXUS..." -ForegroundColor Cyan
         $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
         if ($conn) {
             Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 500
+            Start-Sleep -Seconds 2
         }
     } catch {}
 }
@@ -45,7 +45,7 @@ $backend = Start-Process -PassThru -WindowStyle Hidden `
 # probe hangs until timeout on every iteration and never succeeds.
 $ready = $false
 Write-Host "  Waiting for backend..." -NoNewline
-for ($i = 0; $i -lt 20; $i++) {
+for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep 1
     # Fail fast if the backend process died during startup.
     if ($backend.HasExited) {
@@ -58,7 +58,7 @@ for ($i = 0; $i -lt 20; $i++) {
         exit 1
     }
     try {
-        $r = Invoke-RestMethod "http://127.0.0.1:8000/api/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+        $r = Invoke-RestMethod "http://127.0.0.1:8000/api/health" -TimeoutSec 8 -ErrorAction SilentlyContinue
         if ($r.status -in @("ok", "vault_empty")) { $ready = $true; break }
     } catch {}
     Write-Host "." -NoNewline

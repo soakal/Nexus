@@ -4,13 +4,13 @@ export default function WeatherCard({ data }) {
   if (!data || data.error || data.temp_f == null) return null
   const Icon = ICONS[data.condition] || Cloud
   return (
-    <div className="hud-panel p-5 flex items-center gap-6">
+    <div className="hud-panel p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-6">
       <Icon size={44} className="text-accent-cyan flex-shrink-0" style={{ filter: 'drop-shadow(0 0 8px rgba(0,212,255,0.6))' }} />
       <div className="flex-1">
         <div className="text-text-primary glow-cyan-text" style={{ fontFamily: 'Orbitron, sans-serif', fontSize: '2rem' }}>{data.temp_f}°F</div>
         <div className="text-text-secondary text-sm">{data.summary}</div>
       </div>
-      <div className="text-right space-y-1">
+      <div className="text-left sm:text-right space-y-1 w-full sm:w-auto">
         <div>
           <span className="hud-label">H / L</span>
           <span className="font-mono text-text-primary text-sm ml-2">{data.high_f}° / {data.low_f}°</span>

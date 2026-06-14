@@ -23,8 +23,8 @@ export default function Briefing() {
   const created = briefing ? fmtDateTime(briefing.created_at) : ''
 
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 md:p-6 max-w-3xl">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h1 className="page-header">INTEL BRIEFING</h1>
         <button onClick={trigger} disabled={loading} className="glow-btn disabled:opacity-50">
           {loading ? 'GENERATING...' : 'GENERATE'}

@@ -1,25 +1,30 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { useState, useEffect } from 'react'
+import MobileNav from './components/MobileNav'
 import Dashboard from './pages/Dashboard'
 import Briefing from './pages/Briefing'
+import Today from './pages/Today'
 import Tasks from './pages/Tasks'
-import Voice from './pages/Voice'
+import Chat from './pages/Chat'
 import Agents from './pages/Agents'
 import Media from './pages/Media'
 import Trends from './pages/Trends'
+import Uptime from './pages/Uptime'
 import HomeAssistant from './pages/HomeAssistant'
 import Settings from './pages/Settings'
-import { LayoutDashboard, FileText, ListTodo, Mic, Bot, Tv2, TrendingUp, Home, Settings as SettingsIcon } from 'lucide-react'
+import { LayoutDashboard, FileText, ListTodo, Bot, Tv2, TrendingUp, Home, Settings as SettingsIcon, Activity, MessageSquare, CalendarDays } from 'lucide-react'
 import { API_BASE } from './lib/api'
 
 const NAV = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/briefing', icon: FileText, label: 'Briefing' },
+  { to: '/today', icon: CalendarDays, label: 'Today' },
   { to: '/tasks', icon: ListTodo, label: 'Tasks' },
-  { to: '/voice', icon: Mic, label: 'Voice' },
+  { to: '/chat', icon: MessageSquare, label: 'Chat' },
   { to: '/media', icon: Tv2, label: 'Media' },
   { to: '/ha', icon: Home, label: 'Home Assistant' },
   { to: '/trends', icon: TrendingUp, label: 'Trends' },
+  { to: '/uptime', icon: Activity, label: 'Uptime' },
   { to: '/agents', icon: Bot, label: 'Agents' },
   { to: '/settings', icon: SettingsIcon, label: 'Settings' },
 ]
@@ -50,6 +55,18 @@ export default function App() {
         if (data && (data.status === 'vault_missing' || data.status === 'vault_empty')) {
           setAuthError(true)
           setApiOk(false)
+          return
+        }
+        // /api/health needs no auth, so it can't tell us whether THIS browser holds
+        // a valid API key. Probe one authenticated endpoint so a missing/invalid key
+        // raises the "NO API KEY" banner instead of silently showing empty pages
+        // (the failure mode that made the mobile Uptime page sit on "LOADING...").
+        const authRes = await fetch(`${API_BASE}/api/sources/status`, {
+          headers: { 'Authorization': `Bearer ${key}` },
+        })
+        if (authRes.status === 401) {
+          setAuthError(true)
+          setApiOk(false)
         } else {
           setApiOk(true)
           setAuthError(false)
@@ -67,10 +84,10 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="flex h-screen overflow-hidden bg-bg-primary">
+      <div className="flex h-screen overflow-hidden overflow-x-hidden bg-bg-primary">
         {/* Sidebar */}
         <nav
-          className={`relative flex flex-col bg-bg-secondary transition-all duration-200 ${expanded ? 'w-56' : 'w-16'}`}
+          className={`relative hidden md:flex flex-col bg-bg-secondary transition-all duration-200 ${expanded ? 'md:w-56' : 'md:w-16'}`}
           style={{ borderRight: '1px solid rgba(0,212,255,0.15)' }}
         >
           {/* Brand indicator: vertical accent line */}
@@ -166,11 +183,33 @@ export default function App() {
         </nav>
 
         {/* Main content */}
-        <main className="relative flex-1 overflow-y-auto bg-bg-primary">
+        <main className="relative flex-1 overflow-y-auto bg-bg-primary pb-20 md:pb-0">
+          {/* Mobile top bar */}
+          <div
+            className="md:hidden sticky top-0 z-20 flex items-center justify-between px-4 py-3 bg-bg-secondary"
+            style={{ borderBottom: '1px solid rgba(0,212,255,0.15)' }}
+          >
+            <div className="flex items-center gap-2">
+              <div style={{
+                width: 28, height: 28, backgroundColor: '#00d4ff',
+                clipPath: 'polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)',
+                boxShadow: '0 0 10px rgba(0,212,255,0.6)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: '#04080f', fontWeight: 'bold', fontSize: 12,
+                fontFamily: 'Orbitron,sans-serif',
+              }}>N</div>
+              <span
+                className="text-accent-cyan font-bold tracking-widest text-sm"
+                style={{ fontFamily: 'Orbitron,sans-serif' }}
+              >NEXUS</span>
+            </div>
+            <span className={apiOk ? 'arc-dot' : 'arc-dot-err'} />
+          </div>
+
           {/* Auth/vault warning banner */}
           {authError && (
             <div
-              className="flex items-center gap-3 px-5 py-3"
+              className="flex flex-wrap items-center gap-3 px-4 md:px-5 py-3"
               style={{
                 background: 'rgba(255,149,0,0.12)',
                 borderBottom: '1px solid rgba(255,149,0,0.4)',
@@ -189,15 +228,18 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/briefing" element={<Briefing />} />
+            <Route path="/today" element={<Today />} />
             <Route path="/tasks" element={<Tasks />} />
-            <Route path="/voice" element={<Voice />} />
+            <Route path="/chat" element={<Chat />} />
             <Route path="/media" element={<Media />} />
             <Route path="/ha" element={<HomeAssistant />} />
             <Route path="/trends" element={<Trends />} />
+            <Route path="/uptime" element={<Uptime />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>
+        <MobileNav nav={NAV} />
       </div>
     </BrowserRouter>
   )

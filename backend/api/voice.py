@@ -28,3 +28,24 @@ async def upload_voice(file: UploadFile = File(...), _=Depends(require_api_key))
             os.unlink(tmp_path)
         except Exception:
             pass
+
+
+@router.post("/transcribe")
+async def transcribe_voice(file: UploadFile = File(...), _=Depends(require_api_key)):
+    allowed = (".wav", ".mp3", ".m4a", ".webm", ".ogg")
+    if not file.filename.lower().endswith(allowed):
+        raise HTTPException(status_code=400, detail="Unsupported audio format")
+    suffix = os.path.splitext(file.filename)[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        from backend.agents.voice import transcribe
+        text = await transcribe(tmp_path)
+        return {"transcript": text}
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass

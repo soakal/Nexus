@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Never let mobile browsers serve a stale index.html after a redeploy;
+         the hashed JS/CSS assets are still cached immutably, so this is cheap. -->
+    <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
     <meta name="theme-color" content="#04080f" />
     <title>NEXUS // AGENTIC OS</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />

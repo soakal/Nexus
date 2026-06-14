@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from backend.cache import async_ttl_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +31,7 @@ class ChannelsData:
     storage_total_gb: float = 0.0
 
 
+@async_ttl_cache(10)
 async def fetch() -> ChannelsData:
     from backend.config import get_settings
     settings = get_settings()
@@ -88,6 +91,7 @@ async def fetch() -> ChannelsData:
     return data
 
 
+@async_ttl_cache(12)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

@@ -32,9 +32,14 @@ export default function Media() {
     unmountedRef.current = false
     load()
     const timer = setInterval(load, 30000)
+    const onVis = () => { if (!document.hidden && !unmountedRef.current) load() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
     return () => {
       unmountedRef.current = true
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
     }
   }, [])
 
@@ -59,7 +64,7 @@ export default function Media() {
   }
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="p-4 md:p-6 max-w-2xl">
       <h1 className="page-header mb-6">MEDIA OPERATIONS</h1>
       {!data ? (
         <div className="hud-label animate-pulse">LOADING...</div>
@@ -97,9 +102,9 @@ export default function Media() {
                   }
 
                   return (
-                    <div key={i} className="hud-panel-sm p-3 flex items-start justify-between gap-3 min-w-0">
-                      <span className="text-text-primary text-sm truncate flex-1 leading-snug">{r.title}</span>
-                      <div className="flex items-center gap-2 flex-shrink-0">
+                    <div key={i} className="hud-panel-sm p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 min-w-0">
+                      <span className="text-text-primary text-sm truncate w-full sm:w-auto leading-snug">{r.title}</span>
+                      <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
                         {r.channel && (
                           <span className="inline-block bg-bg-secondary border border-accent-cyan text-accent-cyan font-mono text-xs px-1.5 py-0.5 leading-none tracking-wider">
                             CH {r.channel}

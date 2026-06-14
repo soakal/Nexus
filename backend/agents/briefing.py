@@ -41,6 +41,12 @@ PRs/issues needing attention. Call out any stale PRs explicitly.
 DVR storage: {dvr_used}/{dvr_total} GB.
 [If DVR trend projects full within 14 days, flag with projected date]
 
+## Calendar
+{calendar_block}
+
+## Inbox
+{inbox_block}
+
 ## From Your Vault
 Relevant open tasks from Obsidian. Surface anything tagged #today or #urgent.
 
@@ -95,6 +101,7 @@ async def run_briefing() -> str:
         unraid,
         weather,
     )
+    from backend.integrations.hermes import get_calendar, get_gmail
 
     logger.info("Running morning briefing")
 
@@ -107,10 +114,15 @@ async def run_briefing() -> str:
         weather.fetch(),
         channels_dvr.fetch(),
         adguard.fetch(),
+        get_calendar(),
+        get_gmail(),
         return_exceptions=True,
     )
 
-    ha, unifi_d, unraid_d, obs, gh, wx, channels, ag = results
+    ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data, mail_data = results
+
+    cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
+    mail_str = mail_data if not isinstance(mail_data, Exception) else "Inbox unavailable"
 
     def safe(obj, attr, default="N/A"):
         if isinstance(obj, Exception):
@@ -178,6 +190,8 @@ async def run_briefing() -> str:
         recording_now=rec_str,
         dvr_used=safe(channels, "storage_used_gb", 0),
         dvr_total=safe(channels, "storage_total_gb", 0),
+        calendar_block=cal_str,
+        inbox_block=mail_str,
     )
 
     briefing_text = await opus(prompt)

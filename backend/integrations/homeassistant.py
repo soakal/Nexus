@@ -4,6 +4,8 @@ from datetime import datetime
 
 import httpx
 
+from backend.cache import async_ttl_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +89,7 @@ def _is_noise(entity: dict) -> bool:
     return is_noise_entity(entity_id, state)
 
 
+@async_ttl_cache(8)
 async def fetch() -> HAData:
     from backend.config import get_settings
     settings = get_settings()
@@ -161,6 +164,7 @@ async def try_reload_cloud(host: str, headers: dict, client: httpx.AsyncClient) 
         raise
 
 
+@async_ttl_cache(12)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings
@@ -181,4 +185,8 @@ async def call_service(domain: str, service: str, data: dict | None = None) -> d
     async with httpx.AsyncClient(timeout=5) as client:
         resp = await client.post(url, json=data or {}, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+    # The cached entity snapshot is now stale (we just changed a device); drop it
+    # so the frontend's post-toggle reload sees the real new state, not the cache.
+    fetch.invalidate()
+    return result

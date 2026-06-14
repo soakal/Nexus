@@ -103,8 +103,15 @@ export default function HomeAssistant() {
 
   useEffect(() => {
     load()
-    const id = setInterval(load, 30000)
-    return () => clearInterval(id)
+    const id = setInterval(load, 10000)
+    const onVis = () => { if (!document.hidden) load() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+    }
   }, [load])
 
   const toggle = useCallback(async (entity, currentlyOn) => {
@@ -153,8 +160,8 @@ export default function HomeAssistant() {
   const domains = useMemo(() => Object.keys(grouped).sort(), [grouped])
 
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-baseline justify-between mb-4">
+    <div className="p-4 md:p-6 max-w-3xl">
+      <div className="flex flex-wrap items-baseline gap-2 justify-between mb-4">
         <h1 className="page-header">HOME SYSTEMS</h1>
         <span className="text-text-secondary text-xs font-mono">
           {entities.length} entities
@@ -173,7 +180,7 @@ export default function HomeAssistant() {
           </div>
           <div className="space-y-2">
             {cloudAlerts.map((ca) => (
-              <div key={ca.entity} className="flex items-start justify-between gap-3">
+              <div key={ca.entity} className="flex flex-wrap items-start gap-3">
                 <div className="min-w-0">
                   <div className="text-text-primary text-sm">{ca.message}</div>
                   <div className="text-text-secondary text-xs font-mono truncate">

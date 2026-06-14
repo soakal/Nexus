@@ -52,6 +52,22 @@ class TrendSnapshot(SQLModel, table=True):
     captured_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class UptimeSample(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    source: str
+    ok: bool
+    latency_ms: int | None = None
+    checked_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SpeedtestSample(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    download_mbps: float = 0.0
+    upload_mbps: float = 0.0
+    ping_ms: float = 0.0
+    checked_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class PendingDelivery(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     payload_json: str
@@ -76,6 +92,21 @@ class KnownDevice(SQLModel, table=True):
     first_seen: datetime = Field(default_factory=datetime.utcnow)
     last_seen: datetime = Field(default_factory=datetime.utcnow)
     hostname: str | None = None
+
+
+class Conversation(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    title: str = "New conversation"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ChatMessage(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    conversation_id: int = Field(index=True)
+    role: str  # user | assistant
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 def create_db_and_tables():

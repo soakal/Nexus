@@ -6,6 +6,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Eagerly trigger the heavy watchdog C-extension import at module import time.
+# On Windows this import can hold the GIL for 10-25s. Doing it here (during app
+# import, before uvicorn binds/serves its socket) guarantees the GIL hold cannot
+# collide with a live IOCP accept socket and produce WinError 64. The thread-based
+# start in start_watcher_blocking() is the primary fix; this is defense in depth.
+try:  # pragma: no cover - import side effect only
+    import watchdog.observers  # noqa: F401
+except Exception as _e:  # noqa: BLE001
+    logging.getLogger(__name__).warning(f"watchdog preimport skipped: {_e}")
+
 _observer = None
 _loop = None
 
@@ -105,19 +115,30 @@ async def _debounced_process(path: str) -> None:
     await _process_memo(path)
 
 
-async def start_watcher(watch_folder: str) -> None:
-    global _observer, _loop
-    from watchdog.observers import Observer
+def start_watcher_blocking(watch_folder: str, loop: asyncio.AbstractEventLoop) -> None:
+    """Start the watchdog observer. This MUST be called from a plain OS thread
+    (e.g. threading.Thread), NOT scheduled on the asyncio event loop.
 
-    _loop = asyncio.get_event_loop()
+    The heavy watchdog C-extension import (watchdog.observers.read_directory_changes
+    on Windows) holds the GIL for 10-25s. If this ran on the loop thread, or if the
+    loop were awaiting it, the whole event loop would freeze long enough for the
+    Windows IOCP accept socket to die with WinError 64. Running on a separate OS
+    thread lets the GIL be released back to the loop between bytecode ops, so the
+    loop keeps servicing connections while the import grinds.
+    """
+    global _observer, _loop
+
+    _loop = loop
     watch_path = Path(watch_folder)
     watch_path.mkdir(parents=True, exist_ok=True)
     (watch_path / "processed").mkdir(exist_ok=True)
 
+    from watchdog.observers import Observer  # heavy import, runs on this OS thread
     handler = _MemoHandler(_loop)
-    _observer = Observer()
-    _observer.schedule(handler, str(watch_path), recursive=False)
-    _observer.start()
+    obs = Observer()
+    obs.schedule(handler, str(watch_path), recursive=False)
+    obs.start()
+    _observer = obs
     logger.info(f"Memo watcher started on {watch_folder}")
 
 

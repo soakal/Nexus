@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from backend.cache import async_ttl_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ def _k_to_f(k: float) -> float:
     return round((k - 273.15) * 9/5 + 32, 1)
 
 
+@async_ttl_cache(60)  # weather changes slowly; one shared fetch per minute
 async def fetch() -> WeatherData:
     from backend.config import get_settings
     settings = get_settings()

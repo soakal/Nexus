@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from backend.cache import async_ttl_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +31,7 @@ def _get_adguard_pass(settings):
         return ""
 
 
+@async_ttl_cache(10)
 async def fetch() -> AdGuardData:
     from backend.config import get_settings
     settings = get_settings()
@@ -59,6 +62,7 @@ async def fetch() -> AdGuardData:
     )
 
 
+@async_ttl_cache(12)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings
@@ -79,6 +83,9 @@ async def set_filtering(enabled: bool) -> None:
             json={"protection_enabled": enabled},
             auth=_auth(settings),
         )
+    # The cached fetch() holds the old filtering_enabled flag; drop it so the
+    # toggle's new state is reflected on the next poll.
+    fetch.invalidate()
 
 
 _reenable_task = None

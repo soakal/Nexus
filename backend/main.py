@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import pathlib
 from contextlib import asynccontextmanager
@@ -41,8 +42,15 @@ async def lifespan(app: FastAPI):
             setup_scheduler(settings.briefing_time, settings.briefing_timezone)
             scheduler.start()
 
-            from backend.agents.memo_watcher import start_watcher
-            await start_watcher(settings.memo_watch_folder)
+            import threading
+            from backend.agents.memo_watcher import start_watcher_blocking
+            loop = asyncio.get_running_loop()
+            threading.Thread(
+                target=start_watcher_blocking,
+                args=(settings.memo_watch_folder, loop),
+                name="memo-watcher-start",
+                daemon=True,
+            ).start()
 
             logger.info("NEXUS backend started")
         except Exception as e:
@@ -93,17 +101,21 @@ from backend.api import (
     agents,
     briefing,
     channels,
+    chat,
     homeassistant,
     secrets,
     sources,
     tasks,
+    today,
     trends,
     unraid_api,
+    uptime,
     voice,
 )
 from backend.api.trigger import router as trigger_router
 
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(briefing.router, prefix="/api/briefing", tags=["briefing"])
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 app.include_router(sources.router, prefix="/api/sources", tags=["sources"])
@@ -111,9 +123,11 @@ app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(channels.router, prefix="/api/channels", tags=["channels"])
 app.include_router(adguard.router, prefix="/api/adguard", tags=["adguard"])
 app.include_router(trends.router, prefix="/api/trends", tags=["trends"])
+app.include_router(uptime.router, prefix="/api/uptime", tags=["uptime"])
 app.include_router(secrets.router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(unraid_api.router, prefix="/api/unraid", tags=["unraid"])
 app.include_router(homeassistant.router, prefix="/api/ha", tags=["homeassistant"])
+app.include_router(today.router, prefix="/api/today", tags=["today"])
 app.include_router(trigger_router, tags=["trigger"])
 
 from backend.auth import require_api_key  # noqa: E402

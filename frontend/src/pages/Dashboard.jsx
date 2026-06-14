@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { fmtTime } from '../lib/parseUTC'
@@ -19,19 +19,27 @@ export default function Dashboard() {
   const [lastBriefing, setLastBriefing] = useState(null)
   const navigate = useNavigate()
 
-  useEffect(() => {
-    const load = async () => {
-      try { setSources(await api.sources.status()) } catch {}
-      try { setWeather(await api.get('/weather') || null) } catch {}
-      try { setAdguard(await api.adguard.get()) } catch {}
-      try { setChannels(await api.channels.get()) } catch {}
-      try { setUnraid(await api.unraid.get()) } catch {}
-      try { const b = await api.briefing.latest(); setLastBriefing(b?.created_at) } catch {}
-    }
-    load()
-    const timer = setInterval(load, 30000)
-    return () => clearInterval(timer)
+  const load = useCallback(() => {
+    api.sources.status().then(setSources).catch(() => {})
+    api.get('/weather').then(d => setWeather(d || null)).catch(() => {})
+    api.adguard.get().then(setAdguard).catch(() => {})
+    api.channels.get().then(setChannels).catch(() => {})
+    api.unraid.get().then(setUnraid).catch(() => {})
+    api.briefing.latest().then(b => setLastBriefing(b?.created_at)).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    load()
+    const timer = setInterval(load, 15000)
+    const onVis = () => { if (!document.hidden) load() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+    }
+  }, [load])
 
   const runBriefing = async () => {
     setBriefingLoading(true)
@@ -51,16 +59,16 @@ export default function Dashboard() {
   }
 
   const restartDocker = async (id) => {
-    try { await api.unraid.restartDocker(id) } catch {}
+    try { await api.unraid.restartDocker(id); load() } catch {}
   }
 
   const lastBriefingTime = fmtTime(lastBriefing)
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-4 md:p-6 space-y-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <h1 className="page-header">NEXUS COMMAND CENTER</h1>
-        <div className="text-right">
+        <div className="text-left sm:text-right">
           <button onClick={runBriefing} disabled={briefingLoading}
             className="glow-btn px-4 py-2 disabled:opacity-50">
             {briefingLoading ? 'GENERATING...' : 'RUN BRIEFING'}
