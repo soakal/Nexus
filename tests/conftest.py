@@ -46,6 +46,16 @@ def mock_secrets(monkeypatch):
     monkeypatch.setattr("backend.secrets.vault.get_secret", lambda k: MOCK_SECRETS.get(k, (_ for _ in ()).throw(KeyError(k))))
 
 
+@pytest.fixture(autouse=True)
+def reset_caches():
+    """Clear all async_ttl_cache state before each test so a cached health_check /
+    fetch result from one test can't leak into the next (the caches hold
+    module-level state that otherwise persists for the whole session)."""
+    from backend.cache import reset_all_caches
+    reset_all_caches()
+    yield
+
+
 @pytest.fixture
 def api_key():
     return "test-nexus-key"

@@ -48,7 +48,7 @@ async def test_retry_step():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return "I cannot do this"
+            return "I cannot complete this task"
         return "Done successfully"
 
     with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
@@ -76,7 +76,7 @@ async def test_replan():
          patch("sqlmodel.Session"):
 
         mock_opus.side_effect = [plan_json, replan_json, plan_json]
-        mock_sonnet.side_effect = ["I cannot do this", "Done after replan"]
+        mock_sonnet.side_effect = ["I cannot complete this task", "Done after replan"]
 
         from backend.agents.orchestrator import run_task
         result = await run_task("Replan task")

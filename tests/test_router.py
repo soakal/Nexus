@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 @pytest.mark.asyncio
 async def test_opus_call():
     mock_resp = MagicMock()
-    mock_resp.content = [MagicMock(text="Opus response")]
+    mock_resp.content = [MagicMock(type="text", text="Opus response")]
 
     with patch("anthropic.Anthropic") as mock_anthropic:
         mock_client = MagicMock()
@@ -23,7 +23,7 @@ async def test_opus_call():
 @pytest.mark.asyncio
 async def test_sonnet_call():
     mock_resp = MagicMock()
-    mock_resp.content = [MagicMock(text="Sonnet response")]
+    mock_resp.content = [MagicMock(type="text", text="Sonnet response")]
 
     with patch("anthropic.Anthropic") as mock_anthropic:
         mock_client = MagicMock()
@@ -40,7 +40,7 @@ async def test_sonnet_call():
 @pytest.mark.asyncio
 async def test_haiku_call():
     mock_resp = MagicMock()
-    mock_resp.content = [MagicMock(text="Haiku response")]
+    mock_resp.content = [MagicMock(type="text", text="Haiku response")]
 
     with patch("anthropic.Anthropic") as mock_anthropic:
         mock_client = MagicMock()

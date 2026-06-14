@@ -36,7 +36,7 @@ Focus on your priorities."""
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock) as wx, \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock) as channels, \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock) as ag, \
-         patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_opus, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
          patch("backend.integrations.hermes.notify", new_callable=AsyncMock) as mock_hermes, \
          patch("backend.database.engine"), \
@@ -85,7 +85,7 @@ async def test_briefing_obsidian_write_called():
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
-         patch("backend.agents.router.opus", new_callable=AsyncMock, return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
          patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
          patch("backend.database.engine"), \

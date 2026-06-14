@@ -103,18 +103,16 @@ async def test_adguard_fetch():
 
 @pytest.mark.asyncio
 async def test_channels_fetch():
-    dvr_data = {"storage_used": 1024**3 * 500, "storage_total": 1024**3 * 2000}
+    dvr_data = {"disk": {"total": 1024**3 * 2000, "free": 1024**3 * 1500, "used": 1024**3 * 500}}
 
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_dvr = MagicMock(status_code=200)
         mock_dvr.json.return_value = dvr_data
         mock_jobs = MagicMock(status_code=200)
         mock_jobs.json.return_value = []
-        mock_upcoming = MagicMock(status_code=200)
-        mock_upcoming.json.return_value = []
 
         mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[mock_dvr, mock_jobs, mock_upcoming])
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[mock_dvr, mock_jobs])
         mock_client_cls.return_value = mock_client
 
         from backend.integrations.channels_dvr import fetch

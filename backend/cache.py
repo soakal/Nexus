@@ -35,6 +35,17 @@ import asyncio
 import time
 from functools import wraps
 
+# Every decorated function's cache state, so all caches can be reset at once.
+# Production code uses per-function .invalidate(); tests use reset_all_caches()
+# to guarantee isolation (a cached health_check result must not leak across tests).
+_CACHE_REGISTRY: list[dict] = []
+
+
+def reset_all_caches() -> None:
+    """Expire and clear every cache so the next call does a fresh fetch."""
+    for state in _CACHE_REGISTRY:
+        state.update(expires=0.0, ok=False, value=None, exc=None)
+
 
 def async_ttl_cache(ttl: float, falsy_ttl: float | None = None):
     # A successful, truthy result is held for `ttl`. A failure (exception) or a
@@ -47,6 +58,7 @@ def async_ttl_cache(ttl: float, falsy_ttl: float | None = None):
         # expires: monotonic deadline; ok: was the last refresh a success;
         # value/exc: the cached success value or the cached exception to re-raise.
         state = {"expires": 0.0, "ok": False, "value": None, "exc": None}
+        _CACHE_REGISTRY.append(state)
         lock = asyncio.Lock()
 
         def _return_cached():

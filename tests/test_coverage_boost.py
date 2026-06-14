@@ -251,15 +251,18 @@ def test_setup_scheduler_adds_jobs():
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    assert mock_add.call_count == 3
-    job_ids = {call.kwargs.get("id") or call[1][2] for call in mock_add.call_args_list}
+    assert mock_add.call_count == 5
     # Verify jobs by checking the id kwarg in each call
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
-    assert "morning_briefing" in ids_set
-    assert "trend_snapshots" in ids_set
-    assert "retry_deliveries" in ids_set
+    assert ids_set == {
+        "morning_briefing",
+        "trend_snapshots",
+        "retry_deliveries",
+        "record_uptime",
+        "record_speedtest",
+    }
 
 
 @pytest.mark.asyncio

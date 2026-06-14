@@ -303,7 +303,7 @@ def test_agent_runs_search(app_client, auth_headers):
 # Weather
 # ---------------------------------------------------------------------------
 
-def test_weather_endpoint(app_client):
+def test_weather_endpoint(app_client, auth_headers):
     with patch("backend.integrations.weather.fetch", new_callable=AsyncMock) as mock_wx:
         from backend.integrations.weather import WeatherData
         mock_wx.return_value = WeatherData(
@@ -311,7 +311,7 @@ def test_weather_endpoint(app_client):
             high_f=78.0, low_f=65.0, precip_chance_pct=10,
             wind_mph=5.0, summary="Clear, 72°F"
         )
-        resp = app_client.get("/api/weather")
+        resp = app_client.get("/api/weather", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["condition"] == "Clear"
