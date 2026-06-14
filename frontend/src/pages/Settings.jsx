@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import SecretField from '../components/SecretField'
+import { api } from '../lib/api'
 
 function BrowserApiKey() {
   const [value, setValue] = useState(localStorage.getItem('nexus_api_key') || '')
@@ -127,6 +128,12 @@ const SECTIONS = [
 ]
 
 export default function Settings() {
+  const [meta, setMeta] = useState({})
+
+  useEffect(() => {
+    api.secrets.list().then(r => setMeta(r?.meta || {})).catch(() => {})
+  }, [])
+
   return (
     <div className="p-4 md:p-6 max-w-2xl">
       <h1 className="page-header mb-6">SYSTEM CONFIGURATION</h1>
@@ -136,7 +143,7 @@ export default function Settings() {
           <div key={section.title} className="hud-panel p-4">
             <h2 className="hud-label mb-3">{section.title}</h2>
             {section.secrets.map(s => (
-              <SecretField key={s.key} secretKey={s.key} label={s.label} />
+              <SecretField key={s.key} secretKey={s.key} label={s.label} lastSet={meta[s.key]?.last_set} />
             ))}
           </div>
         ))}

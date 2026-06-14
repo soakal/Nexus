@@ -2,13 +2,32 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 
 from backend.cache import async_ttl_cache
 
 logger = logging.getLogger(__name__)
+
+# Pending-delivery retry policy. The scheduler calls deliver_pending() every 60s;
+# these bound how aggressively a failing row is retried and when it is given up on.
+_BACKOFF_BASE_SECONDS = 60      # first retry waits ~60s after the first failure
+_BACKOFF_CAP_SECONDS = 3600     # exponential backoff ceiling (1 hour)
+_MAX_ATTEMPTS = 8               # dead-letter cap: stop loading a row after this many tries
+
+
+def _next_eligible(attempts: int, last_attempt: datetime | None) -> datetime:
+    """Earliest UTC time a failed delivery may be retried, via exponential backoff.
+
+    A never-attempted row (or one with a non-positive attempt count) is eligible
+    immediately. Otherwise the delay doubles per attempt: 60s, 120s, 240s, ...,
+    capped at _BACKOFF_CAP_SECONDS.
+    """
+    if last_attempt is None or attempts <= 0:
+        return datetime.min
+    delay = min(_BACKOFF_BASE_SECONDS * (2 ** (attempts - 1)), _BACKOFF_CAP_SECONDS)
+    return last_attempt + timedelta(seconds=delay)
 
 
 @dataclass
@@ -99,22 +118,42 @@ def _queue_delivery(payload: dict, delivery_type: str) -> None:
 
 
 def _load_pending() -> list[dict]:
-    """Read pending deliveries off the event loop. Returns plain dicts so no
-    ORM objects (or DB session) cross the await boundary."""
+    """Read up to 10 retry-eligible pending deliveries off the event loop. Returns
+    plain dicts so no ORM objects (or DB session) cross the await boundary.
+
+    Rows are scanned oldest-first (FIFO by created_at). A row is skipped if it has
+    hit the dead-letter cap (attempts >= _MAX_ATTEMPTS) or if its exponential-backoff
+    window has not yet elapsed. This stops a permanently-failing 'poison' row from
+    occupying a delivery slot every cycle and starving newer deliveries."""
     from sqlmodel import Session, select
 
     from backend.database import PendingDelivery, engine
 
+    now = datetime.utcnow()
     with Session(engine) as session:
-        rows = session.exec(select(PendingDelivery).limit(10)).all()
-        return [
-            {
-                "id": r.id,
-                "payload_json": r.payload_json,
-                "delivery_type": r.delivery_type,
-            }
-            for r in rows
-        ]
+        # Pull a candidate window larger than 10 since some will be filtered out as
+        # not-yet-eligible; oldest first so the backlog drains fairly.
+        rows = session.exec(
+            select(PendingDelivery).order_by(PendingDelivery.created_at).limit(50)
+        ).all()
+        eligible: list[dict] = []
+        for r in rows:
+            if r.attempts >= _MAX_ATTEMPTS:
+                continue
+            if _next_eligible(r.attempts, r.last_attempt) > now:
+                continue
+            eligible.append(
+                {
+                    "id": r.id,
+                    "payload_json": r.payload_json,
+                    "delivery_type": r.delivery_type,
+                    "attempts": r.attempts,
+                    "last_attempt": r.last_attempt,
+                }
+            )
+            if len(eligible) >= 10:
+                break
+        return eligible
 
 
 def _apply_pending_results(delivered_ids: list[int], failed_ids: list[int]) -> None:
@@ -141,6 +180,13 @@ def _apply_pending_results(delivered_ids: list[int], failed_ids: list[int]) -> N
             ).all():
                 delivery.attempts += 1
                 delivery.last_attempt = now
+                # Fires exactly once: once at/over the cap the row is no longer
+                # loaded by _load_pending(), so it can't be incremented again.
+                if delivery.attempts >= _MAX_ATTEMPTS:
+                    logger.warning(
+                        f"Dead-lettering pending delivery id={delivery.id} "
+                        f"type={delivery.delivery_type} after {delivery.attempts} attempts"
+                    )
         session.commit()
 
 

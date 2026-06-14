@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -105,13 +106,55 @@ class _MemoHandler:
                 )
 
 
-_pending: dict = {}
+async def _wait_for_stable_size(
+    path: str,
+    *,
+    poll_interval: float = 0.5,
+    stable_checks: int = 2,
+    timeout: float = 30.0,
+) -> bool:
+    """Wait until a file's size stops changing before it is processed.
+
+    A recorder may still be writing a large .m4a/.wav/.mp3 when the watchdog
+    FileCreatedEvent fires; transcribing it then yields a truncated memo. Poll the
+    size (async sleeps only — never time.sleep, which would freeze the event loop and
+    risk WinError 64) until it is unchanged for `stable_checks` consecutive reads.
+
+    Returns True once the size settles. Returns False on timeout (the caller still
+    processes, with a warning, rather than dropping the memo) or if the file vanishes
+    mid-wait (e.g. a cancelled recording).
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    last_size = -1
+    steady = 0
+    while True:
+        await asyncio.sleep(poll_interval)
+        try:
+            size = os.path.getsize(path)
+        except FileNotFoundError:
+            logger.warning(f"Memo file vanished while waiting for it to settle: {path}")
+            return False
+        # A zero-byte file (created but not yet written to) is never 'stable'.
+        if size > 0 and size == last_size:
+            steady += 1
+            if steady >= stable_checks:
+                return True
+        else:
+            steady = 0
+        last_size = size
+        if loop.time() >= deadline:
+            logger.warning(
+                f"Memo file still growing after {timeout}s; processing anyway: {path}"
+            )
+            return False
 
 
 async def _debounced_process(path: str) -> None:
-    await asyncio.sleep(2)
-    if path in _pending:
-        del _pending[path]
+    settled = await _wait_for_stable_size(path)
+    if not settled and not os.path.exists(path):
+        # File was removed mid-wait (cancelled recording) — nothing to process.
+        return
     await _process_memo(path)
 
 

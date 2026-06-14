@@ -15,12 +15,12 @@ class SecretUpdate(BaseModel):
 
 @router.get("/list")
 async def list_secrets(_=Depends(require_api_key)):
-    from backend.secrets.vault import list_keys
+    from backend.secrets.vault import list_keys, read_meta
     try:
         keys = list_keys()
-        return {"keys": keys}
+        return {"keys": keys, "meta": read_meta()}
     except RuntimeError:
-        return {"keys": []}
+        return {"keys": [], "meta": {}}
 
 
 @router.post("/set")

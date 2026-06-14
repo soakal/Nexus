@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     briefing_time: str = "07:00"
     briefing_timezone: str = "America/Detroit"
     memo_watch_folder: str = "./watched_memos"
+    chat_history_limit: int = 20
     whisper_api: bool = False
     whisper_model: str = "base"
     pr_stale_hours: int = 48
@@ -76,6 +77,52 @@ class Settings(BaseSettings):
     def nexus_api_key(self) -> str:
         from backend.secrets.manager import get_secret
         return get_secret("NEXUS_API_KEY")
+
+    def validate(self) -> None:
+        """Fail fast on misconfiguration at startup, before the scheduler/agents run.
+
+        Raises ValueError for a malformed briefing_time/briefing_timezone and
+        RuntimeError listing every missing required secret (all collected, not just
+        the first). Only the two secrets that core function depends on are required;
+        every integration already degrades gracefully when its own secret is absent.
+        """
+        # briefing_time — must satisfy scheduler.py's `hour, minute = briefing_time.split(":")`.
+        parts = self.briefing_time.split(":")
+        if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
+            raise ValueError(
+                f"Invalid briefing_time {self.briefing_time!r}; expected HH:MM 24h"
+            )
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(
+                f"Invalid briefing_time {self.briefing_time!r}; hour must be 0-23, minute 0-59"
+            )
+
+        # briefing_timezone — CronTrigger(timezone=...) would otherwise fail at job time.
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            ZoneInfo(self.briefing_timezone)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(
+                f"Invalid briefing_timezone {self.briefing_timezone!r}: {e}"
+            )
+
+        # Required secrets — ANTHROPIC_API_KEY (every agent call bills it) and
+        # NEXUS_API_KEY (auth for all /api/*). Others are optional/feature-degraded.
+        required = {
+            "ANTHROPIC_API_KEY": "anthropic_api_key",
+            "NEXUS_API_KEY": "nexus_api_key",
+        }
+        missing: list[str] = []
+        for name, prop in required.items():
+            try:
+                value = getattr(self, prop)
+            except Exception:
+                value = None
+            if not value:
+                missing.append(name)
+        if missing:
+            raise RuntimeError(f"Missing required secrets: {', '.join(missing)}")
 
     class Config:
         env_file = ".env"

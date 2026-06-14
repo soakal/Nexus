@@ -107,6 +107,9 @@ async def _record_speedtest():
         from backend.integrations.speedtest import run_speedtest
 
         result = await run_speedtest()
+        if not result.get("online", True):
+            logger.info("Speedtest skipped — no internet connectivity")
+            return
         with Session(engine) as session:
             session.add(SpeedtestSample(
                 download_mbps=result.get("download_mbps", 0.0),

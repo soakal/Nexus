@@ -3,7 +3,6 @@
 import sys
 import pathlib
 import argparse
-import json
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -25,18 +24,8 @@ def main():
         print("Value cannot be empty.")
         sys.exit(1)
 
+    # set_secret stamps last_set/last_rotated in nexus.vault.meta.
     set_secret(args.key, new_value)
-
-    meta_path = pathlib.Path("nexus.vault.meta")
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-    if args.key not in meta:
-        meta[args.key] = {}
-
-    from datetime import datetime
-    now = datetime.utcnow().isoformat()
-    meta[args.key]["last_set"] = now
-    meta[args.key]["last_rotated"] = now
-    meta_path.write_text(json.dumps(meta, indent=2))
 
     print(f"✓ {args.key} rotated")
 

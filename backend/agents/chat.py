@@ -98,16 +98,20 @@ def _db_add_message(conversation_id: int, role: str, content: str) -> None:
         session.commit()
 
 
-def _db_load_history(conversation_id: int) -> list[dict]:
+def _db_load_history(conversation_id: int, limit: int = 20) -> list[dict]:
     from sqlmodel import Session, select
     from backend.database import ChatMessage, engine
     with Session(engine) as session:
+        # Load the MOST RECENT `limit` messages (DESC), then restore chronological
+        # order. Ordering ASC + limit would pin the model to the oldest messages and
+        # drop all recent context as a conversation grows.
         msgs = session.exec(
             select(ChatMessage)
             .where(ChatMessage.conversation_id == conversation_id)
-            .order_by(ChatMessage.created_at)
-            .limit(12)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(limit)
         ).all()
+        msgs = list(reversed(msgs))
         return [{"role": m.role, "content": m.content} for m in msgs]
 
 
@@ -129,7 +133,10 @@ async def chat(conversation_id: int | None, user_message: str) -> dict:
         conversation_id = await asyncio.to_thread(_db_create_conversation, user_message)
 
     await asyncio.to_thread(_db_add_message, conversation_id, "user", user_message)
-    history = await asyncio.to_thread(_db_load_history, conversation_id)
+    from backend.config import get_settings
+    history = await asyncio.to_thread(
+        _db_load_history, conversation_id, get_settings().chat_history_limit
+    )
 
     # 2. Classify intent with haiku (fast)
     classify_prompt = f"""Classify this user message and return JSON only.

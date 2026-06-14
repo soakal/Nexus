@@ -163,13 +163,23 @@ export default function HomeAssistant() {
     <div className="p-4 md:p-6 max-w-3xl">
       <div className="flex flex-wrap items-baseline gap-2 justify-between mb-4">
         <h1 className="page-header">HOME SYSTEMS</h1>
-        <span className="text-text-secondary text-xs font-mono">
-          {entities.length} entities
-          {cloudAlerts.length > 0 && <span className="arc-dot-warn ml-2 inline-block" />}
-          {alerts.length > 0 && (
-            <span className="text-accent-orange ml-2">{alerts.length} unavailable</span>
-          )}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-text-secondary text-xs font-mono">
+            {entities.length} entities
+            {cloudAlerts.length > 0 && <span className="arc-dot-warn ml-2 inline-block" />}
+            {alerts.length > 0 && (
+              <span className="text-accent-orange ml-2">{alerts.length} unavailable</span>
+            )}
+          </span>
+          <button
+            disabled={reloading}
+            onClick={reloadCloud}
+            title="Reload the Home Assistant Cloud (Nabu Casa) connection"
+            className={`hud-label hover:text-accent-cyan transition-colors ${reloading ? 'opacity-50 cursor-wait' : ''}`}
+          >
+            {reloading ? 'RELOADING...' : 'RELOAD CLOUD'}
+          </button>
+        </div>
       </div>
 
       {cloudAlerts.length > 0 && (

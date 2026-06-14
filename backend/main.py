@@ -34,10 +34,26 @@ async def lifespan(app: FastAPI):
 
     vault_ok = pathlib.Path(".vault.key").exists() and pathlib.Path("nexus.vault").exists()
 
+    # Lock down the key file's permissions on every boot (best-effort, never fatal).
+    try:
+        from backend.secrets.vault import secure_key_file
+        secure_key_file()
+    except Exception as e:
+        logger.warning(f"Key file hardening skipped: {e}")
+
     if vault_ok:
+        from backend.config import get_settings
+        settings = get_settings()
+        # Validate config/secrets before anything depends on them. A failure here is
+        # fatal — log at ERROR and re-raise so uvicorn fails fast rather than running
+        # half-configured. This is deliberately OUTSIDE the broad try below so it is
+        # not demoted to a "Startup partial" warning.
         try:
-            from backend.config import get_settings
-            settings = get_settings()
+            settings.validate()
+        except Exception as e:
+            logger.error(f"Startup aborted — invalid configuration: {e}")
+            raise
+        try:
             from backend.scheduler import scheduler, setup_scheduler
             setup_scheduler(settings.briefing_time, settings.briefing_timezone)
             scheduler.start()

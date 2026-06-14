@@ -1,6 +1,9 @@
-import pytest
+import logging
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-import json
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -100,3 +103,71 @@ async def test_deliver_pending_empty_is_noop():
 
         mock_client_cls.assert_not_called()
         mock_apply.assert_not_called()
+
+
+def test_next_eligible_backoff_schedule():
+    from backend.integrations.hermes import (
+        _BACKOFF_CAP_SECONDS,
+        _next_eligible,
+    )
+    base = datetime(2026, 1, 1, 0, 0, 0)
+    # Never attempted -> eligible immediately (far in the past).
+    assert _next_eligible(0, None) <= datetime.utcnow()
+    # Exponential: attempt 1 -> +60s, 2 -> +120s, 3 -> +240s.
+    assert _next_eligible(1, base) == base + timedelta(seconds=60)
+    assert _next_eligible(2, base) == base + timedelta(seconds=120)
+    assert _next_eligible(3, base) == base + timedelta(seconds=240)
+    # Large attempt count is capped.
+    assert _next_eligible(99, base) == base + timedelta(seconds=_BACKOFF_CAP_SECONDS)
+
+
+def _fake_pending(**kw):
+    defaults = dict(id=1, payload_json='{"type": "notify"}', delivery_type="notify",
+                    attempts=0, last_attempt=None, created_at=datetime(2026, 1, 1))
+    defaults.update(kw)
+    return SimpleNamespace(**defaults)
+
+
+def _patch_load_session(rows):
+    """Patch the Session used inside _load_pending so session.exec(...).all() -> rows."""
+    session = MagicMock()
+    session.exec.return_value.all.return_value = rows
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=session)
+    cm.__exit__ = MagicMock(return_value=False)
+    return patch("sqlmodel.Session", return_value=cm)
+
+
+def test_load_pending_skips_not_yet_eligible():
+    from backend.integrations.hermes import _load_pending
+    now = datetime.utcnow()
+    fresh_fail = _fake_pending(id=1, attempts=3, last_attempt=now)          # backoff window open
+    eligible_old = _fake_pending(id=2, attempts=1, last_attempt=now - timedelta(hours=1))
+    with patch("backend.database.engine"), _patch_load_session([fresh_fail, eligible_old]):
+        result = _load_pending()
+    ids = [r["id"] for r in result]
+    assert ids == [2]
+
+
+def test_load_pending_skips_dead_lettered():
+    from backend.integrations.hermes import _MAX_ATTEMPTS, _load_pending
+    dead = _fake_pending(id=1, attempts=_MAX_ATTEMPTS, last_attempt=None)
+    with patch("backend.database.engine"), _patch_load_session([dead]):
+        result = _load_pending()
+    assert result == []
+
+
+def test_apply_results_dead_letters_once(caplog):
+    from backend.integrations.hermes import _MAX_ATTEMPTS, _apply_pending_results
+    # A row that will cross the cap on this increment.
+    row = _fake_pending(id=5, attempts=_MAX_ATTEMPTS - 1, delivery_type="notify")
+    session = MagicMock()
+    session.exec.return_value.all.return_value = [row]
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=session)
+    cm.__exit__ = MagicMock(return_value=False)
+    with patch("backend.database.engine"), patch("sqlmodel.Session", return_value=cm), \
+         caplog.at_level(logging.WARNING):
+        _apply_pending_results([], [5])
+    assert row.attempts == _MAX_ATTEMPTS
+    assert sum("Dead-lettering" in r.message for r in caplog.records) == 1
