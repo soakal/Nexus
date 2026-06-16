@@ -159,6 +159,8 @@ class Conversation(SQLModel, table=True):
     title: str = "New conversation"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    summary: str | None = None
+    summarized_through_id: int | None = None
 
 
 class ChatMessage(SQLModel, table=True):
@@ -265,6 +267,31 @@ def _ensure_spendlog_columns():
         logger.warning(f"_ensure_spendlog_columns failed: {e}")
 
 
+def _ensure_conversation_columns():
+    """Idempotently add columns introduced after the original `conversation` table shipped.
+
+    Safe to run repeatedly: inspects PRAGMA table_info(conversation) and only issues an
+    ALTER for a column that is actually missing. Best-effort — a failure here is
+    logged but never fatal to startup. No-op on a fresh DB (create_all already made
+    the column) and on test :memory: engines.
+    """
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(conversation)"))}
+            if "summary" not in cols:
+                conn.execute(
+                    text("ALTER TABLE conversation ADD COLUMN summary TEXT")
+                )
+                conn.commit()
+            if "summarized_through_id" not in cols:
+                conn.execute(
+                    text("ALTER TABLE conversation ADD COLUMN summarized_through_id INTEGER")
+                )
+                conn.commit()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"_ensure_conversation_columns failed: {e}")
+
+
 def _ensure_system_state():
     """Idempotently seed the single SystemState row (id=1).
 
@@ -300,6 +327,7 @@ def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     _ensure_task_columns()
     _ensure_spendlog_columns()
+    _ensure_conversation_columns()
     _ensure_system_state()
 
 

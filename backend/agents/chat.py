@@ -125,6 +125,96 @@ def _db_touch_conversation(conversation_id: int) -> None:
             session.commit()
 
 
+def _db_get_summary(conversation_id: int) -> str:
+    from sqlmodel import Session
+    from backend.database import Conversation, engine
+    with Session(engine) as session:
+        conv = session.get(Conversation, conversation_id)
+        if conv is None:
+            return ""
+        return conv.summary or ""
+
+
+def _db_get_summary_meta(conversation_id: int) -> dict:
+    from sqlmodel import Session
+    from backend.database import Conversation, engine
+    with Session(engine) as session:
+        conv = session.get(Conversation, conversation_id)
+        if conv is None:
+            return {"summary": "", "through_id": None}
+        return {"summary": conv.summary or "", "through_id": conv.summarized_through_id}
+
+
+def _db_messages_after(conversation_id: int, after_id: int | None) -> list[dict]:
+    from sqlmodel import Session, select
+    from backend.database import ChatMessage, engine
+    with Session(engine) as session:
+        q = select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+        if after_id is not None:
+            q = q.where(ChatMessage.id > after_id)
+        q = q.order_by(ChatMessage.id.asc())
+        msgs = session.exec(q).all()
+        return [{"id": m.id, "role": m.role, "content": m.content} for m in msgs]
+
+
+def _db_set_summary(conversation_id: int, summary: str, through_id: int) -> None:
+    from sqlmodel import Session
+    from backend.database import Conversation, engine
+    with Session(engine) as session:
+        conv = session.get(Conversation, conversation_id)
+        if conv is None:
+            return
+        conv.summary = summary
+        conv.summarized_through_id = through_id
+        session.commit()
+
+
+async def _maybe_summarize(conversation_id: int, history_limit: int) -> None:
+    """Best-effort rolling summarizer. Folds oldest out-of-window messages into a
+    Haiku summary stored on the Conversation row. NEVER raises — all errors are
+    swallowed so summarization never breaks a chat request.
+    """
+    try:
+        from backend.agents.router import haiku
+
+        meta = await asyncio.to_thread(_db_get_summary_meta, conversation_id)
+        pending = await asyncio.to_thread(
+            _db_messages_after, conversation_id, meta["through_id"]
+        )
+
+        # If there are still <= history_limit un-summarized messages, nothing to fold.
+        if len(pending) <= history_limit:
+            return
+
+        # Fold the oldest messages that fall outside the current window.
+        fold = pending[: len(pending) - history_limit]
+        if not fold:
+            return
+
+        existing = meta["summary"]
+        fold_transcript = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+            for m in fold
+        )
+
+        prompt = (
+            "You maintain a running summary of a conversation so older messages can be dropped without losing context.\n\n"
+            f"EXISTING SUMMARY:\n{existing or '(none yet)'}\n\n"
+            f"NEW MESSAGES TO FOLD IN:\n{fold_transcript}\n\n"
+            "Return an UPDATED running summary (<=180 words) capturing durable facts, decisions, preferences, and open threads. Summary text only — no preamble."
+        )
+
+        new_summary = (await haiku(prompt)).strip()
+        if not new_summary:
+            return
+
+        await asyncio.to_thread(
+            _db_set_summary, conversation_id, new_summary, fold[-1]["id"]
+        )
+    except Exception as e:
+        logger.warning(f"_maybe_summarize failed (best-effort, ignoring): {e}")
+
+
 _BUDGET_REACHED_REPLY = (
     "I've hit the configured spending limit for now, so I can't run that. "
     "You can raise or reset the budget in Settings (Safety)."
@@ -144,6 +234,7 @@ async def chat(conversation_id: int | None, user_message: str) -> dict:
     history = await asyncio.to_thread(
         _db_load_history, conversation_id, get_settings().chat_history_limit
     )
+    convo_summary = await asyncio.to_thread(_db_get_summary, conversation_id)
 
     # 2. Classify intent with haiku (fast)
     classify_prompt = f"""Classify this user message and return JSON only.
@@ -185,6 +276,12 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
             f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
             for m in prior
         )
+        if convo_summary:
+            transcript = (
+                f"[Earlier conversation summary]\n{convo_summary}\n\n[Recent messages]\n{transcript}"
+                if transcript
+                else f"[Earlier conversation summary]\n{convo_summary}"
+            )
 
         reply = ""
 
@@ -420,5 +517,8 @@ If they're saving something from the conversation, use the relevant prior assist
     # 4. Persist reply and update conversation timestamp
     await asyncio.to_thread(_db_add_message, conversation_id, "assistant", reply)
     await asyncio.to_thread(_db_touch_conversation, conversation_id)
+
+    # 5. Rolling summarization (best-effort; swallows its own errors)
+    await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
 
     return {"conversation_id": conversation_id, "reply": reply}
