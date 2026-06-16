@@ -281,7 +281,12 @@ READ_TOOLS: list[ReadTool] = [
         dispatch=_vault_search,
     ),
     ReadTool(
-        name="web_search",
+        # Renamed from "web_search" to avoid colliding with Anthropic's HOSTED
+        # web_search tool (router._WEB_SEARCH_TOOL) when both are sent in the same
+        # tools= list. This local DuckDuckGo tool is a CLIENT-SIDE custom tool we
+        # dispatch ourselves; the hosted one returns server results we never
+        # dispatch. Distinct names let them coexist.
+        name="ddg_search",
         description="Live web search (DuckDuckGo + GitHub releases). Use for current versions, news, prices, dates, or real-time facts.",
         input_schema=_QUERY_SCHEMA,
         dispatch=_web_search,

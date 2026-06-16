@@ -370,18 +370,18 @@ def test_unraid_get(app_client, auth_headers):
 # Hermes trigger
 # ---------------------------------------------------------------------------
 
-def test_hermes_trigger_briefing(app_client):
+def test_hermes_trigger_briefing(app_client, auth_headers):
     with patch("backend.agents.briefing.run_briefing", new_callable=AsyncMock) as mock_briefing:
         mock_briefing.return_value = "Briefing text"
-        resp = app_client.post("/api/trigger", json={"task_name": "briefing", "parameters": {}})
+        resp = app_client.post("/api/trigger", json={"task_name": "briefing", "parameters": {}}, headers=auth_headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
 
 
-def test_hermes_trigger_status(app_client):
+def test_hermes_trigger_status(app_client, auth_headers):
     with patch("backend.integrations.homeassistant.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.unraid.health_check", new_callable=AsyncMock, return_value=True):
-        resp = app_client.post("/api/trigger", json={"task_name": "status", "parameters": {}})
+        resp = app_client.post("/api/trigger", json={"task_name": "status", "parameters": {}}, headers=auth_headers)
         assert resp.status_code == 200
         body = resp.json()
         assert body["ok"] is True
@@ -389,6 +389,12 @@ def test_hermes_trigger_status(app_client):
         assert "unraid" in body["result"]
 
 
-def test_hermes_trigger_unknown_task(app_client):
-    resp = app_client.post("/api/trigger", json={"task_name": "nonexistent", "parameters": {}})
+def test_hermes_trigger_unknown_task(app_client, auth_headers):
+    resp = app_client.post("/api/trigger", json={"task_name": "nonexistent", "parameters": {}}, headers=auth_headers)
     assert resp.status_code == 404
+
+
+def test_hermes_trigger_requires_auth(app_client):
+    """/api/trigger is now Bearer-required (Tier 1.6) — no key -> 401."""
+    resp = app_client.post("/api/trigger", json={"task_name": "briefing", "parameters": {}})
+    assert resp.status_code == 401

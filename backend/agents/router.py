@@ -1,10 +1,44 @@
 import asyncio
+import contextvars
 import functools
 import logging
 
 import anthropic
 
 logger = logging.getLogger(__name__)
+
+# Carries the durable task_id of the in-flight orchestrated task. The orchestrator
+# sets it around a durable run_task so nested router calls (plan/debug) see it.
+# NOTE: the default ThreadPoolExecutor does NOT copy the contextvars Context across
+# the loop->thread hop, so the best-effort spend write does NOT read this var
+# directly — _run / run_with_tools capture the task_id on the event loop and thread
+# it into _record_spend via functools.partial. None for non-task callers
+# (chat/briefing single-shot calls).
+_current_task_id: contextvars.ContextVar = contextvars.ContextVar(
+    "nexus_task_id", default=None
+)
+
+
+def set_task_context(task_id):
+    """Bind the current task_id for spend attribution; returns a reset Token."""
+    return _current_task_id.set(task_id)
+
+
+def reset_task_context(token) -> None:
+    """Restore the task-id contextvar to its prior value via the Token."""
+    _current_task_id.reset(token)
+
+
+class TaskAborted(Exception):
+    """Raised inside the tool-use loop when a task must stop mid-flight.
+
+    `.reason` is "stopped" (kill switch / autonomy disabled) or "cancelled"
+    (cooperative cancel). The orchestrator catches it and finalizes the task.
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"task aborted: {reason}")
 
 OPUS_MODEL = "claude-opus-4-8"
 SONNET_MODEL = "claude-sonnet-4-6"
@@ -30,27 +64,36 @@ def _compute_cost(
     """Estimate USD cost of one billed call from token usage.
 
     Returns 0.0 for an unknown model (logged) rather than raising. Cache tokens
-    are folded into the input rate — an approximation (cache-write and cache-read
-    are actually priced differently); refine later when prices are verified.
+    are priced as FRACTIONS of the placeholder input rate: cache_creation at
+    1.25x input, cache_read at 0.1x input. These multipliers are applied to the
+    # VERIFY placeholder input rate — refine when real prices are confirmed.
     """
     price = _PRICE_PER_MTOK.get(model)
     if price is None:
         logger.warning(f"No price entry for model {model!r}; recording cost 0.0")
         return 0.0
     cost = (
-        (input_tokens + cache_creation + cache_read) / 1e6 * price["input"]
+        input_tokens / 1e6 * price["input"]
+        + cache_creation / 1e6 * (price["input"] * 1.25)
+        + cache_read / 1e6 * (price["input"] * 0.1)
         + output_tokens / 1e6 * price["output"]
     )
     return float(cost)
 
 
-def _record_spend(model: str, resp, label: str) -> None:
+def _record_spend(model: str, resp, label: str, task_id=None) -> None:
     """Best-effort: insert a SpendLog row from a Messages API response.
 
     Whole body is wrapped in try/except — a logging failure (or an absent/odd
     usage field) must NEVER crash the LLM response. If usage tokens can't be
     coerced to int (e.g. a MagicMock test response), we treat it as "no usage"
     and write NO row.
+
+    `task_id` is captured by the CALLER on the event loop (where the
+    `_current_task_id` contextvar is set) and threaded down via functools.partial.
+    This is the fallback path: the contextvar does NOT survive the default
+    ThreadPoolExecutor hop (verified by test), so we pass the value explicitly
+    rather than reading the contextvar here (which runs in the worker thread).
     """
     try:
         usage = getattr(resp, "usage", None)
@@ -79,7 +122,13 @@ def _record_spend(model: str, resp, label: str) -> None:
             cache_creation = _coerce("cache_creation_input_tokens")
             cache_read = _coerce("cache_read_input_tokens")
         except (TypeError, ValueError):
-            # Non-numeric usage (e.g. MagicMock) -> treat as no usage, no row.
+            # usage WAS present but a token field can't be coerced (e.g. a
+            # MagicMock test response, or a future/odd usage shape). Distinct from
+            # usage-None above (legit, silent): warn here, then write NO row.
+            logger.warning(
+                f"could not meter LLM call model={model!r} label={label!r}; "
+                "usage shape unrecognized"
+            )
             return
 
         cost = _compute_cost(model, input_tokens, output_tokens, cache_creation, cache_read)
@@ -97,6 +146,7 @@ def _record_spend(model: str, resp, label: str) -> None:
                 cache_read_input_tokens=cache_read,
                 cost_usd=cost,
                 label=label or "",
+                task_id=task_id,
             ))
             session.commit()
     except Exception as e:  # best-effort — never break the response
@@ -129,8 +179,12 @@ def _extract_text(resp) -> str:
     return "\n".join(parts).strip()
 
 
-def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
-    """Blocking Anthropic call. Must be run in an executor, never on the loop."""
+def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None) -> str:
+    """Blocking Anthropic call. Must be run in an executor, never on the loop.
+
+    `task_id` is captured on the event loop by `_run` and passed in here (the
+    contextvar does not cross the executor hop) so the spend row is attributed.
+    """
     client = get_client()
     kwargs = {
         "model": model,
@@ -148,7 +202,7 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
     # Session(engine) write here is correct and must NOT be wrapped in
     # asyncio.to_thread. Do not "fix" this into to_thread.
     try:
-        _record_spend(model, resp, label)
+        _record_spend(model, resp, label, task_id)
     except Exception as e:  # never let metering break the response
         logger.warning(f"spend logging failed (non-fatal): {e}")
     return text
@@ -158,8 +212,8 @@ async def _budget_brake() -> None:
     """Universal daily budget brake: before EVERY billed call, check the daily cap.
 
     A BudgetExceeded propagates (callers degrade gracefully); any OTHER governor
-    error is swallowed so a governor bug can never DOS the assistant. Shared by
-    both `_run` (single-shot calls) and `run_with_tools` (the tool-use loop).
+    error is swallowed so a governor bug can never DOS the assistant. Used by
+    `_run` (single-shot chat/briefing calls that carry no task context).
     """
     from backend.safety.governor import BudgetExceeded, check_budget
     try:
@@ -168,6 +222,56 @@ async def _budget_brake() -> None:
         raise
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"daily budget check failed (non-fatal), proceeding: {e}")
+
+
+async def _loop_guard(task_id, task_start) -> None:
+    """Per-round guard for `run_with_tools`. Order (documented): BUDGET -> KILL -> CANCEL.
+
+    1) check_budget(task_id, task_start) — daily always + per-task if task_start
+       given. BudgetExceeded propagates (durable task finalizes failed/budget).
+    2) Kill switch: if SystemState.autonomy_enabled is OFF, raise
+       TaskAborted("stopped").
+    3) Cancel: if task_id is set and the Task row has cancel_requested, raise
+       TaskAborted("cancelled").
+
+    Only BudgetExceeded + TaskAborted escape. Any OTHER governor/DB error is
+    logged and swallowed so the loop proceeds (mirrors `_budget_brake`).
+    With task_id=None (chat/briefing single calls) this is inert: the per-task
+    cap is skipped, autonomy is NOT consulted, and cancel is not checked — only
+    the daily cap applies.
+    """
+    from backend.safety.governor import BudgetExceeded, check_budget, get_system_state
+
+    # 1) Budget (BudgetExceeded must propagate).
+    try:
+        await asyncio.to_thread(check_budget, task_id, task_start)
+    except BudgetExceeded:
+        raise
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"loop budget check failed (non-fatal), proceeding: {e}")
+
+    if task_id is None:
+        return
+
+    # 2) Kill switch.
+    try:
+        state = await asyncio.to_thread(get_system_state)
+        autonomy_enabled = state["autonomy_enabled"]
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"loop kill-switch check failed (non-fatal), proceeding: {e}")
+        autonomy_enabled = True
+    if not autonomy_enabled:
+        raise TaskAborted("stopped")
+
+    # 3) Cooperative cancel.
+    try:
+        from backend.agents.orchestrator import _is_cancel_requested
+        cancelled = await asyncio.to_thread(_is_cancel_requested, task_id)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"loop cancel check failed (non-fatal), proceeding: {e}")
+        cancelled = False
+    if cancelled:
+        raise TaskAborted("cancelled")
 
 
 async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
@@ -179,12 +283,16 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
     """
     await _budget_brake()
 
+    # Capture the task_id contextvar HERE (on the event loop, where it is set);
+    # it does not survive the run_in_executor hop, so we thread it down explicitly.
+    task_id = _current_task_id.get()
+
     loop = asyncio.get_event_loop()
-    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label)
+    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id)
     return await loop.run_in_executor(None, func)
 
 
-def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str):
+def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None):
     """Blocking Anthropic call for the tool-use loop. Returns the RAW response.
 
     Mirrors `_create_sync` but (1) takes a full `messages` list (not a single
@@ -206,9 +314,11 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
     resp = client.messages.create(**kwargs)
     # Best-effort spend logging — runs INSIDE the executor worker thread (NOT the
     # event loop), so the synchronous Session(engine) write inside _record_spend
-    # is correct here and must NOT be wrapped in asyncio.to_thread.
+    # is correct here and must NOT be wrapped in asyncio.to_thread. task_id is
+    # captured by run_with_tools on the loop and threaded in (contextvar does not
+    # cross the executor hop).
     try:
-        _record_spend(model, resp, label)
+        _record_spend(model, resp, label, task_id)
     except Exception as e:  # never let metering break the response
         logger.warning(f"spend logging failed (non-fatal): {e}")
     return resp
@@ -225,6 +335,8 @@ async def run_with_tools(
     web_search: bool = False,
     label: str = "",
     max_rounds: int = 5,
+    task_id=None,
+    task_start=None,
 ) -> str:
     """Native tool-use loop over READ-ONLY tools.
 
@@ -234,22 +346,30 @@ async def run_with_tools(
     `web_search` is True, Anthropic's hosted web search tool is added alongside the
     local custom tools.
 
-    Metering parity with `_run`: the daily budget brake runs BEFORE every billed
-    round (`_budget_brake`), and each create() records spend AFTER (inside
-    `_create_sync_raw`). A `BudgetExceeded` from the brake propagates out so a
-    durable task finalizes failed/budget_exceeded.
+    Metering parity with `_run`: the per-round guard (`_loop_guard`) runs BEFORE
+    every billed round and each create() records spend AFTER (inside
+    `_create_sync_raw`). The guard enforces BUDGET -> KILL -> CANCEL: a
+    `BudgetExceeded` propagates (durable task finalizes failed/budget_exceeded);
+    a `TaskAborted` propagates (durable task finalizes 'stopped'). With
+    `task_id=None` (chat/briefing) the guard is the daily-cap brake only — kill
+    switch + cancel are not consulted.
     """
     messages: list = [{"role": "user", "content": prompt}]
     tools = ([_WEB_SEARCH_TOOL] if web_search else []) + list(tool_specs)
+
+    # Prefer the explicit task_id param; fall back to the contextvar (set by the
+    # orchestrator). Captured on the loop and threaded into each create() call
+    # since the contextvar does not survive the run_in_executor hop.
+    spend_task_id = task_id if task_id is not None else _current_task_id.get()
 
     loop = asyncio.get_event_loop()
     last_resp = None
 
     for _round in range(max_rounds):
-        await _budget_brake()
+        await _loop_guard(task_id, task_start)
         resp = await loop.run_in_executor(
             None,
-            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label),
+            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label, spend_task_id),
         )
         last_resp = resp
 

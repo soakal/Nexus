@@ -67,7 +67,14 @@ def _load_task_prompt(task_id: int) -> str | None:
 
 
 def _load_unfinished_task_ids() -> list[int]:
-    """Ids of every Task left in a non-terminal state (pending|running)."""
+    """Ids of every Task left in a non-terminal state (pending|running).
+
+    Requeue deliberately filters to ("pending","running"): a TERMINAL task
+    (success | failed | stopped) is NEVER re-enqueued. This terminal-status
+    filter is what breaks the poison loop — when a poison step exhausts its
+    attempts the orchestrator finalizes the task 'failed' (step_exhausted), and
+    that terminal status keeps boot-resume from re-enqueueing it forever.
+    """
     from sqlmodel import Session, select
 
     from backend.database import Task, engine
@@ -85,7 +92,7 @@ def _finalize_failed(task_id: int, reason: str) -> None:
 
     from sqlmodel import Session
 
-    from backend.database import Task, engine
+    from backend.database import AgentRun, Task, engine
 
     with Session(engine) as session:
         t = session.get(Task, task_id)
@@ -94,6 +101,21 @@ def _finalize_failed(task_id: int, reason: str) -> None:
             t.result_json = json.dumps({"error": reason})
             t.updated_at = datetime.utcnow()
             session.commit()
+        # Best-effort: record a minimal AgentRun so the failure is visible in the
+        # agent-runs feed (a worker-level crash otherwise leaves no AgentRun row).
+        try:
+            session.add(AgentRun(
+                task_id=task_id,
+                agent_type="orchestrator",
+                model="sonnet",
+                prompt_snippet=str(reason)[:200],
+                output_snippet="",
+                success=False,
+                duration_ms=0,
+            ))
+            session.commit()
+        except Exception:  # pragma: no cover - best effort
+            pass
 
 
 # --- pool ------------------------------------------------------------------

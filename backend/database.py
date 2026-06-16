@@ -186,6 +186,7 @@ class SpendLog(SQLModel, table=True):
     cache_read_input_tokens: int = 0
     cost_usd: float = 0.0
     label: str = ""
+    task_id: int | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
@@ -218,6 +219,33 @@ def _ensure_task_columns():
                 conn.commit()
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"_ensure_task_columns failed: {e}")
+
+
+def _ensure_spendlog_columns():
+    """Idempotently add columns introduced after the original `spendlog` table shipped.
+
+    Safe to run repeatedly: inspects PRAGMA table_info(spendlog) and only issues an
+    ALTER for a column that is actually missing. Best-effort — a failure here is
+    logged but never fatal to startup. No-op on a fresh DB (create_all already made
+    the column) and on test :memory: engines.
+    """
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(spendlog)"))}
+            if "task_id" not in cols:
+                conn.execute(
+                    text("ALTER TABLE spendlog ADD COLUMN task_id INTEGER")
+                )
+                conn.commit()
+            try:
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_spendlog_task_id ON spendlog(task_id)")
+                )
+                conn.commit()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"_ensure_spendlog_columns index create failed: {e}")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"_ensure_spendlog_columns failed: {e}")
 
 
 def _ensure_system_state():
@@ -254,6 +282,7 @@ def _ensure_system_state():
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     _ensure_task_columns()
+    _ensure_spendlog_columns()
     _ensure_system_state()
 
 

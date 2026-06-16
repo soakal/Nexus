@@ -58,6 +58,11 @@ def reset_caches():
         reset_pool()
     except Exception:
         pass
+    try:
+        from backend.api.trigger import _reset_rate_limit
+        _reset_rate_limit()
+    except Exception:
+        pass
     yield
 
 

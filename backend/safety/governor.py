@@ -86,17 +86,25 @@ def today_spend_usd() -> float:
     return float(total or 0.0)
 
 
-def task_spend_since(task_start: datetime) -> float:
-    """Sum of SpendLog.cost_usd recorded since `task_start` (sync)."""
+def task_spend_since(task_start: datetime, task_id: int | None = None) -> float:
+    """Sum of SpendLog.cost_usd recorded since `task_start` (sync).
+
+    When `task_id` is given, the sum is additionally scoped to rows tagged with
+    that task_id — so one task's spend can never trip another task's per-task cap.
+    With `task_id=None` the behaviour is unchanged (time-window only).
+    """
     from sqlmodel import Session, func, select
 
     from backend.database import SpendLog, engine
 
     with Session(engine) as session:
-        total = session.exec(
+        query = (
             select(func.coalesce(func.sum(SpendLog.cost_usd), 0.0))
             .where(SpendLog.created_at >= task_start)
-        ).one()
+        )
+        if task_id is not None:
+            query = query.where(SpendLog.task_id == task_id)
+        total = session.exec(query).one()
     return float(total or 0.0)
 
 
@@ -172,7 +180,7 @@ def check_budget(task_id: int | None = None, task_start: datetime | None = None)
         raise BudgetExceeded("daily", daily, state["daily_budget_usd"])
 
     if task_start is not None:
-        ts = task_spend_since(task_start)
+        ts = task_spend_since(task_start, task_id)
         if ts >= state["per_task_budget_usd"]:
             raise BudgetExceeded("per_task", ts, state["per_task_budget_usd"], task_id)
 

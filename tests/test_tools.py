@@ -295,9 +295,26 @@ def test_dispatcher_map_keys_match_registry():
     expected = {
         "homeassistant_status", "unraid_status", "unifi_status", "adguard_status",
         "channels_status", "weather", "github_status", "hermes_status",
-        "vault_search", "web_search",
+        "vault_search", "ddg_search",
     }
     assert set(dmap.keys()) == expected
+    # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the
+    # hosted web_search tool — the registry must expose ddg_search, NOT web_search.
+    assert "ddg_search" in dmap
+    assert "web_search" not in dmap
+
+
+def test_local_and_hosted_search_tools_coexist_distinct_names():
+    """The combined tools list (hosted web_search + local custom tools) must have
+    all-distinct names: hosted 'web_search' and local 'ddg_search' never collide."""
+    from backend.agents import router
+    from backend.agents.tools import tool_specs
+
+    combined = [router._WEB_SEARCH_TOOL] + tool_specs()
+    names = [t["name"] for t in combined]
+    assert len(names) == len(set(names))  # all distinct
+    assert "web_search" in names   # hosted
+    assert "ddg_search" in names   # local custom
 
 
 def test_planner_tool_block_lists_all_tools():

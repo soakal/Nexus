@@ -74,11 +74,11 @@ async def test_boot_requeues_running_tasks(eng):
     with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
         mock_exec.return_value = "B"
         await pool.start()  # start() calls requeue_unfinished()
-        for _ in range(200):
-            await asyncio.sleep(0.02)
-            with Session(eng) as s:
-                if s.get(Task, task_id).status in ("success", "failed", "stopped"):
-                    break
+        # Deterministic wait: the worker calls _queue.task_done() in its finally,
+        # so join() returns the instant the re-enqueued task is fully processed.
+        # (A fixed-time poll flaked under load once the Tier 1.6 per-step gates
+        # added asyncio.to_thread hops ahead of execution.)
+        await asyncio.wait_for(pool._queue.join(), timeout=15)
         await pool.stop()
 
     with Session(eng) as s:

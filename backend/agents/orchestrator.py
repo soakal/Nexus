@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 
+# A single step that has been attempted this many times (across retry + replan)
+# without succeeding is declared exhausted — the task finalizes 'failed' with
+# step_exhausted rather than looping forever on a poison step. attempts is
+# incremented by _mark_step_running and PRESERVED across _patch_step_durably.
+MAX_STEP_ATTEMPTS = 5
+
 
 def _idem_key(task_id: int, step_index: int, prompt: str) -> str:
     return hashlib.sha256(f"{task_id}:{step_index}:{prompt}".encode()).hexdigest()[:16]
@@ -125,7 +131,7 @@ Each step must be atomic and runnable on its own. Maximum 10 steps."""
     return plan
 
 
-async def _sonnet_execute(step: Step, context: list) -> str:
+async def _sonnet_execute(step: Step, context: list, *, task_id=None, task_start=None) -> str:
     from backend.agents import router
     from backend.agents.tools import dispatcher_map, tool_specs
 
@@ -152,6 +158,8 @@ substantive answer."""
         dispatch=dispatcher_map(),
         web_search=True,
         label="orchestrator_execute",
+        task_id=task_id,
+        task_start=task_start,
     )
 
 
@@ -543,104 +551,163 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
 
     # Per-task budget brake reference point. Spend recorded after this instant is
     # attributed to this task. Used by check_budget(task_id, task_start) below.
+    from backend.agents.router import (
+        TaskAborted,
+        reset_task_context,
+        set_task_context,
+    )
     from backend.safety.governor import BudgetExceeded, check_budget
     task_start = datetime.utcnow()
 
+    # Bind the task_id contextvar so every SpendLog row written by _record_spend
+    # (in the run_in_executor worker thread) is tagged with this task. RESET on
+    # every exit path via the Token in the finally below. The legacy (task_id is
+    # None) path above returns before this and never sets the contextvar.
+    _ctx_token = set_task_context(task_id)
+
+    from backend.safety.governor import get_system_state
+
     debug = None
     try:
-        for _attempt in range(MAX_RETRIES):
-            # 2.2 / 2.4: reload steps + rebuild context from DONE outputs each pass.
-            steps = await asyncio.to_thread(_load_steps, task_id)
-            context = await asyncio.to_thread(_load_done_outputs, task_id)
-            failed = None
-
-            for s in steps:
-                if s["status"] == "done":
-                    continue  # 2.5 resume — skip already-completed steps
-
-                # 2.3 cooperative cancel checked before marking running.
-                if await asyncio.to_thread(_is_cancel_requested, task_id):
-                    await asyncio.to_thread(_finalize_task, task_id, "stopped", None)
-                    return TaskResult(success=False, reason="cancelled")
-
-                # Per-task + daily budget brake before each non-done step. A
-                # BudgetExceeded (here OR bubbling from _run mid-call inside
-                # _sonnet_execute) is caught by the outer try and finalizes 'failed'.
-                await asyncio.to_thread(check_budget, task_id, task_start)
-
-                await asyncio.to_thread(_mark_step_running, s["id"])
-
-                step_obj = Step(index=s["step_index"], prompt=s["prompt"], description=s["description"])
-                t_start = time.time()
-                result = await _sonnet_execute(step_obj, context)
-                elapsed = int((time.time() - t_start) * 1000)
-
-                success = not _is_failure(result)
-                await asyncio.to_thread(
-                    _record_agent_run, task_id, step_obj.prompt, result, success, elapsed
-                )
-
-                if not success:
-                    await asyncio.to_thread(_fail_step, s["id"], result)
-                    failed = (step_obj, result)
-                    logger.warning(f"Task {task_id} step {step_obj.index} failed: {result[:100]}")
-                    break
-
-                await asyncio.to_thread(_complete_step, s["id"], result)  # checkpoint
-                context.append(result)
-
-            if failed is None:
-                outputs = await asyncio.to_thread(_load_done_outputs, task_id)
-                await asyncio.to_thread(
-                    _finalize_task, task_id, "success", json.dumps(outputs)
-                )
-                return TaskResult(success=True, output=outputs, plan=plan)
-
-            # 2.2 debug the failure.
-            prior = await asyncio.to_thread(_load_done_outputs, task_id)
-            debug = await _opus_debug(task_prompt, plan, failed, prior)
-            action = debug.get("action") if isinstance(debug, dict) else None
-
-            if action == "ABORT":
-                break
-            elif action == "REPLAN" and "new_plan" in debug:
-                raw_steps = debug["new_plan"].get("steps", [])
-                new_steps = [
-                    (s["prompt"], s.get("description", "")) for s in raw_steps
-                ]
-                if not new_steps:
-                    # 2.6 empty replan -> ABORT.
-                    debug = {"action": "ABORT", "reason": "replan_empty"}
-                    break
-                await asyncio.to_thread(_replan_durably, task_id, new_steps)
+        try:
+            for _attempt in range(MAX_RETRIES):
+                # 2.2 / 2.4: reload steps + rebuild context from DONE outputs each pass.
                 steps = await asyncio.to_thread(_load_steps, task_id)
-                plan = _steps_to_plan(task_prompt, steps)
-            elif action == "RETRY_STEP" and "new_prompt" in debug:
-                await asyncio.to_thread(
-                    _patch_step_durably, task_id, failed[0].index, debug["new_prompt"]
-                )
-    except BudgetExceeded as e:
-        # Budget tripped here (the brake) OR mid-call inside _sonnet_execute (the
-        # router's daily brake). Finalize 'failed' with the budget detail. Done
-        # steps are preserved on disk (durable) — only the Task row is marked.
+                context = await asyncio.to_thread(_load_done_outputs, task_id)
+                failed = None
+
+                for s in steps:
+                    if s["status"] == "done":
+                        continue  # 2.5 resume — skip already-completed steps
+
+                    # ITEM 3 poison-step ceiling: a step that has already been
+                    # attempted MAX_STEP_ATTEMPTS times trips here BEFORE we mark
+                    # it running (so an exhausted step trips on resume too).
+                    if s["attempts"] >= MAX_STEP_ATTEMPTS:
+                        await asyncio.to_thread(
+                            _finalize_task,
+                            task_id,
+                            "failed",
+                            json.dumps({
+                                "error": "step_exhausted",
+                                "step_index": s["step_index"],
+                                "attempts": s["attempts"],
+                            }),
+                        )
+                        return TaskResult(success=False, reason="step_exhausted")
+
+                    # Per-step gate order (documented): BUDGET -> KILL -> CANCEL.
+                    # 1) Per-task + daily budget brake. A BudgetExceeded (here OR
+                    # bubbling from _run mid-call inside _sonnet_execute) is caught
+                    # below and finalizes 'failed'/budget_exceeded.
+                    await asyncio.to_thread(check_budget, task_id, task_start)
+
+                    # 2) Kill switch compute-gate: if autonomy was disabled mid-task
+                    # (e.g. POST /api/safety/pause), stop before the next step's LLM
+                    # call. Finalize 'stopped' with autonomy_disabled; done preserved.
+                    state = await asyncio.to_thread(get_system_state)
+                    if not state["autonomy_enabled"]:
+                        await asyncio.to_thread(
+                            _finalize_task,
+                            task_id,
+                            "stopped",
+                            json.dumps({"error": "autonomy_disabled"}),
+                        )
+                        return TaskResult(success=False, reason="stopped")
+
+                    # 3) Cooperative cancel checked before marking running.
+                    if await asyncio.to_thread(_is_cancel_requested, task_id):
+                        await asyncio.to_thread(_finalize_task, task_id, "stopped", None)
+                        return TaskResult(success=False, reason="cancelled")
+
+                    await asyncio.to_thread(_mark_step_running, s["id"])
+
+                    step_obj = Step(index=s["step_index"], prompt=s["prompt"], description=s["description"])
+                    t_start = time.time()
+                    # Pass task context into the tool-use loop so it can enforce
+                    # kill/budget/cancel BETWEEN tool rounds (not just between steps).
+                    result = await _sonnet_execute(step_obj, context, task_id=task_id, task_start=task_start)
+                    elapsed = int((time.time() - t_start) * 1000)
+
+                    success = not _is_failure(result)
+                    await asyncio.to_thread(
+                        _record_agent_run, task_id, step_obj.prompt, result, success, elapsed
+                    )
+
+                    if not success:
+                        await asyncio.to_thread(_fail_step, s["id"], result)
+                        failed = (step_obj, result)
+                        logger.warning(f"Task {task_id} step {step_obj.index} failed: {result[:100]}")
+                        break
+
+                    await asyncio.to_thread(_complete_step, s["id"], result)  # checkpoint
+                    context.append(result)
+
+                if failed is None:
+                    outputs = await asyncio.to_thread(_load_done_outputs, task_id)
+                    await asyncio.to_thread(
+                        _finalize_task, task_id, "success", json.dumps(outputs)
+                    )
+                    return TaskResult(success=True, output=outputs, plan=plan)
+
+                # 2.2 debug the failure.
+                prior = await asyncio.to_thread(_load_done_outputs, task_id)
+                debug = await _opus_debug(task_prompt, plan, failed, prior)
+                action = debug.get("action") if isinstance(debug, dict) else None
+
+                if action == "ABORT":
+                    break
+                elif action == "REPLAN" and "new_plan" in debug:
+                    raw_steps = debug["new_plan"].get("steps", [])
+                    new_steps = [
+                        (s["prompt"], s.get("description", "")) for s in raw_steps
+                    ]
+                    if not new_steps:
+                        # 2.6 empty replan -> ABORT.
+                        debug = {"action": "ABORT", "reason": "replan_empty"}
+                        break
+                    await asyncio.to_thread(_replan_durably, task_id, new_steps)
+                    steps = await asyncio.to_thread(_load_steps, task_id)
+                    plan = _steps_to_plan(task_prompt, steps)
+                elif action == "RETRY_STEP" and "new_prompt" in debug:
+                    await asyncio.to_thread(
+                        _patch_step_durably, task_id, failed[0].index, debug["new_prompt"]
+                    )
+        except BudgetExceeded as e:
+            # Budget tripped here (the brake) OR mid-call inside _sonnet_execute (the
+            # router's daily brake). Finalize 'failed' with the budget detail. Done
+            # steps are preserved on disk (durable) — only the Task row is marked.
+            await asyncio.to_thread(
+                _finalize_task,
+                task_id,
+                "failed",
+                json.dumps({
+                    "error": "budget_exceeded",
+                    "scope": e.scope,
+                    "spend": e.spend,
+                    "cap": e.cap,
+                }),
+            )
+            return TaskResult(success=False, reason="budget_exceeded")
+        except TaskAborted as exc:
+            # Kill switch (autonomy disabled) or cancel raised INSIDE the tool-use
+            # loop, between tool rounds. Finalize 'stopped'; done steps preserved.
+            await asyncio.to_thread(
+                _finalize_task,
+                task_id,
+                "stopped",
+                json.dumps({"error": exc.reason}),
+            )
+            return TaskResult(success=False, reason=exc.reason)
+
+        reason = "max_retries_exceeded"
+        if debug and isinstance(debug, dict) and debug.get("reason"):
+            reason = debug["reason"]
+
         await asyncio.to_thread(
-            _finalize_task,
-            task_id,
-            "failed",
-            json.dumps({
-                "error": "budget_exceeded",
-                "scope": e.scope,
-                "spend": e.spend,
-                "cap": e.cap,
-            }),
+            _finalize_task, task_id, "failed", json.dumps({"error": reason})
         )
-        return TaskResult(success=False, reason="budget_exceeded")
-
-    reason = "max_retries_exceeded"
-    if debug and isinstance(debug, dict) and debug.get("reason"):
-        reason = debug["reason"]
-
-    await asyncio.to_thread(
-        _finalize_task, task_id, "failed", json.dumps({"error": reason})
-    )
-    return TaskResult(success=False, reason=reason)
+        return TaskResult(success=False, reason=reason)
+    finally:
+        # Unbind the task-id contextvar on EVERY exit path (return / exception).
+        reset_task_context(_ctx_token)

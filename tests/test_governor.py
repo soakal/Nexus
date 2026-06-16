@@ -49,11 +49,11 @@ def _seed_state(eng, autonomy=True, daily=25.0, per_task=5.0):
         s.commit()
 
 
-def _seed_spend(eng, cost, created_at=None, model="claude-sonnet-4-6"):
+def _seed_spend(eng, cost, created_at=None, model="claude-sonnet-4-6", task_id=None):
     from backend.database import SpendLog
 
     with Session(eng) as s:
-        row = SpendLog(model=model, cost_usd=cost)
+        row = SpendLog(model=model, cost_usd=cost, task_id=task_id)
         if created_at is not None:
             row.created_at = created_at
         s.add(row)
@@ -106,8 +106,12 @@ def test_compute_cost_includes_cache_tokens():
     price = router._PRICE_PER_MTOK[model]
     base = router._compute_cost(model, 1000, 500)
     with_cache = router._compute_cost(model, 1000, 500, cache_creation=2000, cache_read=3000)
-    # Cache tokens are folded into the input rate.
-    expected_delta = (2000 + 3000) / 1e6 * price["input"]
+    # Cache tokens are priced as fractions of the input rate: cache_creation at
+    # 1.25x input, cache_read at 0.1x input.
+    expected_delta = (
+        2000 / 1e6 * (price["input"] * 1.25)
+        + 3000 / 1e6 * (price["input"] * 0.1)
+    )
     assert with_cache - base == pytest.approx(expected_delta)
     assert with_cache > base
 
@@ -213,7 +217,8 @@ def test_check_budget_per_task_raises(eng):
 
     _seed_state(eng, daily=1000.0, per_task=5.0)
     start = datetime.utcnow()
-    _seed_spend(eng, 6.0, created_at=start + timedelta(seconds=1))
+    # Spend tagged with task 42 — the per-task brake now scopes spend by task_id.
+    _seed_spend(eng, 6.0, created_at=start + timedelta(seconds=1), task_id=42)
     with pytest.raises(governor.BudgetExceeded) as ei:
         governor.check_budget(task_id=42, task_start=start)
     assert ei.value.scope == "per_task"
@@ -265,7 +270,9 @@ async def test_run_task_budget_exceeded_finalizes_failed(eng):
     from backend.agents.orchestrator import Plan, Step
 
     async def fake_plan(_prompt):
-        _seed_spend(eng, 1.0, created_at=datetime.utcnow() + timedelta(hours=1))
+        # Spend tagged with this task's id so the per-task brake (now scoped by
+        # task_id) attributes it to the task and trips before step 1's LLM call.
+        _seed_spend(eng, 1.0, created_at=datetime.utcnow() + timedelta(hours=1), task_id=task_id)
         p = Plan(task_prompt="do a thing")
         p.steps.append(Step(index=1, prompt="step one"))
         return p
@@ -364,6 +371,109 @@ async def test_broker_agent_policy_unchanged_when_enabled(eng):
         )
     assert res.decision == Decision.EXECUTED
     cs.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# ITEM 1 — per-task spend (SpendLog.task_id)
+# ---------------------------------------------------------------------------
+
+def test_ensure_spendlog_columns_idempotent_on_migrated_db():
+    """The ALTER-shim adds task_id to an old spendlog table that lacks it, and is
+    safe to run repeatedly (idempotent)."""
+    import backend.database as db
+    from sqlalchemy import text
+    from sqlmodel import create_engine
+    from sqlmodel.pool import StaticPool
+
+    # Build a legacy spendlog table WITHOUT the task_id column.
+    eng = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    with eng.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE spendlog (id INTEGER PRIMARY KEY, model TEXT, "
+            "input_tokens INTEGER, output_tokens INTEGER, "
+            "cache_creation_input_tokens INTEGER, cache_read_input_tokens INTEGER, "
+            "cost_usd REAL, label TEXT, created_at TEXT)"
+        ))
+        conn.commit()
+
+    orig = db.engine
+    db.engine = eng
+    try:
+        db._ensure_spendlog_columns()
+        with eng.connect() as conn:
+            cols = {r[1] for r in conn.execute(text("PRAGMA table_info(spendlog)"))}
+        assert "task_id" in cols
+        # Idempotent: a second call does not error.
+        db._ensure_spendlog_columns()
+        with eng.connect() as conn:
+            cols2 = {r[1] for r in conn.execute(text("PRAGMA table_info(spendlog)"))}
+        assert cols2 == cols
+    finally:
+        db.engine = orig
+
+
+def test_task_spend_since_filters_by_task_id(eng):
+    from backend.safety import governor
+
+    start = datetime.utcnow()
+    when = start + timedelta(seconds=1)
+    _seed_spend(eng, 4.0, created_at=when, task_id=1)
+    _seed_spend(eng, 7.0, created_at=when, task_id=2)
+    _seed_spend(eng, 9.0, created_at=when, task_id=None)  # untagged
+
+    # task_id given -> only that task's rows.
+    assert governor.task_spend_since(start, task_id=1) == pytest.approx(4.0)
+    assert governor.task_spend_since(start, task_id=2) == pytest.approx(7.0)
+    # task_id None -> unchanged time-window total (all rows).
+    assert governor.task_spend_since(start) == pytest.approx(20.0)
+
+
+def test_task_a_overspend_does_not_trip_task_b(eng):
+    """Task A blowing past the per-task cap must NOT trip task B's check_budget."""
+    from backend.safety import governor
+
+    _seed_state(eng, daily=1000.0, per_task=5.0)
+    start = datetime.utcnow()
+    # Task 101 is way over the per-task cap.
+    _seed_spend(eng, 50.0, created_at=start + timedelta(seconds=1), task_id=101)
+    # Task 202 has spent nothing.
+    assert governor.check_budget(task_id=202, task_start=start) is None
+    # Task 101 itself still trips.
+    with pytest.raises(governor.BudgetExceeded) as ei:
+        governor.check_budget(task_id=101, task_start=start)
+    assert ei.value.scope == "per_task"
+
+
+@pytest.mark.asyncio
+async def test_spend_tagged_with_contextvar_task_id(eng):
+    """A sonnet call made with the task contextvar SET writes task_id==N; with it
+    unset writes NULL. The contextvar does NOT survive the run_in_executor hop;
+    this passes because _run captures _current_task_id.get() ON THE LOOP and
+    threads it into _record_spend via functools.partial (the documented fallback)."""
+    from backend.agents import router
+
+    resp = _usage_resp(text="hi")
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = resp
+        mock_anthropic.return_value = mock_client
+
+        # Set context -> spend tagged with 77.
+        token = router.set_task_context(77)
+        try:
+            await router.sonnet("hi", label="ctx")
+        finally:
+            router.reset_task_context(token)
+
+        # Unset (default None) -> spend tagged NULL.
+        await router.sonnet("hi", label="noctx")
+
+    rows = sorted(_all_spend(eng), key=lambda r: r.id)
+    assert len(rows) == 2
+    assert rows[0].label == "ctx" and rows[0].task_id == 77
+    assert rows[1].label == "noctx" and rows[1].task_id is None
 
 
 # ---------------------------------------------------------------------------

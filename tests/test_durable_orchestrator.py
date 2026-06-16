@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -35,11 +36,11 @@ def eng(monkeypatch):
     return e
 
 
-def _seed_task(eng, prompt="task"):
+def _seed_task(eng, prompt="task", status="pending"):
     from backend.database import Task
 
     with Session(eng) as s:
-        t = Task(prompt=prompt, status="pending")
+        t = Task(prompt=prompt, status=status)
         s.add(t)
         s.commit()
         s.refresh(t)
@@ -230,6 +231,235 @@ async def test_replan_changes_step_count(eng):
         # done row 1 kept; 3 new pending->done indexed 2,3,4
         assert indices == [1, 2, 3, 4]
         assert rows[0].status == "done" and rows[0].step_index == 1
+
+
+# ---------------------------------------------------------------------------
+# ITEM 2 — kill switch / budget / cancel enforced BETWEEN steps (durable path).
+# ---------------------------------------------------------------------------
+
+def _seed_state(eng, autonomy=True, daily=1000.0, per_task=1000.0):
+    from backend.database import SystemState
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            s.add(row)
+        row.autonomy_enabled = autonomy
+        row.daily_budget_usd = daily
+        row.per_task_budget_usd = per_task
+        s.commit()
+
+
+@pytest.mark.asyncio
+async def test_autonomy_disabled_midtask_finalizes_stopped(eng):
+    """Autonomy turned OFF before the next step -> task 'stopped' with
+    autonomy_disabled, the next step's executor is NEVER called, done preserved."""
+    from backend.database import Task, TaskStep
+
+    _seed_state(eng, autonomy=False)
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "a", status="done", output="A")
+    _seed_step(eng, task_id, 2, "b", status="pending")
+
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is False
+    assert result.reason == "stopped"
+    mock_exec.assert_not_awaited()  # aborted BEFORE the next step's LLM call
+
+    with Session(eng) as s:
+        t = s.get(Task, task_id)
+        assert t.status == "stopped"
+        assert json.loads(t.result_json)["error"] == "autonomy_disabled"
+        step1 = s.exec(
+            select(TaskStep).where(TaskStep.task_id == task_id, TaskStep.step_index == 1)
+        ).first()
+        assert step1.status == "done"  # done step preserved
+
+
+@pytest.mark.asyncio
+async def test_per_task_cap_midloop_finalizes_failed(eng):
+    """A per-task budget overrun before a step finalizes failed/budget_exceeded."""
+    import backend.database as db
+    from datetime import datetime, timedelta
+
+    from backend.database import SpendLog, Task
+
+    _seed_state(eng, daily=1000.0, per_task=0.01)
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "a", status="pending")
+
+    # Accrue spend tagged to this task, stamped in the future so it is >=task_start.
+    with Session(eng) as s:
+        s.add(SpendLog(model="claude-sonnet-4-6", cost_usd=5.0, task_id=task_id,
+                       created_at=datetime.utcnow() + timedelta(hours=1)))
+        s.commit()
+
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is False
+    assert result.reason == "budget_exceeded"
+    mock_exec.assert_not_awaited()
+
+    with Session(eng) as s:
+        t = s.get(Task, task_id)
+        assert t.status == "failed"
+        payload = json.loads(t.result_json)
+        assert payload["error"] == "budget_exceeded"
+        assert payload["scope"] == "per_task"
+
+
+@pytest.mark.asyncio
+async def test_cancel_midloop_inside_tool_loop_stopped(eng):
+    """Cancel requested while the tool-use loop is mid-flight -> the loop guard
+    raises TaskAborted('cancelled') and the task finalizes 'stopped'/cancelled."""
+    from backend.database import Task
+
+    _seed_state(eng, autonomy=True)
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "a", status="pending")
+
+    # The executor: simulate a multi-round tool loop that, mid-flight, sets the
+    # cancel flag then drives the REAL _loop_guard to observe it. We patch
+    # run_with_tools to call the real guard after flipping cancel_requested.
+    async def exec_side(*args, **kwargs):
+        from backend.agents.router import _loop_guard
+        from backend.agents.worker_pool import _set_cancel_requested
+        await asyncio.to_thread(_set_cancel_requested, task_id)
+        # Now the per-round guard must raise TaskAborted('cancelled').
+        await _loop_guard(kwargs["task_id"], kwargs["task_start"])
+        return "should not reach"
+
+    with patch("backend.agents.router.run_with_tools", new=exec_side):
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is False
+    assert result.reason == "cancelled"
+    with Session(eng) as s:
+        t = s.get(Task, task_id)
+        assert t.status == "stopped"
+        assert json.loads(t.result_json)["error"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_chat_single_shot_unaffected_by_loop_guard(eng):
+    """run_with_tools with default task_id=None is inert re: kill/cancel: even with
+    autonomy OFF, a single-shot tool call proceeds (only the daily cap applies)."""
+    from unittest.mock import MagicMock
+
+    from backend.agents import router
+
+    _seed_state(eng, autonomy=False, daily=1000.0)
+
+    r = MagicMock()
+    r.content = [MagicMock(type="text", text="answer")]
+    r.stop_reason = "end_turn"
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = r
+
+    with patch("anthropic.Anthropic", return_value=mock_client):
+        out = await router.run_with_tools(
+            model=router.SONNET_MODEL, max_tokens=512, prompt="x",
+            system="", tool_specs=[], dispatch={},
+        )
+    assert out == "answer"  # autonomy OFF did NOT abort a task_id=None call
+
+
+# ---------------------------------------------------------------------------
+# ITEM 3 — poison-step ceiling.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_step_exhausted_at_max_attempts(eng):
+    """A step already at MAX_STEP_ATTEMPTS trips step_exhausted WITHOUT executing."""
+    from backend.agents.orchestrator import MAX_STEP_ATTEMPTS
+    from backend.database import Task, TaskStep
+
+    _seed_state(eng, autonomy=True)
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "poison", status="pending")
+    # Bump attempts to the ceiling directly.
+    with Session(eng) as s:
+        step = s.exec(select(TaskStep).where(TaskStep.task_id == task_id)).first()
+        step.attempts = MAX_STEP_ATTEMPTS
+        s.commit()
+
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is False
+    assert result.reason == "step_exhausted"
+    mock_exec.assert_not_awaited()  # exhausted step never executed
+
+    with Session(eng) as s:
+        t = s.get(Task, task_id)
+        assert t.status == "failed"
+        payload = json.loads(t.result_json)
+        assert payload["error"] == "step_exhausted"
+        assert payload["step_index"] == 1
+        assert payload["attempts"] == MAX_STEP_ATTEMPTS
+
+
+def test_finalize_failed_writes_agent_run(eng):
+    """worker_pool._finalize_failed records a minimal AgentRun row (best effort)."""
+    from backend.agents.worker_pool import _finalize_failed
+    from backend.database import AgentRun, Task
+
+    task_id = _seed_task(eng)
+    _finalize_failed(task_id, "boom reason")
+
+    with Session(eng) as s:
+        t = s.get(Task, task_id)
+        assert t.status == "failed"
+        runs = s.exec(select(AgentRun).where(AgentRun.task_id == task_id)).all()
+        assert len(runs) == 1
+        assert runs[0].agent_type == "orchestrator"
+        assert runs[0].success is False
+        assert "boom reason" in runs[0].prompt_snippet
+
+
+def test_terminal_task_not_requeued(eng):
+    """_load_unfinished_task_ids returns only pending/running ids — a terminal
+    (failed/success/stopped) task is NOT re-enqueued (breaks the poison loop)."""
+    from backend.agents.worker_pool import _load_unfinished_task_ids
+
+    pending_id = _seed_task(eng, status="pending")
+    running_id = _seed_task(eng, status="running")
+    _seed_task(eng, status="failed")
+    _seed_task(eng, status="success")
+    _seed_task(eng, status="stopped")
+
+    ids = set(_load_unfinished_task_ids())
+    assert ids == {pending_id, running_id}
+
+
+@pytest.mark.asyncio
+async def test_boot_resume_normal_task_still_resumes(eng):
+    """Sanity: a normal pending step still resumes/executes (the poison guard does
+    not block under-ceiling steps)."""
+    _seed_state(eng, autonomy=True)
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "ok", status="pending")
+
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = "done"
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is True
+    mock_exec.assert_awaited_once()
 
 
 @pytest.mark.asyncio

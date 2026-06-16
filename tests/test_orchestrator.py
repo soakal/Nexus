@@ -115,7 +115,9 @@ async def test_executor_uses_run_with_tools():
         assert kwargs["label"] == "orchestrator_execute"
         # The read-only tool registry is wired in.
         names = {s["name"] for s in kwargs["tool_specs"]}
-        assert "web_search" in names and "vault_search" in names
+        # ITEM 5: the local DuckDuckGo tool is now named ddg_search (the hosted
+        # web_search is added separately via web_search=True, not in tool_specs).
+        assert "ddg_search" in names and "vault_search" in names
         assert "do it" in kwargs["prompt"]
 
 

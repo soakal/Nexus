@@ -89,7 +89,7 @@ async def _get_trend_summary() -> str:
 async def run_briefing() -> str:
     from sqlmodel import Session
 
-    from backend.agents.router import sonnet as opus
+    from backend.agents.router import sonnet
     from backend.database import Briefing, engine
     from backend.integrations import (
         adguard,
@@ -194,7 +194,7 @@ async def run_briefing() -> str:
         inbox_block=mail_str,
     )
 
-    briefing_text = await opus(prompt)
+    briefing_text = await sonnet(prompt)
     logger.info("Briefing generated")
 
     # Store in DB
