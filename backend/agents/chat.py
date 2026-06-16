@@ -255,12 +255,20 @@ If no entity matches, return:
                         (e["friendly_name"] for e in controllable if e["entity_id"] == entity_id),
                         entity_id,
                     )
-                    try:
-                        await homeassistant.call_service(domain, service, {"entity_id": entity_id})
+                    from backend.safety.broker import Decision, execute_action
+                    res = await execute_action(
+                        actor="user",
+                        kind="ha_service",
+                        target=entity_id,
+                        payload={"domain": domain, "service": service},
+                    )
+                    if res.decision == Decision.EXECUTED:
                         action_word = {"turn_on": "Turned on", "turn_off": "Turned off", "toggle": "Toggled"}.get(service, service)
                         reply = f"{action_word} {friendly}."
-                    except Exception as e:
-                        reply = f"Failed to {service.replace('_', ' ')} {friendly}: {e}"
+                    elif res.decision == Decision.FAILED:
+                        reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+                    else:
+                        reply = "That action needs confirmation."
 
         except Exception as e:
             reply = f"Home Assistant is not reachable right now: {e}"
@@ -274,8 +282,20 @@ If no entity matches, return:
             reply = f"I wasn't able to complete that task: {result.reason}"
 
     elif intent == "HERMES":
-        from backend.integrations.hermes import relay
-        reply = await relay(user_message)
+        from backend.safety.broker import Decision, execute_action
+        res = await execute_action(
+            actor="user",
+            kind="hermes_relay",
+            target="hermes",
+            payload={"message": user_message},
+        )
+        # actor=user always allows, so relay still runs; its return string flows
+        # back via res.result["response"] — user-visible reply is unchanged.
+        reply = (
+            (res.result or {}).get("response")
+            if res.decision == Decision.EXECUTED
+            else (res.error or "Hermes action could not be completed.")
+        )
 
     elif intent == "NOTE":
         from backend.integrations.obsidian import create_note

@@ -32,6 +32,15 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 - `frontend/src/pages/` — 11 pages (Dashboard, Briefing, Tasks, Chat, Voice, Media, HomeAssistant, Trends, Uptime, Agents, Settings); `Today` page for calendar/email. `App.jsx` holds the `NAV` array + routes; `components/MobileNav.jsx` is the mobile bottom bar.
 - `tray.py` + `launch_tray.vbs` — system tray launcher, auto-starts at login via a Registry Run key.
 
+## Action broker (Tier 1.3 — policy-gated writes + immutable audit)
+- **`backend/safety/broker.py::execute_action(actor, kind, target, payload, idempotency_key=None, *, confirmed=False)` is the ONE chokepoint every side-effecting write passes through.** It classifies risk/reversibility, decides allow/needs_confirm/forbid by actor, writes an immutable `ActionLog` row BEFORE and AFTER the attempt, dispatches only when allowed, and is idempotent by key. It NEVER re-raises a dispatch error.
+- **Two outcome axes, never conflated:** GATE outcome = {allowed, needs_confirm, forbidden}; DISPATCH outcome = {executed, failed}. `ActionLog.decision` holds the FINAL state.
+- **Actors:** `user` is always allowed (preserves chat UX, still logged); `agent`/`autonomous` go through the policy — IRREVERSIBLE→forbidden unless confirmed; HIGH/UNCLASSIFIABLE→needs_confirm unless confirmed; LOW/MEDIUM→allowed. An UNKNOWN actor string degrades to `autonomous` (most restrictive), never `user`.
+- **Dispatchers live only in the broker** (`_DISPATCHERS`): `ha_service`→`homeassistant.call_service`, `hermes_relay`→`hermes.relay`. `chat.py` has NO raw `call_service`/`relay(...)` dispatch — it calls `execute_action`. Add new write paths as a new dispatcher, never a direct integration call.
+- **`ActionLog` table** (`backend/database.py`): immutable by convention — app code only INSERTs then UPDATEs a row, never deletes. Created by `create_all` (new table, no migration shim).
+- **API:** `GET /api/safety/actions` (auth, `?limit=`≤200, `?decision=`, `?actor=`) lists the audit trail newest-first. `POST /api/safety/actions/{id}/confirm` is a documented inert placeholder (real 404/409; confirm-and-dispatch lands with Tier 1.5 autonomy).
+- All broker DB helpers are sync + `asyncio.to_thread`-only — no Session/ORM crosses an `await`.
+
 ## Secrets — never commit
 `config.py`, `nexus.vault`, `.vault.key`, `.env` are gitignored and MUST stay that way. Secrets live encrypted in `nexus.vault` (Fernet, key in `.vault.key`); non-secret config in `.env`. `backend/secrets/vault.py` reads them; `Settings` (`backend/config.py`) exposes secret properties lazily. `nexus.vault.meta` (names + timestamps only, no values) is safe to track.
 

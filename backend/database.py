@@ -152,6 +152,25 @@ class ChatMessage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Immutable audit log of every side-effecting action that passed through the
+# policy-gated action broker (backend/safety/broker.py). App code only INSERTs a
+# row (the intent/gate decision) then UPDATEs it with the dispatch outcome — it
+# NEVER deletes an ActionLog row (immutable by convention).
+class ActionLog(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    actor: str               # user | agent | autonomous
+    kind: str                # ha_service | hermes_relay | ...
+    target: str
+    payload_json: str
+    risk: str                # low | medium | high | unclassifiable
+    reversibility: str       # reversible | reversible_by_inverse | irreversible | unknown
+    decision: str            # allowed | needs_confirm | forbidden | executed | failed (FINAL state)
+    result_json: str | None = None
+    idempotency_key: str | None = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_task_columns():
     """Idempotently add columns introduced after the original `task` table shipped.
 
