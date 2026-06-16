@@ -20,7 +20,7 @@ If you genuinely cannot see homelab data that was asked for, say so in one short
 hedge or apologise. Never say "as of my last update" or similar. Be concise; the user is technical
 and time-constrained.
 
-LIVE HOMELAB SNAPSHOT:
+{memory}LIVE HOMELAB SNAPSHOT:
 {snapshot}"""
 
 
@@ -191,6 +191,7 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
         # 3. Route by intent
         if intent == "CHAT":
             from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
+            from backend.agents import memory
 
             results = await asyncio.gather(
                 homeassistant.fetch(),
@@ -198,12 +199,21 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
                 channels_dvr.fetch(),
                 adguard.fetch(),
                 weather.fetch(),
+                memory.vault_recall(user_message),
+                memory.latest_briefing_seed(),
                 return_exceptions=True,
             )
-            ha, unraid_d, channels, ag, wx = results
+            ha, unraid_d, channels, ag, wx, vault_str, briefing_str = results
+            # Coerce any exception results from memory fns to empty string
+            if isinstance(vault_str, Exception):
+                vault_str = ""
+            if isinstance(briefing_str, Exception):
+                briefing_str = ""
             snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
-            system = CHAT_SYSTEM.format(snapshot=snapshot)
+            memory_block = memory.assemble(vault_str, briefing_str)
+            memory_inject = (memory_block + "\n\n") if memory_block else ""
+            system = CHAT_SYSTEM.format(memory=memory_inject, snapshot=snapshot)
             user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
                            else f"User: {user_message}")
             try:
