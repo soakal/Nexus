@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ShieldCheck } from 'lucide-react'
-import { api } from '../lib/api'
+import { api, WS_BASE } from '../lib/api'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,9 +39,29 @@ function verdictColor(verdict) {
 function decisionColor(decision) {
   switch ((decision || '').toLowerCase()) {
     case 'allowed':
-    case 'executed':  return 'text-accent-cyan'
+    case 'executed':      return 'text-accent-cyan'
     case 'needs_confirm': return 'text-accent-orange'
-    default:          return 'text-red-400'
+    default:              return 'text-red-400'
+  }
+}
+
+function riskColor(risk) {
+  switch ((risk || '').toLowerCase()) {
+    case 'low':    return 'text-accent-cyan'
+    case 'medium': return 'text-accent-orange'
+    case 'high':   return 'text-red-400'
+    default:       return 'text-text-secondary'
+  }
+}
+
+function goalStatusColor(status) {
+  switch ((status || '').toLowerCase()) {
+    case 'proposed':  return 'text-accent-cyan'
+    case 'approved':
+    case 'running':   return 'text-accent-orange'
+    case 'completed': return 'text-accent-cyan'
+    case 'failed':    return 'text-red-400'
+    default:          return 'text-text-secondary'
   }
 }
 
@@ -78,9 +98,9 @@ function SpendBar({ spend, budget }) {
 // ---------------------------------------------------------------------------
 
 export default function Safety() {
-  const [status, setStatus]   = useState(null)
+  const [status, setStatus]     = useState(null)
   const [outcomes, setOutcomes] = useState(null)
-  const [actions, setActions]  = useState(null)
+  const [actions, setActions]   = useState(null)
   const [toggling, setToggling] = useState(false)
 
   // Budget editor state
@@ -89,15 +109,43 @@ export default function Safety() {
   const [budgetSaved, setBudgetSaved]   = useState(false)
   const [budgetErr, setBudgetErr]       = useState('')
 
+  // New sections state
+  const [events, setEvents]               = useState([])
+  const [wsConnected, setWsConnected]     = useState(false)
+  const [pendingActions, setPendingActions] = useState([])
+  const [confirmingId, setConfirmingId]   = useState(null)
+  const [confirmErrors, setConfirmErrors] = useState({})
+  const [goals, setGoals]                 = useState([])
+  const [goalActingId, setGoalActingId]   = useState(null)
+  const [goalErrors, setGoalErrors]       = useState({})
+  const [metering, setMetering]           = useState(null)
+
+  // Goal propose form state
+  const [proposeTitle, setProposeTitle]   = useState('')
+  const [proposeDesc, setProposeDesc]     = useState('')
+  const [proposeRisk, setProposeRisk]     = useState('medium')
+  const [proposing, setProposing]         = useState(false)
+  const [proposeErr, setProposeErr]       = useState('')
+
+  // WebSocket refs (prevent stale closures / leak on unmount)
+  const wsRef       = useRef(null)
+  const wsAliveRef  = useRef(true)
+  const reconnTimer = useRef(null)
+
+  // ---------------------------------------------------------------------------
+  // REST load (10s poll)
+  // ---------------------------------------------------------------------------
   const load = useCallback(() => {
     api.safety.status().then(s => {
       setStatus(s)
-      // Pre-fill budget inputs only if not currently editing
       setDailyInput(v => v || (s.daily_budget_usd != null ? String(s.daily_budget_usd) : ''))
       setPerTaskInput(v => v || (s.per_task_budget_usd != null ? String(s.per_task_budget_usd) : ''))
     }).catch(() => {})
     api.safety.outcomes(20).then(setOutcomes).catch(() => {})
     api.safety.actions(20).then(setActions).catch(() => {})
+    api.safety.pendingActions(20).then(setPendingActions).catch(() => {})
+    api.goals.list().then(setGoals).catch(() => {})
+    api.safety.metering().then(setMetering).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -113,6 +161,58 @@ export default function Safety() {
     }
   }, [load])
 
+  // ---------------------------------------------------------------------------
+  // WebSocket — live event feed
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    wsAliveRef.current = true
+
+    function connect() {
+      if (!wsAliveRef.current) return
+      const ws = new WebSocket(`${WS_BASE}/ws/logs`)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        if (wsAliveRef.current) setWsConnected(true)
+      }
+
+      ws.onmessage = (e) => {
+        try {
+          const evt = JSON.parse(e.data)
+          setEvents(prev => [{ ...evt, _t: Date.now() }, ...prev].slice(0, 20))
+        } catch {
+          // ignore unparseable frames
+        }
+      }
+
+      ws.onclose = () => {
+        setWsConnected(false)
+        if (wsAliveRef.current) {
+          reconnTimer.current = setTimeout(connect, 3000)
+        }
+      }
+
+      ws.onerror = () => {
+        ws.close()
+      }
+    }
+
+    connect()
+
+    return () => {
+      wsAliveRef.current = false
+      clearTimeout(reconnTimer.current)
+      if (wsRef.current) {
+        wsRef.current.onclose = null  // prevent reconnect loop on intentional close
+        wsRef.current.close()
+        wsRef.current = null
+      }
+    }
+  }, [])
+
+  // ---------------------------------------------------------------------------
+  // Handlers
+  // ---------------------------------------------------------------------------
   async function handleToggle() {
     if (!status || toggling) return
     setToggling(true)
@@ -151,6 +251,66 @@ export default function Safety() {
       load()
     } catch {
       setBudgetErr('Failed to save. Check connection.')
+    }
+  }
+
+  async function handleConfirm(id) {
+    setConfirmingId(id)
+    setConfirmErrors(prev => ({ ...prev, [id]: '' }))
+    try {
+      await api.safety.confirmAction(id)
+      load()
+    } catch (err) {
+      const msg = err?.message || 'Failed to confirm action.'
+      setConfirmErrors(prev => ({ ...prev, [id]: msg }))
+    } finally {
+      setConfirmingId(null)
+    }
+  }
+
+  async function handleGoalApprove(id) {
+    setGoalActingId(id)
+    setGoalErrors(prev => ({ ...prev, [id]: '' }))
+    try {
+      await api.goals.approve(id)
+      load()
+    } catch (err) {
+      const msg = err?.message || 'Failed to approve goal.'
+      setGoalErrors(prev => ({ ...prev, [id]: msg }))
+    } finally {
+      setGoalActingId(null)
+    }
+  }
+
+  async function handleGoalReject(id) {
+    setGoalActingId(id)
+    setGoalErrors(prev => ({ ...prev, [id]: '' }))
+    try {
+      await api.goals.reject(id)
+      load()
+    } catch (err) {
+      const msg = err?.message || 'Failed to reject goal.'
+      setGoalErrors(prev => ({ ...prev, [id]: msg }))
+    } finally {
+      setGoalActingId(null)
+    }
+  }
+
+  async function handlePropose() {
+    setProposeErr('')
+    if (!proposeTitle.trim()) { setProposeErr('Title is required.'); return }
+    if (!proposeDesc.trim())  { setProposeErr('Description is required.'); return }
+    setProposing(true)
+    try {
+      await api.goals.propose(proposeTitle.trim(), proposeDesc.trim(), proposeRisk)
+      setProposeTitle('')
+      setProposeDesc('')
+      setProposeRisk('medium')
+      load()
+    } catch (err) {
+      setProposeErr(err?.message || 'Failed to propose goal.')
+    } finally {
+      setProposing(false)
     }
   }
 
@@ -214,6 +374,318 @@ export default function Safety() {
               </div>
             </div>
           </>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Live event feed (WebSocket)                                          */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3 flex items-center gap-3">
+        LIVE ACTIVITY
+        <span className={wsConnected ? 'arc-dot' : 'arc-dot-err'} />
+        <span className="font-mono text-xs text-text-secondary">
+          {wsConnected ? 'CONNECTED' : 'DISCONNECTED'}
+        </span>
+      </div>
+
+      <div className="hud-panel-sm p-4 mb-6">
+        {events.length === 0 ? (
+          <div className="hud-label opacity-40">WAITING FOR ACTIVITY...</div>
+        ) : (
+          <div className="space-y-1">
+            {events.map((evt, idx) => (
+              <div
+                key={`${evt._t}-${idx}`}
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5"
+                style={{ borderBottom: '1px solid rgba(0,212,255,0.06)' }}
+              >
+                {evt.type === 'action' ? (
+                  <>
+                    <span
+                      className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${decisionColor(evt.decision)}`}
+                      style={{ border: '1px solid currentColor', opacity: 0.85, fontSize: '0.6rem' }}
+                    >
+                      {evt.decision}
+                    </span>
+                    <span className="font-mono text-xs text-accent-cyan uppercase">{evt.actor}</span>
+                    <span className="text-text-secondary text-xs">›</span>
+                    <span className="font-mono text-xs text-text-primary">{evt.kind}</span>
+                    {evt.target && (
+                      <span className="font-mono text-xs text-text-secondary truncate max-w-xs">{evt.target}</span>
+                    )}
+                    <span className="font-mono text-xs text-text-secondary ml-auto">
+                      {relativeTime(new Date(evt._t).toISOString())}
+                    </span>
+                  </>
+                ) : evt.type === 'autonomy' ? (
+                  <>
+                    <span className={`font-mono text-xs font-bold tracking-widest ${evt.enabled ? 'text-accent-cyan' : 'text-red-400'}`}>
+                      AUTONOMY {evt.enabled ? 'ENABLED' : 'PAUSED'}
+                    </span>
+                    <span className="font-mono text-xs text-text-secondary ml-auto">
+                      {relativeTime(new Date(evt._t).toISOString())}
+                    </span>
+                  </>
+                ) : (
+                  <span className="font-mono text-xs text-text-secondary">
+                    {JSON.stringify(evt)}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Pending confirmations                                                */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="hud-label border-l-2 border-accent-orange pl-2 mb-3">PENDING CONFIRMATIONS</div>
+
+      <div className="hud-panel-sm p-4 mb-6">
+        {pendingActions.length === 0 ? (
+          <div className="hud-label opacity-40">NO ACTIONS AWAITING CONFIRMATION</div>
+        ) : (
+          <div className="space-y-2">
+            {pendingActions.map((a) => (
+              <div
+                key={a.id}
+                className="py-3"
+                style={{ borderBottom: '1px solid rgba(0,212,255,0.08)' }}
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2">
+                  {/* Risk chip */}
+                  <span
+                    className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${riskColor(a.risk)}`}
+                    style={{ border: '1px solid currentColor', opacity: 0.9, fontSize: '0.6rem' }}
+                  >
+                    {a.risk || 'RISK?'}
+                  </span>
+                  {/* Actor */}
+                  <span className="font-mono text-xs text-accent-cyan uppercase">{a.actor}</span>
+                  <span className="text-text-secondary text-xs">›</span>
+                  {/* Kind */}
+                  <span className="font-mono text-xs text-text-primary">{a.kind}</span>
+                  {/* Target */}
+                  {a.target && (
+                    <span className="font-mono text-xs text-text-secondary truncate max-w-xs">{a.target}</span>
+                  )}
+                  <span className="font-mono text-xs text-text-secondary ml-auto">
+                    {relativeTime(a.created_at)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={() => handleConfirm(a.id)}
+                    disabled={confirmingId === a.id}
+                    className="glow-btn-gold px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
+                  >
+                    {confirmingId === a.id ? 'CONFIRMING...' : 'CONFIRM'}
+                  </button>
+                  {confirmErrors[a.id] && (
+                    <span className="font-mono text-xs text-red-400">{confirmErrors[a.id]}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Goals                                                                */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-1">GOALS</div>
+      <div className="font-mono text-xs text-text-secondary mb-3 pl-3">
+        Approving a goal dispatches a task you authorized — autonomy stays off; nothing self-proposes.
+      </div>
+
+      <div className="hud-panel-sm p-4 mb-6">
+        {/* Propose form */}
+        <div className="mb-4 pb-4" style={{ borderBottom: '1px solid rgba(0,212,255,0.12)' }}>
+          <div className="hud-label mb-3">PROPOSE NEW GOAL</div>
+          <div className="space-y-2">
+            <div>
+              <label className="hud-label mb-1 block">TITLE</label>
+              <input
+                type="text"
+                value={proposeTitle}
+                onChange={e => { setProposeTitle(e.target.value); setProposeErr('') }}
+                placeholder="Short goal title"
+                className="hud-input w-full font-mono"
+              />
+            </div>
+            <div>
+              <label className="hud-label mb-1 block">DESCRIPTION</label>
+              <textarea
+                value={proposeDesc}
+                onChange={e => { setProposeDesc(e.target.value); setProposeErr('') }}
+                placeholder="Describe the goal in detail"
+                rows={3}
+                className="hud-input w-full font-mono resize-y"
+              />
+            </div>
+            <div>
+              <label className="hud-label mb-1 block">RISK</label>
+              <select
+                value={proposeRisk}
+                onChange={e => setProposeRisk(e.target.value)}
+                className="hud-input font-mono"
+              >
+                <option value="low">LOW</option>
+                <option value="medium">MEDIUM</option>
+                <option value="high">HIGH</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap pt-1">
+              <button
+                onClick={handlePropose}
+                disabled={proposing}
+                className="glow-btn px-4 py-2 text-xs tracking-widest disabled:opacity-40"
+                style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
+              >
+                {proposing ? 'PROPOSING...' : 'PROPOSE GOAL'}
+              </button>
+              {proposeErr && (
+                <span className="font-mono text-xs text-red-400">{proposeErr}</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Goals list */}
+        {goals.length === 0 ? (
+          <div className="hud-label opacity-40">NO GOALS YET</div>
+        ) : (
+          <div className="space-y-2">
+            {goals.map((g) => (
+              <div
+                key={g.id}
+                className="py-3"
+                style={{ borderBottom: '1px solid rgba(0,212,255,0.08)' }}
+              >
+                <div className="flex flex-wrap items-start gap-x-2 gap-y-1 mb-2">
+                  {/* Status chip */}
+                  <span
+                    className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${goalStatusColor(g.status)}`}
+                    style={{ border: '1px solid currentColor', opacity: 0.9, fontSize: '0.6rem' }}
+                  >
+                    {g.status}
+                  </span>
+                  {/* Risk chip */}
+                  <span
+                    className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${riskColor(g.risk)}`}
+                    style={{ border: '1px solid currentColor', opacity: 0.85, fontSize: '0.6rem' }}
+                  >
+                    {g.risk || 'MEDIUM'}
+                  </span>
+                  {/* Title */}
+                  <span className="font-mono text-xs text-text-primary flex-1 min-w-0">{g.title}</span>
+                  {/* Time */}
+                  <span className="font-mono text-xs text-text-secondary">
+                    {relativeTime(g.created_at)}
+                  </span>
+                </div>
+
+                {/* Running: show task_id */}
+                {(g.status === 'running' || g.status === 'approved') && g.task_id && (
+                  <div className="font-mono text-xs text-accent-orange mb-2">
+                    TASK #{g.task_id}
+                  </div>
+                )}
+
+                {/* Proposed: approve/reject */}
+                {g.status === 'proposed' && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      onClick={() => handleGoalApprove(g.id)}
+                      disabled={goalActingId === g.id}
+                      className="glow-btn px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
+                      style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
+                    >
+                      {goalActingId === g.id ? 'APPROVING...' : 'APPROVE'}
+                    </button>
+                    <button
+                      onClick={() => handleGoalReject(g.id)}
+                      disabled={goalActingId === g.id}
+                      className="font-mono text-xs text-text-secondary px-3 py-1.5 rounded disabled:opacity-40"
+                      style={{ border: '1px solid rgba(255,255,255,0.12)' }}
+                    >
+                      {goalActingId === g.id ? 'REJECTING...' : 'REJECT'}
+                    </button>
+                    {goalErrors[g.id] && (
+                      <span className="font-mono text-xs text-red-400">{goalErrors[g.id]}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Metering health                                                      */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">METERING HEALTH</div>
+
+      <div className="hud-panel-sm p-4 mb-6">
+        {metering === null ? (
+          <div className="hud-label animate-pulse">LOADING...</div>
+        ) : (
+          <div className="space-y-3">
+            {/* Prices verified badge */}
+            <div className="flex items-center gap-2">
+              <span className={metering.prices_verified ? 'arc-dot' : 'arc-dot-warn'} />
+              <span
+                className={`font-mono text-xs font-bold tracking-widest ${metering.prices_verified ? 'text-accent-cyan' : 'text-accent-orange'}`}
+              >
+                {metering.prices_verified ? 'PRICES VERIFIED' : 'PRICES UNVERIFIED'}
+              </span>
+            </div>
+            {!metering.prices_verified && (
+              <div className="font-mono text-xs text-text-secondary pl-5">
+                Cost caps may be inaccurate until verified.
+              </div>
+            )}
+
+            {/* Today stats */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+              <div>
+                <div className="hud-label mb-1">TODAY SPEND</div>
+                <div className="font-mono text-sm text-accent-cyan">{fmtUsd(metering.today_spend_usd)}</div>
+              </div>
+              <div>
+                <div className="hud-label mb-1">ROWS TODAY</div>
+                <div className="font-mono text-sm text-text-primary">{metering.today_row_count ?? 0}</div>
+              </div>
+            </div>
+
+            {/* Counters */}
+            {metering.counters && (
+              <div className="pt-1">
+                <div className="hud-label mb-2">SPEND LOG COUNTERS</div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div>
+                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>RECORDED</div>
+                    <div className="font-mono text-sm text-accent-cyan">{metering.counters.recorded ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>SKIPPED (NO USAGE)</div>
+                    <div className="font-mono text-sm text-text-secondary">{metering.counters.skipped_no_usage ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>SKIPPED (UNPARSEABLE)</div>
+                    <div className="font-mono text-sm text-accent-orange">{metering.counters.skipped_unparseable ?? 0}</div>
+                  </div>
+                  <div>
+                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>FAILED</div>
+                    <div className="font-mono text-sm text-red-400">{metering.counters.failed ?? 0}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

@@ -9,6 +9,7 @@ const _base = import.meta.env.VITE_API_BASE
   : `${window.location.protocol}//${API_HOST}:8000`
 
 export const API_BASE = _base
+export const WS_BASE = _base.replace(/^http/, 'ws')
 
 const BASE = `${_base}/api`
 
@@ -104,5 +105,14 @@ export const api = {
     setBudget: (daily_usd, per_task_usd) => req('POST', '/safety/budget', { daily_usd, per_task_usd }),
     actions: (limit) => req('GET', `/safety/actions?limit=${limit || 20}`),
     outcomes: (limit) => req('GET', `/safety/outcomes?limit=${limit || 20}`),
+    metering: () => req('GET', '/safety/metering'),
+    confirmAction: (id) => req('POST', `/safety/actions/${id}/confirm`),
+    pendingActions: (limit) => req('GET', `/safety/actions?decision=needs_confirm&limit=${limit || 20}`),
+  },
+  goals: {
+    list: () => req('GET', '/goals/'),
+    propose: (title, description, risk) => req('POST', '/goals/propose', { title, description, risk: risk || 'medium' }),
+    approve: (id) => req('POST', `/goals/${id}/approve`),
+    reject: (id) => req('POST', `/goals/${id}/reject`),
   },
 }
