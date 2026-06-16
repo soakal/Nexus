@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     briefing_timezone: str = "America/Detroit"
     memo_watch_folder: str = "./watched_memos"
     chat_history_limit: int = 20
+    agent_write_enabled: bool = True  # Tier 2.4 hard master switch: executor write tools on/off
     whisper_api: bool = False
     whisper_model: str = "base"
     pr_stale_hours: int = 48

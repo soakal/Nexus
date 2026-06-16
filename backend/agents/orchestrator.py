@@ -98,7 +98,14 @@ def _is_failure(result: str) -> bool:
 
 async def _opus_plan(task_prompt: str, learning: str = "") -> Plan:
     from backend.agents.router import opus
-    from backend.agents.tools import planner_tool_block
+    from backend.config import get_settings
+
+    if get_settings().agent_write_enabled:
+        from backend.agents.write_tools import all_planner_block
+        tool_block = all_planner_block()
+    else:
+        from backend.agents.tools import planner_tool_block
+        tool_block = planner_tool_block()
 
     learning_block = ""
     if learning:
@@ -109,8 +116,9 @@ async def _opus_plan(task_prompt: str, learning: str = "") -> Plan:
 TASK: {task_prompt}
 
 THE EXECUTOR HAS THESE TOOLS (it calls them natively — do NOT prefix steps):
-{planner_tool_block()}
+{tool_block}
 
+Some tools perform real actions (home_control, hermes_command); they are safety-gated and risky ones need human confirmation — use them only when the task clearly asks to change something.
 For tasks answerable from general knowledge alone, the executor just answers directly.
 Keep it minimal: usually 1-3 steps. The final step synthesizes the answer.
 {learning_block}
@@ -138,7 +146,14 @@ Each step must be atomic and runnable on its own. Maximum 10 steps."""
 
 async def _sonnet_execute(step: Step, context: list, *, task_id=None, task_start=None) -> str:
     from backend.agents import router
-    from backend.agents.tools import dispatcher_map, tool_specs
+    from backend.config import get_settings
+
+    if get_settings().agent_write_enabled:
+        from backend.agents.write_tools import all_tool_specs, all_dispatchers
+        specs, dispatch = all_tool_specs(), all_dispatchers()
+    else:
+        from backend.agents.tools import tool_specs, dispatcher_map
+        specs, dispatch = tool_specs(), dispatcher_map()
 
     context_str = "\n".join([f"Step {i+1} result: {r}" for i, r in enumerate(context)]) if context else "No prior context."
     full_prompt = f"""Previous results:
@@ -149,18 +164,19 @@ Current task:
 
 Execute this task and return the result directly.
 
-You have READ-ONLY tools available: call them to pull live homelab status, search
-the web for current/real-time information, or search the user's Obsidian vault when
-the task needs that live data. If the task is answerable from general knowledge
-alone, just answer directly without calling a tool. Always produce a useful,
-substantive answer."""
+You have tools available: call them to pull live homelab status, search
+the web for current/real-time information, search the user's Obsidian vault when
+the task needs that live data, or perform safe write actions (home_control,
+hermes_command) when the task clearly asks to change something. If the task is
+answerable from general knowledge alone, just answer directly without calling a
+tool. Always produce a useful, substantive answer."""
     return await router.run_with_tools(
         model=router.SONNET_MODEL,
         max_tokens=8192,
         prompt=full_prompt,
         system="",
-        tool_specs=tool_specs(),
-        dispatch=dispatcher_map(),
+        tool_specs=specs,
+        dispatch=dispatch,
         web_search=True,
         label="orchestrator_execute",
         task_id=task_id,
