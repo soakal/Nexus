@@ -121,24 +121,47 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # A relay posts raw natural language straight to a live PRODUCTION bot
         # that can restart LXCs, open the garage, send Telegram messages, etc.
         # The effect (and thus its reversibility) is unknowable from here, so it
-        # is HIGH by construction. This is what makes the Tier 1.4
-        # relay-quarantine follow-up visible in the audit log.
+        # is HIGH by construction. Tier 1.4 quarantines this for non-user actors
+        # in `decide` (FORBIDDEN); the classification itself is unchanged.
         return Risk.HIGH, Reversibility.UNKNOWN
+
+    if kind == "hermes_action":
+        # A structured allowlist verb — classification comes from the verb spec.
+        # Lazy import to avoid a load cycle (hermes_actions imports Risk/Reversibility
+        # from this module at its top).
+        from backend.safety import hermes_actions
+        return hermes_actions.classify_verb((payload or {}).get("verb", ""))
 
     # Unknown kind — we have no policy for it.
     return Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN
 
 
-def decide(actor: Actor, risk: Risk, reversibility: Reversibility, confirmed: bool) -> Decision:
+def decide(
+    actor: Actor,
+    risk: Risk,
+    reversibility: Reversibility,
+    confirmed: bool,
+    kind: str | None = None,
+) -> Decision:
     """Gate decision: may this actor run this action now?
 
     Returns one of {allowed, needs_confirm, forbidden} — the GATE outcome, never
     a dispatch outcome.
+
+    `kind` is optional (default None keeps the positional decide() callers/tests
+    working). When `kind == "hermes_relay"` a NON-user actor is FORBIDDEN outright:
+    free-text relay to the live Hermes bot is quarantined to humans only (Tier
+    1.4). `confirmed` is NOT an escape hatch for it — an agent must use the
+    structured `hermes_action` allowlist instead.
     """
     # A direct human action is always allowed (preserves the chat UX); it is still
     # classified and logged so the audit trail is complete.
     if actor == Actor.USER:
         return Decision.ALLOWED
+
+    # Free-text Hermes relay is forbidden for agent/autonomous, confirmed or not.
+    if kind == "hermes_relay":
+        return Decision.FORBIDDEN
 
     # agent / autonomous — evaluate irreversibility FIRST: an irreversible action
     # is the highest-stakes case and must be confirmed regardless of risk band.
@@ -176,9 +199,25 @@ async def _dispatch_hermes_relay(target: str, payload: dict) -> dict:
     return {"response": r}
 
 
+async def _dispatch_hermes_action(target: str, payload: dict) -> dict:
+    """Build a phrase from the structured allowlist verb, then relay it.
+
+    `build_command` validates the verb + args and raises ValueError on anything
+    invalid/unknown — that propagates up to the dispatch try/except in
+    `execute_action`, which records the action FAILED (never re-raises).
+    """
+    from backend.integrations import hermes
+    from backend.safety import hermes_actions
+
+    command = hermes_actions.build_command(payload["verb"], payload.get("args") or {})
+    r = await hermes.relay(command)
+    return {"command": command, "response": r}
+
+
 _DISPATCHERS = {
     "ha_service": _dispatch_ha_service,
     "hermes_relay": _dispatch_hermes_relay,
+    "hermes_action": _dispatch_hermes_action,
 }
 
 
@@ -363,7 +402,7 @@ async def execute_action(
             )
 
     risk, reversibility = classify(kind, payload)
-    decision = decide(actor, risk, reversibility, confirmed)
+    decision = decide(actor, risk, reversibility, confirmed, kind=kind)
 
     # BEFORE write — the intent/gate record exists even if the process dies now.
     log_id = await asyncio.to_thread(

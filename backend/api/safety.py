@@ -72,6 +72,18 @@ async def list_actions(
     ]
 
 
+@router.get("/hermes-actions")
+async def list_hermes_actions(_=Depends(require_api_key)):
+    """The structured Hermes verb allowlist (Tier 1.4 relay quarantine).
+
+    Pure read of an in-memory allowlist — no DB, no to_thread. Returns a JSON-safe
+    description of every verb (no callables) so a client can present the menu.
+    """
+    from backend.safety import hermes_actions
+
+    return {"verbs": hermes_actions.allowed_verbs()}
+
+
 @router.post("/actions/{action_id}/confirm")
 async def confirm_action(
     action_id: int,

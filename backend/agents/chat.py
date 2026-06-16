@@ -300,13 +300,62 @@ If no entity matches, return:
                 reply = f"I wasn't able to complete that task: {result.reason}"
 
         elif intent == "HERMES":
+            from backend.safety import hermes_actions
             from backend.safety.broker import Decision, execute_action
-            res = await execute_action(
-                actor="user",
-                kind="hermes_relay",
-                target="hermes",
-                payload={"message": user_message},
-            )
+
+            # Haiku verb-pick: map the request onto the structured allowlist. A
+            # known verb with valid args goes through the structured `hermes_action`
+            # path; anything else falls back to free-text relay (kind="hermes_relay"),
+            # which is allowed only because this is a USER action.
+            menu = json.dumps(hermes_actions.allowed_verbs(), indent=2)
+            verb_prompt = f"""The user wants the Hermes homelab bot to do something.
+
+User request: "{user_message}"
+
+Pick the single best matching verb from this allowlist (verb, risk, reversibility,
+required_args, enum_args):
+{menu}
+
+Return JSON only:
+{{"verb": "<one of the allowlist verbs above, or 'unknown'>", "args": {{...}}}}
+
+Fill `args` with every required_arg and enum_arg the chosen verb needs (enum_args
+must use one of the listed values). If nothing matches, return:
+{{"verb": "unknown", "args": {{}}}}"""
+
+            verb = "unknown"
+            args: dict = {}
+            try:
+                raw_verb = await haiku(verb_prompt)
+                vs = raw_verb.find("{")
+                ve = raw_verb.rfind("}") + 1
+                if vs >= 0 and ve > vs:
+                    vd = json.loads(raw_verb[vs:ve])
+                    verb = vd.get("verb", "unknown")
+                    args = vd.get("args") or {}
+                    if not isinstance(args, dict):
+                        args = {}
+            except BudgetExceeded:
+                raise  # budget brake reaches the outer handler
+            except Exception:
+                verb, args = "unknown", {}
+
+            if hermes_actions.is_allowed(verb) and hermes_actions.validate_args(verb, args) is None:
+                res = await execute_action(
+                    actor="user",
+                    kind="hermes_action",
+                    target="hermes",
+                    payload={"verb": verb, "args": args},
+                )
+            else:
+                # Fallback: free-text relay (user-only path, behaviour unchanged).
+                res = await execute_action(
+                    actor="user",
+                    kind="hermes_relay",
+                    target="hermes",
+                    payload={"message": user_message},
+                )
+
             # actor=user always allows, so relay still runs; its return string flows
             # back via res.result["response"] — user-visible reply is unchanged.
             reply = (
