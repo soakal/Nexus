@@ -355,6 +355,25 @@ def _coerce_actor(actor) -> Actor:
         return Actor.AUTONOMOUS
 
 
+async def _publish_action(
+    actor, kind: str, target: str, decision, risk, reversibility, log_id
+) -> None:
+    """Best-effort broadcast of a terminal broker outcome to /ws/logs clients.
+
+    Never raises — all errors are swallowed by events.publish itself.
+    """
+    from backend import events
+    await events.publish("action", {
+        "actor": getattr(actor, "value", str(actor)),
+        "kind": kind,
+        "target": target,
+        "decision": getattr(decision, "value", str(decision)),
+        "risk": getattr(risk, "value", str(risk)),
+        "reversibility": getattr(reversibility, "value", str(reversibility)),
+        "log_id": log_id,
+    })
+
+
 async def execute_action(
     actor,
     kind: str,
@@ -428,6 +447,7 @@ async def execute_action(
                 Decision.FORBIDDEN.value,
                 json.dumps({"reason": "autonomy_disabled"}),
             )
+            await _publish_action(actor, kind, target, Decision.FORBIDDEN, risk, reversibility, log_id)
             return ActionResult(
                 decision=Decision.FORBIDDEN,
                 risk=risk,
@@ -454,6 +474,7 @@ async def execute_action(
 
     # Gate said no / not-yet — record stands as-is, nothing dispatched.
     if decision in (Decision.FORBIDDEN, Decision.NEEDS_CONFIRM):
+        await _publish_action(actor, kind, target, decision, risk, reversibility, log_id)
         return ActionResult(
             decision=decision,
             risk=risk,
@@ -468,6 +489,7 @@ async def execute_action(
         await asyncio.to_thread(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": error})
         )
+        await _publish_action(actor, kind, target, Decision.FAILED, risk, reversibility, log_id)
         return ActionResult(
             decision=Decision.FAILED,
             risk=risk,
@@ -483,6 +505,7 @@ async def execute_action(
         await asyncio.to_thread(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": str(e)})
         )
+        await _publish_action(actor, kind, target, Decision.FAILED, risk, reversibility, log_id)
         return ActionResult(
             decision=Decision.FAILED,
             risk=risk,
@@ -494,6 +517,7 @@ async def execute_action(
     await asyncio.to_thread(
         _update_action_log, log_id, Decision.EXECUTED.value, json.dumps(result)
     )
+    await _publish_action(actor, kind, target, Decision.EXECUTED, risk, reversibility, log_id)
     return ActionResult(
         decision=Decision.EXECUTED,
         risk=risk,
@@ -550,6 +574,10 @@ async def confirm_action(
                 Decision.FORBIDDEN.value,
                 json.dumps({"reason": "expired"}),
             )
+            await _publish_action(
+                _coerce_actor(row["actor"]), row["kind"], row["target"],
+                Decision.FORBIDDEN, risk, reversibility, log_id,
+            )
             return ("expired", None)
 
     # Step 5: kill switch re-check for non-user actors
@@ -563,6 +591,10 @@ async def confirm_action(
                 log_id,
                 Decision.FORBIDDEN.value,
                 json.dumps({"reason": "autonomy_disabled"}),
+            )
+            await _publish_action(
+                actor, row["kind"], row["target"],
+                Decision.FORBIDDEN, risk, reversibility, log_id,
             )
             return (
                 "forbidden",
@@ -581,6 +613,10 @@ async def confirm_action(
         error = f"no dispatcher for kind '{row['kind']}'"
         await asyncio.to_thread(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": error})
+        )
+        await _publish_action(
+            actor, row["kind"], row["target"],
+            Decision.FAILED, risk, reversibility, log_id,
         )
         return (
             "failed",
@@ -601,6 +637,10 @@ async def confirm_action(
         await asyncio.to_thread(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": str(e)})
         )
+        await _publish_action(
+            actor, row["kind"], row["target"],
+            Decision.FAILED, risk, reversibility, log_id,
+        )
         return (
             "failed",
             ActionResult(
@@ -614,6 +654,10 @@ async def confirm_action(
 
     await asyncio.to_thread(
         _update_action_log, log_id, Decision.EXECUTED.value, json.dumps(result)
+    )
+    await _publish_action(
+        actor, row["kind"], row["target"],
+        Decision.EXECUTED, risk, reversibility, log_id,
     )
     return (
         "executed",

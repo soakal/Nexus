@@ -168,6 +168,7 @@ async def pause_autonomy(_=Depends(require_api_key)):
     """Global kill switch ON: disable agent/autonomous side effects + pause the
     scheduler. User actions are unaffected."""
     from backend.safety import governor
+    from backend import events
 
     await asyncio.to_thread(governor.set_autonomy, False)
     try:
@@ -176,6 +177,7 @@ async def pause_autonomy(_=Depends(require_api_key)):
             scheduler.pause()
     except Exception:
         pass
+    await events.publish("autonomy", {"enabled": False})
     return {"autonomy_enabled": False, "scheduler_running": _scheduler_running()}
 
 
@@ -183,6 +185,7 @@ async def pause_autonomy(_=Depends(require_api_key)):
 async def resume_autonomy(_=Depends(require_api_key)):
     """Global kill switch OFF: re-enable autonomy + resume the scheduler."""
     from backend.safety import governor
+    from backend import events
 
     await asyncio.to_thread(governor.set_autonomy, True)
     try:
@@ -191,6 +194,7 @@ async def resume_autonomy(_=Depends(require_api_key)):
             scheduler.resume()
     except Exception:
         pass
+    await events.publish("autonomy", {"enabled": True})
     return {"autonomy_enabled": True, "scheduler_running": _scheduler_running()}
 
 
