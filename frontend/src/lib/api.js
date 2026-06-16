@@ -97,4 +97,12 @@ export const api = {
     remove: (id) => req('DELETE', `/chat/${id}`),
   },
   today: { get: () => req('GET', '/today/') },
+  safety: {
+    status: () => req('GET', '/safety/status'),
+    pause: () => req('POST', '/safety/pause'),
+    resume: () => req('POST', '/safety/resume'),
+    setBudget: (daily_usd, per_task_usd) => req('POST', '/safety/budget', { daily_usd, per_task_usd }),
+    actions: (limit) => req('GET', `/safety/actions?limit=${limit || 20}`),
+    outcomes: (limit) => req('GET', `/safety/outcomes?limit=${limit || 20}`),
+  },
 }

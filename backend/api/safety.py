@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, select
 
 from backend.auth import require_api_key
-from backend.database import ActionLog, get_session
+from backend.database import ActionLog, TaskOutcome, get_session
 
 router = APIRouter()
 
@@ -67,6 +67,37 @@ async def list_actions(
             "idempotency_key": r.idempotency_key,
             "created_at": r.created_at.isoformat(),
             "updated_at": r.updated_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/outcomes")
+async def list_outcomes(
+    limit: int = 50,
+    _=Depends(require_api_key),
+    session: Session = Depends(get_session),
+):
+    """Recent Opus-verifier TaskOutcome rows (Tier 2.2 learning loop), newest first.
+
+    `?limit=` defaults to 50, capped at 200. Mirrors list_actions (pure-read GET
+    on a Depends-injected Session — no to_thread needed here).
+    """
+    limit = max(1, min(limit, 200))
+    stmt = select(TaskOutcome).order_by(TaskOutcome.created_at.desc()).limit(limit)
+    rows = session.exec(stmt).all()
+
+    return [
+        {
+            "id": r.id,
+            "task_id": r.task_id,
+            "verdict": r.verdict,
+            "confidence": r.confidence,
+            "reason": r.reason,
+            "grounded": r.grounded,
+            "evidence": r.evidence,
+            "model": r.model,
+            "created_at": r.created_at.isoformat(),
         }
         for r in rows
     ]
