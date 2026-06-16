@@ -25,6 +25,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     test_engine = make_test_engine()
+    # Isolate the worker pool's boot-time DB reads (requeue_unfinished) from the
+    # real on-disk nexus.db — point the module engine at the in-memory test DB.
+    monkeypatch.setattr("backend.database.engine", test_engine)
 
     def override_session():
         with Session(test_engine) as session:

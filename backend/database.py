@@ -1,12 +1,37 @@
+import logging
 import pathlib
 from datetime import datetime
 
+from sqlalchemy import event, text
 from sqlmodel import Field, Session, SQLModel, create_engine
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = pathlib.Path("nexus.db")
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, echo=False)
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    connect_args={"check_same_thread": False, "timeout": 30},
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Apply WAL + busy-timeout pragmas on every new connection.
+
+    Harmless on :memory:/StaticPool test engines — WAL silently stays in
+    'memory' mode there. We never assert the result, just execute.
+    """
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Failed to set SQLite pragmas: {e}")
 
 
 class Task(SQLModel, table=True):
@@ -14,11 +39,29 @@ class Task(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     prompt: str
-    status: str = "pending"  # pending | running | success | failed
+    status: str = "pending"  # pending | running | success | failed | stopped
     plan_json: str | None = None
     result_json: str | None = None
     model_used: str = "sonnet"
     steps_taken: int = 0
+    cancel_requested: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TaskStep(SQLModel, table=True):
+    model_config = {"protected_namespaces": ()}
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int = Field(index=True)
+    step_index: int  # 1-based
+    prompt: str
+    description: str = ""
+    status: str = "pending"  # pending | running | done | failed
+    output_json: str | None = None
+    attempts: int = 0
+    idempotency_key: str = ""
+    heartbeat_at: datetime | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -109,8 +152,28 @@ class ChatMessage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+def _ensure_task_columns():
+    """Idempotently add columns introduced after the original `task` table shipped.
+
+    Safe to run repeatedly: inspects PRAGMA table_info(task) and only issues an
+    ALTER for a column that is actually missing. No-op on a fresh DB (create_all
+    already made the column) and on test :memory: engines.
+    """
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(task)"))}
+            if "cancel_requested" not in cols:
+                conn.execute(
+                    text("ALTER TABLE task ADD COLUMN cancel_requested BOOLEAN DEFAULT 0")
+                )
+                conn.commit()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"_ensure_task_columns failed: {e}")
+
+
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
+    _ensure_task_columns()
 
 
 def get_session():

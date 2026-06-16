@@ -16,6 +16,8 @@ venv/
 .coverage
 htmlcov/
 nexus.db
+nexus.db-wal
+nexus.db-shm
 
 # Frontend build & deps
 frontend/node_modules/

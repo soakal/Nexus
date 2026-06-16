@@ -1,11 +1,18 @@
+import asyncio
+import hashlib
 import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+
+
+def _idem_key(task_id: int, step_index: int, prompt: str) -> str:
+    return hashlib.sha256(f"{task_id}:{step_index}:{prompt}".encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -223,21 +230,282 @@ Return JSON only:
     return json.loads(raw[start:end])
 
 
-async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
+# ---------------------------------------------------------------------------
+# Durable DB helpers — every one of these is SYNCHRONOUS and must only ever be
+# invoked via `asyncio.to_thread`. They open and close their own Session inside
+# the worker thread, and return plain dicts/values so NO ORM object or Session
+# ever crosses an `await` (Windows ProactorEventLoop safety, see CLAUDE.md).
+# ---------------------------------------------------------------------------
+
+def _persist_plan(task_id: int, plan_steps: list) -> None:
+    """Delete any existing TaskStep rows for the task and insert one pending
+    row per planned step. Also stamps Task.plan_json + status=running.
+
+    `plan_steps` is a list of (index, prompt, description) tuples — plain data,
+    not ORM/Step objects.
+    """
+    from sqlmodel import Session, select
+
+    from backend.database import Task, TaskStep, engine
+
+    with Session(engine) as session:
+        for row in session.exec(select(TaskStep).where(TaskStep.task_id == task_id)).all():
+            session.delete(row)
+        for index, prompt, description in plan_steps:
+            session.add(TaskStep(
+                task_id=task_id,
+                step_index=index,
+                prompt=prompt,
+                description=description,
+                status="pending",
+                idempotency_key=_idem_key(task_id, index, prompt),
+            ))
+        t = session.get(Task, task_id)
+        if t:
+            t.plan_json = json.dumps([{"index": i, "description": d} for i, _p, d in plan_steps])
+            t.status = "running"
+            t.updated_at = datetime.utcnow()
+        session.commit()
+
+
+def _load_steps(task_id: int) -> list[dict]:
+    """Return all TaskStep rows for a task ordered by step_index as plain dicts.
+
+    A step left in 'running' state (process died mid-step) is reset to 'pending'
+    here so it is re-executed on resume.
+    """
+    from sqlmodel import Session, select
+
+    from backend.database import TaskStep, engine
+
+    out: list[dict] = []
+    with Session(engine) as session:
+        rows = session.exec(
+            select(TaskStep).where(TaskStep.task_id == task_id).order_by(TaskStep.step_index)
+        ).all()
+        dirty = False
+        for r in rows:
+            if r.status == "running":
+                r.status = "pending"
+                r.updated_at = datetime.utcnow()
+                dirty = True
+        if dirty:
+            session.commit()
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "task_id": r.task_id,
+                "step_index": r.step_index,
+                "prompt": r.prompt,
+                "description": r.description,
+                "status": r.status,
+                "output_json": r.output_json,
+                "attempts": r.attempts,
+                "idempotency_key": r.idempotency_key,
+            })
+    return out
+
+
+def _load_done_outputs(task_id: int) -> list[str]:
+    """Decoded outputs of all `done` steps, ordered by step_index. This is the
+    rebuilt context — the core fix for the reset-each-retry bug."""
+    from sqlmodel import Session, select
+
+    from backend.database import TaskStep, engine
+
+    outputs: list[str] = []
+    with Session(engine) as session:
+        rows = session.exec(
+            select(TaskStep)
+            .where(TaskStep.task_id == task_id, TaskStep.status == "done")
+            .order_by(TaskStep.step_index)
+        ).all()
+        for r in rows:
+            if r.output_json is None:
+                continue
+            try:
+                outputs.append(json.loads(r.output_json))
+            except Exception:
+                outputs.append(r.output_json)
+    return outputs
+
+
+def _mark_step_running(step_db_id: int) -> None:
     from sqlmodel import Session
 
-    from backend.database import AgentRun, Task, engine
+    from backend.database import TaskStep, engine
+
+    with Session(engine) as session:
+        s = session.get(TaskStep, step_db_id)
+        if s:
+            s.status = "running"
+            s.heartbeat_at = datetime.utcnow()
+            s.attempts += 1
+            s.updated_at = datetime.utcnow()
+            session.commit()
+
+
+def _complete_step(step_db_id: int, output: str) -> None:
+    """THE CHECKPOINT — committed the instant a step finishes successfully."""
+    from sqlmodel import Session
+
+    from backend.database import TaskStep, engine
+
+    with Session(engine) as session:
+        s = session.get(TaskStep, step_db_id)
+        if s:
+            s.status = "done"
+            s.output_json = json.dumps(output)
+            s.updated_at = datetime.utcnow()
+            session.commit()
+
+
+def _fail_step(step_db_id: int, output: str) -> None:
+    from sqlmodel import Session
+
+    from backend.database import TaskStep, engine
+
+    with Session(engine) as session:
+        s = session.get(TaskStep, step_db_id)
+        if s:
+            s.status = "failed"
+            s.output_json = json.dumps(output)
+            s.updated_at = datetime.utcnow()
+            session.commit()
+
+
+def _is_cancel_requested(task_id: int) -> bool:
+    from sqlmodel import Session
+
+    from backend.database import Task, engine
+
+    with Session(engine) as session:
+        t = session.get(Task, task_id)
+        return bool(t and t.cancel_requested)
+
+
+def _finalize_task(task_id: int, status: str, result_json: str | None) -> None:
+    from sqlmodel import Session, select
+
+    from backend.database import Task, TaskStep, engine
+
+    with Session(engine) as session:
+        t = session.get(Task, task_id)
+        if t:
+            t.status = status
+            if result_json is not None:
+                t.result_json = result_json
+            done = session.exec(
+                select(TaskStep).where(TaskStep.task_id == task_id, TaskStep.status == "done")
+            ).all()
+            t.steps_taken = len(done)
+            t.updated_at = datetime.utcnow()
+            session.commit()
+
+
+def _record_agent_run(task_id: int, prompt: str, output: str, success: bool, elapsed_ms: int) -> None:
+    from sqlmodel import Session
+
+    from backend.database import AgentRun, engine
+
+    with Session(engine) as session:
+        session.add(AgentRun(
+            task_id=task_id,
+            agent_type="orchestrator",
+            model="sonnet",
+            prompt_snippet=prompt[:200],
+            output_snippet=output[:200],
+            success=success,
+            duration_ms=elapsed_ms,
+        ))
+        session.commit()
+
+
+def _patch_step_durably(task_id: int, step_index: int, new_prompt: str) -> None:
+    """RETRY_STEP: rewrite one step's prompt, recompute its idempotency key, reset
+    it to pending and clear its output. Attempts are preserved (not reset)."""
+    from sqlmodel import Session, select
+
+    from backend.database import TaskStep, engine
+
+    with Session(engine) as session:
+        s = session.exec(
+            select(TaskStep).where(
+                TaskStep.task_id == task_id, TaskStep.step_index == step_index
+            )
+        ).first()
+        if s:
+            s.prompt = new_prompt
+            s.idempotency_key = _idem_key(task_id, step_index, new_prompt)
+            s.status = "pending"
+            s.output_json = None
+            s.updated_at = datetime.utcnow()
+            session.commit()
+
+
+def _replan_durably(task_id: int, new_steps: list) -> int:
+    """REPLAN: keep all `done` rows (with their indices), delete the rest, and
+    append the new steps as pending, indexed continuing after max(done_index).
+
+    `new_steps` is a list of (prompt, description) tuples. Returns the number of
+    pending steps inserted.
+    """
+    from sqlmodel import Session, select
+
+    from backend.database import Task, TaskStep, engine
+
+    with Session(engine) as session:
+        rows = session.exec(select(TaskStep).where(TaskStep.task_id == task_id)).all()
+        max_done = 0
+        for r in rows:
+            if r.status == "done":
+                max_done = max(max_done, r.step_index)
+            else:
+                session.delete(r)
+
+        inserted = 0
+        for offset, (prompt, description) in enumerate(new_steps, start=1):
+            idx = max_done + offset
+            session.add(TaskStep(
+                task_id=task_id,
+                step_index=idx,
+                prompt=prompt,
+                description=description,
+                status="pending",
+                idempotency_key=_idem_key(task_id, idx, prompt),
+            ))
+            inserted += 1
+
+        # Refresh plan_json to reflect the new full step list (done + new).
+        t = session.get(Task, task_id)
+        if t:
+            done_meta = [
+                {"index": r.step_index, "description": r.description}
+                for r in rows if r.status == "done"
+            ]
+            new_meta = [
+                {"index": max_done + offset, "description": d}
+                for offset, (_p, d) in enumerate(new_steps, start=1)
+            ]
+            t.plan_json = json.dumps(sorted(done_meta + new_meta, key=lambda x: x["index"]))
+            t.updated_at = datetime.utcnow()
+
+        session.commit()
+        return inserted
+
+
+# ---------------------------------------------------------------------------
+# Legacy (in-memory) path — preserved EXACTLY for task_id=None callers so the
+# existing test_orchestrator.py suite (which patches sqlmodel.Session) passes.
+# ---------------------------------------------------------------------------
+
+async def _run_task_legacy(task_prompt: str) -> TaskResult:
+    from sqlmodel import Session
+
+    from backend.database import AgentRun, engine
 
     plan = await _opus_plan(task_prompt)
     logger.info(f"Task plan: {len(plan.steps)} steps")
-
-    if task_id:
-        with Session(engine) as session:
-            t = session.get(Task, task_id)
-            if t:
-                t.plan_json = json.dumps([{"index": s.index, "description": s.description} for s in plan.steps])
-                t.status = "running"
-                session.commit()
 
     debug = None
     for _attempt in range(MAX_RETRIES):
@@ -251,7 +519,7 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
 
             with Session(engine) as session:
                 session.add(AgentRun(
-                    task_id=task_id,
+                    task_id=None,
                     agent_type="orchestrator",
                     model="sonnet",
                     prompt_snippet=step.prompt[:200],
@@ -269,14 +537,6 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
             results.append(result)
 
         if failed_step is None:
-            if task_id:
-                with Session(engine) as session:
-                    t = session.get(Task, task_id)
-                    if t:
-                        t.status = "success"
-                        t.result_json = json.dumps(results)
-                        t.steps_taken = len(results)
-                        session.commit()
             return TaskResult(success=True, output=results, plan=plan)
 
         debug = await _opus_debug(task_prompt, plan, failed_step, results)
@@ -293,12 +553,112 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
     if debug and isinstance(debug, dict) and debug.get("reason"):
         reason = debug["reason"]
 
-    if task_id:
-        with Session(engine) as session:
-            t = session.get(Task, task_id)
-            if t:
-                t.status = "failed"
-                t.result_json = json.dumps({"error": reason})
-                session.commit()
+    return TaskResult(success=False, reason=reason)
 
+
+def _plan_to_persist_tuples(plan: Plan) -> list:
+    return [(s.index, s.prompt, s.description) for s in plan.steps]
+
+
+def _steps_to_plan(task_prompt: str, steps: list[dict]) -> Plan:
+    plan = Plan(task_prompt=task_prompt)
+    for s in steps:
+        plan.steps.append(Step(index=s["step_index"], prompt=s["prompt"], description=s["description"]))
+    return plan
+
+
+async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
+    # Backward-compat: no task_id -> legacy in-memory loop (existing tests).
+    if task_id is None:
+        return await _run_task_legacy(task_prompt)
+
+    # --- DURABLE PATH ---------------------------------------------------------
+    # 2.1 Entry: load any existing steps. Empty -> first run (plan); non-empty
+    # -> RESUME (rebuild plan from rows, do NOT re-plan).
+    steps = await asyncio.to_thread(_load_steps, task_id)
+    if not steps:
+        plan = await _opus_plan(task_prompt)
+        logger.info(f"Task {task_id} plan: {len(plan.steps)} steps")
+        await asyncio.to_thread(_persist_plan, task_id, _plan_to_persist_tuples(plan))
+        steps = await asyncio.to_thread(_load_steps, task_id)
+    else:
+        logger.info(f"Task {task_id} resuming with {len(steps)} existing step(s)")
+
+    plan = _steps_to_plan(task_prompt, steps)
+
+    debug = None
+    for _attempt in range(MAX_RETRIES):
+        # 2.2 / 2.4: reload steps + rebuild context from DONE outputs each pass.
+        steps = await asyncio.to_thread(_load_steps, task_id)
+        context = await asyncio.to_thread(_load_done_outputs, task_id)
+        failed = None
+
+        for s in steps:
+            if s["status"] == "done":
+                continue  # 2.5 resume — skip already-completed steps
+
+            # 2.3 cooperative cancel checked before marking running.
+            if await asyncio.to_thread(_is_cancel_requested, task_id):
+                await asyncio.to_thread(_finalize_task, task_id, "stopped", None)
+                return TaskResult(success=False, reason="cancelled")
+
+            await asyncio.to_thread(_mark_step_running, s["id"])
+
+            step_obj = Step(index=s["step_index"], prompt=s["prompt"], description=s["description"])
+            t_start = time.time()
+            result = await _sonnet_execute(step_obj, context)
+            elapsed = int((time.time() - t_start) * 1000)
+
+            success = not _is_failure(result)
+            await asyncio.to_thread(
+                _record_agent_run, task_id, step_obj.prompt, result, success, elapsed
+            )
+
+            if not success:
+                await asyncio.to_thread(_fail_step, s["id"], result)
+                failed = (step_obj, result)
+                logger.warning(f"Task {task_id} step {step_obj.index} failed: {result[:100]}")
+                break
+
+            await asyncio.to_thread(_complete_step, s["id"], result)  # checkpoint
+            context.append(result)
+
+        if failed is None:
+            outputs = await asyncio.to_thread(_load_done_outputs, task_id)
+            await asyncio.to_thread(
+                _finalize_task, task_id, "success", json.dumps(outputs)
+            )
+            return TaskResult(success=True, output=outputs, plan=plan)
+
+        # 2.2 debug the failure.
+        prior = await asyncio.to_thread(_load_done_outputs, task_id)
+        debug = await _opus_debug(task_prompt, plan, failed, prior)
+        action = debug.get("action") if isinstance(debug, dict) else None
+
+        if action == "ABORT":
+            break
+        elif action == "REPLAN" and "new_plan" in debug:
+            raw_steps = debug["new_plan"].get("steps", [])
+            new_steps = [
+                (s["prompt"], s.get("description", "")) for s in raw_steps
+            ]
+            if not new_steps:
+                # 2.6 empty replan -> ABORT.
+                debug = {"action": "ABORT", "reason": "replan_empty"}
+                break
+            await asyncio.to_thread(_replan_durably, task_id, new_steps)
+            steps = await asyncio.to_thread(_load_steps, task_id)
+            plan = _steps_to_plan(task_prompt, steps)
+        elif action == "RETRY_STEP" and "new_prompt" in debug:
+            await asyncio.to_thread(
+                _patch_step_durably, task_id, failed[0].index, debug["new_prompt"]
+            )
+
+    reason = "max_retries_exceeded"
+    if debug and isinstance(debug, dict) and debug.get("reason"):
+        reason = debug["reason"]
+
+    await asyncio.to_thread(
+        _finalize_task, task_id, "failed", json.dumps({"error": reason})
+    )
     return TaskResult(success=False, reason=reason)

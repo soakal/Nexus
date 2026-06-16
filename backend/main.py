@@ -17,20 +17,8 @@ async def lifespan(app: FastAPI):
     from backend.database import create_db_and_tables
     create_db_and_tables()
 
-    # Mark any tasks left in "running" state as failed (they died with the previous process)
-    try:
-        from sqlmodel import Session, select
-        from backend.database import Task, engine
-        with Session(engine) as s:
-            stuck = s.exec(select(Task).where(Task.status == "running")).all()
-            for t in stuck:
-                t.status = "failed"
-                t.result_json = '{"error": "interrupted by backend restart"}'
-            if stuck:
-                s.commit()
-                logger.info(f"Cleared {len(stuck)} interrupted task(s)")
-    except Exception as e:
-        logger.warning(f"Startup task cleanup failed: {e}")
+    # Tasks left "running"/"pending" from a dead process are NOT force-failed —
+    # the worker pool re-enqueues them on start() so durable execution resumes.
 
     vault_ok = pathlib.Path(".vault.key").exists() and pathlib.Path("nexus.vault").exists()
 
@@ -68,6 +56,11 @@ async def lifespan(app: FastAPI):
                 daemon=True,
             ).start()
 
+            # Durable task worker pool — start() re-enqueues any unfinished tasks
+            # so execution resumes after a restart instead of being force-failed.
+            from backend.agents.worker_pool import get_pool
+            await get_pool().start()
+
             logger.info("NEXUS backend started")
         except Exception as e:
             logger.warning(f"Startup partial: {e}")
@@ -86,6 +79,11 @@ async def lifespan(app: FastAPI):
     try:
         from backend.agents.memo_watcher import stop_watcher
         await stop_watcher()
+    except Exception:
+        pass
+    try:
+        from backend.agents.worker_pool import get_pool
+        await get_pool().stop()
     except Exception:
         pass
 

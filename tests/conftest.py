@@ -53,6 +53,11 @@ def reset_caches():
     module-level state that otherwise persists for the whole session)."""
     from backend.cache import reset_all_caches
     reset_all_caches()
+    try:
+        from backend.agents.worker_pool import reset_pool
+        reset_pool()
+    except Exception:
+        pass
     yield
 
 

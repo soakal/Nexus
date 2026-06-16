@@ -25,6 +25,9 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     test_engine = make_test_engine()
+    # Isolate the worker pool's boot-time DB reads (requeue_unfinished) from the
+    # real on-disk nexus.db — point the module engine at the in-memory test DB.
+    monkeypatch.setattr("backend.database.engine", test_engine)
 
     def override_session():
         with Session(test_engine) as session:
@@ -255,12 +258,13 @@ def test_sources_status_unauthorized(app_client):
 # ---------------------------------------------------------------------------
 
 def test_create_task(app_client, auth_headers):
-    with patch("backend.api.tasks.asyncio.create_task"):
+    from backend.agents.worker_pool import get_pool
+    with patch.object(get_pool(), "enqueue", new_callable=AsyncMock):
         resp = app_client.post("/api/tasks/", json={"prompt": "Test task"}, headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "id" in data
-        assert data["status"] == "running"
+        assert data["status"] == "pending"
 
 
 def test_list_tasks(app_client, auth_headers):
