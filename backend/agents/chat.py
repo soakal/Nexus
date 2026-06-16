@@ -288,7 +288,7 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
         # 3. Route by intent
         if intent == "CHAT":
             from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
-            from backend.agents import memory
+            from backend.agents import facts, memory
 
             results = await asyncio.gather(
                 homeassistant.fetch(),
@@ -298,17 +298,20 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
                 weather.fetch(),
                 memory.vault_recall(user_message),
                 memory.latest_briefing_seed(),
+                facts.facts_recall(user_message),
                 return_exceptions=True,
             )
-            ha, unraid_d, channels, ag, wx, vault_str, briefing_str = results
-            # Coerce any exception results from memory fns to empty string
+            ha, unraid_d, channels, ag, wx, vault_str, briefing_str, facts_str = results
+            # Coerce any exception results from memory/facts fns to empty string
             if isinstance(vault_str, Exception):
                 vault_str = ""
             if isinstance(briefing_str, Exception):
                 briefing_str = ""
+            if isinstance(facts_str, Exception):
+                facts_str = ""
             snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
-            memory_block = memory.assemble(vault_str, briefing_str)
+            memory_block = memory.assemble(vault_str, briefing_str, facts_str)
             memory_inject = (memory_block + "\n\n") if memory_block else ""
             system = CHAT_SYSTEM.format(memory=memory_inject, snapshot=snapshot)
             user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
@@ -520,5 +523,9 @@ If they're saving something from the conversation, use the relevant prior assist
 
     # 5. Rolling summarization (best-effort; swallows its own errors)
     await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
+
+    # 6. Fact extraction (best-effort; guards itself, never raises; runs for ALL intents)
+    from backend.agents import facts
+    await facts.extract_and_store(user_message, conversation_id)
 
     return {"conversation_id": conversation_id, "reply": reply}

@@ -83,16 +83,21 @@ async def latest_briefing_seed() -> str:
         return ""
 
 
-def assemble(vault_str: str, briefing_str: str) -> str:
+def assemble(vault_str: str, briefing_str: str, facts_str: str = "") -> str:
     """Pure function: build the memory injection block.
 
-    Returns "" when both inputs are empty so the caller can skip injection
+    Returns "" when all inputs are empty so the caller can skip injection
     entirely. Otherwise returns a block with only the non-empty sections.
+
+    facts_str is an optional block of durable known facts (Tier 2.3c). When
+    present it is appended after the vault notes and briefing with a header
+    noting that live data takes precedence on conflict.
     """
     vault_str = vault_str or ""
     briefing_str = briefing_str or ""
+    facts_str = facts_str or ""
 
-    if not vault_str and not briefing_str:
+    if not vault_str and not briefing_str and not facts_str:
         return ""
 
     parts = ["RELEVANT MEMORY (from your notes + latest briefing — use if helpful, ignore if not):"]
@@ -102,6 +107,11 @@ def assemble(vault_str: str, briefing_str: str) -> str:
     if briefing_str:
         parts.append("[LATEST BRIEFING]")
         parts.append(briefing_str)
+    if facts_str:
+        parts.append(
+            "[KNOWN FACTS] (durable; may be stale — prefer live data above if it conflicts)"
+        )
+        parts.append(facts_str)
 
     return "\n".join(parts)
 

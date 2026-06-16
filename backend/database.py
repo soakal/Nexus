@@ -171,6 +171,25 @@ class ChatMessage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Durable entity/fact store (Tier 2.3c). Facts are extracted from chat,
+# stored with a confidence that decays with age, can be SUPERSEDED when a
+# newer value contradicts an older one, and the most relevant active facts
+# are injected into the chat memory block. Created by create_all (new table,
+# no _ensure_ migration shim needed).
+class Fact(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    subject: str = Field(index=True)        # e.g. "user", "unraid", "garage"
+    predicate: str = Field(index=True)      # e.g. "prefers", "named", "located_at"
+    value: str                              # the fact value
+    confidence: float = 0.6                 # 0..1 at write time
+    source: str = "chat"                    # chat | manual | extracted
+    conversation_id: int | None = None
+    superseded_by: int | None = None        # id of the Fact that replaced this; None = active
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_seen_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # Immutable audit log of every side-effecting action that passed through the
 # policy-gated action broker (backend/safety/broker.py). App code only INSERTs a
 # row (the intent/gate decision) then UPDATEs it with the dispatch outcome — it
