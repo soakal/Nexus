@@ -92,30 +92,16 @@ def _is_failure(result: str) -> bool:
 
 async def _opus_plan(task_prompt: str) -> Plan:
     from backend.agents.router import opus
+    from backend.agents.tools import planner_tool_block
     plan_prompt = f"""Decompose this task into numbered execution steps for an executor agent.
 
 TASK: {task_prompt}
 
-THE EXECUTOR HAS THESE TOOLS:
-- WEB_SEARCH: <query>  — live web search (DuckDuckGo + GitHub releases API).
-  Use for current versions, news, prices, dates, or any real-time information.
-- VAULT_SEARCH: <query> — searches the user's personal Obsidian knowledge vault.
-  Use when the task mentions "my notes", "my vault", "Obsidian", "vault", or asks
-  to find/retrieve/summarize something from personal notes or saved knowledge.
+THE EXECUTOR HAS THESE TOOLS (it calls them natively — do NOT prefix steps):
+{planner_tool_block()}
 
-MANDATORY RULES — follow these exactly:
-1. If ANY step needs current/live/real-time information, that step's "prompt" MUST
-   literally begin with "WEB_SEARCH:" followed by a self-contained search query.
-   CORRECT: "WEB_SEARCH: HashiCorp Vault latest stable release version"
-   WRONG:   "Retrieve live data from authoritative sources to find the version"
-2. If ANY step needs to look up the user's personal notes or Obsidian vault, that
-   step's "prompt" MUST literally begin with "VAULT_SEARCH:" followed by the query.
-   CORRECT: "VAULT_SEARCH: project ideas"
-   CORRECT: "VAULT_SEARCH: meeting notes April"
-   WRONG:   "Search the vault for project ideas"
-3. NEVER put placeholders inside a tool query. Queries run verbatim — no substitution.
-4. For tasks answerable from general knowledge alone, use no tool prefix.
-5. Keep it minimal: usually 1-3 steps. The final step synthesizes the answer.
+For tasks answerable from general knowledge alone, the executor just answers directly.
+Keep it minimal: usually 1-3 steps. The final step synthesizes the answer.
 
 Return JSON only:
 {{
@@ -140,47 +126,8 @@ Each step must be atomic and runnable on its own. Maximum 10 steps."""
 
 
 async def _sonnet_execute(step: Step, context: list) -> str:
-    import re
-
-    from backend.agents.router import sonnet
-    from backend.integrations.web_search import search
-
-    # Intercept VAULT_SEARCH directives — search the user's Obsidian vault
-    vault_marker = re.search(r"VAULT_SEARCH:\s*(.+?)(?:\n|$)", step.prompt, re.IGNORECASE)
-    if vault_marker:
-        from backend.integrations.obsidian import vault_search
-        query = re.sub(r"<[^>]*>", "", vault_marker.group(1).strip()).strip()
-        vault_result = await vault_search(query)
-        enriched_prompt = step.prompt + f"\n\nVAULT_SEARCH results for '{query}':\n{vault_result}\n\nSummarize the above vault search results to answer the task."
-        context_str = "\n".join([f"Step {i+1} result: {r}" for i, r in enumerate(context)]) if context else "No prior context."
-        full_prompt = f"""Previous results:
-{context_str}
-
-Current task:
-{enriched_prompt}
-
-Execute this task and return the result directly."""
-        return await sonnet(full_prompt)
-
-    # Intercept WEB_SEARCH directives before sending to LLM
-    web_marker = re.search(r"WEB_SEARCH:\s*(.+?)(?:\n|$)", step.prompt, re.IGNORECASE)
-    if web_marker:
-        query = web_marker.group(1).strip()
-        # Strip any leftover "<placeholder>" tokens the planner may have emitted —
-        # the executor cannot substitute prior-step values into a literal query.
-        query = re.sub(r"<[^>]*>", "", query).replace("  ", " ").strip()
-        web_result = await search(query)
-        # Append search results to context and continue with enriched prompt
-        enriched_prompt = step.prompt + f"\n\nWEB_SEARCH results for '{query}':\n{web_result}\n\nSummarize the above search results to answer the task."
-        context_str = "\n".join([f"Step {i+1} result: {r}" for i, r in enumerate(context)]) if context else "No prior context."
-        full_prompt = f"""Previous results:
-{context_str}
-
-Current task:
-{enriched_prompt}
-
-Execute this task and return the result directly."""
-        return await sonnet(full_prompt)
+    from backend.agents import router
+    from backend.agents.tools import dispatcher_map, tool_specs
 
     context_str = "\n".join([f"Step {i+1} result: {r}" for i, r in enumerate(context)]) if context else "No prior context."
     full_prompt = f"""Previous results:
@@ -191,13 +138,21 @@ Current task:
 
 Execute this task and return the result directly.
 
-IMPORTANT: You do NOT have live internet access in this step. If the task asks
-for current/real-time information and no web search results were provided above,
-DO NOT refuse. Instead, give your best answer from your training knowledge and
-clearly state the knowledge cutoff caveat, e.g. "Based on my training knowledge
-(as of my cutoff), the answer is X — verify against the live source for the most
-current value." Always produce a useful, substantive answer."""
-    return await sonnet(full_prompt)
+You have READ-ONLY tools available: call them to pull live homelab status, search
+the web for current/real-time information, or search the user's Obsidian vault when
+the task needs that live data. If the task is answerable from general knowledge
+alone, just answer directly without calling a tool. Always produce a useful,
+substantive answer."""
+    return await router.run_with_tools(
+        model=router.SONNET_MODEL,
+        max_tokens=8192,
+        prompt=full_prompt,
+        system="",
+        tool_specs=tool_specs(),
+        dispatch=dispatcher_map(),
+        web_search=True,
+        label="orchestrator_execute",
+    )
 
 
 async def _opus_debug(task: str, plan: Plan, failed_step: tuple, prior_results: list) -> dict:

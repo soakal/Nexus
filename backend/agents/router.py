@@ -154,16 +154,13 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
     return text
 
 
-async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
-    """Run the blocking SDK call in the default thread-pool executor.
+async def _budget_brake() -> None:
+    """Universal daily budget brake: before EVERY billed call, check the daily cap.
 
-    The sync `anthropic.Anthropic` client wrapped in `run_in_executor` is more
-    reliable here than `AsyncAnthropic`, which has been observed blocking the
-    event loop during briefings.
+    A BudgetExceeded propagates (callers degrade gracefully); any OTHER governor
+    error is swallowed so a governor bug can never DOS the assistant. Shared by
+    both `_run` (single-shot calls) and `run_with_tools` (the tool-use loop).
     """
-    # Universal daily budget brake: before EVERY billed call, check the daily cap.
-    # A BudgetExceeded propagates (callers degrade gracefully); any OTHER governor
-    # error is swallowed so a governor bug can never DOS the assistant.
     from backend.safety.governor import BudgetExceeded, check_budget
     try:
         await asyncio.to_thread(check_budget)
@@ -172,9 +169,125 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"daily budget check failed (non-fatal), proceeding: {e}")
 
+
+async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
+    """Run the blocking SDK call in the default thread-pool executor.
+
+    The sync `anthropic.Anthropic` client wrapped in `run_in_executor` is more
+    reliable here than `AsyncAnthropic`, which has been observed blocking the
+    event loop during briefings.
+    """
+    await _budget_brake()
+
     loop = asyncio.get_event_loop()
     func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label)
     return await loop.run_in_executor(None, func)
+
+
+def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str):
+    """Blocking Anthropic call for the tool-use loop. Returns the RAW response.
+
+    Mirrors `_create_sync` but (1) takes a full `messages` list (not a single
+    prompt) and a `tools` list, and (2) returns the raw Messages API response so
+    the caller can inspect `stop_reason` / tool_use blocks. Spend is recorded
+    in-thread (best-effort) exactly as in `_create_sync`. Must run in an executor,
+    never on the event loop.
+    """
+    client = get_client()
+    kwargs = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+    }
+    if system:
+        kwargs["system"] = system
+    if tools:
+        kwargs["tools"] = tools
+    resp = client.messages.create(**kwargs)
+    # Best-effort spend logging — runs INSIDE the executor worker thread (NOT the
+    # event loop), so the synchronous Session(engine) write inside _record_spend
+    # is correct here and must NOT be wrapped in asyncio.to_thread.
+    try:
+        _record_spend(model, resp, label)
+    except Exception as e:  # never let metering break the response
+        logger.warning(f"spend logging failed (non-fatal): {e}")
+    return resp
+
+
+async def run_with_tools(
+    model: str,
+    max_tokens: int,
+    prompt: str,
+    system: str,
+    tool_specs: list,
+    dispatch: dict,
+    *,
+    web_search: bool = False,
+    label: str = "",
+    max_rounds: int = 5,
+) -> str:
+    """Native tool-use loop over READ-ONLY tools.
+
+    Drives a multi-round conversation: Claude may call any of the provided tools,
+    we dispatch each call and feed the result back, until Claude returns a final
+    text answer (stop_reason != "tool_use") or `max_rounds` is reached. When
+    `web_search` is True, Anthropic's hosted web search tool is added alongside the
+    local custom tools.
+
+    Metering parity with `_run`: the daily budget brake runs BEFORE every billed
+    round (`_budget_brake`), and each create() records spend AFTER (inside
+    `_create_sync_raw`). A `BudgetExceeded` from the brake propagates out so a
+    durable task finalizes failed/budget_exceeded.
+    """
+    messages: list = [{"role": "user", "content": prompt}]
+    tools = ([_WEB_SEARCH_TOOL] if web_search else []) + list(tool_specs)
+
+    loop = asyncio.get_event_loop()
+    last_resp = None
+
+    for _round in range(max_rounds):
+        await _budget_brake()
+        resp = await loop.run_in_executor(
+            None,
+            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label),
+        )
+        last_resp = resp
+
+        # Record the assistant turn verbatim (raw content blocks) so tool_result
+        # turns reference valid tool_use ids on the next request.
+        messages.append({"role": "assistant", "content": resp.content})
+
+        tool_use_blocks = [
+            b for b in resp.content if getattr(b, "type", None) == "tool_use"
+        ]
+        if getattr(resp, "stop_reason", None) != "tool_use" or not tool_use_blocks:
+            return _extract_text(resp)
+
+        tool_results = []
+        for block in tool_use_blocks:
+            name = getattr(block, "name", "")
+            tid = getattr(block, "id", "")
+            raw_input = getattr(block, "input", None)
+            tinput = raw_input if isinstance(raw_input, dict) else {}
+            fn = dispatch.get(name)
+            if fn is None:
+                result = "unknown tool: " + str(name)
+            else:
+                try:
+                    result = await fn(tinput)
+                except Exception as e:
+                    result = f"{name} unavailable: {e}"
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tid,
+                "content": result,
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    # Ran out of rounds while Claude still wanted to call tools.
+    text = _extract_text(last_resp) if last_resp is not None else ""
+    return text if text else "(tool loop reached max rounds without a final answer)"
 
 
 async def opus(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:

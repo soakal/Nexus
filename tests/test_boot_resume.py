@@ -60,7 +60,8 @@ async def test_boot_requeues_running_tasks(eng):
     """A Task left 'running' with [done, pending] resumes to success on boot.
 
     The worker loop does `from backend.agents.orchestrator import run_task`, so
-    the REAL durable orchestrator runs; only sonnet is mocked.
+    the REAL durable orchestrator runs; only the executor's tool-use loop
+    (router.run_with_tools, Tier 2.1) is mocked.
     """
     from backend.agents.worker_pool import TaskWorkerPool
     from backend.database import Task
@@ -70,8 +71,8 @@ async def test_boot_requeues_running_tasks(eng):
     _seed_step(eng, task_id, 2, "b", status="pending")
 
     pool = TaskWorkerPool(size=1)
-    with patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_sonnet:
-        mock_sonnet.return_value = "B"
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = "B"
         await pool.start()  # start() calls requeue_unfinished()
         for _ in range(200):
             await asyncio.sleep(0.02)
@@ -85,7 +86,7 @@ async def test_boot_requeues_running_tasks(eng):
         assert t.status == "success"
         assert json.loads(t.result_json) == ["A", "B"]
     # Only the pending step ran.
-    assert mock_sonnet.await_count == 1
+    assert mock_exec.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -95,14 +96,14 @@ async def test_boot_resets_orphan_running_step(eng):
     task_id = _seed_task(eng, status="running")
     _seed_step(eng, task_id, 1, "orphan", status="running")  # died mid-flight
 
-    with patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_sonnet:
-        mock_sonnet.return_value = "RECOVERED"
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = "RECOVERED"
         from backend.agents.orchestrator import run_task
 
         result = await run_task("task", task_id)
 
     assert result.success is True
-    assert mock_sonnet.await_count == 1
+    assert mock_exec.await_count == 1
 
     from backend.database import TaskStep
 

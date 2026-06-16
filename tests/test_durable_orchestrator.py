@@ -3,6 +3,13 @@ import json
 import pytest
 from unittest.mock import AsyncMock, patch
 
+# Tier 2.1: the executor (_sonnet_execute) now calls router.run_with_tools (the
+# native read-only tool-use loop) instead of router.sonnet. These tests are
+# mechanically migrated to patch run_with_tools with the SAME canned strings;
+# the orchestrator control flow under test (resume/checkpoint/cancel/retry/
+# replan) is unchanged. One run_with_tools await == one executed step, exactly
+# as one sonnet await did before.
+
 from sqlmodel import SQLModel, Session, create_engine, select
 from sqlmodel.pool import StaticPool
 
@@ -66,14 +73,14 @@ async def test_resume_skips_done_steps(eng):
     _seed_step(eng, task_id, 2, "step two", status="pending")
     _seed_step(eng, task_id, 3, "step three", status="pending")
 
-    with patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_sonnet:
-        mock_sonnet.side_effect = ["OUT2", "OUT3"]
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        mock_exec.side_effect = ["OUT2", "OUT3"]
         from backend.agents.orchestrator import run_task
 
         result = await run_task("task", task_id)
 
     assert result.success is True
-    assert mock_sonnet.await_count == 2
+    assert mock_exec.await_count == 2
 
     from backend.database import Task
 
@@ -95,14 +102,14 @@ async def test_checkpoint_persisted_each_step(eng):
 
     seen_after_first = {}
 
-    async def sonnet_side(prompt, system=""):
+    async def exec_side(*args, **kwargs):
         # When the second step runs, the first step must already be 'done'.
         with Session(eng) as s:
             rows = s.exec(select(TaskStep).where(TaskStep.task_id == task_id).order_by(TaskStep.step_index)).all()
             seen_after_first[len(seen_after_first)] = [r.status for r in rows]
         return "ok"
 
-    with patch("backend.agents.router.sonnet", new_callable=AsyncMock, side_effect=sonnet_side):
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side):
         from backend.agents.orchestrator import run_task
 
         result = await run_task("task", task_id)
@@ -127,14 +134,14 @@ async def test_cooperative_cancel_marks_stopped(eng):
         t.cancel_requested = True
         s.commit()
 
-    with patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_sonnet:
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
         from backend.agents.orchestrator import run_task
 
         result = await run_task("task", task_id)
 
     assert result.success is False
     assert result.reason == "cancelled"
-    mock_sonnet.assert_not_awaited()
+    mock_exec.assert_not_awaited()
 
     with Session(eng) as s:
         t = s.get(Task, task_id)
@@ -155,14 +162,14 @@ async def test_retry_step_durable(eng):
 
     call = {"n": 0}
 
-    async def sonnet_side(prompt, system=""):
+    async def exec_side(*args, **kwargs):
         call["n"] += 1
         if call["n"] == 1:
             return "I cannot complete this task"
         return "fixed"
 
     with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
-         patch("backend.agents.router.sonnet", new_callable=AsyncMock, side_effect=sonnet_side):
+         patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side):
         mock_opus.return_value = retry_json
         from backend.agents.orchestrator import run_task
 
@@ -199,14 +206,14 @@ async def test_replan_changes_step_count(eng):
 
     call = {"n": 0}
 
-    async def sonnet_side(prompt, system=""):
+    async def exec_side(*args, **kwargs):
         call["n"] += 1
         if call["n"] == 1:
             return "I cannot complete this task"  # bad-step fails -> replan
         return "good"
 
     with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
-         patch("backend.agents.router.sonnet", new_callable=AsyncMock, side_effect=sonnet_side):
+         patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side):
         mock_opus.return_value = replan
         from backend.agents.orchestrator import run_task
 
@@ -231,10 +238,10 @@ async def test_no_id_legacy_path(eng):
     plan_json = '{"steps": [{"index": 1, "description": "s", "prompt": "p"}]}'
 
     with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
-         patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_sonnet, \
+         patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("sqlmodel.Session"):
         mock_opus.return_value = plan_json
-        mock_sonnet.return_value = "done"
+        mock_exec.return_value = "done"
         from backend.agents.orchestrator import run_task
 
         result = await run_task("legacy task")
