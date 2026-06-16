@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     per_task_budget_usd: float = 5.0
     autonomy_enabled_default: bool = True
 
+    # Spend-metering price verification flag (Tier 3 observability).
+    # Set to True in .env after confirming _PRICE_PER_MTOK in router.py against
+    # live Anthropic billing. Until True, a startup WARNING fires each boot.
+    prices_verified: bool = False
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

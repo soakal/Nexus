@@ -44,9 +44,26 @@ OPUS_MODEL = "claude-opus-4-8"
 SONNET_MODEL = "claude-sonnet-4-6"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
+# Process-lifetime metering outcome counters (reset on restart — that's fine;
+# they are a live health signal, not a durable ledger). Incrementing a dict
+# value under CPython's GIL is safe here without a lock.
+_METER_COUNTS: dict[str, int] = {
+    "recorded": 0,
+    "skipped_no_usage": 0,
+    "skipped_unparseable": 0,
+    "failed": 0,
+}
+
+
+def metering_counters() -> dict:
+    """Return a snapshot of the process-lifetime metering outcome counters."""
+    return dict(_METER_COUNTS)
+
 
 # Price per 1,000,000 tokens (USD), keyed on the model constants above.
-# VERIFY against current Anthropic pricing — these are placeholders.
+# Rates are believed-current Anthropic list prices; `prices_verified` (config)
+# gates the startup warning. Set prices_verified=True in .env after field-
+# validating these numbers against live Anthropic billing.
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 15.0, "output": 75.0},
     SONNET_MODEL: {"input": 3.0, "output": 15.0},
@@ -98,6 +115,7 @@ def _record_spend(model: str, resp, label: str, task_id=None) -> None:
     try:
         usage = getattr(resp, "usage", None)
         if usage is None:
+            _METER_COUNTS["skipped_no_usage"] += 1
             return
 
         def _coerce(name):
@@ -125,6 +143,7 @@ def _record_spend(model: str, resp, label: str, task_id=None) -> None:
             # usage WAS present but a token field can't be coerced (e.g. a
             # MagicMock test response, or a future/odd usage shape). Distinct from
             # usage-None above (legit, silent): warn here, then write NO row.
+            _METER_COUNTS["skipped_unparseable"] += 1
             logger.warning(
                 f"could not meter LLM call model={model!r} label={label!r}; "
                 "usage shape unrecognized"
@@ -149,7 +168,9 @@ def _record_spend(model: str, resp, label: str, task_id=None) -> None:
                 task_id=task_id,
             ))
             session.commit()
+        _METER_COUNTS["recorded"] += 1
     except Exception as e:  # best-effort — never break the response
+        _METER_COUNTS["failed"] += 1
         logger.warning(f"_record_spend failed (non-fatal): {e}")
 
 

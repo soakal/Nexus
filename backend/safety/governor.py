@@ -167,6 +167,42 @@ def set_budgets(daily: float | None = None, per_task: float | None = None) -> No
         session.commit()
 
 
+def _today_spend_row_count() -> int:
+    """Count SpendLog rows recorded since the most recent local midnight (sync).
+
+    Uses the same window logic as `today_spend_usd()` so the two numbers are
+    directly comparable (row count vs. dollar sum over the same window).
+    """
+    from sqlmodel import Session, func, select
+
+    from backend.database import SpendLog, engine
+
+    since = _local_midnight_utc_naive()
+    with Session(engine) as session:
+        count = session.exec(
+            select(func.count(SpendLog.id)).where(SpendLog.created_at >= since)
+        ).one()
+    return int(count or 0)
+
+
+def metering_health() -> dict:
+    """Return a dict summarising live metering health (sync).
+
+    Intended for the GET /api/safety/metering endpoint. All fields are
+    best-effort: today_spend_usd / today_row_count are current as of this call;
+    counters are process-lifetime (reset on restart).
+    """
+    from backend.agents.router import metering_counters
+    from backend.config import get_settings
+
+    return {
+        "counters": metering_counters(),
+        "today_spend_usd": today_spend_usd(),
+        "today_row_count": _today_spend_row_count(),
+        "prices_verified": bool(getattr(get_settings(), "prices_verified", False)),
+    }
+
+
 def check_budget(task_id: int | None = None, task_start: datetime | None = None) -> None:
     """Raise BudgetExceeded if a cap is reached, else return None (sync).
 

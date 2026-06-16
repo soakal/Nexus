@@ -210,6 +210,15 @@ async def safety_status(_=Depends(require_api_key)):
     }
 
 
+@router.get("/metering")
+async def metering_health(_=Depends(require_api_key)):
+    """Live spend-metering health: process-lifetime outcome counters + today's
+    spend and row count + whether prices have been field-verified."""
+    from backend.safety import governor
+
+    return await asyncio.to_thread(governor.metering_health)
+
+
 @router.post("/budget")
 async def set_budget(
     body: dict = Body(default_factory=dict),

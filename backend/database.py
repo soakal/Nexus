@@ -265,75 +265,66 @@ class Goal(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-def _ensure_task_columns():
-    """Idempotently add columns introduced after the original `task` table shipped.
+def _safe_add_column(table: str, column: str, ddl_type: str) -> None:
+    """Idempotently + race-safely add one column.
 
-    Safe to run repeatedly: inspects PRAGMA table_info(task) and only issues an
-    ALTER for a column that is actually missing. No-op on a fresh DB (create_all
-    already made the column) and on test :memory: engines.
+    A concurrent boot that already added it ('duplicate column name') is treated
+    as success, not failure. Non-duplicate errors are logged as warnings and do
+    NOT propagate — each column is independent; one failure must never abort
+    sibling columns in the same _ensure_* call.
     """
     try:
         with engine.connect() as conn:
-            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(task)"))}
-            if "cancel_requested" not in cols:
-                conn.execute(
-                    text("ALTER TABLE task ADD COLUMN cancel_requested BOOLEAN DEFAULT 0")
-                )
-                conn.commit()
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"_ensure_task_columns failed: {e}")
+            cols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            if column in cols:
+                return
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+            conn.commit()
+    except Exception as e:
+        if "duplicate column" in str(e).lower():
+            return  # a racing boot added it first — fine, idempotent
+        logger.warning(f"_safe_add_column {table}.{column} failed: {e}")
+
+
+def _ensure_task_columns():
+    """Idempotently add columns introduced after the original `task` table shipped.
+
+    Each column is added independently via _safe_add_column so a race on one
+    column never aborts the others. No-op on a fresh DB (create_all already made
+    the column) and on test :memory: engines.
+    """
+    _safe_add_column("task", "cancel_requested", "BOOLEAN DEFAULT 0")
 
 
 def _ensure_spendlog_columns():
     """Idempotently add columns introduced after the original `spendlog` table shipped.
 
-    Safe to run repeatedly: inspects PRAGMA table_info(spendlog) and only issues an
-    ALTER for a column that is actually missing. Best-effort — a failure here is
-    logged but never fatal to startup. No-op on a fresh DB (create_all already made
-    the column) and on test :memory: engines.
+    Each column is added independently via _safe_add_column so a race on one
+    column never aborts the others. Best-effort — a failure here is logged but
+    never fatal to startup. No-op on a fresh DB (create_all already made the
+    column) and on test :memory: engines.
     """
+    _safe_add_column("spendlog", "task_id", "INTEGER")
     try:
         with engine.connect() as conn:
-            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(spendlog)"))}
-            if "task_id" not in cols:
-                conn.execute(
-                    text("ALTER TABLE spendlog ADD COLUMN task_id INTEGER")
-                )
-                conn.commit()
-            try:
-                conn.execute(
-                    text("CREATE INDEX IF NOT EXISTS ix_spendlog_task_id ON spendlog(task_id)")
-                )
-                conn.commit()
-            except Exception as e:  # pragma: no cover - defensive
-                logger.warning(f"_ensure_spendlog_columns index create failed: {e}")
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_spendlog_task_id ON spendlog(task_id)")
+            )
+            conn.commit()
     except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"_ensure_spendlog_columns failed: {e}")
+        logger.warning(f"_ensure_spendlog_columns index create failed: {e}")
 
 
 def _ensure_conversation_columns():
     """Idempotently add columns introduced after the original `conversation` table shipped.
 
-    Safe to run repeatedly: inspects PRAGMA table_info(conversation) and only issues an
-    ALTER for a column that is actually missing. Best-effort — a failure here is
-    logged but never fatal to startup. No-op on a fresh DB (create_all already made
-    the column) and on test :memory: engines.
+    Each column is added independently via _safe_add_column so a race on one
+    column never aborts the others. Best-effort — a failure here is logged but
+    never fatal to startup. No-op on a fresh DB (create_all already made the
+    column) and on test :memory: engines.
     """
-    try:
-        with engine.connect() as conn:
-            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(conversation)"))}
-            if "summary" not in cols:
-                conn.execute(
-                    text("ALTER TABLE conversation ADD COLUMN summary TEXT")
-                )
-                conn.commit()
-            if "summarized_through_id" not in cols:
-                conn.execute(
-                    text("ALTER TABLE conversation ADD COLUMN summarized_through_id INTEGER")
-                )
-                conn.commit()
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"_ensure_conversation_columns failed: {e}")
+    _safe_add_column("conversation", "summary", "TEXT")
+    _safe_add_column("conversation", "summarized_through_id", "INTEGER")
 
 
 def _ensure_system_state():
@@ -341,7 +332,8 @@ def _ensure_system_state():
 
     No-op if the row already exists. Defaults come from Settings (.env-overridable)
     with literal fallbacks if Settings can't be read. Defensive: a failure here is
-    logged but never fatal to startup.
+    logged but never fatal to startup. Tolerates a racing duplicate-id=1 insert
+    (IntegrityError → rollback and continue — the other boot's row is fine).
     """
     try:
         from backend.config import get_settings
@@ -356,13 +348,18 @@ def _ensure_system_state():
 
         with Session(engine) as session:
             if session.get(SystemState, 1) is None:
-                session.add(SystemState(
-                    id=1,
-                    autonomy_enabled=autonomy,
-                    daily_budget_usd=daily,
-                    per_task_budget_usd=per_task,
-                ))
-                session.commit()
+                try:
+                    from sqlalchemy.exc import IntegrityError
+                    session.add(SystemState(
+                        id=1,
+                        autonomy_enabled=autonomy,
+                        daily_budget_usd=daily,
+                        per_task_budget_usd=per_task,
+                    ))
+                    session.commit()
+                except IntegrityError:
+                    # A racing boot inserted id=1 first — that row is fine.
+                    session.rollback()
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"_ensure_system_state failed: {e}")
 

@@ -17,6 +17,18 @@ async def lifespan(app: FastAPI):
     from backend.database import create_db_and_tables
     create_db_and_tables()
 
+    # Warn once at startup if spend-metering prices have not been field-verified.
+    try:
+        from backend.config import get_settings as _gs
+        if not _gs().prices_verified:
+            logger.warning(
+                "Spend metering prices are UNVERIFIED (config prices_verified=False). "
+                "Cost caps may be inaccurate until rates are field-validated against "
+                "Anthropic billing."
+            )
+    except Exception:
+        pass  # vault not ready yet — warning will appear once vault is unlocked
+
     # Tasks left "running"/"pending" from a dead process are NOT force-failed —
     # the worker pool re-enqueues them on start() so durable execution resumes.
 
