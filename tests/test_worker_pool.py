@@ -63,9 +63,22 @@ async def test_pool_picks_up_pending_task(eng):
 
 
 @pytest.mark.asyncio
-async def test_pool_bounded_concurrency(eng):
-    """With size=2, at most 2 tasks run concurrently. Event-gated, no sleeps."""
+async def test_pool_bounded_concurrency(tmp_path, monkeypatch):
+    """With size=2, at most 2 tasks run concurrently. Event-gated, no sleeps.
+
+    Uses a FILE-based engine (not the StaticPool :memory: fixture): this test runs
+    the pool with size=2, so two worker threads do concurrent Session(engine) reads.
+    StaticPool shares ONE SQLite connection across threads, and concurrent use of a
+    single connection intermittently raises a SQLAlchemy error under load (the source
+    of a long-standing flake). A file DB hands each thread its own pooled connection,
+    matching how production runs against the real WAL nexus.db.
+    """
     from backend.agents.worker_pool import TaskWorkerPool
+
+    db_path = tmp_path / "pool_concurrency.db"
+    eng = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr("backend.database.engine", eng)
 
     ids = [_seed_task(eng, prompt=f"t{i}") for i in range(4)]
 
