@@ -241,12 +241,14 @@ def test_metering_health_today_row_count(eng):
     assert result["today_spend_usd"] == pytest.approx(3.0)
 
 
-def test_metering_health_prices_verified_false_by_default(eng):
-    """prices_verified defaults False before any .env override."""
+def test_metering_health_reports_prices_verified(eng):
+    """metering_health() surfaces the prices_verified config flag (now True after
+    the 2026-06-16 verification of _PRICE_PER_MTOK against Anthropic's pricing)."""
     from backend.safety.governor import metering_health
-    # The test conftest does not set prices_verified=True, so it should be False.
+    from backend.config import get_settings
     result = metering_health()
-    assert result["prices_verified"] is False
+    assert result["prices_verified"] is bool(get_settings().prices_verified)
+    assert result["prices_verified"] is True
 
 
 # ---------------------------------------------------------------------------

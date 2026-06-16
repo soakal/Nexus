@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     # Spend-metering price verification flag (Tier 3 observability).
     # Set to True in .env after confirming _PRICE_PER_MTOK in router.py against
     # live Anthropic billing. Until True, a startup WARNING fires each boot.
-    prices_verified: bool = False
+    # Set True 2026-06-16 after verifying _PRICE_PER_MTOK against Anthropic's
+    # official pricing page (Opus 4.8 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5).
+    prices_verified: bool = True
 
     # Tier 3 — suggest-only autonomous goal proposer.
     proposer_enabled: bool = True

@@ -61,13 +61,15 @@ def metering_counters() -> dict:
 
 
 # Price per 1,000,000 tokens (USD), keyed on the model constants above.
-# Rates are believed-current Anthropic list prices; `prices_verified` (config)
-# gates the startup warning. Set prices_verified=True in .env after field-
-# validating these numbers against live Anthropic billing.
+# Verified 2026-06-16 against Anthropic's official pricing page
+# (platform.claude.com/docs/.../about-claude/pricing): Opus 4.8 $5/$25,
+# Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 per MTok. The cache multipliers in
+# _compute_cost (5m write 1.25x input, read 0.1x input) also match the official
+# rates. NOTE: the hosted web_search server tool ($10/1k searches) is NOT metered.
 _PRICE_PER_MTOK = {
-    OPUS_MODEL: {"input": 15.0, "output": 75.0},
+    OPUS_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 3.0, "output": 15.0},
-    HAIKU_MODEL: {"input": 0.80, "output": 4.0},
+    HAIKU_MODEL: {"input": 1.0, "output": 5.0},
 }
 
 
