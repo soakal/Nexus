@@ -1,15 +1,23 @@
-"""Suggest-only autonomous goal proposer (Tier 3).
+"""Autonomous goal proposer with narrow auto-approve (Tier 3).
 
 A scheduled tick reviews live homelab state + already-open goals and asks Opus to
-PROPOSE new objectives. It ONLY creates Goal rows in status 'proposed'
-(actor='autonomous') — it NEVER approves, dispatches, or acts. A human approves via
-the Safety UI. Gated by the kill switch: when autonomy_enabled is False the tick is a
-no-op. Best-effort: never raises (it is a scheduler job).
+PROPOSE new objectives. Goals are created in status 'proposed' (actor='autonomous').
+When auto_approve_low_risk is True, goals that pass goals.is_auto_approvable() —
+i.e. low risk + reversible + autonomous actor — are immediately approved via
+goals.approve(); all other goals (medium/high risk, irreversible, human-proposed,
+or flag-off) stay 'proposed' and await human approval in the Safety UI.
+Gated by the kill switch: when autonomy_enabled is False the tick is a no-op.
+Best-effort: never raises (it is a scheduler job).
 
 SAFETY CONTRACT (hard, enforced at code level):
-  - Only calls goals.propose().
-  - NEVER calls goals.approve, execute_action, run_task, get_pool, or any dispatcher.
+  - Calls goals.propose() for every candidate.
+  - MAY call goals.approve(), but ONLY for goals that pass goals.is_auto_approvable()
+    (low risk + reversible + autonomous actor + flag on). All other goals stay
+    'proposed'. NEVER approves MEDIUM/HIGH/irreversible/human goals.
+  - NEVER calls execute_action, run_task, or get_pool directly.
   - Gated by governor.get_system_state()["autonomy_enabled"] before any Opus call.
+  - Even auto-approved goals' tasks are still broker-gated per-action (actor="agent"),
+    so a HIGH/irreversible action mid-task is still blocked/needs-confirm.
 """
 import asyncio
 import json
@@ -68,6 +76,7 @@ async def propose_goals_tick() -> dict:
 
         s = get_settings()
         max_per_tick = s.proposer_max_per_tick
+        auto_approve_enabled = s.auto_approve_low_risk
 
         # ------------------------------------------------------------------
         # Ask Opus to propose new goals.
@@ -111,7 +120,7 @@ async def propose_goals_tick() -> dict:
         proposals = proposals[:max_per_tick]
 
         # ------------------------------------------------------------------
-        # Propose each valid item — ONLY calls goals.propose(), nothing else.
+        # Propose each valid item; auto-approve if policy permits.
         # ------------------------------------------------------------------
         results_list = []
         for item in proposals:
@@ -137,19 +146,52 @@ async def propose_goals_tick() -> dict:
                 ttl_seconds=s.goal_ttl_seconds,
                 debounce_seconds=s.goal_debounce_seconds,
             )
-            results_list.append({
+            entry = {
                 "title": title,
                 "status": res["status"],
                 "reason": res.get("reason"),
-            })
+            }
+
+            # Narrow auto-approve: only when the propose actually created a new
+            # goal AND all four policy conditions hold (autonomous + low + reversible
+            # + flag on). Human-proposed, medium/high, irreversible, flag-off →
+            # entry stays "proposed" and waits for a human in the Safety UI.
+            if res["status"] == "proposed" and goals.is_auto_approvable(
+                res["goal"], enabled=auto_approve_enabled
+            ):
+                try:
+                    appr = await goals.approve(
+                        res["goal"]["id"],
+                        approved_by="auto:low_risk_reversible",
+                    )
+                    entry["auto_approved"] = (appr.get("status") == "approved")
+                    entry["status"] = (
+                        "auto_approved" if appr.get("status") == "approved"
+                        else res["status"]
+                    )
+                except Exception as _ae:
+                    logger.warning(
+                        "goal_proposer: auto-approve failed for goal %s: %s",
+                        res["goal"].get("id"), _ae,
+                    )
+                    entry["auto_approved"] = False
+
+            results_list.append(entry)
 
         count_proposed = sum(1 for r in results_list if r["status"] == "proposed")
+        count_auto_approved = sum(1 for r in results_list if r.get("auto_approved") is True)
         logger.info(
-            "goal_proposer tick done: %d proposed, %d total evaluated",
+            "goal_proposer tick done: %d proposed, %d auto-approved, %d total evaluated",
             count_proposed,
+            count_auto_approved,
             len(results_list),
         )
-        return {"status": "ok", "results": results_list, "count_proposed": count_proposed}
+        return {
+            "status": "ok",
+            "results": results_list,
+            "count_proposed": count_proposed,
+            "count_auto_approved": count_auto_approved,
+        }
 
     except Exception as e:
         logger.warning("propose_goals_tick failed (best-effort): %s", e)

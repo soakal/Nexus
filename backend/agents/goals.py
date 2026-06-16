@@ -61,6 +61,28 @@ def _goal_to_dict(g: Goal) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auto-approve policy (pure, single source of truth, no I/O)
+# ---------------------------------------------------------------------------
+
+_AUTO_APPROVE_REVERSIBLE = {"reversible", "reversible_by_inverse"}
+
+
+def is_auto_approvable(goal: dict, *, enabled: bool) -> bool:
+    """Default-deny policy for narrow auto-approve. True ONLY when ALL hold:
+    the feature is enabled, the goal was proposed by the autonomous actor, its risk
+    is 'low', and its reversibility is reversible. Everything else stays proposed for
+    human approval. Irreversible/unknown reversibility and MEDIUM+ risk are NEVER
+    auto-approvable, regardless of the flag."""
+    if not enabled:
+        return False
+    return (
+        str(goal.get("actor")) == "autonomous"
+        and str(goal.get("risk")) == "low"
+        and str(goal.get("reversibility")) in _AUTO_APPROVE_REVERSIBLE
+    )
+
+
+# ---------------------------------------------------------------------------
 # Sync DB helpers — called exclusively via asyncio.to_thread.
 # Always open a fresh Session from _db_mod.engine so monkeypatching
 # backend.database.engine in tests is honoured.

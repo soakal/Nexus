@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     proposer_enabled: bool = True
     proposer_interval_hours: int = 6
     proposer_max_per_tick: int = 3
+    # Narrow auto-approve: auto-runs ONLY low-risk reversible autonomous goals;
+    # everything else (medium/high risk, irreversible, human-proposed) still needs human approval.
+    auto_approve_low_risk: bool = True
 
     # Secret properties via vault (lazy)
     @property

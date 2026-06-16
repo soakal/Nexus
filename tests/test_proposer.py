@@ -1,12 +1,13 @@
-"""Tests for the Tier 3 suggest-only autonomous goal proposer.
+"""Tests for the Tier 3 autonomous goal proposer with narrow auto-approve.
 
 Pattern: in-memory StaticPool engine monkeypatched onto backend.database.engine,
 matching test_governor.py / test_goals.py.
 
 SAFETY CONTRACT assertions are spread across every test:
-  - router.opus is the ONLY LLM function called (never approve/run_task/enqueue).
-  - Every created Goal stays in status 'proposed' (never approved/running).
-  - No Task rows are created by the proposer.
+  - router.opus is the ONLY LLM function called.
+  - The proposer MAY call goals.approve(), but ONLY for low-risk reversible autonomous
+    goals when auto_approve_low_risk is True. All other goals stay 'proposed'.
+  - The proposer NEVER calls execute_action, run_task, or get_pool directly.
 """
 import json
 from types import SimpleNamespace
@@ -136,7 +137,7 @@ async def test_kill_switch_skips_everything(eng, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_happy_path_two_proposals(eng, monkeypatch):
-    """With autonomy on and Opus returning 2 goals, both are inserted as
+    """With autonomy on and auto_approve_low_risk=False, both proposals stay
     status='proposed' with actor='autonomous'. No Task rows created."""
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
@@ -159,12 +160,15 @@ async def test_happy_path_two_proposals(eng, monkeypatch):
     ])
 
     with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
-        # Also patch config so cap doesn't interfere.
+        # Also patch config so cap doesn't interfere; disable auto-approve so
+        # goals stay proposed (auto-approve is tested separately in test 7 and
+        # test_auto_approve.py).
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
             s.goal_ttl_seconds = 86400
             s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = False
             mock_settings.return_value = s
 
             from backend.agents.proposer import propose_goals_tick
@@ -179,7 +183,7 @@ async def test_happy_path_two_proposals(eng, monkeypatch):
         assert g.status == "proposed"
         assert g.actor == "autonomous"
 
-    # SAFETY: no Task rows.
+    # SAFETY: no Task rows (auto-approve disabled).
     assert _all_tasks(eng) == []
 
 
@@ -234,6 +238,7 @@ async def test_cap_limits_proposals(eng, monkeypatch):
             s.proposer_max_per_tick = 3
             s.goal_ttl_seconds = 86400
             s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = False  # isolate cap behavior, not auto-approve
             mock_settings.return_value = s
 
             from backend.agents.proposer import propose_goals_tick
@@ -275,6 +280,7 @@ async def test_dedup_second_tick_debounced(eng, monkeypatch):
         # (The active goal from tick 1 is still 'proposed', so tick 2 hits
         # the duplicate_active debounce regardless of cooldown.)
         s.goal_debounce_seconds = 0
+        s.auto_approve_low_risk = False  # isolate dedup behavior
         return s
 
     with patch("backend.agents.router.opus", new=AsyncMock(return_value=single_goal)):
@@ -328,17 +334,23 @@ async def test_best_effort_on_opus_error(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 7 — NEVER approves: after happy-path tick, all goals stay 'proposed';
-#           no Task rows; proposer module imports nothing forbidden.
+# Test 7 — Selective auto-approve: medium-risk goal stays 'proposed'; low+reversible
+#           goal is auto-approved; proposer module never calls forbidden names directly.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_never_approves_strong_safety(eng, monkeypatch):
-    """Strong safety assertion: after a successful tick every Goal must still be
-    status='proposed' (none have been approved or moved to running). And there
-    must be no Task rows — the proposer NEVER dispatches."""
+async def test_selective_auto_approve_safety(eng, monkeypatch):
+    """Updated safety assertion: with auto_approve_low_risk=True, a MEDIUM-risk goal
+    must stay 'proposed' (no task created for it), while a LOW+reversible autonomous
+    goal is auto-approved (task created). The proposer must NEVER call
+    execute_action, run_task, or get_pool directly (verified via AST walk)."""
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
+
+    # Patch get_pool so approve() doesn't actually run a task.
+    pool_mock = MagicMock()
+    pool_mock.enqueue = AsyncMock()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool_mock)
 
     opus_response = json.dumps([
         {
@@ -363,33 +375,37 @@ async def test_never_approves_strong_safety(eng, monkeypatch):
             s.proposer_max_per_tick = 3
             s.goal_ttl_seconds = 86400
             s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = True
             mock_settings.return_value = s
 
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
 
     assert result["status"] == "ok"
-    assert result["count_proposed"] == 2
+    # count_auto_approved is now part of the return dict.
+    assert result["count_auto_approved"] == 1  # only the low+reversible one
+    assert result["count_proposed"] == 1       # medium-risk stays proposed
 
-    # SAFETY: every goal is STILL 'proposed' — nothing approved or dispatched.
-    goals = _all_goals(eng)
-    assert len(goals) == 2
-    for g in goals:
-        assert g.status == "proposed", (
-            f"Goal '{g.title}' has status '{g.status}' — proposer must never approve"
-        )
+    all_g = _all_goals(eng)
+    assert len(all_g) == 2
+    statuses = {g.title: g.status for g in all_g}
+    assert statuses["Reboot Jellyfin container"] == "proposed", (
+        "Medium-risk goal must stay 'proposed' — proposer must not auto-approve medium+ risk"
+    )
+    assert statuses["Archive old recordings"] == "running", (
+        "Low+reversible autonomous goal should be auto-approved (→ running)"
+    )
 
-    # SAFETY: no Task rows whatsoever — proposer never enqueues anything.
-    assert _all_tasks(eng) == [], "Proposer must never create Task rows"
+    # Low+reversible goal produced a Task row; medium-risk goal did NOT.
+    tasks = _all_tasks(eng)
+    assert len(tasks) == 1, "Only the auto-approved low+reversible goal should create a Task"
 
     # SAFETY: verify at the AST level that proposer CALLS nothing forbidden.
-    # Parsing the AST rather than grepping the source avoids false positives
-    # from docstring / comment text that mentions the forbidden names.
+    # approve() is now allowed; but execute_action/run_task/get_pool are still banned.
     import backend.agents.proposer as proposer_mod
     import ast, inspect, textwrap
     source = inspect.getsource(proposer_mod)
     tree = ast.parse(textwrap.dedent(source))
-    # Collect all method/attribute names that are actually *called*.
     called_attrs = set()
     called_names = set()
     for node in ast.walk(tree):
@@ -400,10 +416,11 @@ async def test_never_approves_strong_safety(eng, monkeypatch):
             elif isinstance(func, ast.Name):
                 called_names.add(func.id)
     all_calls = called_attrs | called_names
-    forbidden_calls = {"approve", "execute_action", "run_task", "get_pool"}
+    # "approve" is now allowed (via goals.approve); only these three stay forbidden.
+    forbidden_calls = {"execute_action", "run_task", "get_pool"}
     for name in forbidden_calls:
         assert name not in all_calls, (
-            f"proposer.py must not CALL '{name}' (safety contract violation)"
+            f"proposer.py must not CALL '{name}' directly (safety contract violation)"
         )
 
 
