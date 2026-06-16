@@ -130,6 +130,14 @@ async def _retry_pending_deliveries():
         logger.error(f"Retry delivery error: {e}")
 
 
+async def _propose_goals():
+    try:
+        from backend.agents.proposer import propose_goals_tick
+        await propose_goals_tick()
+    except Exception as e:
+        logger.error(f"Goal proposer job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -162,4 +170,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
         id="record_speedtest",
         replace_existing=True,
     )
+    from backend.config import get_settings
+    s = get_settings()
+    if getattr(s, "proposer_enabled", False):
+        scheduler.add_job(
+            _propose_goals,
+            IntervalTrigger(hours=max(1, getattr(s, "proposer_interval_hours", 6))),
+            id="goal_proposer",
+            replace_existing=True,
+        )
+        logger.info(f"Goal proposer enabled: every {s.proposer_interval_hours}h (suggest-only)")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # live Anthropic billing. Until True, a startup WARNING fires each boot.
     prices_verified: bool = False
 
+    # Tier 3 — suggest-only autonomous goal proposer.
+    proposer_enabled: bool = True
+    proposer_interval_hours: int = 6
+    proposer_max_per_tick: int = 3
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:
