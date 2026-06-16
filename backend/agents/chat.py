@@ -125,8 +125,15 @@ def _db_touch_conversation(conversation_id: int) -> None:
             session.commit()
 
 
+_BUDGET_REACHED_REPLY = (
+    "I've hit the configured spending limit for now, so I can't run that. "
+    "You can raise or reset the budget in Settings (Safety)."
+)
+
+
 async def chat(conversation_id: int | None, user_message: str) -> dict:
     from backend.agents.router import haiku, sonnet
+    from backend.safety.governor import BudgetExceeded
 
     # 1. Conversation handling — all DB ops off the event loop
     if conversation_id is None:
@@ -152,76 +159,85 @@ CHAT = any question or request for information — including current events, pri
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
 NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes"."""
 
-    raw_intent = await haiku(classify_prompt)
-    intent = "CHAT"
+    # Budget-reached degrades gracefully at any point below: the haiku classify
+    # and every routing branch can raise BudgetExceeded (router's daily brake).
+    # We catch it, reply with a friendly message, and persist normally — no
+    # exception escapes to FastAPI.
     try:
-        start = raw_intent.find("{")
-        end = raw_intent.rfind("}") + 1
-        if start >= 0 and end > start:
-            parsed = json.loads(raw_intent[start:end])
-            intent = parsed.get("intent", "CHAT")
-            if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE"):
-                intent = "CHAT"
-    except Exception:
+        raw_intent = await haiku(classify_prompt)
         intent = "CHAT"
+        try:
+            start = raw_intent.find("{")
+            end = raw_intent.rfind("}") + 1
+            if start >= 0 and end > start:
+                parsed = json.loads(raw_intent[start:end])
+                intent = parsed.get("intent", "CHAT")
+                if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE"):
+                    intent = "CHAT"
+        except Exception:
+            intent = "CHAT"
 
-    logger.info(f"Chat intent={intent} conversation_id={conversation_id}")
+        logger.info(f"Chat intent={intent} conversation_id={conversation_id}")
 
-    # Build history transcript (exclude the last user message — it's sent separately)
-    prior = history[:-1]  # last item is the user message we just persisted
-    transcript = "\n".join(
-        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
-        for m in prior
-    )
-
-    reply = ""
-
-    # 3. Route by intent
-    if intent == "CHAT":
-        from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
-
-        results = await asyncio.gather(
-            homeassistant.fetch(),
-            unraid.fetch(),
-            channels_dvr.fetch(),
-            adguard.fetch(),
-            weather.fetch(),
-            return_exceptions=True,
+        # Build history transcript (exclude the last user message — sent separately)
+        prior = history[:-1]  # last item is the user message we just persisted
+        transcript = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+            for m in prior
         )
-        ha, unraid_d, channels, ag, wx = results
-        snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
-        system = CHAT_SYSTEM.format(snapshot=snapshot)
-        user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
-                       else f"User: {user_message}")
-        try:
-            reply = await sonnet(user_prompt, system=system, web_search=True)
-        except Exception as e:
-            # If the hosted web search tool is unavailable (e.g. not enabled on the
-            # account), fall back to a plain reply so chat still works.
-            logger.warning(f"Chat web search unavailable, answering without it: {e}")
-            reply = await sonnet(user_prompt, system=system)
+        reply = ""
 
-    elif intent == "HOME_CONTROL":
-        from backend.integrations import homeassistant
+        # 3. Route by intent
+        if intent == "CHAT":
+            from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
 
-        try:
-            ha_data = await homeassistant.fetch()
-            controllable = [
-                {
-                    "entity_id": e["entity_id"],
-                    "friendly_name": (e.get("attributes") or {}).get("friendly_name", e["entity_id"]),
-                    "state": e.get("state", "unknown"),
-                }
-                for e in ha_data.entities
-                if e.get("entity_id", "").split(".")[0] in _CONTROLLABLE_DOMAINS
-            ][:60]
+            results = await asyncio.gather(
+                homeassistant.fetch(),
+                unraid.fetch(),
+                channels_dvr.fetch(),
+                adguard.fetch(),
+                weather.fetch(),
+                return_exceptions=True,
+            )
+            ha, unraid_d, channels, ag, wx = results
+            snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
-            if not controllable:
-                reply = "No controllable devices found in Home Assistant."
-            else:
-                entity_list = json.dumps(controllable, indent=2)
-                pick_prompt = f"""The user wants to control a Home Assistant device.
+            system = CHAT_SYSTEM.format(snapshot=snapshot)
+            user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
+                           else f"User: {user_message}")
+            try:
+                reply = await sonnet(user_prompt, system=system, web_search=True)
+            except BudgetExceeded:
+                # Budget brake — must reach the outer handler, not the web-search
+                # fallback below (a second sonnet call would just re-raise anyway).
+                raise
+            except Exception as e:
+                # If the hosted web search tool is unavailable (e.g. not enabled on
+                # the account), fall back to a plain reply so chat still works.
+                logger.warning(f"Chat web search unavailable, answering without it: {e}")
+                reply = await sonnet(user_prompt, system=system)
+
+        elif intent == "HOME_CONTROL":
+            from backend.integrations import homeassistant
+
+            try:
+                ha_data = await homeassistant.fetch()
+                controllable = [
+                    {
+                        "entity_id": e["entity_id"],
+                        "friendly_name": (e.get("attributes") or {}).get("friendly_name", e["entity_id"]),
+                        "state": e.get("state", "unknown"),
+                    }
+                    for e in ha_data.entities
+                    if e.get("entity_id", "").split(".")[0] in _CONTROLLABLE_DOMAINS
+                ][:60]
+
+                if not controllable:
+                    reply = "No controllable devices found in Home Assistant."
+                else:
+                    entity_list = json.dumps(controllable, indent=2)
+                    pick_prompt = f"""The user wants to control a Home Assistant device.
 
 User request: "{user_message}"
 
@@ -234,73 +250,75 @@ Return JSON only — pick the best matching entity and service:
 If no entity matches, return:
 {{"entity_id": null, "service": null}}"""
 
-                raw_pick = await haiku(pick_prompt)
-                entity_id = None
-                service = None
-                try:
-                    ps = raw_pick.find("{")
-                    pe = raw_pick.rfind("}") + 1
-                    if ps >= 0 and pe > ps:
-                        pick = json.loads(raw_pick[ps:pe])
-                        entity_id = pick.get("entity_id")
-                        service = pick.get("service")
-                except Exception:
-                    pass
+                    raw_pick = await haiku(pick_prompt)
+                    entity_id = None
+                    service = None
+                    try:
+                        ps = raw_pick.find("{")
+                        pe = raw_pick.rfind("}") + 1
+                        if ps >= 0 and pe > ps:
+                            pick = json.loads(raw_pick[ps:pe])
+                            entity_id = pick.get("entity_id")
+                            service = pick.get("service")
+                    except Exception:
+                        pass
 
-                if not entity_id or not service:
-                    reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\" or \"toggle the living room fan\"."
-                else:
-                    domain = entity_id.split(".")[0]
-                    friendly = next(
-                        (e["friendly_name"] for e in controllable if e["entity_id"] == entity_id),
-                        entity_id,
-                    )
-                    from backend.safety.broker import Decision, execute_action
-                    res = await execute_action(
-                        actor="user",
-                        kind="ha_service",
-                        target=entity_id,
-                        payload={"domain": domain, "service": service},
-                    )
-                    if res.decision == Decision.EXECUTED:
-                        action_word = {"turn_on": "Turned on", "turn_off": "Turned off", "toggle": "Toggled"}.get(service, service)
-                        reply = f"{action_word} {friendly}."
-                    elif res.decision == Decision.FAILED:
-                        reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+                    if not entity_id or not service:
+                        reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\" or \"toggle the living room fan\"."
                     else:
-                        reply = "That action needs confirmation."
+                        domain = entity_id.split(".")[0]
+                        friendly = next(
+                            (e["friendly_name"] for e in controllable if e["entity_id"] == entity_id),
+                            entity_id,
+                        )
+                        from backend.safety.broker import Decision, execute_action
+                        res = await execute_action(
+                            actor="user",
+                            kind="ha_service",
+                            target=entity_id,
+                            payload={"domain": domain, "service": service},
+                        )
+                        if res.decision == Decision.EXECUTED:
+                            action_word = {"turn_on": "Turned on", "turn_off": "Turned off", "toggle": "Toggled"}.get(service, service)
+                            reply = f"{action_word} {friendly}."
+                        elif res.decision == Decision.FAILED:
+                            reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+                        else:
+                            reply = "That action needs confirmation."
 
-        except Exception as e:
-            reply = f"Home Assistant is not reachable right now: {e}"
+            except BudgetExceeded:
+                raise  # budget brake reaches the outer handler
+            except Exception as e:
+                reply = f"Home Assistant is not reachable right now: {e}"
 
-    elif intent == "TASK":
-        from backend.agents.orchestrator import run_task
-        result = await run_task(user_message)
-        if result.success:
-            reply = result.output[-1] if result.output else "Task completed."
-        else:
-            reply = f"I wasn't able to complete that task: {result.reason}"
+        elif intent == "TASK":
+            from backend.agents.orchestrator import run_task
+            result = await run_task(user_message)
+            if result.success:
+                reply = result.output[-1] if result.output else "Task completed."
+            else:
+                reply = f"I wasn't able to complete that task: {result.reason}"
 
-    elif intent == "HERMES":
-        from backend.safety.broker import Decision, execute_action
-        res = await execute_action(
-            actor="user",
-            kind="hermes_relay",
-            target="hermes",
-            payload={"message": user_message},
-        )
-        # actor=user always allows, so relay still runs; its return string flows
-        # back via res.result["response"] — user-visible reply is unchanged.
-        reply = (
-            (res.result or {}).get("response")
-            if res.decision == Decision.EXECUTED
-            else (res.error or "Hermes action could not be completed.")
-        )
+        elif intent == "HERMES":
+            from backend.safety.broker import Decision, execute_action
+            res = await execute_action(
+                actor="user",
+                kind="hermes_relay",
+                target="hermes",
+                payload={"message": user_message},
+            )
+            # actor=user always allows, so relay still runs; its return string flows
+            # back via res.result["response"] — user-visible reply is unchanged.
+            reply = (
+                (res.result or {}).get("response")
+                if res.decision == Decision.EXECUTED
+                else (res.error or "Hermes action could not be completed.")
+            )
 
-    elif intent == "NOTE":
-        from backend.integrations.obsidian import create_note
+        elif intent == "NOTE":
+            from backend.integrations.obsidian import create_note
 
-        extract_prompt = f"""The user wants to save a note to their Obsidian vault.
+            extract_prompt = f"""The user wants to save a note to their Obsidian vault.
 
 User request: "{user_message}"
 
@@ -312,25 +330,33 @@ Return JSON only:
 
 If they're saving something from the conversation, use the relevant prior assistant message as the content. Otherwise use what they dictated."""
 
-        title, content = "Chat Note", user_message
-        try:
-            raw_note = await haiku(extract_prompt)
-            ns = raw_note.find("{")
-            ne = raw_note.rfind("}") + 1
-            if ns >= 0 and ne > ns:
-                nd = json.loads(raw_note[ns:ne])
-                title = nd.get("title") or "Chat Note"
-                content = nd.get("content") or user_message
-        except Exception:
-            pass
+            title, content = "Chat Note", user_message
+            try:
+                raw_note = await haiku(extract_prompt)
+                ns = raw_note.find("{")
+                ne = raw_note.rfind("}") + 1
+                if ns >= 0 and ne > ns:
+                    nd = json.loads(raw_note[ns:ne])
+                    title = nd.get("title") or "Chat Note"
+                    content = nd.get("content") or user_message
+            except BudgetExceeded:
+                raise  # budget brake reaches the outer handler
+            except Exception:
+                pass
 
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-        body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
-        try:
-            path = await create_note(title=title, content=body, folder="NEXUS/Chat Notes")
-            reply = f'Saved "{title}" to your vault ({path}).'
-        except Exception as e:
-            reply = f"Couldn't save the note: {e}"
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+            body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
+            try:
+                path = await create_note(title=title, content=body, folder="NEXUS/Chat Notes")
+                reply = f'Saved "{title}" to your vault ({path}).'
+            except Exception as e:
+                reply = f"Couldn't save the note: {e}"
+
+    except BudgetExceeded:
+        # Spending cap reached anywhere above — degrade gracefully. The reply is
+        # persisted below like any other; no exception escapes to FastAPI.
+        logger.info("Chat hit budget cap; returning friendly budget-reached reply")
+        reply = _BUDGET_REACHED_REPLY
 
     # 4. Persist reply and update conversation timestamp
     await asyncio.to_thread(_db_add_message, conversation_id, "assistant", reply)

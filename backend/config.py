@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     weather_lon: float = -83.04
     debug: bool = False
 
+    # Cost governor / kill switch (Tier 1.5) — seed defaults for the SystemState
+    # row; .env-overridable. The live values are read from SystemState at runtime.
+    daily_budget_usd: float = 25.0
+    per_task_budget_usd: float = 5.0
+    autonomy_enabled_default: bool = True
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

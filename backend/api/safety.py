@@ -1,12 +1,24 @@
+import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, select
 
 from backend.auth import require_api_key
 from backend.database import ActionLog, get_session
 
 router = APIRouter()
+
+
+def _scheduler_running() -> bool:
+    """Best-effort read of the scheduler's running flag. Guarded so the test
+    fixture (which patches `scheduler` with running=False) and a not-yet-started
+    scheduler both work without raising."""
+    try:
+        from backend.scheduler import scheduler
+        return bool(getattr(scheduler, "running", False))
+    except Exception:
+        return False
 
 
 def _parse_json(raw: str | None):
@@ -84,4 +96,82 @@ async def confirm_action(
         "id": action_id,
         "status": "confirm_not_yet_wired",
         "detail": "Confirm flow lands with Tier 1.5 autonomy",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cost governor / kill switch (Tier 1.5)
+# ---------------------------------------------------------------------------
+
+@router.post("/pause")
+async def pause_autonomy(_=Depends(require_api_key)):
+    """Global kill switch ON: disable agent/autonomous side effects + pause the
+    scheduler. User actions are unaffected."""
+    from backend.safety import governor
+
+    await asyncio.to_thread(governor.set_autonomy, False)
+    try:
+        from backend.scheduler import scheduler
+        if getattr(scheduler, "running", False):
+            scheduler.pause()
+    except Exception:
+        pass
+    return {"autonomy_enabled": False, "scheduler_running": _scheduler_running()}
+
+
+@router.post("/resume")
+async def resume_autonomy(_=Depends(require_api_key)):
+    """Global kill switch OFF: re-enable autonomy + resume the scheduler."""
+    from backend.safety import governor
+
+    await asyncio.to_thread(governor.set_autonomy, True)
+    try:
+        from backend.scheduler import scheduler
+        if getattr(scheduler, "running", False):
+            scheduler.resume()
+    except Exception:
+        pass
+    return {"autonomy_enabled": True, "scheduler_running": _scheduler_running()}
+
+
+@router.get("/status")
+async def safety_status(_=Depends(require_api_key)):
+    """Current kill-switch + budget state plus today's spend."""
+    from backend.safety import governor
+
+    state = await asyncio.to_thread(governor.get_system_state)
+    spend = await asyncio.to_thread(governor.today_spend_usd)
+    return {
+        "autonomy_enabled": state["autonomy_enabled"],
+        "today_spend_usd": spend,
+        "daily_budget_usd": state["daily_budget_usd"],
+        "per_task_budget_usd": state["per_task_budget_usd"],
+        "scheduler_running": _scheduler_running(),
+    }
+
+
+@router.post("/budget")
+async def set_budget(
+    body: dict = Body(default_factory=dict),
+    _=Depends(require_api_key),
+):
+    """Runtime cap-setter. Body: {daily_usd?: float, per_task_usd?: float}.
+    Returns the new state."""
+    from backend.safety import governor
+
+    daily = body.get("daily_usd")
+    per_task = body.get("per_task_usd")
+    await asyncio.to_thread(
+        governor.set_budgets,
+        float(daily) if daily is not None else None,
+        float(per_task) if per_task is not None else None,
+    )
+    state = await asyncio.to_thread(governor.get_system_state)
+    spend = await asyncio.to_thread(governor.today_spend_usd)
+    return {
+        "autonomy_enabled": state["autonomy_enabled"],
+        "today_spend_usd": spend,
+        "daily_budget_usd": state["daily_budget_usd"],
+        "per_task_budget_usd": state["per_task_budget_usd"],
+        "scheduler_running": _scheduler_running(),
     }

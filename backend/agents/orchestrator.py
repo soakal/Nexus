@@ -586,73 +586,100 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
 
     plan = _steps_to_plan(task_prompt, steps)
 
+    # Per-task budget brake reference point. Spend recorded after this instant is
+    # attributed to this task. Used by check_budget(task_id, task_start) below.
+    from backend.safety.governor import BudgetExceeded, check_budget
+    task_start = datetime.utcnow()
+
     debug = None
-    for _attempt in range(MAX_RETRIES):
-        # 2.2 / 2.4: reload steps + rebuild context from DONE outputs each pass.
-        steps = await asyncio.to_thread(_load_steps, task_id)
-        context = await asyncio.to_thread(_load_done_outputs, task_id)
-        failed = None
-
-        for s in steps:
-            if s["status"] == "done":
-                continue  # 2.5 resume — skip already-completed steps
-
-            # 2.3 cooperative cancel checked before marking running.
-            if await asyncio.to_thread(_is_cancel_requested, task_id):
-                await asyncio.to_thread(_finalize_task, task_id, "stopped", None)
-                return TaskResult(success=False, reason="cancelled")
-
-            await asyncio.to_thread(_mark_step_running, s["id"])
-
-            step_obj = Step(index=s["step_index"], prompt=s["prompt"], description=s["description"])
-            t_start = time.time()
-            result = await _sonnet_execute(step_obj, context)
-            elapsed = int((time.time() - t_start) * 1000)
-
-            success = not _is_failure(result)
-            await asyncio.to_thread(
-                _record_agent_run, task_id, step_obj.prompt, result, success, elapsed
-            )
-
-            if not success:
-                await asyncio.to_thread(_fail_step, s["id"], result)
-                failed = (step_obj, result)
-                logger.warning(f"Task {task_id} step {step_obj.index} failed: {result[:100]}")
-                break
-
-            await asyncio.to_thread(_complete_step, s["id"], result)  # checkpoint
-            context.append(result)
-
-        if failed is None:
-            outputs = await asyncio.to_thread(_load_done_outputs, task_id)
-            await asyncio.to_thread(
-                _finalize_task, task_id, "success", json.dumps(outputs)
-            )
-            return TaskResult(success=True, output=outputs, plan=plan)
-
-        # 2.2 debug the failure.
-        prior = await asyncio.to_thread(_load_done_outputs, task_id)
-        debug = await _opus_debug(task_prompt, plan, failed, prior)
-        action = debug.get("action") if isinstance(debug, dict) else None
-
-        if action == "ABORT":
-            break
-        elif action == "REPLAN" and "new_plan" in debug:
-            raw_steps = debug["new_plan"].get("steps", [])
-            new_steps = [
-                (s["prompt"], s.get("description", "")) for s in raw_steps
-            ]
-            if not new_steps:
-                # 2.6 empty replan -> ABORT.
-                debug = {"action": "ABORT", "reason": "replan_empty"}
-                break
-            await asyncio.to_thread(_replan_durably, task_id, new_steps)
+    try:
+        for _attempt in range(MAX_RETRIES):
+            # 2.2 / 2.4: reload steps + rebuild context from DONE outputs each pass.
             steps = await asyncio.to_thread(_load_steps, task_id)
-            plan = _steps_to_plan(task_prompt, steps)
-        elif action == "RETRY_STEP" and "new_prompt" in debug:
-            await asyncio.to_thread(
-                _patch_step_durably, task_id, failed[0].index, debug["new_prompt"]
-            )
+            context = await asyncio.to_thread(_load_done_outputs, task_id)
+            failed = None
+
+            for s in steps:
+                if s["status"] == "done":
+                    continue  # 2.5 resume — skip already-completed steps
+
+                # 2.3 cooperative cancel checked before marking running.
+                if await asyncio.to_thread(_is_cancel_requested, task_id):
+                    await asyncio.to_thread(_finalize_task, task_id, "stopped", None)
+                    return TaskResult(success=False, reason="cancelled")
+
+                # Per-task + daily budget brake before each non-done step. A
+                # BudgetExceeded (here OR bubbling from _run mid-call inside
+                # _sonnet_execute) is caught by the outer try and finalizes 'failed'.
+                await asyncio.to_thread(check_budget, task_id, task_start)
+
+                await asyncio.to_thread(_mark_step_running, s["id"])
+
+                step_obj = Step(index=s["step_index"], prompt=s["prompt"], description=s["description"])
+                t_start = time.time()
+                result = await _sonnet_execute(step_obj, context)
+                elapsed = int((time.time() - t_start) * 1000)
+
+                success = not _is_failure(result)
+                await asyncio.to_thread(
+                    _record_agent_run, task_id, step_obj.prompt, result, success, elapsed
+                )
+
+                if not success:
+                    await asyncio.to_thread(_fail_step, s["id"], result)
+                    failed = (step_obj, result)
+                    logger.warning(f"Task {task_id} step {step_obj.index} failed: {result[:100]}")
+                    break
+
+                await asyncio.to_thread(_complete_step, s["id"], result)  # checkpoint
+                context.append(result)
+
+            if failed is None:
+                outputs = await asyncio.to_thread(_load_done_outputs, task_id)
+                await asyncio.to_thread(
+                    _finalize_task, task_id, "success", json.dumps(outputs)
+                )
+                return TaskResult(success=True, output=outputs, plan=plan)
+
+            # 2.2 debug the failure.
+            prior = await asyncio.to_thread(_load_done_outputs, task_id)
+            debug = await _opus_debug(task_prompt, plan, failed, prior)
+            action = debug.get("action") if isinstance(debug, dict) else None
+
+            if action == "ABORT":
+                break
+            elif action == "REPLAN" and "new_plan" in debug:
+                raw_steps = debug["new_plan"].get("steps", [])
+                new_steps = [
+                    (s["prompt"], s.get("description", "")) for s in raw_steps
+                ]
+                if not new_steps:
+                    # 2.6 empty replan -> ABORT.
+                    debug = {"action": "ABORT", "reason": "replan_empty"}
+                    break
+                await asyncio.to_thread(_replan_durably, task_id, new_steps)
+                steps = await asyncio.to_thread(_load_steps, task_id)
+                plan = _steps_to_plan(task_prompt, steps)
+            elif action == "RETRY_STEP" and "new_prompt" in debug:
+                await asyncio.to_thread(
+                    _patch_step_durably, task_id, failed[0].index, debug["new_prompt"]
+                )
+    except BudgetExceeded as e:
+        # Budget tripped here (the brake) OR mid-call inside _sonnet_execute (the
+        # router's daily brake). Finalize 'failed' with the budget detail. Done
+        # steps are preserved on disk (durable) — only the Task row is marked.
+        await asyncio.to_thread(
+            _finalize_task,
+            task_id,
+            "failed",
+            json.dumps({
+                "error": "budget_exceeded",
+                "scope": e.scope,
+                "spend": e.spend,
+                "cap": e.cap,
+            }),
+        )
+        return TaskResult(success=False, reason="budget_exceeded")
 
     reason = "max_retries_exceeded"
     if debug and isinstance(debug, dict) and debug.get("reason"):

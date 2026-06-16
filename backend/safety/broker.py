@@ -328,6 +328,40 @@ async def execute_action(
                 replayed=True,
             )
 
+    # Global kill switch: when autonomy is disabled, agent/autonomous side effects
+    # are forbidden outright (a USER action is unaffected — preserves chat UX).
+    # Checked AFTER the idempotency replay (a completed action still replays its
+    # recorded result) but BEFORE classify/decide/dispatch.
+    if actor in (Actor.AGENT, Actor.AUTONOMOUS):
+        from backend.safety import governor
+        state = await asyncio.to_thread(governor.get_system_state)
+        if not state["autonomy_enabled"]:
+            risk, reversibility = classify(kind, payload)
+            log_id = await asyncio.to_thread(
+                _insert_action_log,
+                actor.value,
+                kind,
+                target,
+                payload,
+                risk.value,
+                reversibility.value,
+                Decision.FORBIDDEN.value,
+                idempotency_key,
+            )
+            await asyncio.to_thread(
+                _update_action_log,
+                log_id,
+                Decision.FORBIDDEN.value,
+                json.dumps({"reason": "autonomy_disabled"}),
+            )
+            return ActionResult(
+                decision=Decision.FORBIDDEN,
+                risk=risk,
+                reversibility=reversibility,
+                log_id=log_id,
+                error="autonomy_disabled",
+            )
+
     risk, reversibility = classify(kind, payload)
     decision = decide(actor, risk, reversibility, confirmed)
 

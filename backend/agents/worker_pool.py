@@ -157,6 +157,11 @@ class TaskWorkerPool:
     async def _worker_loop(self, worker_id: int) -> None:
         from backend.agents.orchestrator import run_task
 
+        # NOTE (Tier 1.5 kill switch): tasks here are USER-created, so the global
+        # autonomy flag does NOT gate them. When AUTONOMOUS task generation lands
+        # (a worker proposing its own tasks), consult
+        # `governor.get_system_state()["autonomy_enabled"]` BEFORE running an
+        # autonomously-generated task and skip/park it when autonomy is disabled.
         while True:
             task_id = await self._queue.get()
             try:

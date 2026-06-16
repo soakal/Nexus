@@ -171,6 +171,36 @@ class ActionLog(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Per-call cost/usage ledger written best-effort by the agent router
+# (backend/agents/router.py::_record_spend). One row per billed LLM call. The
+# cost governor (backend/safety/governor.py) sums cost_usd over time windows to
+# enforce daily / per-task budgets. Created by create_all (new table, no shim).
+class SpendLog(SQLModel, table=True):
+    model_config = {"protected_namespaces": ()}
+
+    id: int | None = Field(default=None, primary_key=True)
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cost_usd: float = 0.0
+    label: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+# Single-row runtime control table (id=1) for the global kill switch + budgets.
+# Seeded idempotently by _ensure_system_state(). The governor reads/writes row 1.
+class SystemState(SQLModel, table=True):
+    model_config = {"protected_namespaces": ()}
+
+    id: int | None = Field(default=None, primary_key=True)
+    autonomy_enabled: bool = True
+    daily_budget_usd: float = 25.0
+    per_task_budget_usd: float = 5.0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_task_columns():
     """Idempotently add columns introduced after the original `task` table shipped.
 
@@ -190,9 +220,41 @@ def _ensure_task_columns():
         logger.warning(f"_ensure_task_columns failed: {e}")
 
 
+def _ensure_system_state():
+    """Idempotently seed the single SystemState row (id=1).
+
+    No-op if the row already exists. Defaults come from Settings (.env-overridable)
+    with literal fallbacks if Settings can't be read. Defensive: a failure here is
+    logged but never fatal to startup.
+    """
+    try:
+        from backend.config import get_settings
+
+        try:
+            s = get_settings()
+            autonomy = bool(getattr(s, "autonomy_enabled_default", True))
+            daily = float(getattr(s, "daily_budget_usd", 25.0))
+            per_task = float(getattr(s, "per_task_budget_usd", 5.0))
+        except Exception:
+            autonomy, daily, per_task = True, 25.0, 5.0
+
+        with Session(engine) as session:
+            if session.get(SystemState, 1) is None:
+                session.add(SystemState(
+                    id=1,
+                    autonomy_enabled=autonomy,
+                    daily_budget_usd=daily,
+                    per_task_budget_usd=per_task,
+                ))
+                session.commit()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"_ensure_system_state failed: {e}")
+
+
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     _ensure_task_columns()
+    _ensure_system_state()
 
 
 def get_session():
