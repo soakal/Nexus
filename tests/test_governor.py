@@ -269,7 +269,7 @@ async def test_run_task_budget_exceeded_finalizes_failed(eng):
     # brake checks it just before step 1 runs.
     from backend.agents.orchestrator import Plan, Step
 
-    async def fake_plan(_prompt):
+    async def fake_plan(_prompt, **kwargs):
         # Spend tagged with this task's id so the per-task brake (now scoped by
         # task_id) attributes it to the task and trips before step 1's LLM call.
         _seed_spend(eng, 1.0, created_at=datetime.utcnow() + timedelta(hours=1), task_id=task_id)

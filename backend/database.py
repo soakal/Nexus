@@ -78,6 +78,23 @@ class AgentRun(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Opus verifier outcome — one row per durable task, written after all steps
+# finish (before the final success/failure status is committed). The verdict
+# is the honest success gate: a confident "failure" can flip an otherwise-done
+# task to "failed"; success/partial/uncertain always finalizes "success".
+# Created by create_all (new table, no _ensure_ migration shim needed).
+class TaskOutcome(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: int = Field(index=True)
+    verdict: str          # "success" | "failure" | "partial" | "uncertain"
+    confidence: float = 0.0
+    reason: str = ""
+    grounded: bool = False   # True if a real read-only tool-read backed the verdict
+    evidence: str | None = None
+    model: str = "opus"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Briefing(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     content: str

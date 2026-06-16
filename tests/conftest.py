@@ -74,3 +74,36 @@ def api_key():
 @pytest.fixture
 def auth_headers(api_key):
     return {"Authorization": f"Bearer {api_key}"}
+
+
+@pytest.fixture(autouse=True)
+def auto_mock_opus_verify(request):
+    """Auto-patch _opus_verify in the durable orchestrator path to return a
+    permissive success dict by default.
+
+    This prevents the new Opus verifier call (which itself calls run_with_tools)
+    from interfering with pre-existing tests that patch run_with_tools and assert
+    on its call count. Tests in test_learning_loop.py that need to control the
+    verifier's behaviour patch _opus_verify themselves (innermost patch wins).
+
+    Tests that directly unit-test _opus_verify (calling the real function) should
+    be marked with @pytest.mark.real_opus_verify to skip this auto-mock so they
+    get the actual implementation.
+    """
+    if request.node.get_closest_marker("real_opus_verify"):
+        yield
+        return
+
+    _DEFAULT = {
+        "verdict": "success",
+        "confidence": 1.0,
+        "reason": "auto-mocked verifier",
+        "grounded": False,
+        "evidence": None,
+    }
+    with patch(
+        "backend.agents.orchestrator._opus_verify",
+        new_callable=AsyncMock,
+        return_value=_DEFAULT,
+    ):
+        yield

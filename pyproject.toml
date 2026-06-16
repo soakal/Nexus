@@ -21,3 +21,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--tb=short"
 pythonpath = ["."]
+markers = [
+    "real_opus_verify: skip the auto_mock_opus_verify autouse fixture so the real _opus_verify implementation is used",
+]

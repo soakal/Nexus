@@ -96,9 +96,14 @@ def _is_failure(result: str) -> bool:
     return False
 
 
-async def _opus_plan(task_prompt: str) -> Plan:
+async def _opus_plan(task_prompt: str, learning: str = "") -> Plan:
     from backend.agents.router import opus
     from backend.agents.tools import planner_tool_block
+
+    learning_block = ""
+    if learning:
+        learning_block = f"\nPRIOR ATTEMPTS THAT FAILED (avoid repeating these mistakes):\n{learning}\n"
+
     plan_prompt = f"""Decompose this task into numbered execution steps for an executor agent.
 
 TASK: {task_prompt}
@@ -108,7 +113,7 @@ THE EXECUTOR HAS THESE TOOLS (it calls them natively — do NOT prefix steps):
 
 For tasks answerable from general knowledge alone, the executor just answers directly.
 Keep it minimal: usually 1-3 steps. The final step synthesizes the answer.
-
+{learning_block}
 Return JSON only:
 {{
   "steps": [
@@ -191,6 +196,109 @@ Return JSON only:
     start = raw.find("{")
     end = raw.rfind("}") + 1
     return json.loads(raw[start:end])
+
+
+async def _opus_verify(task_prompt: str, final_output: list, plan: "Plan", *, task_id=None, task_start=None) -> dict:
+    """Run the Opus verifier over a completed task's output.
+
+    Asks Opus to judge whether the task was GENUINELY accomplished. When the
+    output makes a checkable claim about live homelab/vault/web state, Opus is
+    instructed to call the available read-only tools rather than trust the text.
+
+    Returns a dict with keys: verdict, confidence, reason, grounded, evidence.
+    On ANY parse failure, returns a safe permissive default (verdict="uncertain")
+    so a verifier crash NEVER destroys a genuinely-good completed task.
+
+    BudgetExceeded and TaskAborted are NOT caught here — they propagate to the
+    run_task try/except which already handles them correctly.
+
+    Sync DB helpers are NOT called here — call _record_task_outcome via
+    asyncio.to_thread from the caller (run_task durable path).
+    """
+    from backend.agents import router
+    from backend.agents.tools import dispatcher_map, tool_specs
+
+    _SAFE_DEFAULT = {
+        "verdict": "uncertain",
+        "confidence": 0.0,
+        "reason": "verify_unparseable",
+        "grounded": False,
+        "evidence": None,
+    }
+
+    try:
+        output_text = json.dumps(final_output)
+        if len(output_text) > 4000:
+            output_text = output_text[:4000] + "\n...[truncated]"
+
+        step_descriptions = [
+            f"  Step {s.index}: {s.description or s.prompt[:80]}"
+            for s in plan.steps
+        ]
+        steps_block = "\n".join(step_descriptions) if step_descriptions else "  (no steps)"
+
+        verify_prompt = f"""You are verifying whether a task was genuinely accomplished.
+
+ORIGINAL TASK:
+{task_prompt}
+
+EXECUTED PLAN (steps that ran):
+{steps_block}
+
+FINAL OUTPUT (from the executor):
+{output_text}
+
+Your job: judge whether the task was GENUINELY accomplished based on this output.
+
+If the output makes a checkable claim about live homelab state, vault notes, or
+real-time web information, CALL the available read-only tools to verify the claim
+rather than trusting the text alone. Set "grounded": true only if you actually
+ran a tool check that supported the verdict.
+
+Respond with JSON only — no prose before or after:
+{{
+  "verdict": "success" | "failure" | "partial" | "uncertain",
+  "confidence": 0.0-1.0,
+  "reason": "one-sentence explanation",
+  "grounded": true | false,
+  "evidence": "short quote of what was checked, or null"
+}}"""
+
+        raw = await router.run_with_tools(
+            model=router.OPUS_MODEL,
+            max_tokens=2048,
+            prompt=verify_prompt,
+            system="",
+            tool_specs=tool_specs(),
+            dispatch=dispatcher_map(),
+            web_search=False,
+            label="orchestrator_verify",
+            task_id=task_id,
+            task_start=task_start,
+        )
+
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return _SAFE_DEFAULT
+        result = json.loads(raw[start:end])
+        # Validate required keys present; fill missing with defaults.
+        return {
+            "verdict": str(result.get("verdict", "uncertain")),
+            "confidence": float(result.get("confidence", 0.0)),
+            "reason": str(result.get("reason", "")),
+            "grounded": bool(result.get("grounded", False)),
+            "evidence": result.get("evidence"),
+        }
+    except Exception as e:
+        # BudgetExceeded and TaskAborted are subclasses of Exception too, but we
+        # do NOT want to swallow them — re-raise them explicitly.
+        from backend.agents.router import TaskAborted
+        from backend.safety.governor import BudgetExceeded
+        if isinstance(e, (BudgetExceeded, TaskAborted)):
+            raise
+        logger.warning(f"_opus_verify parse/call failed (using safe default): {e}")
+        return _SAFE_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +492,76 @@ def _record_agent_run(task_id: int, prompt: str, output: str, success: bool, ela
         session.commit()
 
 
+def _record_task_outcome(task_id: int, verdict: str, confidence: float, reason: str, grounded: bool, evidence: str | None) -> None:
+    """Insert one TaskOutcome row for a completed durable task (model="opus").
+
+    Sync — must only be called via asyncio.to_thread. Opens and closes its own
+    Session; returns plain None so no ORM object crosses an await.
+    """
+    from sqlmodel import Session
+
+    from backend.database import TaskOutcome, engine
+
+    with Session(engine) as session:
+        session.add(TaskOutcome(
+            task_id=task_id,
+            verdict=verdict,
+            confidence=confidence,
+            reason=reason,
+            grounded=grounded,
+            evidence=evidence,
+            model="opus",
+        ))
+        session.commit()
+
+
+def _load_learning_context(limit: int = 5) -> str:
+    """Return a compact plain-text block of the most recent failed signals.
+
+    Pulls (newest-first) failed TaskOutcome rows (reason) and failed AgentRun
+    rows (prompt_snippet + output_snippet), combined and capped to `limit` items.
+    Each entry is truncated to ~200 chars. Returns "" if nothing or on any error.
+
+    Sync — must only be called via asyncio.to_thread.
+    """
+    try:
+        from sqlmodel import Session, select
+
+        from backend.database import AgentRun, TaskOutcome, engine
+
+        items: list[str] = []
+        with Session(engine) as session:
+            # (a) recent failed TaskOutcome rows, newest-first.
+            outcomes = session.exec(
+                select(TaskOutcome)
+                .where(TaskOutcome.verdict.in_(["failure", "partial"]))
+                .order_by(TaskOutcome.created_at.desc())
+                .limit(limit)
+            ).all()
+            for o in outcomes:
+                snippet = (o.reason or "")[:200]
+                items.append(f"- [failed] {snippet}")
+
+            remaining = limit - len(items)
+            if remaining > 0:
+                # (b) recent failed AgentRun rows, newest-first.
+                runs = session.exec(
+                    select(AgentRun)
+                    .where(AgentRun.success == False)  # noqa: E712
+                    .order_by(AgentRun.created_at.desc())
+                    .limit(remaining)
+                ).all()
+                for r in runs:
+                    prompt_part = (r.prompt_snippet or "")[:100]
+                    output_part = (r.output_snippet or "")[:100]
+                    snippet = f"{prompt_part} -> {output_part}"[:200]
+                    items.append(f"- [failed] {snippet}")
+
+        return "\n".join(items)
+    except Exception:
+        return ""
+
+
 def _patch_step_durably(task_id: int, step_index: int, new_prompt: str) -> None:
     """RETRY_STEP: rewrite one step's prompt, recompute its idempotency key, reset
     it to pending and clear its output. Attempts are preserved (not reset)."""
@@ -540,7 +718,8 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
     # -> RESUME (rebuild plan from rows, do NOT re-plan).
     steps = await asyncio.to_thread(_load_steps, task_id)
     if not steps:
-        plan = await _opus_plan(task_prompt)
+        learning = await asyncio.to_thread(_load_learning_context)
+        plan = await _opus_plan(task_prompt, learning=learning)
         logger.info(f"Task {task_id} plan: {len(plan.steps)} steps")
         await asyncio.to_thread(_persist_plan, task_id, _plan_to_persist_tuples(plan))
         steps = await asyncio.to_thread(_load_steps, task_id)
@@ -645,6 +824,43 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
 
                 if failed is None:
                     outputs = await asyncio.to_thread(_load_done_outputs, task_id)
+                    # Opus verifier: honest success gate. This runs INSIDE the
+                    # try/except so BudgetExceeded / TaskAborted from the verify
+                    # call propagate to the existing handlers (finalize
+                    # failed/budget_exceeded or stopped). The verify prompt is
+                    # built from final outputs; a parse failure returns the safe
+                    # permissive default (verdict="uncertain") so a verifier crash
+                    # NEVER destroys a genuinely-good completed task.
+                    outcome = await _opus_verify(
+                        task_prompt, outputs, plan,
+                        task_id=task_id, task_start=task_start,
+                    )
+                    await asyncio.to_thread(
+                        _record_task_outcome,
+                        task_id,
+                        outcome["verdict"],
+                        outcome["confidence"],
+                        outcome["reason"],
+                        outcome["grounded"],
+                        outcome.get("evidence"),
+                    )
+                    # GATING RULE: only a confident rejection overturns a
+                    # completed task. verdict=="failure" AND confidence>=0.7
+                    # finalizes "failed"; everything else (success/partial/
+                    # uncertain/low-confidence failure) finalizes "success".
+                    if outcome["verdict"] == "failure" and outcome["confidence"] >= 0.7:
+                        await asyncio.to_thread(
+                            _finalize_task,
+                            task_id,
+                            "failed",
+                            json.dumps({
+                                "error": "verify_rejected",
+                                "reason": outcome["reason"],
+                                "confidence": outcome["confidence"],
+                            }),
+                        )
+                        return TaskResult(success=False, reason="verify_rejected")
+
                     await asyncio.to_thread(
                         _finalize_task, task_id, "success", json.dumps(outputs)
                     )
