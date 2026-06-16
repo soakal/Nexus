@@ -149,7 +149,7 @@ async def _sonnet_execute(step: Step, context: list, *, task_id=None, task_start
     from backend.config import get_settings
 
     if get_settings().agent_write_enabled:
-        from backend.agents.write_tools import all_tool_specs, all_dispatchers
+        from backend.agents.write_tools import all_tool_specs, all_dispatchers, set_write_context, reset_write_context
         specs, dispatch = all_tool_specs(), all_dispatchers()
     else:
         from backend.agents.tools import tool_specs, dispatcher_map
@@ -170,18 +170,32 @@ the task needs that live data, or perform safe write actions (home_control,
 hermes_command) when the task clearly asks to change something. If the task is
 answerable from general knowledge alone, just answer directly without calling a
 tool. Always produce a useful, substantive answer."""
-    return await router.run_with_tools(
-        model=router.SONNET_MODEL,
-        max_tokens=8192,
-        prompt=full_prompt,
-        system="",
-        tool_specs=specs,
-        dispatch=dispatch,
-        web_search=True,
-        label="orchestrator_execute",
-        task_id=task_id,
-        task_start=task_start,
-    )
+
+    # Bind the durable step identity so write tool dispatchers can compute a stable
+    # idempotency_key. Only on the durable path (task_id is not None); the legacy
+    # path (task_id=None) gets no context → _idem_key_for returns None → unchanged
+    # behavior (no key passed to the broker, no replay protection on single-shot).
+    if get_settings().agent_write_enabled and task_id is not None:
+        _wtok = set_write_context(task_id, step.index)
+    else:
+        _wtok = None
+
+    try:
+        return await router.run_with_tools(
+            model=router.SONNET_MODEL,
+            max_tokens=8192,
+            prompt=full_prompt,
+            system="",
+            tool_specs=specs,
+            dispatch=dispatch,
+            web_search=True,
+            label="orchestrator_execute",
+            task_id=task_id,
+            task_start=task_start,
+        )
+    finally:
+        if _wtok is not None:
+            reset_write_context(_wtok)
 
 
 async def _opus_debug(task: str, plan: Plan, failed_step: tuple, prior_results: list) -> dict:

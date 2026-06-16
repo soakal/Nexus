@@ -7,9 +7,45 @@ A HIGH/irreversible action comes back needs_confirm/forbidden and is NOT perform
 Every dispatch returns a compact string for the LLM and NEVER raises.
 """
 
+import contextvars
+import hashlib
+import json
+
 from backend.agents.tools import ReadTool, _truncate, tool_specs, dispatcher_map, planner_tool_block
 
 MAX_WRITE_RESULT_CHARS = 600
+
+# ---------------------------------------------------------------------------
+# Durable write-context — threaded idempotency key for broker replays
+# ---------------------------------------------------------------------------
+
+_write_ctx: contextvars.ContextVar = contextvars.ContextVar("nexus_write_ctx", default=None)
+
+
+def set_write_context(task_id, step_index):
+    """Bind the durable step identity so write dispatchers can compute a stable
+    idempotency_key. Returns a token; pass it to reset_write_context in a finally."""
+    return _write_ctx.set((task_id, step_index))
+
+
+def reset_write_context(token):
+    try:
+        _write_ctx.reset(token)
+    except Exception:
+        pass
+
+
+def _idem_key_for(tool_name: str, args: dict):
+    """Stable key per (task, step, tool, args) so a durable resume that re-calls
+    the SAME tool with the SAME args replays via the broker instead of re-firing.
+    Returns None when there is no durable context (chat/legacy single-shot — no
+    resume risk), so the broker dispatches normally."""
+    ctx = _write_ctx.get()
+    if not ctx or ctx[0] is None:
+        return None
+    task_id, step_index = ctx
+    raw = f"{task_id}:{step_index}:{tool_name}:{json.dumps(args, sort_keys=True, default=str)}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 def _wtruncate(s: str) -> str:
@@ -74,6 +110,7 @@ async def _home_control(input: dict) -> str:  # noqa: A002
             )
 
         domain = str(entity_id).split(".")[0]
+        key = _idem_key_for("home_control", {"entity_id": entity_id, "service": service})
 
         from backend.safety.broker import execute_action
         res = await execute_action(
@@ -81,6 +118,7 @@ async def _home_control(input: dict) -> str:  # noqa: A002
             kind="ha_service",
             target=entity_id,
             payload={"domain": domain, "service": service},
+            idempotency_key=key,
         )
         return _wtruncate(_decision_to_str(res))
     except Exception as e:
@@ -106,12 +144,15 @@ async def _hermes_command(input: dict) -> str:  # noqa: A002
         if err:
             return f"invalid args: {err}"
 
+        key = _idem_key_for("hermes_command", {"verb": verb, "args": args})
+
         from backend.safety.broker import execute_action
         res = await execute_action(
             actor="agent",
             kind="hermes_action",
             target="hermes",
             payload={"verb": verb, "args": args},
+            idempotency_key=key,
         )
         return _wtruncate(_decision_to_str(res))
     except Exception as e:

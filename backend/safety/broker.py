@@ -182,9 +182,11 @@ def decide(
 async def _dispatch_ha_service(target: str, payload: dict) -> dict:
     from backend.integrations import homeassistant
 
-    result = await homeassistant.call_service(
-        payload["domain"], payload["service"], {"entity_id": target}
-    )
+    if "service_data" in payload and payload["service_data"] is not None:
+        service_data = payload["service_data"]
+    else:
+        service_data = {"entity_id": target}
+    result = await homeassistant.call_service(payload["domain"], payload["service"], service_data)
     return result
 
 

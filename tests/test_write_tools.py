@@ -405,3 +405,201 @@ def test_write_tools_module_imports_broker_not_tools():
     assert "FAILED" in _decision_to_str(FakeResult(decision=Decision.FAILED, error="oops"))
     assert "BLOCKED" in _decision_to_str(FakeResult(decision=Decision.NEEDS_CONFIRM))
     assert "FORBIDDEN" in _decision_to_str(FakeResult(decision=Decision.FORBIDDEN, error="policy"))
+
+
+# ===========================================================================
+# BLOCKER #2 Tests — idempotency key threading
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 13: Key threading — same args → same key; different args → different key;
+#          no context set → key is None.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_idem_key_threading_home_control(eng):
+    """set_write_context makes _idem_key_for return a stable key tied to
+    (task_id, step_index, tool_name, args); distinct args → distinct key;
+    no context → None."""
+    from backend.agents.write_tools import (
+        _idem_key_for,
+        set_write_context,
+        reset_write_context,
+    )
+
+    # No context → None
+    assert _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_on"}) is None
+
+    tok = set_write_context(5, 2)
+    try:
+        k1 = _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_on"})
+        k2 = _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_on"})
+        k3 = _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_off"})
+
+        assert k1 is not None and isinstance(k1, str) and len(k1) > 0
+        assert k1 == k2, "same args should produce the same key"
+        assert k1 != k3, "different service arg should produce a different key"
+    finally:
+        reset_write_context(tok)
+
+    # After reset → no context → None again
+    assert _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_on"}) is None
+
+
+@pytest.mark.asyncio
+async def test_idem_key_passed_to_broker(eng):
+    """With write context set, _home_control passes a non-None idempotency_key to
+    execute_action; without context it passes None."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import (
+        _home_control,
+        set_write_context,
+        reset_write_context,
+    )
+
+    captured_keys = []
+
+    from backend.safety.broker import execute_action as real_ea
+
+    async def capturing_ea(*args, **kwargs):
+        captured_keys.append(kwargs.get("idempotency_key"))
+        return await real_ea(*args, **kwargs)
+
+    with patch(
+        "backend.safety.broker.execute_action",
+        side_effect=capturing_ea,
+    ):
+        with patch(
+            "backend.integrations.homeassistant.call_service",
+            new_callable=AsyncMock,
+            return_value={"ok": True},
+        ):
+            # Without context → key should be None
+            await _home_control({"entity_id": "light.office", "service": "turn_on"})
+            assert captured_keys[-1] is None, f"expected None without context, got {captured_keys[-1]!r}"
+
+            # With context → key should be a non-empty string
+            tok = set_write_context(7, 3)
+            try:
+                await _home_control({"entity_id": "light.office", "service": "turn_on"})
+                assert captured_keys[-1] is not None and len(captured_keys[-1]) > 0, \
+                    f"expected non-None key with context, got {captured_keys[-1]!r}"
+            finally:
+                reset_write_context(tok)
+
+
+# ---------------------------------------------------------------------------
+# Test 14: End-to-end replay — real broker idempotency prevents double-fire
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_home_control_idempotency_replay_prevents_double_fire(eng):
+    """Call _home_control TWICE with the same write context and args. The broker's
+    idempotency replay means call_service is only invoked ONCE (not twice), and
+    there is exactly ONE executed ActionLog row."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import (
+        _home_control,
+        set_write_context,
+        reset_write_context,
+    )
+
+    with patch(
+        "backend.integrations.homeassistant.call_service",
+        new_callable=AsyncMock,
+        return_value={"ok": True},
+    ) as cs:
+        tok = set_write_context(7, 1)
+        try:
+            result1 = await _home_control({"entity_id": "light.office", "service": "turn_on"})
+            result2 = await _home_control({"entity_id": "light.office", "service": "turn_on"})
+        finally:
+            reset_write_context(tok)
+
+    # call_service must have been called exactly ONCE (second call replayed by broker)
+    cs.assert_awaited_once()
+
+    # Both results should indicate success
+    assert result1.startswith("OK"), f"first call should succeed: {result1!r}"
+    assert result2.startswith("OK"), f"replayed call should succeed: {result2!r}"
+
+    # Exactly ONE executed ActionLog row (the replay doesn't insert a second row)
+    from backend.database import ActionLog
+    with Session(eng) as s:
+        logs = s.exec(
+            select(ActionLog).where(ActionLog.decision == "executed")
+        ).all()
+    assert len(logs) == 1, f"expected exactly 1 executed ActionLog, got {len(logs)}"
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Different step context produces different keys (cross-step isolation)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_idem_keys_differ_across_steps(eng):
+    """Same tool + same args but different step_index produce different keys,
+    so a tool call in step 1 can't replay a call in step 2."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import (
+        _idem_key_for,
+        set_write_context,
+        reset_write_context,
+    )
+
+    tok1 = set_write_context(10, 1)
+    key_step1 = _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_on"})
+    reset_write_context(tok1)
+
+    tok2 = set_write_context(10, 2)
+    key_step2 = _idem_key_for("home_control", {"entity_id": "light.x", "service": "turn_on"})
+    reset_write_context(tok2)
+
+    assert key_step1 != key_step2, (
+        f"step 1 and step 2 keys must differ; got {key_step1!r} and {key_step2!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Hermes command idempotency key threading
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_hermes_command_idem_key_threading(eng):
+    """_hermes_command passes idempotency_key when write context is set."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import (
+        _hermes_command,
+        set_write_context,
+        reset_write_context,
+    )
+
+    captured_keys = []
+
+    from backend.safety.broker import execute_action as real_ea
+
+    async def capturing_ea(*args, **kwargs):
+        captured_keys.append(kwargs.get("idempotency_key"))
+        return await real_ea(*args, **kwargs)
+
+    with patch("backend.safety.broker.execute_action", side_effect=capturing_ea):
+        with patch(
+            "backend.integrations.hermes.relay",
+            new_callable=AsyncMock,
+            return_value="proxmox is healthy",
+        ):
+            # Without context → None
+            await _hermes_command({"verb": "proxmox_status", "args": {}})
+            assert captured_keys[-1] is None
+
+            # With context → non-None key
+            tok = set_write_context(3, 1)
+            try:
+                await _hermes_command({"verb": "proxmox_status", "args": {}})
+                assert captured_keys[-1] is not None and len(captured_keys[-1]) > 0
+            finally:
+                reset_write_context(tok)
