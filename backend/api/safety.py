@@ -119,26 +119,43 @@ async def list_hermes_actions(_=Depends(require_api_key)):
 async def confirm_action(
     action_id: int,
     _=Depends(require_api_key),
-    session: Session = Depends(get_session),
 ):
-    """Confirm a `needs_confirm` action.
+    """Confirm-and-dispatch a `needs_confirm` action (Tier 1.5 — Piece B).
 
-    Documented inert placeholder: validation is real (404 for a missing row, 409
-    for a row that is not awaiting confirmation), but no dispatch happens yet. The
-    confirm-and-dispatch flow lands with Tier 1.5 autonomy, when agents/autonomous
-    actors actually generate `needs_confirm` rows that a human approves. Until then
-    no production path produces a confirmable row, so this safely returns a
-    not-yet-wired marker rather than dispatching.
+    Re-checks the global kill switch and confirmation TTL at dispatch time.
+    Only a row whose decision is exactly `needs_confirm` can be confirmed —
+    everything else is rejected (default-deny posture). The existing ActionLog
+    row is updated in place; no second row is created.
+
+    Status codes:
+      200  — dispatch attempted (status: executed | failed)
+      403  — blocked by kill switch (autonomy paused)
+      404  — action row not found
+      409  — row exists but is not awaiting confirmation
+      410  — confirmation window expired (TTL elapsed)
     """
-    row = session.get(ActionLog, action_id)
-    if row is None:
+    from backend.config import get_settings
+    from backend.safety import broker
+
+    ttl = get_settings().action_confirm_ttl_seconds
+    status, res = await broker.confirm_action(action_id, ttl_seconds=ttl)
+
+    if status == "not_found":
         raise HTTPException(status_code=404, detail="Action not found")
-    if row.decision != "needs_confirm":
+    if status == "not_confirmable":
         raise HTTPException(status_code=409, detail="Action is not awaiting confirmation")
+    if status == "expired":
+        raise HTTPException(status_code=410, detail="Confirmation window expired")
+    if status == "forbidden":
+        raise HTTPException(status_code=403, detail="Blocked: autonomy is paused (kill switch on)")
+
+    # executed | failed — both return 200 with the dispatch outcome in the body
     return {
         "id": action_id,
-        "status": "confirm_not_yet_wired",
-        "detail": "Confirm flow lands with Tier 1.5 autonomy",
+        "status": status,
+        "decision": res.decision.value if res else None,
+        "result": res.result if res else None,
+        "error": res.error if res else None,
     }
 
 

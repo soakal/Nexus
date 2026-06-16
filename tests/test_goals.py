@@ -1,0 +1,465 @@
+"""Tests for the Goal state-machine substrate (Tier 3 gate-blocker #3, Piece A).
+
+Covers: fingerprint purity, all three debounce guards, approve happy-path,
+approve-expired, approve-conflict, reject, reconcile_running, record_goal_result,
+and the HTTP API layer.
+
+Pattern: in-memory StaticPool engine monkeypatched onto backend.database.engine,
+matching test_governor.py.  Worker-pool enqueue is always patched so tests never
+actually run a durable task.
+"""
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel.pool import StaticPool
+
+# Register all table metadata (including Goal) before any test runs.
+import backend.database  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Shared engine fixture
+# ---------------------------------------------------------------------------
+
+def make_engine():
+    eng = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(eng)
+    return eng
+
+
+@pytest.fixture
+def eng(monkeypatch):
+    e = make_engine()
+    monkeypatch.setattr("backend.database.engine", e)
+    return e
+
+
+# ---------------------------------------------------------------------------
+# Pool patch helper (prevents real task execution)
+# ---------------------------------------------------------------------------
+
+def _mock_pool():
+    pool = MagicMock()
+    pool.enqueue = AsyncMock()
+    return pool
+
+
+# ---------------------------------------------------------------------------
+# 1. propose — creates a "proposed" goal with fingerprint + expires_at
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_propose_creates_proposed_goal(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    result = await goals.propose(
+        "Buy milk",
+        "Go to the store and buy two litres of whole milk.",
+        ttl_seconds=3600,
+    )
+
+    assert result["status"] == "proposed"
+    g = result["goal"]
+    assert g["status"] == "proposed"
+    assert len(g["fingerprint"]) == 16  # sha256[:16]
+    assert g["expires_at"] is not None   # TTL was passed
+
+    # Exactly one row in the DB.
+    with Session(eng) as s:
+        rows = s.exec(select(Goal)).all()
+    assert len(rows) == 1
+    assert rows[0].fingerprint == g["fingerprint"]
+
+
+# ---------------------------------------------------------------------------
+# 2. debounce — duplicate active
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_debounce_duplicate_active(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    title = "Restart server"
+    desc = "Reboot the Unraid NAS."
+
+    r1 = await goals.propose(title, desc)
+    assert r1["status"] == "proposed"
+
+    r2 = await goals.propose(title, desc)
+    assert r2["status"] == "debounced"
+    assert r2["reason"] == "duplicate_active"
+
+    # Only ONE goal row should exist.
+    with Session(eng) as s:
+        count = len(s.exec(select(Goal)).all())
+    assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# 3. debounce — cooldown (same fingerprint, terminal goal, proposed recently)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_debounce_cooldown(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    title = "Send report"
+    desc = "Email the weekly summary to the team."
+    fp = goals._fingerprint(title, desc)
+
+    # Seed a terminal (abandoned) goal with proposal_at = just now.
+    recent_proposal = datetime.utcnow() - timedelta(seconds=30)
+    with Session(eng) as s:
+        s.add(Goal(
+            title=title,
+            description=desc,
+            status="abandoned",
+            fingerprint=fp,
+            proposal_at=recent_proposal,
+        ))
+        s.commit()
+
+    # debounce_seconds=3600 means 30s ago is still within the window.
+    r = await goals.propose(title, desc, debounce_seconds=3600)
+    assert r["status"] == "debounced"
+    assert r["reason"] == "cooldown"
+
+    # Still only one row.
+    with Session(eng) as s:
+        count = len(s.exec(select(Goal)).all())
+    assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# 4. debounce — backoff
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_debounce_backoff(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    title = "Fetch weather"
+    desc = "Pull the latest weather data."
+    fp = goals._fingerprint(title, desc)
+
+    # Seed a failed goal with backoff_until in the future.
+    future_backoff = datetime.utcnow() + timedelta(hours=1)
+    with Session(eng) as s:
+        s.add(Goal(
+            title=title,
+            description=desc,
+            status="failed",
+            fingerprint=fp,
+            proposal_at=datetime.utcnow() - timedelta(hours=2),
+            backoff_until=future_backoff,
+        ))
+        s.commit()
+
+    r = await goals.propose(title, desc)
+    assert r["status"] == "debounced"
+    assert r["reason"] == "backoff"
+
+    with Session(eng) as s:
+        count = len(s.exec(select(Goal)).all())
+    assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. approve — happy path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_approve_happy_path(eng, monkeypatch):
+    from backend.agents import goals
+    from backend.database import Goal, Task
+
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    # Propose a goal first.
+    r_propose = await goals.propose("Organise files", "Sort downloads folder by type.")
+    goal_id = r_propose["goal"]["id"]
+
+    r_approve = await goals.approve(goal_id)
+    assert r_approve["status"] == "approved"
+    assert r_approve["task_id"] is not None
+    assert r_approve["goal"]["status"] == "running"
+    assert r_approve["goal"]["task_id"] == r_approve["task_id"]
+
+    # A Task row was created with prompt == description.
+    with Session(eng) as s:
+        task = s.get(Task, r_approve["task_id"])
+    assert task is not None
+    desc = r_propose["goal"]["description"]
+    assert task.prompt == desc
+
+    # pool.enqueue was called exactly once.
+    pool.enqueue.assert_awaited_once_with(r_approve["task_id"])
+
+    # Goal row in DB is "running".
+    with Session(eng) as s:
+        g = s.get(Goal, goal_id)
+    assert g.status == "running"
+    assert g.task_id == r_approve["task_id"]
+
+
+# ---------------------------------------------------------------------------
+# 6. approve — expired
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_approve_expired(eng, monkeypatch):
+    from backend.agents import goals
+    from backend.database import Goal, Task
+
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    fp = goals._fingerprint("Old task", "A task that expired.")
+    # Insert directly with expires_at already in the past.
+    with Session(eng) as s:
+        g = Goal(
+            title="Old task",
+            description="A task that expired.",
+            status="proposed",
+            fingerprint=fp,
+            proposal_at=datetime.utcnow() - timedelta(hours=2),
+            expires_at=datetime.utcnow() - timedelta(hours=1),
+        )
+        s.add(g)
+        s.commit()
+        s.refresh(g)
+        goal_id = g.id
+
+    r = await goals.approve(goal_id)
+    assert r["status"] == "expired"
+
+    # Goal should now be "abandoned", no Task created.
+    with Session(eng) as s:
+        g = s.get(Goal, goal_id)
+    assert g.status == "abandoned"
+
+    pool.enqueue.assert_not_awaited()
+    with Session(eng) as s:
+        tasks = s.exec(select(Task)).all()
+    assert len(tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 7. approve — conflict (already running / approved)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_approve_conflict(eng, monkeypatch):
+    from backend.agents import goals
+
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    r_propose = await goals.propose("Check logs", "Review system logs for errors.")
+    goal_id = r_propose["goal"]["id"]
+
+    # First approve succeeds.
+    await goals.approve(goal_id)
+
+    # Second approve on a now-running goal → conflict.
+    r2 = await goals.approve(goal_id)
+    assert r2["status"] == "conflict"
+    assert r2["current"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# 8. reject
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reject_proposed_goal(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    r_propose = await goals.propose("Buy groceries", "Pick up items from the grocery list.")
+    goal_id = r_propose["goal"]["id"]
+
+    r_reject = await goals.reject(goal_id)
+    assert r_reject["status"] == "abandoned"
+
+    with Session(eng) as s:
+        g = s.get(Goal, goal_id)
+    assert g.status == "abandoned"
+
+
+# ---------------------------------------------------------------------------
+# 9. reconcile_running
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reconcile_running(eng):
+    from backend.agents import goals
+    from backend.database import Goal, Task
+
+    # Create two running goals, each linked to a task.
+    with Session(eng) as s:
+        t_success = Task(prompt="do success thing", status="success")
+        t_failed = Task(prompt="do failing thing", status="failed")
+        s.add(t_success)
+        s.add(t_failed)
+        s.commit()
+        s.refresh(t_success)
+        s.refresh(t_failed)
+
+        g_success = Goal(
+            title="Succeed",
+            description="A task that will succeed.",
+            status="running",
+            fingerprint="aaaa0000aaaa0000",
+            task_id=t_success.id,
+        )
+        g_failed = Goal(
+            title="Fail",
+            description="A task that will fail.",
+            status="running",
+            fingerprint="bbbb1111bbbb1111",
+            task_id=t_failed.id,
+            attempts=0,
+        )
+        s.add(g_success)
+        s.add(g_failed)
+        s.commit()
+        s.refresh(g_success)
+        s.refresh(g_failed)
+        g_success_id = g_success.id
+        g_failed_id = g_failed.id
+
+    await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
+
+    with Session(eng) as s:
+        gs = s.get(Goal, g_success_id)
+        gf = s.get(Goal, g_failed_id)
+
+    assert gs.status == "completed"
+    assert gf.status == "failed"
+    assert gf.attempts == 1
+    assert gf.backoff_until is not None
+    assert gf.backoff_until > datetime.utcnow()
+
+
+# ---------------------------------------------------------------------------
+# 10. API layer (TestClient + Bearer)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def goals_client(tmp_path, monkeypatch):
+    vault_key = tmp_path / ".vault.key"
+    vault_file = tmp_path / "nexus.vault"
+    vault_key.write_bytes(b"A" * 32)
+    vault_file.write_text("{}")
+    monkeypatch.chdir(tmp_path)
+
+    test_engine = make_engine()
+    monkeypatch.setattr("backend.database.engine", test_engine)
+
+    from backend.database import get_session
+
+    def override_session():
+        with Session(test_engine) as session:
+            yield session
+
+    with patch("backend.database.create_db_and_tables"), \
+         patch("backend.scheduler.setup_scheduler"), \
+         patch("backend.scheduler.scheduler") as sched, \
+         patch("backend.agents.memo_watcher.start_watcher_blocking"), \
+         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
+        sched.running = False
+        from backend.main import app
+        app.dependency_overrides[get_session] = override_session
+        with TestClient(app) as c:
+            c._engine = test_engine
+            yield c
+        app.dependency_overrides.clear()
+
+
+def test_api_propose_returns_200(goals_client, auth_headers, monkeypatch):
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    resp = goals_client.post(
+        "/api/goals/propose",
+        headers=auth_headers,
+        json={
+            "title": "Update firmware",
+            "description": "Flash the latest firmware on the router.",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "proposed"
+    assert body["goal"]["status"] == "proposed"
+
+
+def test_api_list_goals(goals_client, auth_headers, monkeypatch):
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    goals_client.post(
+        "/api/goals/propose",
+        headers=auth_headers,
+        json={"title": "Task A", "description": "Do something useful."},
+    )
+    resp = goals_client.get("/api/goals/", headers=auth_headers)
+    assert resp.status_code == 200
+    items = resp.json()
+    assert len(items) >= 1
+    assert items[0]["title"] == "Task A"
+
+
+def test_api_approve_returns_200(goals_client, auth_headers, monkeypatch):
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    r = goals_client.post(
+        "/api/goals/propose",
+        headers=auth_headers,
+        json={"title": "Run diagnostics", "description": "Execute full system health check."},
+    )
+    goal_id = r.json()["goal"]["id"]
+
+    resp = goals_client.post(f"/api/goals/{goal_id}/approve", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "approved"
+    assert body["task_id"] is not None
+
+
+def test_api_approve_missing_404(goals_client, auth_headers, monkeypatch):
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    resp = goals_client.post("/api/goals/99999/approve", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+def test_api_approve_same_id_twice_409(goals_client, auth_headers, monkeypatch):
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    r = goals_client.post(
+        "/api/goals/propose",
+        headers=auth_headers,
+        json={"title": "Reboot box", "description": "Restart the media server."},
+    )
+    goal_id = r.json()["goal"]["id"]
+
+    goals_client.post(f"/api/goals/{goal_id}/approve", headers=auth_headers)
+    resp = goals_client.post(f"/api/goals/{goal_id}/approve", headers=auth_headers)
+    assert resp.status_code == 409

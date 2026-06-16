@@ -406,11 +406,18 @@ def test_safety_confirm_404_and_409(safety_client, auth_headers):
     resp = safety_client.post(f"/api/safety/actions/{aid}/confirm", headers=auth_headers)
     assert resp.status_code == 409
 
-    # needs_confirm -> documented inert response
+    # needs_confirm -> real dispatch attempt; dispatcher fails gracefully -> 200 with status "failed"
+    from unittest.mock import AsyncMock, patch
     aid2 = _seed_action(eng, decision="needs_confirm")
-    resp = safety_client.post(f"/api/safety/actions/{aid2}/confirm", headers=auth_headers)
+    with patch(
+        "backend.integrations.homeassistant.call_service",
+        new_callable=AsyncMock,
+        return_value={"ok": True},
+    ):
+        resp = safety_client.post(f"/api/safety/actions/{aid2}/confirm", headers=auth_headers)
     assert resp.status_code == 200
-    assert resp.json()["status"] == "confirm_not_yet_wired"
+    body = resp.json()
+    assert body["status"] in ("executed", "failed")
 
 
 # ===========================================================================

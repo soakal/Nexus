@@ -240,6 +240,31 @@ class SystemState(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Goal(SQLModel, table=True):
+    """Durable objective with a propose → approve → running → completed|failed|abandoned
+    state machine.  Humans propose and approve via the /api/goals router; on approval a
+    durable Task is dispatched.  Never auto-initiates — autonomy substrate only."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    actor: str = "user"                 # user | agent | autonomous
+    title: str
+    description: str                    # becomes the durable Task prompt on approve
+    status: str = "proposed"           # proposed|approved|running|completed|failed|abandoned
+    confidence: float = 0.6
+    risk: str = "medium"               # low|medium|high|unclassifiable
+    reversibility: str = "unknown"     # reversible|reversible_by_inverse|irreversible|unknown
+    fingerprint: str = Field(default="", index=True)
+    attempts: int = 0
+    backoff_until: datetime | None = None
+    task_id: int | None = None
+    proposal_at: datetime = Field(default_factory=datetime.utcnow)
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_task_columns():
     """Idempotently add columns introduced after the original `task` table shipped.
 

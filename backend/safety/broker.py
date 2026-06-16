@@ -307,6 +307,39 @@ def _find_completed_action(key: str) -> dict | None:
         }
 
 
+def _get_action_log(log_id: int) -> dict | None:
+    """Fetch a single ActionLog row by id as a plain dict (or None).
+
+    Returned fields: id, actor, kind, target, payload (dict, json-parsed),
+    decision, risk, reversibility, created_at (datetime), idempotency_key.
+    Sync only — call via asyncio.to_thread.
+    """
+    from sqlmodel import Session
+
+    from backend.database import ActionLog, engine
+
+    with Session(engine) as session:
+        row = session.get(ActionLog, log_id)
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row.payload_json)
+        except (TypeError, ValueError):
+            payload = {}
+        return {
+            "id": row.id,
+            "actor": row.actor,
+            "kind": row.kind,
+            "target": row.target,
+            "payload": payload,
+            "decision": row.decision,
+            "risk": row.risk,
+            "reversibility": row.reversibility,
+            "created_at": row.created_at,
+            "idempotency_key": row.idempotency_key,
+        }
+
+
 # ---------------------------------------------------------------------------
 # The chokepoint
 # ---------------------------------------------------------------------------
@@ -467,4 +500,128 @@ async def execute_action(
         reversibility=reversibility,
         log_id=log_id,
         result=result if isinstance(result, dict) else {"result": result},
+    )
+
+
+async def confirm_action(
+    log_id: int,
+    *,
+    ttl_seconds: int | None = None,
+) -> tuple[str, "ActionResult | None"]:
+    """Confirm-and-dispatch a needs_confirm action.
+
+    Returns (status, ActionResult|None) where status is one of:
+      not_found        — no ActionLog row with this id
+      not_confirmable  — row exists but decision is not needs_confirm (double-confirm prevention)
+      expired          — confirmation window exceeded ttl_seconds
+      forbidden        — kill switch is ON for an agent/autonomous actor
+      executed         — dispatch succeeded
+      failed           — dispatch failed (dispatcher error or no dispatcher for kind)
+
+    Re-checks the kill switch and TTL at confirm time. Updates the SAME ActionLog
+    row in place — no second row is inserted. Never re-raises a dispatch error.
+    """
+    # Step 1: fetch the row
+    row = await asyncio.to_thread(_get_action_log, log_id)
+    if row is None:
+        return ("not_found", None)
+
+    # Step 2: must be awaiting confirmation (also blocks double-dispatch of same row)
+    if row["decision"] != Decision.NEEDS_CONFIRM.value:
+        return ("not_confirmable", None)
+
+    # Step 3: parse risk/reversibility defensively
+    try:
+        risk = Risk(row["risk"])
+    except ValueError:
+        risk = Risk.UNCLASSIFIABLE
+    try:
+        reversibility = Reversibility(row["reversibility"])
+    except ValueError:
+        reversibility = Reversibility.UNKNOWN
+
+    # Step 4: TTL check — if the confirmation window has elapsed, record FORBIDDEN
+    if ttl_seconds is not None:
+        age_seconds = (datetime.utcnow() - row["created_at"]).total_seconds()
+        if age_seconds > ttl_seconds:
+            await asyncio.to_thread(
+                _update_action_log,
+                log_id,
+                Decision.FORBIDDEN.value,
+                json.dumps({"reason": "expired"}),
+            )
+            return ("expired", None)
+
+    # Step 5: kill switch re-check for non-user actors
+    actor = _coerce_actor(row["actor"])
+    if actor in (Actor.AGENT, Actor.AUTONOMOUS):
+        from backend.safety import governor
+        state = await asyncio.to_thread(governor.get_system_state)
+        if not state["autonomy_enabled"]:
+            await asyncio.to_thread(
+                _update_action_log,
+                log_id,
+                Decision.FORBIDDEN.value,
+                json.dumps({"reason": "autonomy_disabled"}),
+            )
+            return (
+                "forbidden",
+                ActionResult(
+                    decision=Decision.FORBIDDEN,
+                    risk=risk,
+                    reversibility=reversibility,
+                    log_id=log_id,
+                    error="autonomy_disabled",
+                ),
+            )
+
+    # Step 6: look up dispatcher
+    dispatcher = _DISPATCHERS.get(row["kind"])
+    if dispatcher is None:
+        error = f"no dispatcher for kind '{row['kind']}'"
+        await asyncio.to_thread(
+            _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": error})
+        )
+        return (
+            "failed",
+            ActionResult(
+                decision=Decision.FAILED,
+                risk=risk,
+                reversibility=reversibility,
+                log_id=log_id,
+                error=error,
+            ),
+        )
+
+    # Step 7: dispatch
+    try:
+        result = await dispatcher(row["target"], row["payload"])
+    except Exception as e:
+        logger.warning(f"confirm_action dispatch failed kind={row['kind']} id={log_id}: {e}")
+        await asyncio.to_thread(
+            _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": str(e)})
+        )
+        return (
+            "failed",
+            ActionResult(
+                decision=Decision.FAILED,
+                risk=risk,
+                reversibility=reversibility,
+                log_id=log_id,
+                error=str(e),
+            ),
+        )
+
+    await asyncio.to_thread(
+        _update_action_log, log_id, Decision.EXECUTED.value, json.dumps(result)
+    )
+    return (
+        "executed",
+        ActionResult(
+            decision=Decision.EXECUTED,
+            risk=risk,
+            reversibility=reversibility,
+            log_id=log_id,
+            result=result if isinstance(result, dict) else {"result": result},
+        ),
     )
