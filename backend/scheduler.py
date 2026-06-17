@@ -173,6 +173,14 @@ async def _checkpoint():
         logger.error(f"Checkpoint job error: {e}")
 
 
+async def _watchdog():
+    try:
+        from backend.agents.watchdog import run_watchdog
+        await run_watchdog()
+    except Exception as e:
+        logger.error(f"Watchdog job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -265,4 +273,12 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Backup enabled: checkpoint hourly, backup daily at {bh:02d}:{bm:02d} {timezone}")
+    if getattr(s, "watchdog_enabled", False):
+        scheduler.add_job(
+            _watchdog,
+            IntervalTrigger(minutes=5),
+            id="watchdog",
+            replace_existing=True,
+        )
+        logger.info("Scheduler stall watchdog enabled: runs every 5 minutes")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

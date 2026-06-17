@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     step_watchdog_enabled: bool = True
     step_hung_timeout_s: int = 600  # seconds before a running step with no live worker is reaped
 
+    # Scheduler stall watchdog + Hermes dead-letter alert (Tier 3 blind-spot removal).
+    # watchdog_enabled: master gate for both checks (scheduler stall + dead-letter).
+    # scheduler_stall_grace_s: a scheduler job overdue by more than this is flagged stalled.
+    # dead_letter_attempts: PendingDelivery rows at/above this attempt count are dead-lettered.
+    # watchdog_alert_cooldown_s: minimum seconds between repeat phone alerts for the same condition.
+    watchdog_enabled: bool = True
+    scheduler_stall_grace_s: int = 600
+    dead_letter_attempts: int = 5
+    watchdog_alert_cooldown_s: int = 3600
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:
