@@ -44,3 +44,18 @@ async def list_runs(
     if q:
         runs = [r for r in runs if q.lower() in (r.prompt_snippet + r.output_snippet).lower()]
     return runs
+
+
+@router.get("/tools")
+async def list_tools(_=Depends(require_api_key)):
+    """The executor's available tools (read-only + broker-gated write tools)."""
+    from backend.agents.write_tools import all_tool_specs, write_tool_names
+    specs = all_tool_specs()
+    writes = set(write_tool_names())
+    return {
+        "tools": [
+            {"name": s["name"], "description": s.get("description", ""), "write": s["name"] in writes}
+            for s in specs
+        ],
+        "count": len(specs),
+    }
