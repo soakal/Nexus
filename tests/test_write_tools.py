@@ -247,14 +247,14 @@ async def test_hermes_command_never_raises_on_broker_exception(eng):
 # ===========================================================================
 
 def test_combined_providers_all_tool_specs():
-    """all_tool_specs() == read specs + 2 write specs."""
+    """all_tool_specs() == read specs + 5 write specs."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs, write_tool_names
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 2, (
-        f"expected {len(read_specs) + 2} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 5, (
+        f"expected {len(read_specs) + 5} specs, got {len(all_specs)}"
     )
 
 
@@ -271,10 +271,16 @@ def test_combined_providers_all_dispatchers():
 
 
 def test_write_tool_names():
-    """write_tool_names() returns exactly ['home_control', 'hermes_command']."""
+    """write_tool_names() returns all five write tool names."""
     from backend.agents.write_tools import write_tool_names
 
-    assert write_tool_names() == ["home_control", "hermes_command"]
+    names = write_tool_names()
+    assert "home_control" in names
+    assert "hermes_command" in names
+    assert "channels_record" in names
+    assert "unraid_docker_restart" in names
+    assert "obsidian_complete_task" in names
+    assert len(names) == 5
 
 
 # ===========================================================================

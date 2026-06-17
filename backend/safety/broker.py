@@ -132,6 +132,19 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         from backend.safety import hermes_actions
         return hermes_actions.classify_verb((payload or {}).get("verb", ""))
 
+    if kind == "channels_record":
+        # Trigger a DVR recording — low blast radius, deletable via the inverse.
+        return Risk.LOW, Reversibility.REVERSIBLE_BY_INVERSE
+
+    if kind == "unraid_docker":
+        # Restart a Docker container — a service restart is HIGH; always needs
+        # a human tap for an agent/autonomous actor.
+        return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
+
+    if kind == "obsidian_task":
+        # Check off a vault task — low blast radius, reversible by unchecking.
+        return Risk.LOW, Reversibility.REVERSIBLE
+
     # Unknown kind — we have no policy for it.
     return Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN
 
@@ -216,10 +229,47 @@ async def _dispatch_hermes_action(target: str, payload: dict) -> dict:
     return {"command": command, "response": r}
 
 
+async def _dispatch_channels_record(target: str, payload: dict) -> dict:
+    """Trigger a Channels DVR recording for the given program_id.
+
+    Calls channels_dvr.trigger_recording directly from this PC — NOT via Hermes.
+    """
+    from backend.integrations import channels_dvr
+
+    r = await channels_dvr.trigger_recording(payload["program_id"])
+    # trigger_recording returns a dict; surface it directly.
+    return r if isinstance(r, dict) else {"result": r}
+
+
+async def _dispatch_unraid_docker(target: str, payload: dict) -> dict:
+    """Restart a Docker container on Unraid.
+
+    Calls unraid.restart_docker directly from this PC — NOT via Hermes.
+    """
+    from backend.integrations import unraid
+
+    ok = await unraid.restart_docker(payload["container_id"])
+    return {"success": bool(ok)}
+
+
+async def _dispatch_obsidian_task(target: str, payload: dict) -> dict:
+    """Check off a task in an Obsidian vault note.
+
+    Calls obsidian.complete_task directly from this PC — NOT via Hermes.
+    """
+    from backend.integrations import obsidian
+
+    await obsidian.complete_task(payload["note_path"], payload["task_text"])
+    return {"ok": True}
+
+
 _DISPATCHERS = {
     "ha_service": _dispatch_ha_service,
     "hermes_relay": _dispatch_hermes_relay,
     "hermes_action": _dispatch_hermes_action,
+    "channels_record": _dispatch_channels_record,
+    "unraid_docker": _dispatch_unraid_docker,
+    "obsidian_task": _dispatch_obsidian_task,
 }
 
 

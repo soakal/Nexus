@@ -159,6 +159,104 @@ async def _hermes_command(input: dict) -> str:  # noqa: A002
         return f"hermes_command error: {e}"
 
 
+async def _channels_record(input: dict) -> str:  # noqa: A002
+    """Trigger a Channels DVR recording by program_id.
+
+    Goes through the safety broker (Risk.LOW → agent ALLOWED automatically).
+    Dispatches DIRECT from this PC — not via Hermes.
+    """
+    try:
+        program_id = (input or {}).get("program_id", "")
+        if not program_id or not str(program_id).strip():
+            return (
+                "channels_record error: 'program_id' is required and must be a non-empty string; "
+                f"got {program_id!r}"
+            )
+
+        program_id = str(program_id).strip()
+        key = _idem_key_for("channels_record", {"program_id": program_id})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="channels_record",
+            target=program_id,
+            payload={"program_id": program_id},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"channels_record error: {e}"
+
+
+async def _unraid_docker_restart(input: dict) -> str:  # noqa: A002
+    """Restart a Docker container on Unraid by container_id.
+
+    Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM;
+    a human must confirm before the restart executes).
+    Dispatches DIRECT from this PC — not via Hermes.
+    """
+    try:
+        container_id = (input or {}).get("container_id", "")
+        if not container_id or not str(container_id).strip():
+            return (
+                "unraid_docker_restart error: 'container_id' is required and must be a non-empty string; "
+                f"got {container_id!r}"
+            )
+
+        container_id = str(container_id).strip()
+        key = _idem_key_for("unraid_docker_restart", {"container_id": container_id})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="unraid_docker",
+            target=container_id,
+            payload={"container_id": container_id},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"unraid_docker_restart error: {e}"
+
+
+async def _obsidian_complete_task(input: dict) -> str:  # noqa: A002
+    """Check off a task in an Obsidian vault note.
+
+    Goes through the safety broker (Risk.LOW → agent ALLOWED automatically).
+    Dispatches DIRECT from this PC — not via Hermes.
+    """
+    try:
+        note_path = (input or {}).get("note_path", "")
+        task_text = (input or {}).get("task_text", "")
+        if not note_path or not str(note_path).strip():
+            return (
+                "obsidian_complete_task error: 'note_path' is required and must be a non-empty string; "
+                f"got {note_path!r}"
+            )
+        if not task_text or not str(task_text).strip():
+            return (
+                "obsidian_complete_task error: 'task_text' is required and must be a non-empty string; "
+                f"got {task_text!r}"
+            )
+
+        note_path = str(note_path).strip()
+        task_text = str(task_text).strip()
+        key = _idem_key_for("obsidian_complete_task", {"note_path": note_path, "task_text": task_text})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="obsidian_task",
+            target=note_path,
+            payload={"note_path": note_path, "task_text": task_text},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"obsidian_complete_task error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Write tool registry
 # ---------------------------------------------------------------------------
@@ -210,6 +308,68 @@ WRITE_TOOLS: list[ReadTool] = [
             "required": ["verb"],
         },
         dispatch=_hermes_command,
+    ),
+    ReadTool(
+        name="channels_record",
+        description=(
+            "Trigger a Channels DVR recording for a program by program_id. "
+            "Goes through the safety broker (LOW risk — auto-allowed for agents). "
+            "Dispatches direct from this PC, not via Hermes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "program_id": {
+                    "type": "string",
+                    "description": "Channels DVR program id to record, e.g. '12345'",
+                },
+            },
+            "required": ["program_id"],
+        },
+        dispatch=_channels_record,
+    ),
+    ReadTool(
+        name="unraid_docker_restart",
+        description=(
+            "Restart a Docker container on Unraid by container_id. "
+            "Goes through the safety broker (HIGH risk — needs human confirmation "
+            "before the restart executes for an agent). "
+            "Dispatches direct from this PC, not via Hermes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "container_id": {
+                    "type": "string",
+                    "description": "Docker container id or name on Unraid, e.g. 'plex' or 'abc123def456'",
+                },
+            },
+            "required": ["container_id"],
+        },
+        dispatch=_unraid_docker_restart,
+    ),
+    ReadTool(
+        name="obsidian_complete_task",
+        description=(
+            "Check off an open task (- [ ] ...) in an Obsidian vault note. "
+            "Goes through the safety broker (LOW risk — auto-allowed for agents). "
+            "Dispatches direct from this PC, not via Hermes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "note_path": {
+                    "type": "string",
+                    "description": "Vault-relative path to the note, e.g. '2026-06-17.md' or 'Projects/Todo.md'",
+                },
+                "task_text": {
+                    "type": "string",
+                    "description": "Exact text of the task (without the '- [ ] ' prefix), e.g. 'Call dentist'",
+                },
+            },
+            "required": ["note_path", "task_text"],
+        },
+        dispatch=_obsidian_complete_task,
     ),
 ]
 
