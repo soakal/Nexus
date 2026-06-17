@@ -76,7 +76,11 @@ async def notify(payload: dict) -> bool:
         headers = {"Content-Type": "application/json"}
 
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        # 30s (not 5s): a full daily briefing is several KB and Hermes forwards it
+        # to Telegram before replying, which can exceed 5s on the ~2s-latency LXC
+        # link — a false timeout marks it failed, queues it, and the retry re-sends
+        # to Telegram (the briefing-spam root cause). 30s comfortably covers it.
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(f"{settings.hermes_host}/hermes/notify", json=payload, headers=headers)
             if resp.status_code in (200, 201, 204):
                 return True
@@ -97,7 +101,7 @@ async def action(payload: dict) -> bool:
         headers = {"Content-Type": "application/json"}
 
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=30) as client:  # 30s: Hermes->Telegram round-trip can be slow
             resp = await client.post(f"{settings.hermes_host}/hermes/action", json=payload, headers=headers)
             return resp.status_code in (200, 201, 204)
     except Exception:
@@ -265,7 +269,7 @@ async def deliver_pending() -> None:
     delivered_ids: list[int] = []
     failed_ids: list[int] = []
 
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(timeout=30) as client:  # 30s: large queued briefings need headroom (see notify)
         for delivery in pending:
             try:
                 payload = json.loads(delivery["payload_json"])
