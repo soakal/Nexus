@@ -92,6 +92,26 @@ async def notify(payload: dict) -> bool:
     return False
 
 
+def _ok_from_action_json(data: dict) -> bool:
+    """Read Hermes's structured-action success signal.
+
+    Newer Hermes (the #2 response-contract change) returns {"ok": bool, ...} on
+    /hermes/action. Older Hermes returns only {"response": str}. So: trust an
+    explicit "ok" when present; otherwise fall back to the same prefix heuristic
+    Hermes uses — a result is failed only if the response text starts with
+    "error" (case-insensitive). Absent/blank body degrades to True (HTTP 2xx
+    already gated the call) to preserve back-compat before Brian deploys #2.
+    """
+    if not isinstance(data, dict):
+        return True
+    if isinstance(data.get("ok"), bool):
+        return data["ok"]
+    text = (data.get("response") or "").strip().lower()
+    if not text:
+        return True
+    return not text.startswith("error")
+
+
 async def action(payload: dict) -> bool:
     from backend.config import get_settings
     settings = get_settings()
@@ -103,10 +123,56 @@ async def action(payload: dict) -> bool:
     try:
         async with httpx.AsyncClient(timeout=30) as client:  # 30s: Hermes->Telegram round-trip can be slow
             resp = await client.post(f"{settings.hermes_host}/hermes/action", json=payload, headers=headers)
-            return resp.status_code in (200, 201, 204)
+            if resp.status_code not in (200, 201, 204):
+                return False
+            # A 2xx with a structured {"ok": false} body is a Hermes-side action
+            # failure (e.g. Proxmox returned 500) — surface it as False even though
+            # the HTTP call landed. Body parse failures fall back to the 2xx result.
+            try:
+                return _ok_from_action_json(resp.json())
+            except Exception:
+                return True
     except Exception:
         _queue_delivery(payload, "action")
         return False
+
+
+async def relay_action(message: str) -> dict:
+    """Structured relay used by the broker for agent/autonomous actions.
+
+    Unlike relay() (which returns a human string and swallows transport errors
+    INTO that string, so the broker can't tell a real failure from a normal
+    reply), this returns Hermes's structured contract:
+        {"ok": bool, "response": str, "intent": str | None}
+    A transport error or non-200 yields ok=False with the detail in "response",
+    so the broker records the action FAILED instead of silently "succeeding" on
+    an error string. Back-compatible with pre-#2 Hermes via _ok_from_action_json.
+    """
+    from backend.config import get_settings
+    settings = get_settings()
+    headers = {"Content-Type": "application/json"}
+    try:
+        headers["X-Webhook-Secret"] = settings.hermes_webhook_secret
+    except Exception:
+        pass
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.hermes_host}/hermes/action", json={"message": message}, headers=headers
+            )
+            if resp.status_code != 200:
+                return {"ok": False, "response": f"Hermes returned HTTP {resp.status_code}.", "intent": None}
+            try:
+                data = resp.json()
+            except Exception:
+                return {"ok": True, "response": "(Hermes returned a non-JSON response.)", "intent": None}
+            return {
+                "ok": _ok_from_action_json(data),
+                "response": data.get("response") or "(Hermes returned no response.)",
+                "intent": data.get("intent"),
+            }
+    except Exception as e:
+        return {"ok": False, "response": f"Hermes is not reachable right now: {e}", "intent": None}
 
 
 def _queue_delivery(payload: dict, delivery_type: str) -> None:

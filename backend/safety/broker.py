@@ -225,8 +225,14 @@ async def _dispatch_hermes_action(target: str, payload: dict) -> dict:
     from backend.safety import hermes_actions
 
     command = hermes_actions.build_command(payload["verb"], payload.get("args") or {})
-    r = await hermes.relay(command)
-    return {"command": command, "response": r}
+    # Use the structured relay (Tier 1.4 follow-up, now unblocked by the Hermes #2
+    # response contract): it returns {"ok", "response", "intent"} so a Hermes-side
+    # action failure (e.g. Proxmox 500 → "error: ...") is no longer swallowed into
+    # a success string. Raise on ok=False so execute_action records this FAILED.
+    result = await hermes.relay_action(command)
+    if not result.get("ok", True):
+        raise RuntimeError(f"Hermes action failed: {result.get('response')}")
+    return {"command": command, "response": result.get("response"), "intent": result.get("intent")}
 
 
 async def _dispatch_channels_record(target: str, payload: dict) -> dict:

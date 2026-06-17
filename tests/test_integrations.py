@@ -171,3 +171,53 @@ async def test_hermes_health_dead():
 
         from backend.integrations.hermes import health_check
         assert await health_check() is False
+
+
+def test_hermes_ok_from_action_json():
+    """The #2 structured-action signal: explicit 'ok' wins; otherwise the
+    'error'-prefix heuristic; absent/blank degrades to True (back-compat)."""
+    from backend.integrations.hermes import _ok_from_action_json
+    assert _ok_from_action_json({"ok": True, "response": "ok: start sent to 101"}) is True
+    assert _ok_from_action_json({"ok": False, "response": "error: Proxmox 500"}) is False
+    # Pre-#2 Hermes (no 'ok' field) — fall back to the response prefix.
+    assert _ok_from_action_json({"response": "error: invalid action"}) is False
+    assert _ok_from_action_json({"response": "VMs/LXCs:\n..."}) is True
+    # Absent/blank body degrades to True (HTTP 2xx already gated the call).
+    assert _ok_from_action_json({}) is True
+    assert _ok_from_action_json({"response": ""}) is True
+
+
+@pytest.mark.asyncio
+async def test_hermes_relay_action_failure_signal():
+    """relay_action surfaces a Hermes-side {'ok': false} as ok=False (not a
+    success string), so the broker can record the action FAILED."""
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "ok": False,
+            "response": "error: Proxmox returned 500",
+            "intent": "vm_action",
+        }
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.hermes import relay_action
+        result = await relay_action("start 101")
+        assert result["ok"] is False
+        assert "500" in result["response"]
+        assert result["intent"] == "vm_action"
+
+
+@pytest.mark.asyncio
+async def test_hermes_relay_action_unreachable():
+    """A transport failure yields ok=False with the detail in 'response'."""
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(side_effect=Exception("connection refused"))
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.hermes import relay_action
+        result = await relay_action("start 101")
+        assert result["ok"] is False
+        assert "not reachable" in result["response"].lower()

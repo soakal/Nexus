@@ -440,7 +440,8 @@ def test_classify_hermes_action_per_verb():  # AC2.1
 
 @pytest.mark.asyncio
 async def test_user_hermes_action_executes_and_logs(eng):  # AC2.2
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="done") as rl:
+    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
+               return_value={"ok": True, "response": "done", "intent": "restart_service"}) as rl:
         res = await execute_action(
             actor="user", kind="hermes_action", target="hermes",
             payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
@@ -460,7 +461,8 @@ async def test_user_hermes_action_executes_and_logs(eng):  # AC2.2
 
 @pytest.mark.asyncio
 async def test_agent_low_hermes_action_executes(eng):  # AC2.3 — autonomy ON (no SystemState row -> default True)
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="pong") as rl:
+    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
+               return_value={"ok": True, "response": "pong", "intent": "proxmox_status"}) as rl:
         res = await execute_action(
             actor="agent", kind="hermes_action", target="hermes",
             payload={"verb": "proxmox_status", "args": {}},
@@ -472,7 +474,8 @@ async def test_agent_low_hermes_action_executes(eng):  # AC2.3 — autonomy ON (
 
 @pytest.mark.asyncio
 async def test_agent_high_hermes_action_needs_confirm_then_confirmed(eng):  # AC2.4
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="ok") as rl:
+    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
+               return_value={"ok": True, "response": "ok", "intent": "restart_service"}) as rl:
         res = await execute_action(
             actor="agent", kind="hermes_action", target="hermes",
             payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
@@ -517,7 +520,8 @@ async def test_hermes_action_injection_blocked(eng):
 
 @pytest.mark.asyncio
 async def test_hermes_action_idempotency_replay(eng):  # AC2.8
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="ok") as rl:
+    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
+               return_value={"ok": True, "response": "ok", "intent": "restart_service"}) as rl:
         res1 = await execute_action(
             actor="user", kind="hermes_action", target="hermes",
             payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
@@ -597,7 +601,8 @@ async def test_chat_hermes_known_verb_routes_structured(eng):  # AC4.1
         return verb_json  # the verb-pick prompt
 
     with patch("backend.agents.router.haiku", new=fake_haiku), \
-         patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="restarted") as rl:
+         patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
+               return_value={"ok": True, "response": "restarted", "intent": "restart_service"}) as rl:
         out = await chat_mod.chat(None, "restart jellyfin")
 
     assert out["reply"] == "restarted"

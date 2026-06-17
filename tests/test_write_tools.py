@@ -194,9 +194,9 @@ async def test_hermes_command_low_risk_verb_executed(eng):
     from backend.agents.write_tools import _hermes_command
 
     with patch(
-        "backend.integrations.hermes.relay",
+        "backend.integrations.hermes.relay_action",
         new_callable=AsyncMock,
-        return_value="proxmox is healthy",
+        return_value={"ok": True, "response": "proxmox is healthy", "intent": "proxmox_status"},
     ) as rl:
         result = await _hermes_command({"verb": "proxmox_status", "args": {}})
 
@@ -368,9 +368,9 @@ async def test_hermes_command_actor_is_agent(eng):
     from backend.safety.broker import execute_action as real_ea
 
     with patch(
-        "backend.integrations.hermes.relay",
+        "backend.integrations.hermes.relay_action",
         new_callable=AsyncMock,
-        return_value="ok",
+        return_value={"ok": True, "response": "ok", "intent": "proxmox_status"},
     ):
         with patch(
             "backend.safety.broker.execute_action",
@@ -594,9 +594,9 @@ async def test_hermes_command_idem_key_threading(eng):
 
     with patch("backend.safety.broker.execute_action", side_effect=capturing_ea):
         with patch(
-            "backend.integrations.hermes.relay",
+            "backend.integrations.hermes.relay_action",
             new_callable=AsyncMock,
-            return_value="proxmox is healthy",
+            return_value={"ok": True, "response": "proxmox is healthy", "intent": "proxmox_status"},
         ):
             # Without context → None
             await _hermes_command({"verb": "proxmox_status", "args": {}})
