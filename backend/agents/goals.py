@@ -391,6 +391,14 @@ async def reconcile_running(
                     backoff_until=backoff_until,
                     updated_at=now,
                 )
+                # Best-effort phone alert for auto-approved goals that failed.
+                # Inside the per-goal try/except so a notify failure never aborts the loop.
+                if g.get("approved_by", "").startswith("auto:"):
+                    from backend import events
+                    await events.notify_phone(
+                        f"NEXUS auto-started goal FAILED: {g.get('title')}",
+                        kind="goal_failed",
+                    )
             # still-running tasks are left untouched
         except Exception:
             logger.exception("reconcile_running: error processing goal %s", g.get("id"))

@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     backup_retention_days: int = 7
     backup_time: str = "03:30"  # 24h HH:MM for the daily backup job
 
+    # Per-verb throttle + circuit breaker on broker writes (Tier 3 guardrails).
+    # Applied ONLY to agent/autonomous ALLOWED dispatches; user actions are never throttled.
+    verb_throttle_max: int = 5           # max dispatches per kind in the window
+    verb_throttle_window_s: int = 300    # rolling window in seconds (5 min)
+    breaker_failure_threshold: int = 3   # consecutive failures in window to trip the breaker
+    breaker_cooldown_s: int = 900        # seconds a tripped kind stays forbidden (15 min)
+
     # /api/trigger HMAC signing (Tier 1.6 autonomy ingress hardening).
     # trigger_hmac_required=False: backward-compatible — Bearer-only callers still work.
     # trigger_hmac_required=True: every call must carry a valid X-Timestamp / X-Signature.

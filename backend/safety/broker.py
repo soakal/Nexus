@@ -540,7 +540,37 @@ async def execute_action(
             log_id=log_id,
         )
 
-    # decision == ALLOWED — dispatch.
+    # decision == ALLOWED — throttle/circuit-breaker gate for agent/autonomous actors.
+    # USER actions are never throttled (the user is always allowed — preserves chat UX).
+    if actor in (Actor.AGENT, Actor.AUTONOMOUS):
+        from backend.safety import throttle
+        from backend.config import get_settings
+        _s = get_settings()
+        _ok, _reason = throttle.allow(
+            kind,
+            max_per_window=_s.verb_throttle_max,
+            window_s=_s.verb_throttle_window_s,
+        )
+        if not _ok:
+            await asyncio.to_thread(
+                _update_action_log, log_id, Decision.FORBIDDEN.value, json.dumps({"reason": _reason})
+            )
+            await _publish_action(actor, kind, target, Decision.FORBIDDEN, risk, reversibility, log_id)
+            from backend import events
+            await events.notify_phone(
+                f"NEXUS blocked '{kind}' ({_reason}).",
+                kind="throttled",
+            )
+            return ActionResult(
+                decision=Decision.FORBIDDEN,
+                risk=risk,
+                reversibility=reversibility,
+                log_id=log_id,
+                error=_reason,
+            )
+        throttle.record_attempt(kind)
+
+    # dispatch.
     dispatcher = _DISPATCHERS.get(kind)
     if dispatcher is None:
         error = f"no dispatcher for kind '{kind}'"
@@ -548,6 +578,24 @@ async def execute_action(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": error})
         )
         await _publish_action(actor, kind, target, Decision.FAILED, risk, reversibility, log_id)
+        # Record outcome for agent/autonomous circuit breaker (no dispatcher = failure).
+        if actor in (Actor.AGENT, Actor.AUTONOMOUS):
+            from backend.safety import throttle as _throttle
+            from backend.config import get_settings as _gs
+            _cfg = _gs()
+            _tripped = _throttle.record_result(
+                kind, False,
+                failure_threshold=_cfg.breaker_failure_threshold,
+                window_s=_cfg.verb_throttle_window_s,
+                cooldown_s=_cfg.breaker_cooldown_s,
+            )
+            if _tripped:
+                from backend import events as _events
+                await _events.notify_phone(
+                    f"NEXUS circuit breaker TRIPPED for '{kind}' after repeated failures"
+                    f" — auto-paused {_cfg.breaker_cooldown_s}s.",
+                    kind="circuit_breaker",
+                )
         return ActionResult(
             decision=Decision.FAILED,
             risk=risk,
@@ -564,6 +612,24 @@ async def execute_action(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": str(e)})
         )
         await _publish_action(actor, kind, target, Decision.FAILED, risk, reversibility, log_id)
+        # Record outcome for agent/autonomous circuit breaker.
+        if actor in (Actor.AGENT, Actor.AUTONOMOUS):
+            from backend.safety import throttle as _throttle
+            from backend.config import get_settings as _gs
+            _cfg = _gs()
+            _tripped = _throttle.record_result(
+                kind, False,
+                failure_threshold=_cfg.breaker_failure_threshold,
+                window_s=_cfg.verb_throttle_window_s,
+                cooldown_s=_cfg.breaker_cooldown_s,
+            )
+            if _tripped:
+                from backend import events as _events
+                await _events.notify_phone(
+                    f"NEXUS circuit breaker TRIPPED for '{kind}' after repeated failures"
+                    f" — auto-paused {_cfg.breaker_cooldown_s}s.",
+                    kind="circuit_breaker",
+                )
         return ActionResult(
             decision=Decision.FAILED,
             risk=risk,
@@ -576,6 +642,17 @@ async def execute_action(
         _update_action_log, log_id, Decision.EXECUTED.value, json.dumps(result)
     )
     await _publish_action(actor, kind, target, Decision.EXECUTED, risk, reversibility, log_id)
+    # Record outcome for agent/autonomous circuit breaker (success resets failure streak).
+    if actor in (Actor.AGENT, Actor.AUTONOMOUS):
+        from backend.safety import throttle as _throttle
+        from backend.config import get_settings as _gs
+        _cfg = _gs()
+        _throttle.record_result(
+            kind, True,
+            failure_threshold=_cfg.breaker_failure_threshold,
+            window_s=_cfg.verb_throttle_window_s,
+            cooldown_s=_cfg.breaker_cooldown_s,
+        )
     return ActionResult(
         decision=Decision.EXECUTED,
         risk=risk,
