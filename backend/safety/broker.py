@@ -475,6 +475,14 @@ async def execute_action(
     # Gate said no / not-yet — record stands as-is, nothing dispatched.
     if decision in (Decision.FORBIDDEN, Decision.NEEDS_CONFIRM):
         await _publish_action(actor, kind, target, decision, risk, reversibility, log_id)
+        # Phone alert ONLY on needs_confirm (something awaits human tap) — NOT on forbidden.
+        if decision == Decision.NEEDS_CONFIRM:
+            from backend import events
+            await events.notify_phone(
+                f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}). "
+                f"Open the Safety page to confirm or reject.",
+                kind="needs_confirm",
+            )
         return ActionResult(
             decision=decision,
             risk=risk,

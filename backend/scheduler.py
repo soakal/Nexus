@@ -138,6 +138,14 @@ async def _propose_goals():
         logger.error(f"Goal proposer job error: {e}")
 
 
+async def _autonomy_digest():
+    try:
+        from backend.agents.digest import send_autonomy_digest
+        await send_autonomy_digest()
+    except Exception as e:
+        logger.error(f"Autonomy digest job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -180,4 +188,21 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Goal proposer enabled: every {s.proposer_interval_hours}h (suggest-only)")
+    if getattr(s, "autonomy_digest_enabled", False):
+        digest_time = getattr(s, "autonomy_digest_time", "20:00")
+        try:
+            dh, dm = digest_time.split(":")
+            dh, dm = int(dh), int(dm)
+        except Exception:
+            logger.warning(
+                f"Invalid autonomy_digest_time {digest_time!r}; falling back to 20:00"
+            )
+            dh, dm = 20, 0
+        scheduler.add_job(
+            _autonomy_digest,
+            CronTrigger(hour=dh, minute=dm, timezone=timezone),
+            id="autonomy_digest",
+            replace_existing=True,
+        )
+        logger.info(f"Autonomy digest enabled: daily at {dh:02d}:{dm:02d} {timezone}")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

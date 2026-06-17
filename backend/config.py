@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # everything else (medium/high risk, irreversible, human-proposed) still needs human approval.
     auto_approve_low_risk: bool = True
 
+    # Phone notification settings (via Hermes->Telegram).
+    phone_notifications_enabled: bool = True   # gate for all notify_phone calls
+    autonomy_digest_enabled: bool = True        # send a daily autonomy summary
+    autonomy_digest_time: str = "20:00"         # 24h HH:MM for the daily digest job
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

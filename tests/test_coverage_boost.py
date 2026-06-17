@@ -251,8 +251,8 @@ def test_setup_scheduler_adds_jobs():
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    # 5 original jobs + 1 goal_proposer job (proposer_enabled defaults to True).
-    assert mock_add.call_count == 6
+    # 5 original jobs + 1 goal_proposer + 1 autonomy_digest (both enabled by default).
+    assert mock_add.call_count == 7
     # Verify jobs by checking the id kwarg in each call
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -264,6 +264,7 @@ def test_setup_scheduler_adds_jobs():
         "record_uptime",
         "record_speedtest",
         "goal_proposer",
+        "autonomy_digest",
     }
 
 

@@ -169,6 +169,12 @@ async def propose_goals_tick() -> dict:
                         "auto_approved" if appr.get("status") == "approved"
                         else res["status"]
                     )
+                    if entry["auto_approved"]:
+                        from backend import events
+                        await events.notify_phone(
+                            f"NEXUS auto-started a low-risk goal: {title}",
+                            kind="auto_approved",
+                        )
                 except Exception as _ae:
                     logger.warning(
                         "goal_proposer: auto-approve failed for goal %s: %s",

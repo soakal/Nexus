@@ -16,3 +16,20 @@ async def publish(event_type: str, payload: dict) -> None:
         await ws_manager.broadcast(msg)
     except Exception as e:  # never break the caller
         logger.debug(f"events.publish failed (ignored): {e}")
+
+
+async def notify_phone(content: str, *, kind: str = "autonomy_alert") -> bool:
+    """Best-effort phone push via Hermes->Telegram. Gated by phone_notifications_enabled.
+
+    NEVER raises (a notify failure must not affect the caller). Returns delivered bool.
+    """
+    try:
+        from backend.config import get_settings
+        if not getattr(get_settings(), "phone_notifications_enabled", False):
+            return False
+        from datetime import datetime
+        from backend.integrations import hermes
+        return await hermes.notify({"type": kind, "content": content, "timestamp": datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.debug(f"events.notify_phone failed (ignored): {e}")
+        return False
