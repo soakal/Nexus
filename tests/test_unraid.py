@@ -66,17 +66,29 @@ async def test_unraid_fetch_multiple_data_disks():
 
 
 @pytest.mark.asyncio
-async def test_unraid_fetch_http_error_returns_defaults():
-    """A non-2xx GraphQL response (raise_for_status raises) yields default data."""
+async def test_unraid_fetch_http_error_raises():
+    """A non-2xx GraphQL response (raise_for_status raises) must RAISE — NOT return
+    zero-filled defaults. Zeros look like catastrophic data loss to the briefing/
+    trends/proposer; a raise makes downstream report Unraid 'unavailable' instead."""
     resp = _gql_response({}, status_code=500)
     resp.raise_for_status.side_effect = Exception("HTTP 500")
     with patch("httpx.AsyncClient") as mock_cls:
         mock_cls.return_value = _post_client(resp)
         from backend.integrations.unraid import fetch
-        result = await fetch()
-        assert result.array_status == "unknown"
-        assert result.docker_containers == []
-        assert result.storage_total_gb == 0.0
+        with pytest.raises(Exception):
+            await fetch()
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_connection_error_raises():
+    """A connection failure (post raises) must propagate as unavailable, not zeros."""
+    with patch("httpx.AsyncClient") as mock_cls:
+        client = AsyncMock()
+        client.__aenter__.return_value.post = AsyncMock(side_effect=Exception("connection refused"))
+        mock_cls.return_value = client
+        from backend.integrations.unraid import fetch
+        with pytest.raises(Exception):
+            await fetch()
 
 
 @pytest.mark.asyncio

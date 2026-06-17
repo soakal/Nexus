@@ -77,7 +77,14 @@ async def fetch() -> UnraidData:
                 for c in containers
             ]
         except Exception as e:
-            logger.warning(f"Unraid GraphQL fetch failed: {e}")
+            # A failed/incomplete read must NOT be reported as real zeros — a
+            # zero-filled UnraidData (storage 0.0/0.0, array "unknown", 0 docker)
+            # looks like CATASTROPHIC DATA LOSS to the briefing/trends/proposer and
+            # fires false "storage zeroed / massive negative trend / ANOMALY" alerts.
+            # Raise instead so callers (gather(return_exceptions=True)) treat Unraid
+            # as UNAVAILABLE — the cache caches+re-raises the exception briefly.
+            logger.warning(f"Unraid fetch failed (reporting unavailable): {e}")
+            raise RuntimeError(f"Unraid unavailable: {e}") from e
 
     return data
 
