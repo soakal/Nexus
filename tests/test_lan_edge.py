@@ -114,6 +114,27 @@ def test_cors_allows_localhost_origin(lan_client):
     )
 
 
+def test_cors_allows_tailscale_origins(lan_client):
+    """Tailscale CGNAT (100.64.0.0/10) + *.ts.net MagicDNS must be allowed so remote
+    access over Tailscale works (regression: the LAN-edge allowlist must not block it)."""
+    for origin in (
+        "http://100.101.102.103:3000",   # Tailscale CGNAT IP
+        "http://100.64.0.1:8000",
+        "http://mypc.tailnet-name.ts.net:3000",  # MagicDNS hostname
+    ):
+        resp = lan_client.get("/api/health", headers={"Origin": origin})
+        assert resp.status_code == 200
+        acao = resp.headers.get("access-control-allow-origin", "")
+        assert acao == origin, f"Tailscale origin {origin!r} should be CORS-allowed, got {acao!r}"
+
+
+def test_cors_blocks_non_tailscale_100_range(lan_client):
+    """100.x OUTSIDE the 100.64-127 CGNAT band is NOT Tailscale and must stay blocked."""
+    resp = lan_client.get("/api/health", headers={"Origin": "http://100.200.0.1:3000"})
+    acao = resp.headers.get("access-control-allow-origin", "")
+    assert acao != "http://100.200.0.1:3000"
+
+
 def test_cors_blocks_public_origin(lan_client):
     """A public origin must NOT appear in access-control-allow-origin."""
     resp = lan_client.get(
