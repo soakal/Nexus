@@ -120,4 +120,9 @@ export const api = {
     approve: (id) => req('POST', `/goals/${id}/approve`),
     reject: (id) => req('POST', `/goals/${id}/reject`),
   },
+  facts: {
+    list: () => req('GET', '/facts/'),
+    recall: (q) => req('GET', `/facts/recall?query=${encodeURIComponent(q)}`),
+    dismiss: (id) => req('POST', `/facts/${id}/dismiss`),
+  },
 }

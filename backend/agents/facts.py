@@ -52,7 +52,7 @@ def _age_days(created_at: datetime, now: datetime) -> float:
 # ---------------------------------------------------------------------------
 
 def _db_active_facts() -> list[dict]:
-    """Return all active (superseded_by IS NULL) facts as plain dicts.
+    """Return all active (superseded_by IS NULL AND dismissed_at IS NULL) facts as plain dicts.
 
     Opens its own Session; never raises (returns [] on any error).
     """
@@ -61,7 +61,11 @@ def _db_active_facts() -> list[dict]:
         from backend.database import Fact, engine
 
         with Session(engine) as session:
-            stmt = select(Fact).where(Fact.superseded_by == None)  # noqa: E711
+            stmt = (
+                select(Fact)
+                .where(Fact.superseded_by == None)  # noqa: E711
+                .where(Fact.dismissed_at == None)   # noqa: E711
+            )
             rows = session.exec(stmt).all()
             return [
                 {
@@ -78,6 +82,69 @@ def _db_active_facts() -> list[dict]:
     except Exception as exc:
         logger.debug(f"_db_active_facts: error (ignored): {exc}")
         return []
+
+
+def _db_list_facts_for_audit() -> list[dict]:
+    """Return all active facts enriched with effective_confidence + above_floor.
+
+    Active = superseded_by IS NULL AND dismissed_at IS NULL.
+    Sorted: newest / highest effective_confidence first.
+    Opens its own Session; raises on DB errors (caller wraps in to_thread).
+    """
+    from sqlmodel import Session, select
+    from backend.database import Fact, engine
+
+    with Session(engine) as session:
+        stmt = (
+            select(Fact)
+            .where(Fact.superseded_by == None)  # noqa: E711
+            .where(Fact.dismissed_at == None)   # noqa: E711
+        )
+        rows = session.exec(stmt).all()
+
+    now = datetime.utcnow()
+    result = []
+    for r in rows:
+        age = _age_days(r.created_at, now)
+        eff = effective_confidence(r.confidence, age)
+        result.append({
+            "id": r.id,
+            "subject": r.subject,
+            "predicate": r.predicate,
+            "value": r.value,
+            "confidence": r.confidence,
+            "source": r.source,
+            "created_at": r.created_at.isoformat(),
+            "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+            "effective_confidence": round(eff, 4),
+            "above_floor": eff >= EFFECTIVE_FLOOR,
+        })
+
+    # Sort: newest / highest effective_confidence first
+    result.sort(key=lambda x: (x["effective_confidence"],), reverse=True)
+    return result
+
+
+def _db_dismiss_fact(fact_id: int) -> bool:
+    """Soft-dismiss a fact by setting dismissed_at = utcnow().
+
+    Returns True if a row was updated, False if not found.
+    The row is PRESERVED — no DELETE. Dismissed facts are excluded from
+    _db_active_facts (and thus from facts_recall) and from _db_list_facts_for_audit.
+    Opens its own Session; raises on DB errors (caller wraps in to_thread).
+    """
+    from sqlmodel import Session
+    from backend.database import Fact, engine
+
+    with Session(engine) as session:
+        fact = session.get(Fact, fact_id)
+        if fact is None:
+            return False
+        fact.dismissed_at = datetime.utcnow()
+        fact.updated_at = datetime.utcnow()
+        session.add(fact)
+        session.commit()
+        return True
 
 
 def _db_upsert_fact(
@@ -218,6 +285,29 @@ async def facts_recall(query: str, limit: int = RECALL_LIMIT) -> str:
     except Exception as exc:
         logger.debug(f"facts_recall: error (ignored): {exc}")
         return ""
+
+
+async def list_facts_for_audit() -> list[dict]:
+    """Async wrapper for _db_list_facts_for_audit.
+
+    Returns the active fact list with effective_confidence + above_floor.
+    Best-effort: returns [] on any error.
+    """
+    try:
+        return await asyncio.to_thread(_db_list_facts_for_audit)
+    except Exception as exc:
+        logger.debug(f"list_facts_for_audit: error (ignored): {exc}")
+        return []
+
+
+async def dismiss_fact(fact_id: int) -> bool:
+    """Async wrapper for _db_dismiss_fact.
+
+    Returns True if the fact was dismissed, False if not found.
+    Best-effort: re-raises on DB errors (let the API layer handle 500s)
+    but swallows unexpected non-DB errors gracefully.
+    """
+    return await asyncio.to_thread(_db_dismiss_fact, fact_id)
 
 
 async def extract_and_store(user_message: str, conversation_id: int | None) -> None:

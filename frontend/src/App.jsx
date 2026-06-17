@@ -13,7 +13,8 @@ import Uptime from './pages/Uptime'
 import HomeAssistant from './pages/HomeAssistant'
 import Settings from './pages/Settings'
 import Safety from './pages/Safety'
-import { LayoutDashboard, FileText, ListTodo, Bot, Tv2, TrendingUp, Home, Settings as SettingsIcon, Activity, MessageSquare, CalendarDays, ShieldCheck } from 'lucide-react'
+import Facts from './pages/Facts'
+import { LayoutDashboard, FileText, ListTodo, Bot, Tv2, TrendingUp, Home, Settings as SettingsIcon, Activity, MessageSquare, CalendarDays, ShieldCheck, Brain } from 'lucide-react'
 import { API_BASE } from './lib/api'
 
 const NAV = [
@@ -28,6 +29,7 @@ const NAV = [
   { to: '/uptime', icon: Activity, label: 'Uptime' },
   { to: '/agents', icon: Bot, label: 'Agents' },
   { to: '/safety', icon: ShieldCheck, label: 'Safety' },
+  { to: '/facts', icon: Brain, label: 'Facts' },
   { to: '/settings', icon: SettingsIcon, label: 'Settings' },
 ]
 
@@ -239,6 +241,7 @@ export default function App() {
             <Route path="/uptime" element={<Uptime />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/safety" element={<Safety />} />
+            <Route path="/facts" element={<Facts />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
         </main>

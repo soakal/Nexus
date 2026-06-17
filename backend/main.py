@@ -135,6 +135,7 @@ from backend.api import (
     briefing,
     channels,
     chat,
+    facts,
     goals,
     homeassistant,
     safety,
@@ -150,6 +151,7 @@ from backend.api import (
 from backend.api.trigger import router as trigger_router
 
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
+app.include_router(facts.router, prefix="/api/facts", tags=["facts"])
 app.include_router(goals.router, prefix="/api/goals", tags=["goals"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(briefing.router, prefix="/api/briefing", tags=["briefing"])

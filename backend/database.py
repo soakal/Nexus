@@ -188,6 +188,7 @@ class Fact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     last_seen_at: datetime = Field(default_factory=datetime.utcnow)
+    dismissed_at: datetime | None = None    # set by soft-dismiss; excluded from recall/audit
 
 
 # Immutable audit log of every side-effecting action that passed through the
@@ -339,6 +340,17 @@ def _ensure_goal_columns():
     _safe_add_column("goal", "rejection_reason", "TEXT")
 
 
+def _ensure_fact_columns():
+    """Idempotently add columns introduced after the original `fact` table shipped.
+
+    Each column is added independently via _safe_add_column so a race on one
+    column never aborts the others. Best-effort — a failure here is logged but
+    never fatal to startup. No-op on a fresh DB (create_all already made the
+    column) and on test :memory: engines.
+    """
+    _safe_add_column("fact", "dismissed_at", "TIMESTAMP")
+
+
 def _ensure_system_state():
     """Idempotently seed the single SystemState row (id=1).
 
@@ -382,6 +394,7 @@ def create_db_and_tables():
     _ensure_spendlog_columns()
     _ensure_conversation_columns()
     _ensure_goal_columns()
+    _ensure_fact_columns()
     _ensure_system_state()
 
 
