@@ -122,6 +122,34 @@ async def test_channels_fetch():
 
 
 @pytest.mark.asyncio
+async def test_channels_fetch_dvr_non200_raises():
+    """A non-200 /dvr disk-stats read must RAISE (treated as unavailable), NOT report
+    0.0 GB storage that looks like data loss to the briefing/trends/proposer."""
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_dvr = MagicMock(status_code=503)
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.get = AsyncMock(return_value=mock_dvr)
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.channels_dvr import fetch
+        with pytest.raises(Exception):
+            await fetch()
+
+
+@pytest.mark.asyncio
+async def test_channels_fetch_connection_error_raises():
+    """A connection failure on the disk-stats read propagates as unavailable."""
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=Exception("connection refused"))
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.channels_dvr import fetch
+        with pytest.raises(Exception):
+            await fetch()
+
+
+@pytest.mark.asyncio
 async def test_hermes_health_alive():
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_resp = MagicMock(status_code=200)

@@ -44,16 +44,23 @@ async def fetch() -> ChannelsData:
         # byte counts, e.g. {"disk": {"total": ..., "free": ..., "used": ...}}.
         try:
             resp = await client.get(f"{host}/dvr")
-            if resp.status_code == 200:
-                dvr = resp.json() or {}
-                disk = dvr.get("disk") or {}
-                disk_total = disk.get("total", 0) or 0
-                disk_free = disk.get("free", 0) or 0
-                disk_used = disk.get("used") or max(disk_total - disk_free, 0)
-                data.storage_total_gb = round(disk_total / 1024**3, 1)
-                data.storage_used_gb = round(disk_used / 1024**3, 1)
+            if resp.status_code != 200:
+                raise RuntimeError(f"/dvr returned {resp.status_code}")
+            dvr = resp.json() or {}
+            disk = dvr.get("disk") or {}
+            disk_total = disk.get("total", 0) or 0
+            disk_free = disk.get("free", 0) or 0
+            disk_used = disk.get("used") or max(disk_total - disk_free, 0)
+            data.storage_total_gb = round(disk_total / 1024**3, 1)
+            data.storage_used_gb = round(disk_used / 1024**3, 1)
         except Exception as e:
-            logger.warning(f"Channels DVR stats failed: {e}")
+            # A failed disk-stats read must NOT be reported as real 0.0 GB storage —
+            # that looks like data loss to the briefing/trends/proposer (same bug
+            # that affected Unraid). Raise so callers treat Channels DVR as
+            # UNAVAILABLE; the cache caches+re-raises briefly. (The /dvr endpoint is
+            # also what health_check probes, so it is the right availability signal.)
+            logger.warning(f"Channels DVR stats failed (reporting unavailable): {e}")
+            raise RuntimeError(f"Channels DVR unavailable: {e}") from e
 
         # Recording jobs. The documented endpoint is /api/v1/jobs and fields are
         # snake_case: id, name, start_time/end_time (epoch seconds), duration,
