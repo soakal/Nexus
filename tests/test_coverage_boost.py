@@ -254,8 +254,9 @@ def test_setup_scheduler_adds_jobs():
     # 5 original jobs + step_watchdog + goal_proposer + autonomy_digest +
     # db_checkpoint + db_backup (backup_enabled=True by default) +
     # watchdog (watchdog_enabled=True by default) +
-    # spend_report (spend_report_enabled=True by default).
-    assert mock_add.call_count == 12
+    # spend_report (spend_report_enabled=True by default) +
+    # goal_recurrence (goal_recurrence_enabled=True by default).
+    assert mock_add.call_count == 13
     # Verify jobs by checking the id kwarg in each call
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -273,6 +274,7 @@ def test_setup_scheduler_adds_jobs():
         "db_backup",
         "watchdog",
         "spend_report",
+        "goal_recurrence",
     }
 
 

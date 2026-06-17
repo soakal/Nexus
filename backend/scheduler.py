@@ -189,6 +189,15 @@ async def _spend_report():
         logger.error(f"Spend report job error: {e}")
 
 
+async def _goal_recurrence():
+    try:
+        from backend.agents.goals import tick_recurring_goals
+        result = await tick_recurring_goals()
+        logger.info(f"Goal recurrence tick: {result}")
+    except Exception as e:
+        logger.error(f"Goal recurrence job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -307,4 +316,12 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Spend report enabled: weekly on {report_day} at {rh:02d}:{rm:02d} {timezone}")
+    if getattr(s, "goal_recurrence_enabled", True):
+        scheduler.add_job(
+            _goal_recurrence,
+            IntervalTrigger(minutes=30),
+            id="goal_recurrence",
+            replace_existing=True,
+        )
+        logger.info("Goal recurrence tick enabled: runs every 30 minutes")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

@@ -263,6 +263,12 @@ class Goal(SQLModel, table=True):
     approved_at: datetime | None = None
     expires_at: datetime | None = None
     rejection_reason: str | None = None
+    # Recurring-goal fields (cadence + category + success_criteria + next_eval_at).
+    # cadence=None means one-shot; "daily"|"weekly"|"monthly" enables recurrence.
+    cadence: str | None = None
+    category: str | None = None
+    success_criteria: str | None = None
+    next_eval_at: datetime | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -340,6 +346,20 @@ def _ensure_goal_columns():
     _safe_add_column("goal", "rejection_reason", "TEXT")
 
 
+def _ensure_goal_recurrence_columns():
+    """Idempotently add the four recurring-goal columns introduced in Tier 3 (council w33gixx93).
+
+    Separate from _ensure_goal_columns so existing deployments get an additive-only
+    migration — no mutation of the original shim. Each column is independent so a
+    failure on one never aborts the others. Best-effort — never fatal to startup.
+    No-op on a fresh DB (create_all already made the columns) and on :memory: engines.
+    """
+    _safe_add_column("goal", "cadence", "TEXT")
+    _safe_add_column("goal", "category", "TEXT")
+    _safe_add_column("goal", "success_criteria", "TEXT")
+    _safe_add_column("goal", "next_eval_at", "TIMESTAMP")
+
+
 def _ensure_fact_columns():
     """Idempotently add columns introduced after the original `fact` table shipped.
 
@@ -394,6 +414,7 @@ def create_db_and_tables():
     _ensure_spendlog_columns()
     _ensure_conversation_columns()
     _ensure_goal_columns()
+    _ensure_goal_recurrence_columns()
     _ensure_fact_columns()
     _ensure_system_state()
 

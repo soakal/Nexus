@@ -25,6 +25,9 @@ class GoalPropose(BaseModel):
     confidence: float = 0.6
     risk: str = "medium"
     reversibility: str = "unknown"
+    cadence: str | None = None
+    category: str | None = None
+    success_criteria: str | None = None
 
 
 class GoalReject(BaseModel):
@@ -45,6 +48,9 @@ async def propose_goal(body: GoalPropose, _=Depends(require_api_key)):
         reversibility=body.reversibility,
         ttl_seconds=s.goal_ttl_seconds,
         debounce_seconds=s.goal_debounce_seconds,
+        cadence=body.cadence,
+        category=body.category,
+        success_criteria=body.success_criteria,
     )
     return result
 

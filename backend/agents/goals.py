@@ -56,9 +56,31 @@ def _goal_to_dict(g: Goal) -> dict:
         "approved_at": g.approved_at.isoformat() if g.approved_at else None,
         "expires_at": g.expires_at.isoformat() if g.expires_at else None,
         "rejection_reason": g.rejection_reason,
+        "cadence": g.cadence,
+        "category": g.category,
+        "success_criteria": g.success_criteria,
+        "next_eval_at": g.next_eval_at.isoformat() if g.next_eval_at else None,
         "created_at": g.created_at.isoformat() if g.created_at else None,
         "updated_at": g.updated_at.isoformat() if g.updated_at else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cadence helpers (pure, no I/O)
+# ---------------------------------------------------------------------------
+
+_CADENCE_SECONDS: dict[str, int] = {
+    "daily": 86400,
+    "weekly": 604800,
+    "monthly": 2592000,
+}
+
+
+def _cadence_seconds(cadence: str | None) -> int | None:
+    """Return seconds for a cadence string, or None if unknown/None."""
+    if cadence is None:
+        return None
+    return _CADENCE_SECONDS.get(cadence)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +126,9 @@ def _db_insert_goal(
     fingerprint: str = "",
     proposal_at: datetime,
     expires_at: datetime | None = None,
+    cadence: str | None = None,
+    category: str | None = None,
+    success_criteria: str | None = None,
 ) -> dict:
     with Session(_db_mod.engine) as session:
         g = Goal(
@@ -117,6 +142,9 @@ def _db_insert_goal(
             fingerprint=fingerprint,
             proposal_at=proposal_at,
             expires_at=expires_at,
+            cadence=cadence,
+            category=category,
+            success_criteria=success_criteria,
         )
         session.add(g)
         session.commit()
@@ -225,6 +253,33 @@ def _db_create_task(prompt: str) -> int:
         return t.id  # type: ignore[return-value]
 
 
+def _db_due_recurring_goals(now: datetime) -> list[dict]:
+    """Return recurring goals whose next_eval_at is due.
+
+    A goal qualifies when ALL of:
+      - cadence IS NOT NULL
+      - next_eval_at IS NOT NULL
+      - next_eval_at <= now
+      - status IN ('completed', 'failed')
+
+    'running' is deliberately EXCLUDED so a recurring goal NEVER overlaps itself —
+    a new cycle is dispatched only after the previous cycle has FINISHED. The caller
+    (tick_recurring_goals) reconciles still-running goals against their Task status
+    first, so a finished-but-unreconciled goal becomes 'completed' and then eligible.
+    Called exclusively via asyncio.to_thread.
+    """
+    with Session(_db_mod.engine) as session:
+        stmt = (
+            select(Goal)
+            .where(Goal.cadence.isnot(None))  # type: ignore[attr-defined]
+            .where(Goal.next_eval_at.isnot(None))  # type: ignore[attr-defined]
+            .where(Goal.next_eval_at <= now)  # type: ignore[operator]
+            .where(Goal.status.in_(["completed", "failed"]))  # type: ignore[attr-defined]
+        )
+        goals = session.exec(stmt).all()
+        return [_goal_to_dict(g) for g in goals]
+
+
 # ---------------------------------------------------------------------------
 # Async interface
 # ---------------------------------------------------------------------------
@@ -239,12 +294,18 @@ async def propose(
     reversibility: str = "unknown",
     ttl_seconds: int | None = None,
     debounce_seconds: int | None = None,
+    cadence: str | None = None,
+    category: str | None = None,
+    success_criteria: str | None = None,
 ) -> dict:
     """Create a new Goal in 'proposed' status, unless debounce guards fire.
 
     Returns a dict with a top-level 'status' key:
       "proposed"   — goal inserted
       "debounced"  — not inserted; see 'reason' (duplicate_active | backoff | cooldown)
+
+    cadence, category, and success_criteria are optional recurring-goal fields.
+    Callers that omit them get the one-shot behaviour (cadence=None).
     """
     import asyncio
 
@@ -281,6 +342,9 @@ async def propose(
         fingerprint=fp,
         proposal_at=now,
         expires_at=expires_at,
+        cadence=cadence,
+        category=category,
+        success_criteria=success_criteria,
     )
     return {"status": "proposed", "goal": inserted}
 
@@ -324,13 +388,21 @@ async def approve(goal_id: int, *, approved_by: str = "user") -> dict:
     task_id = await asyncio.to_thread(_db_create_task, g["description"])
     await _self.get_pool().enqueue(task_id)
 
-    # Mark running and record the task linkage.
-    updated = await asyncio.to_thread(
-        _db_update_goal, goal_id,
-        status="running",
-        task_id=task_id,
-        updated_at=datetime.utcnow(),
-    )
+    # Build the update fields — always set status + task linkage.
+    update_fields: dict = {
+        "status": "running",
+        "task_id": task_id,
+        "updated_at": datetime.utcnow(),
+    }
+
+    # For recurring goals, schedule the FIRST recurrence now so the tick knows
+    # when to re-dispatch. One-shot goals (cadence=None) never get next_eval_at.
+    cadence = g.get("cadence")
+    secs = _cadence_seconds(cadence)
+    if secs is not None:
+        update_fields["next_eval_at"] = datetime.utcnow() + timedelta(seconds=secs)
+
+    updated = await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
     return {"status": "approved", "goal": updated, "task_id": task_id}
 
 
@@ -438,3 +510,73 @@ async def record_goal_result(
         backoff_until=backoff_until,
         updated_at=now,
     )
+
+
+async def tick_recurring_goals() -> dict:
+    """Scheduler tick: re-dispatch any recurring goals whose next_eval_at is due.
+
+    Safety contract:
+      - Kill-switch gated: if autonomy_enabled is False, returns immediately.
+      - Best-effort: a failure on one goal never aborts the loop and never raises.
+      - Re-dispatched Tasks go through the normal durable pool (no policy bypass).
+      - next_eval_at is advanced to utcnow() + cadence_seconds after each dispatch.
+
+    Returns {"redispatched": <count>} on success, or {"skipped": <reason>} when
+    the kill switch is off.
+    """
+    import asyncio
+
+    from backend.safety import governor
+
+    # Kill-switch gate — all DB work via to_thread (never block the event loop).
+    state = await asyncio.to_thread(governor.get_system_state)
+    if not state.get("autonomy_enabled", True):
+        return {"skipped": "autonomy_disabled"}
+
+    # Reconcile first: advance any still-'running' goal whose Task has finished to
+    # 'completed'/'failed' so it becomes eligible below. This is what lets a
+    # recurring goal re-run WITHOUT overlapping itself (the due query excludes
+    # 'running'). Best-effort — never aborts the tick.
+    try:
+        from backend.config import get_settings
+        _s = get_settings()
+        await reconcile_running(
+            backoff_base_seconds=getattr(_s, "goal_backoff_base_seconds", 300),
+            max_attempts=getattr(_s, "goal_max_attempts", 5),
+        )
+    except Exception:
+        logger.exception("tick_recurring_goals: reconcile_running failed (ignored)")
+
+    due = await asyncio.to_thread(_db_due_recurring_goals, datetime.utcnow())
+
+    import backend.agents.goals as _self
+
+    count = 0
+    for g in due:
+        try:
+            task_id = await asyncio.to_thread(_db_create_task, g["description"])
+            await _self.get_pool().enqueue(task_id)
+
+            cadence = g.get("cadence")
+            secs = _cadence_seconds(cadence)
+            next_eval = (
+                datetime.utcnow() + timedelta(seconds=secs)
+                if secs is not None
+                else None
+            )
+            update_fields: dict = {
+                "status": "running",
+                "task_id": task_id,
+                "updated_at": datetime.utcnow(),
+            }
+            if next_eval is not None:
+                update_fields["next_eval_at"] = next_eval
+
+            await asyncio.to_thread(_db_update_goal, g["id"], **update_fields)
+            count += 1
+        except Exception:
+            logger.exception(
+                "tick_recurring_goals: error re-dispatching goal %s", g.get("id")
+            )
+
+    return {"redispatched": count}

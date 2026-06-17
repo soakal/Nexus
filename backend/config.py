@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     breaker_failure_threshold: int = 3   # consecutive failures in window to trip the breaker
     breaker_cooldown_s: int = 900        # seconds a tripped kind stays forbidden (15 min)
 
+    # Recurring-goal scheduler tick (Tier 3 council w33gixx93).
+    # goal_recurrence_enabled=True: scheduler runs tick_recurring_goals every 30 min.
+    # Disable in .env to turn off re-dispatch without touching the kill switch.
+    goal_recurrence_enabled: bool = True
+
     # /api/trigger HMAC signing (Tier 1.6 autonomy ingress hardening).
     # trigger_hmac_required=False: backward-compatible — Bearer-only callers still work.
     # trigger_hmac_required=True: every call must carry a valid X-Timestamp / X-Signature.
