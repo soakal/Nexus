@@ -251,8 +251,9 @@ def test_setup_scheduler_adds_jobs():
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    # 5 original jobs + step_watchdog + goal_proposer + autonomy_digest (all enabled by default).
-    assert mock_add.call_count == 8
+    # 5 original jobs + step_watchdog + goal_proposer + autonomy_digest +
+    # db_checkpoint + db_backup (backup_enabled=True by default).
+    assert mock_add.call_count == 10
     # Verify jobs by checking the id kwarg in each call
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -266,6 +267,8 @@ def test_setup_scheduler_adds_jobs():
         "step_watchdog",
         "goal_proposer",
         "autonomy_digest",
+        "db_checkpoint",
+        "db_backup",
     }
 
 

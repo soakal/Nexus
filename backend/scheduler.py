@@ -157,6 +157,22 @@ async def _autonomy_digest():
         logger.error(f"Autonomy digest job error: {e}")
 
 
+async def _backup():
+    try:
+        from backend.agents.backup import run_backup_job
+        await run_backup_job()
+    except Exception as e:
+        logger.error(f"Backup job error: {e}")
+
+
+async def _checkpoint():
+    try:
+        from backend.agents.backup import run_checkpoint_job
+        await run_checkpoint_job()
+    except Exception as e:
+        logger.error(f"Checkpoint job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -224,4 +240,29 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Autonomy digest enabled: daily at {dh:02d}:{dm:02d} {timezone}")
+    if getattr(s, "backup_enabled", False):
+        # Hourly WAL checkpoint
+        scheduler.add_job(
+            _checkpoint,
+            IntervalTrigger(hours=1),
+            id="db_checkpoint",
+            replace_existing=True,
+        )
+        # Daily backup at configured time
+        backup_time = getattr(s, "backup_time", "03:30")
+        try:
+            bh, bm = backup_time.split(":")
+            bh, bm = int(bh), int(bm)
+        except Exception:
+            logger.warning(
+                f"Invalid backup_time {backup_time!r}; falling back to 03:30"
+            )
+            bh, bm = 3, 30
+        scheduler.add_job(
+            _backup,
+            CronTrigger(hour=bh, minute=bm, timezone=timezone),
+            id="db_backup",
+            replace_existing=True,
+        )
+        logger.info(f"Backup enabled: checkpoint hourly, backup daily at {bh:02d}:{bm:02d} {timezone}")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

@@ -5,6 +5,9 @@ nexus.vault
 .env.local
 .nexus.pids
 
+# Local backups — contain secrets (.vault.key, nexus.vault); NEVER commit
+backups/
+
 # Python
 __pycache__/
 *.py[cod]

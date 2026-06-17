@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     autonomy_digest_enabled: bool = True        # send a daily autonomy summary
     autonomy_digest_time: str = "20:00"         # 24h HH:MM for the daily digest job
 
+    # Local backup settings — db + secrets copied to backups/<timestamp>/ daily.
+    # backups/ is gitignored; secrets NEVER leave the local machine via this path.
+    backup_enabled: bool = True
+    backup_dir: str = "backups"
+    backup_retention_days: int = 7
+    backup_time: str = "03:30"  # 24h HH:MM for the daily backup job
+
     # /api/trigger HMAC signing (Tier 1.6 autonomy ingress hardening).
     # trigger_hmac_required=False: backward-compatible — Bearer-only callers still work.
     # trigger_hmac_required=True: every call must carry a valid X-Timestamp / X-Signature.
