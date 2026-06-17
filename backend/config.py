@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     trigger_hmac_required: bool = False
     trigger_hmac_window_s: int = 300
 
+    # Live hung-step watchdog — reaps orphaned 'running' TaskSteps whose worker is
+    # gone and whose heartbeat is stale, resetting them to 'pending' and re-enqueueing
+    # the owning Task so work resumes without waiting for a reboot.
+    step_watchdog_enabled: bool = True
+    step_hung_timeout_s: int = 600  # seconds before a running step with no live worker is reaped
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

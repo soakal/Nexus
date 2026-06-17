@@ -12,6 +12,7 @@ event loop is never blocked (Windows ProactorEventLoop safety — see CLAUDE.md)
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,50 @@ def _load_unfinished_task_ids() -> list[int]:
             select(Task).where(Task.status.in_(["pending", "running"]))
         ).all()
         return [t.id for t in rows if t.id is not None]
+
+
+def _find_hung_running_steps(cutoff: datetime) -> list[dict]:
+    """Return TaskStep rows with status=='running' AND (heartbeat_at IS NULL OR heartbeat_at < cutoff).
+
+    Each result is a plain dict with keys: step_id, task_id, step_index.
+    Run via asyncio.to_thread — never call directly from the event loop.
+    """
+    from sqlmodel import Session, select
+
+    from backend.database import TaskStep, engine
+
+    with Session(engine) as session:
+        rows = session.exec(
+            select(TaskStep).where(TaskStep.status == "running")
+        ).all()
+        hung = []
+        for row in rows:
+            if row.heartbeat_at is None or row.heartbeat_at < cutoff:
+                hung.append({
+                    "step_id": row.id,
+                    "task_id": row.task_id,
+                    "step_index": row.step_index,
+                })
+        return hung
+
+
+def _reset_step_to_pending(step_id: int) -> None:
+    """Reset a single TaskStep to 'pending' with heartbeat_at=None.
+
+    Mirrors the boot-time reset in orchestrator._load_steps without touching attempts.
+    Run via asyncio.to_thread — never call directly from the event loop.
+    """
+    from sqlmodel import Session
+
+    from backend.database import TaskStep, engine
+
+    with Session(engine) as session:
+        step = session.get(TaskStep, step_id)
+        if step:
+            step.status = "pending"
+            step.heartbeat_at = None
+            step.updated_at = datetime.utcnow()
+            session.commit()
 
 
 def _finalize_failed(task_id: int, reason: str) -> None:
@@ -175,6 +220,46 @@ class TaskWorkerPool:
             await self._queue.put(task_id)
         if ids:
             logger.info(f"Re-enqueued {len(ids)} unfinished task(s) on boot")
+
+    async def reap_hung_steps(self, timeout_s: int) -> int:
+        """Reset orphaned 'running' steps (worker gone) to 'pending' and re-enqueue
+        their task, so work resumes without waiting for a reboot. NEVER touches a step
+        whose task is still in self._inflight (a worker is actively on it). Best-effort:
+        a failure on one step never aborts the sweep. Returns the count reaped.
+        """
+        cutoff = datetime.utcnow() - timedelta(seconds=timeout_s)
+        try:
+            hung = await asyncio.to_thread(_find_hung_running_steps, cutoff)
+        except Exception as exc:
+            logger.warning(f"reap_hung_steps: error fetching hung steps: {exc}")
+            return 0
+
+        reaped = 0
+        for step in hung:
+            task_id = step["task_id"]
+            step_id = step["step_id"]
+            step_index = step["step_index"]
+
+            # PRIMARY SAFETY CHECK: if this task's worker is actively in-flight,
+            # the step is legitimately running — NEVER reset it.
+            if task_id in self._inflight:
+                continue
+
+            try:
+                await asyncio.to_thread(_reset_step_to_pending, step_id)
+                await self.enqueue(task_id)
+                reaped += 1
+                logger.warning(
+                    f"reap_hung_steps: reaped orphaned step {step_id} "
+                    f"(task={task_id}, step_index={step_index}) → pending, task re-enqueued"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"reap_hung_steps: error reaping step {step_id} "
+                    f"(task={task_id}): {exc}"
+                )
+
+        return reaped
 
     async def _worker_loop(self, worker_id: int) -> None:
         from backend.agents.orchestrator import run_task

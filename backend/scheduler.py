@@ -130,6 +130,17 @@ async def _retry_pending_deliveries():
         logger.error(f"Retry delivery error: {e}")
 
 
+async def _step_watchdog():
+    try:
+        from backend.agents.worker_pool import get_pool
+        from backend.config import get_settings
+        count = await get_pool().reap_hung_steps(get_settings().step_hung_timeout_s)
+        if count:
+            logger.info(f"Step watchdog: reaped {count} orphaned step(s)")
+    except Exception as e:
+        logger.error(f"Step watchdog error: {e}")
+
+
 async def _propose_goals():
     try:
         from backend.agents.proposer import propose_goals_tick
@@ -180,6 +191,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
     )
     from backend.config import get_settings
     s = get_settings()
+    if getattr(s, "step_watchdog_enabled", False):
+        scheduler.add_job(
+            _step_watchdog,
+            IntervalTrigger(minutes=2),
+            id="step_watchdog",
+            replace_existing=True,
+        )
+        logger.info("Step watchdog enabled: runs every 2 minutes")
     if getattr(s, "proposer_enabled", False):
         scheduler.add_job(
             _propose_goals,
