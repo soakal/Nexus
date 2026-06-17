@@ -22,8 +22,74 @@ SAFETY CONTRACT (hard, enforced at code level):
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Sync DB helpers for proposer enrichment context (own Session, best-effort).
+# Called exclusively via asyncio.to_thread; return [] on any error so one
+# failing sub-query degrades that prompt section to "(none)", never aborts tick.
+# ---------------------------------------------------------------------------
+
+def _db_trend_summary(since: datetime) -> list[dict]:
+    """Group TrendSnapshots since `since` by (source, metric); return first/last/n per group."""
+    try:
+        import backend.database as _db_mod
+        from sqlmodel import Session, select
+        from backend.database import TrendSnapshot
+
+        with Session(_db_mod.engine) as session:
+            stmt = (
+                select(TrendSnapshot)
+                .where(TrendSnapshot.captured_at >= since)
+                .order_by(TrendSnapshot.captured_at.asc())  # type: ignore[attr-defined]
+            )
+            rows = session.exec(stmt).all()
+
+        # Group by (source, metric)
+        groups: dict[tuple, list] = {}
+        for r in rows:
+            key = (r.source, r.metric)
+            groups.setdefault(key, []).append(r.value)
+
+        result = []
+        for (source, metric), values in groups.items():
+            result.append({
+                "source": source,
+                "metric": metric,
+                "first": values[0],
+                "last": values[-1],
+                "n": len(values),
+            })
+        return result
+    except Exception:
+        return []
+
+
+def _db_uptime_anomalies(since: datetime) -> list[dict]:
+    """Return sources with at least one down event since `since`, with down count."""
+    try:
+        import backend.database as _db_mod
+        from sqlmodel import Session, select
+        from backend.database import UptimeSample
+
+        with Session(_db_mod.engine) as session:
+            stmt = (
+                select(UptimeSample)
+                .where(UptimeSample.checked_at >= since)
+                .where(UptimeSample.ok == False)  # noqa: E712
+            )
+            rows = session.exec(stmt).all()
+
+        counts: dict[str, int] = {}
+        for r in rows:
+            counts[r.source] = counts.get(r.source, 0) + 1
+
+        return [{"source": src, "down": cnt} for src, cnt in counts.items()]
+    except Exception:
+        return []
 
 
 async def propose_goals_tick() -> dict:
@@ -79,6 +145,66 @@ async def propose_goals_tick() -> dict:
         auto_approve_enabled = s.auto_approve_low_risk
 
         # ------------------------------------------------------------------
+        # Gather enrichment context: trends, uptime anomalies, rejection memory.
+        # Each gather is best-effort: a failure degrades that section to "(none)"
+        # and NEVER aborts the tick.
+        # ------------------------------------------------------------------
+        now = datetime.utcnow()
+        since = now - timedelta(days=7)
+
+        try:
+            trend_rows = await asyncio.to_thread(_db_trend_summary, since)
+        except Exception:
+            trend_rows = []
+
+        try:
+            anom_rows = await asyncio.to_thread(_db_uptime_anomalies, since)
+        except Exception:
+            anom_rows = []
+
+        try:
+            abandoned_rows = await asyncio.to_thread(goals._db_recent_abandoned, 8)
+        except Exception:
+            abandoned_rows = []
+
+        # Format trend lines: "- {source} {metric}: {first:.0f} -> {last:.0f} (rising|falling|flat)"
+        if trend_rows:
+            trend_lines = []
+            for t in trend_rows:
+                if t["last"] > t["first"]:
+                    direction = "rising"
+                elif t["last"] < t["first"]:
+                    direction = "falling"
+                else:
+                    direction = "flat"
+                trend_lines.append(
+                    f"- {t['source']} {t['metric']}: {t['first']:.0f} -> {t['last']:.0f} ({direction})"
+                )
+            trends_text = "\n".join(trend_lines)
+        else:
+            trends_text = "(none)"
+
+        # Format anomaly lines: "- {source}: {down} down event(s)"
+        if anom_rows:
+            anoms_text = "\n".join(
+                f"- {a['source']}: {a['down']} down event(s)" for a in anom_rows
+            )
+        else:
+            anoms_text = "(none)"
+
+        # Format abandoned lines: "- {title} — {reason}" (reason omitted if None)
+        if abandoned_rows:
+            abandoned_lines = []
+            for ab in abandoned_rows:
+                line = f"- {ab['title']}"
+                if ab.get("rejection_reason"):
+                    line += f" — {ab['rejection_reason']}"
+                abandoned_lines.append(line)
+            abandoned_text = "\n".join(abandoned_lines)
+        else:
+            abandoned_text = "(none)"
+
+        # ------------------------------------------------------------------
         # Ask Opus to propose new goals.
         # ------------------------------------------------------------------
         prompt = (
@@ -86,7 +212,10 @@ async def propose_goals_tick() -> dict:
             "Propose any NEW objectives genuinely worth doing — concrete, actionable, NOT already open,\n"
             "NOT destructive. Be conservative: return an EMPTY array unless something clearly warrants\n"
             "attention (e.g. storage near full, a device alert, many stale PRs). Never propose anything\n"
-            "that is already listed as open.\n\n"
+            "that is already listed as open.\n"
+            "Use the RECENT TRENDS to anticipate upcoming issues (e.g. storage rising toward full,\n"
+            "blocked percentage climbing). Do NOT propose anything that appears on the\n"
+            "DO NOT RE-PROPOSE list — those goals were explicitly rejected by Brian; respect his judgment.\n\n"
             f"Return JSON only — an array (max {max_per_tick}) of:\n"
             '[{"title": "...", "description": "concrete goal the executor can pursue", '
             '"risk": "low|medium|high", '
@@ -94,7 +223,10 @@ async def propose_goals_tick() -> dict:
             '"confidence": 0.0-1.0}]\n'
             "Empty array [] if nothing warrants action.\n\n"
             f"LIVE STATE:\n{snapshot}\n\n"
-            f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}"
+            f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
+            f"RECENT TRENDS (7d):\n{trends_text}\n\n"
+            f"UPTIME ANOMALIES (7d):\n{anoms_text}\n\n"
+            f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"
         )
 
         try:

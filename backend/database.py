@@ -261,6 +261,7 @@ class Goal(SQLModel, table=True):
     approved_by: str | None = None
     approved_at: datetime | None = None
     expires_at: datetime | None = None
+    rejection_reason: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -327,6 +328,17 @@ def _ensure_conversation_columns():
     _safe_add_column("conversation", "summarized_through_id", "INTEGER")
 
 
+def _ensure_goal_columns():
+    """Idempotently add columns introduced after the original `goal` table shipped.
+
+    Each column is added independently via _safe_add_column so a race on one
+    column never aborts the others. Best-effort — a failure here is logged but
+    never fatal to startup. No-op on a fresh DB (create_all already made the
+    column) and on test :memory: engines.
+    """
+    _safe_add_column("goal", "rejection_reason", "TEXT")
+
+
 def _ensure_system_state():
     """Idempotently seed the single SystemState row (id=1).
 
@@ -369,6 +381,7 @@ def create_db_and_tables():
     _ensure_task_columns()
     _ensure_spendlog_columns()
     _ensure_conversation_columns()
+    _ensure_goal_columns()
     _ensure_system_state()
 
 

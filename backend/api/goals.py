@@ -27,6 +27,10 @@ class GoalPropose(BaseModel):
     reversibility: str = "unknown"
 
 
+class GoalReject(BaseModel):
+    reason: str | None = None
+
+
 @router.post("/propose")
 async def propose_goal(body: GoalPropose, _=Depends(require_api_key)):
     from backend.agents import goals
@@ -82,10 +86,10 @@ async def approve_goal(goal_id: int, _=Depends(require_api_key)):
 
 
 @router.post("/{goal_id}/reject")
-async def reject_goal(goal_id: int, _=Depends(require_api_key)):
+async def reject_goal(goal_id: int, body: GoalReject = GoalReject(), _=Depends(require_api_key)):
     from backend.agents import goals
 
-    r = await goals.reject(goal_id)
+    r = await goals.reject(goal_id, reason=body.reason)
     if r["status"] == "not_found":
         raise HTTPException(status_code=404, detail="Goal not found")
     if r["status"] == "conflict":

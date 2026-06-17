@@ -55,6 +55,7 @@ def _goal_to_dict(g: Goal) -> dict:
         "approved_by": g.approved_by,
         "approved_at": g.approved_at.isoformat() if g.approved_at else None,
         "expires_at": g.expires_at.isoformat() if g.expires_at else None,
+        "rejection_reason": g.rejection_reason,
         "created_at": g.created_at.isoformat() if g.created_at else None,
         "updated_at": g.updated_at.isoformat() if g.updated_at else None,
     }
@@ -178,6 +179,22 @@ def _db_list_goals(status: str | None = None, limit: int = 100) -> list[dict]:
             stmt = stmt.where(Goal.status == status)
         goals = session.exec(stmt).all()
         return [_goal_to_dict(g) for g in goals]
+
+
+def _db_recent_abandoned(limit: int = 8) -> list[dict]:
+    """Return recently abandoned goals as [{title, rejection_reason}], newest first.
+
+    Called exclusively via asyncio.to_thread.
+    """
+    with Session(_db_mod.engine) as session:
+        stmt = (
+            select(Goal)
+            .where(Goal.status == "abandoned")
+            .order_by(Goal.updated_at.desc())  # type: ignore[attr-defined]
+            .limit(limit)
+        )
+        goals = session.exec(stmt).all()
+        return [{"title": g.title, "rejection_reason": g.rejection_reason} for g in goals]
 
 
 def _db_find_running_with_task() -> list[dict]:
@@ -317,9 +334,10 @@ async def approve(goal_id: int, *, approved_by: str = "user") -> dict:
     return {"status": "approved", "goal": updated, "task_id": task_id}
 
 
-async def reject(goal_id: int) -> dict:
+async def reject(goal_id: int, *, reason: str | None = None) -> dict:
     """Abandon a proposed or approved Goal (reject/cancel by a human).
 
+    Optionally captures the human's rejection reason for proposer memory.
     Returns 'status': not_found | conflict | abandoned.
     """
     import asyncio
@@ -328,11 +346,10 @@ async def reject(goal_id: int) -> dict:
     if g is None:
         return {"status": "not_found"}
     if g["status"] in ("proposed", "approved"):
-        await asyncio.to_thread(
-            _db_update_goal, goal_id,
-            status="abandoned",
-            updated_at=datetime.utcnow(),
-        )
+        update_fields: dict = {"status": "abandoned", "updated_at": datetime.utcnow()}
+        if reason is not None:
+            update_fields["rejection_reason"] = reason
+        await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
         return {"status": "abandoned"}
     return {"status": "conflict", "current": g["status"]}
 
