@@ -11,6 +11,11 @@ const _base = import.meta.env.VITE_API_BASE
 export const API_BASE = _base
 export const WS_BASE = _base.replace(/^http/, 'ws')
 
+export function wsLogsUrl() {
+  const k = localStorage.getItem('nexus_api_key') || ''
+  return `${WS_BASE}/ws/logs?key=${encodeURIComponent(k)}`
+}
+
 const BASE = `${_base}/api`
 
 function getKey() {

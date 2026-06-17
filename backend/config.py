@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     trigger_hmac_required: bool = False
     trigger_hmac_window_s: int = 300
 
+    # CORS allowlist — localhost + RFC1918 private ranges, any port. Override in .env to add a hostname.
+    cors_allow_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$"
+
     # Live hung-step watchdog — reaps orphaned 'running' TaskSteps whose worker is
     # gone and whose heartbeat is stale, resetting them to 'pending' and re-enqueueing
     # the owning Task so work resumes without waiting for a reboot.

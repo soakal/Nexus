@@ -102,9 +102,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="NEXUS Agentic OS", version="1.0.0", lifespan=lifespan)
 
+try:
+    from backend.config import get_settings as _gs_cors
+    _cors_origin_regex = _gs_cors().cors_allow_origin_regex
+except Exception:
+    # Vault not ready at build time — fall back to the hard-coded default so the app always starts.
+    _cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=_cors_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -174,6 +181,18 @@ async def get_weather(_=Depends(require_api_key)):
 
 @app.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
+    # Authenticate on the handshake: browsers can't set WS headers, so the key
+    # comes as ?key=. Reject (close 1008) before accepting if it doesn't match.
+    import hmac
+    provided = websocket.query_params.get("key", "")
+    try:
+        from backend.config import get_settings
+        expected = get_settings().nexus_api_key
+    except Exception:
+        expected = ""
+    if not provided or not expected or not hmac.compare_digest(provided, expected):
+        await websocket.close(code=1008)  # policy violation
+        return
     from backend.api.agents import ws_manager
     await ws_manager.connect(websocket)
     try:

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ShieldCheck } from 'lucide-react'
-import { api, WS_BASE } from '../lib/api'
+import { api, wsLogsUrl } from '../lib/api'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -169,7 +169,7 @@ export default function Safety() {
 
     function connect() {
       if (!wsAliveRef.current) return
-      const ws = new WebSocket(`${WS_BASE}/ws/logs`)
+      const ws = new WebSocket(wsLogsUrl())
       wsRef.current = ws
 
       ws.onopen = () => {
