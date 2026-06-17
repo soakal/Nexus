@@ -115,8 +115,9 @@ export const api = {
     pendingActions: (limit) => req('GET', `/safety/actions?decision=needs_confirm&limit=${limit || 20}`),
   },
   goals: {
-    list: () => req('GET', '/goals/'),
-    propose: (title, description, risk) => req('POST', '/goals/propose', { title, description, risk: risk || 'medium' }),
+    list: (category) => req('GET', `/goals/${category ? `?category=${encodeURIComponent(category)}` : ''}`),
+    categories: () => req('GET', '/goals/categories'),
+    propose: (title, description, risk, category) => req('POST', '/goals/propose', { title, description, risk: risk || 'medium', category: category || 'other' }),
     approve: (id) => req('POST', `/goals/${id}/approve`),
     reject: (id) => req('POST', `/goals/${id}/reject`),
   },

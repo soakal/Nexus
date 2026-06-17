@@ -220,7 +220,8 @@ async def propose_goals_tick() -> dict:
             '[{"title": "...", "description": "concrete goal the executor can pursue", '
             '"risk": "low|medium|high", '
             '"reversibility": "reversible|reversible_by_inverse|irreversible|unknown", '
-            '"confidence": 0.0-1.0}]\n'
+            '"confidence": 0.0-1.0, '
+            '"category": "one of: maintenance|storage|network|media|monitoring|knowledge|other"}]\n'
             "Empty array [] if nothing warrants action.\n\n"
             f"LIVE STATE:\n{snapshot}\n\n"
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
@@ -277,6 +278,7 @@ async def propose_goals_tick() -> dict:
                 reversibility=reversibility,
                 ttl_seconds=s.goal_ttl_seconds,
                 debounce_seconds=s.goal_debounce_seconds,
+                category=goals.normalize_category(item.get("category")),
             )
             entry = {
                 "title": title,

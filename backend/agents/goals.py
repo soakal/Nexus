@@ -22,6 +22,21 @@ from backend.agents.worker_pool import get_pool  # noqa: F401 (re-exported for p
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Category vocabulary + normalizer
+# ---------------------------------------------------------------------------
+
+GOAL_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]
+_CATEGORY_SET = {c for c in GOAL_CATEGORIES}
+
+
+def normalize_category(category: str | None) -> str:
+    """Map any input to a canonical category. Case-insensitive; unknown/None -> 'other'."""
+    if not category:
+        return "other"
+    c = str(category).strip().lower()
+    return c if c in _CATEGORY_SET else "other"
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers
@@ -330,6 +345,7 @@ async def propose(
         if (now - last_proposal).total_seconds() < debounce_seconds:
             return {"status": "debounced", "reason": "cooldown", "goal": latest}
 
+    category = normalize_category(category)
     expires_at = now + timedelta(seconds=ttl_seconds) if ttl_seconds else None
     inserted = await asyncio.to_thread(
         _db_insert_goal,

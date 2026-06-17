@@ -55,8 +55,18 @@ async def propose_goal(body: GoalPropose, _=Depends(require_api_key)):
     return result
 
 
+@router.get("/categories")
+async def list_categories(_=Depends(require_api_key)):
+    from backend.agents.goals import GOAL_CATEGORIES
+    return {"categories": GOAL_CATEGORIES}
+
+
 @router.get("/")
-async def list_goals(status: str | None = None, _=Depends(require_api_key)):
+async def list_goals(
+    status: str | None = None,
+    category: str | None = None,
+    _=Depends(require_api_key),
+):
     from backend.agents import goals
 
     s = get_settings()
@@ -64,7 +74,11 @@ async def list_goals(status: str | None = None, _=Depends(require_api_key)):
         backoff_base_seconds=s.goal_backoff_base_seconds,
         max_attempts=s.goal_max_attempts,
     )
-    return await asyncio.to_thread(goals._db_list_goals, status, 100)
+    all_goals = await asyncio.to_thread(goals._db_list_goals, status, 100)
+    if category is not None:
+        normalized = goals.normalize_category(category)
+        all_goals = [g for g in all_goals if g.get("category") == normalized]
+    return all_goals
 
 
 @router.get("/{goal_id}")

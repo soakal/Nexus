@@ -121,11 +121,17 @@ export default function Safety() {
   const [metering, setMetering]           = useState(null)
 
   // Goal propose form state
-  const [proposeTitle, setProposeTitle]   = useState('')
-  const [proposeDesc, setProposeDesc]     = useState('')
-  const [proposeRisk, setProposeRisk]     = useState('medium')
-  const [proposing, setProposing]         = useState(false)
-  const [proposeErr, setProposeErr]       = useState('')
+  const [proposeTitle, setProposeTitle]       = useState('')
+  const [proposeDesc, setProposeDesc]         = useState('')
+  const [proposeRisk, setProposeRisk]         = useState('medium')
+  const [proposeCategory, setProposeCategory] = useState('other')
+  const [proposing, setProposing]             = useState(false)
+  const [proposeErr, setProposeErr]           = useState('')
+
+  // Goal category vocabulary + filter
+  const FALLBACK_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]
+  const [categories, setCategories]       = useState(FALLBACK_CATEGORIES)
+  const [categoryFilter, setCategoryFilter] = useState('all')
 
   // WebSocket refs (prevent stale closures / leak on unmount)
   const wsRef       = useRef(null)
@@ -146,6 +152,12 @@ export default function Safety() {
     api.safety.pendingActions(20).then(setPendingActions).catch(() => {})
     api.goals.list().then(setGoals).catch(() => {})
     api.safety.metering().then(setMetering).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    api.goals.categories().then(data => {
+      if (data?.categories?.length) setCategories(data.categories)
+    }).catch(() => { /* use fallback */ })
   }, [])
 
   useEffect(() => {
@@ -302,10 +314,11 @@ export default function Safety() {
     if (!proposeDesc.trim())  { setProposeErr('Description is required.'); return }
     setProposing(true)
     try {
-      await api.goals.propose(proposeTitle.trim(), proposeDesc.trim(), proposeRisk)
+      await api.goals.propose(proposeTitle.trim(), proposeDesc.trim(), proposeRisk, proposeCategory)
       setProposeTitle('')
       setProposeDesc('')
       setProposeRisk('medium')
+      setProposeCategory('other')
       load()
     } catch (err) {
       setProposeErr(err?.message || 'Failed to propose goal.')
@@ -525,17 +538,31 @@ export default function Safety() {
                 className="hud-input w-full font-mono resize-y"
               />
             </div>
-            <div>
-              <label className="hud-label mb-1 block">RISK</label>
-              <select
-                value={proposeRisk}
-                onChange={e => setProposeRisk(e.target.value)}
-                className="hud-input font-mono"
-              >
-                <option value="low">LOW</option>
-                <option value="medium">MEDIUM</option>
-                <option value="high">HIGH</option>
-              </select>
+            <div className="flex gap-3 flex-wrap">
+              <div>
+                <label className="hud-label mb-1 block">RISK</label>
+                <select
+                  value={proposeRisk}
+                  onChange={e => setProposeRisk(e.target.value)}
+                  className="hud-input font-mono"
+                >
+                  <option value="low">LOW</option>
+                  <option value="medium">MEDIUM</option>
+                  <option value="high">HIGH</option>
+                </select>
+              </div>
+              <div>
+                <label className="hud-label mb-1 block">CATEGORY</label>
+                <select
+                  value={proposeCategory}
+                  onChange={e => setProposeCategory(e.target.value)}
+                  className="hud-input font-mono"
+                >
+                  {categories.map(c => (
+                    <option key={c} value={c}>{c.toUpperCase()}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap pt-1">
               <button
@@ -553,12 +580,27 @@ export default function Safety() {
           </div>
         </div>
 
+        {/* Category filter */}
+        <div className="mb-3 flex items-center gap-2">
+          <label className="hud-label">FILTER BY CATEGORY:</label>
+          <select
+            value={categoryFilter}
+            onChange={e => setCategoryFilter(e.target.value)}
+            className="hud-input font-mono"
+          >
+            <option value="all">ALL</option>
+            {categories.map(c => (
+              <option key={c} value={c}>{c.toUpperCase()}</option>
+            ))}
+          </select>
+        </div>
+
         {/* Goals list */}
         {goals.length === 0 ? (
           <div className="hud-label opacity-40">NO GOALS YET</div>
         ) : (
           <div className="space-y-2">
-            {goals.map((g) => (
+            {goals.filter(g => categoryFilter === 'all' || g.category === categoryFilter).map((g) => (
               <div
                 key={g.id}
                 className="py-3"
@@ -579,6 +621,15 @@ export default function Safety() {
                   >
                     {g.risk || 'MEDIUM'}
                   </span>
+                  {/* Category chip */}
+                  {g.category && (
+                    <span
+                      className="font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded text-accent-cyan"
+                      style={{ border: '1px solid rgba(0,212,255,0.45)', opacity: 0.8, fontSize: '0.6rem' }}
+                    >
+                      {g.category}
+                    </span>
+                  )}
                   {/* Title */}
                   <span className="font-mono text-xs text-text-primary flex-1 min-w-0">{g.title}</span>
                   {/* Time */}

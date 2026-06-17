@@ -97,18 +97,20 @@ async def test_propose_persists_cadence_fields(eng):
     from backend.agents import goals
     from backend.database import Goal
 
+    # "monitoring" is a valid category in GOAL_CATEGORIES; "reporting" was a
+    # free-form string from before the controlled vocabulary was introduced.
     result = await goals.propose(
         "Weekly report",
         "Generate weekly system health report.",
         cadence="weekly",
-        category="reporting",
+        category="monitoring",
         success_criteria="Report sent to Obsidian.",
     )
 
     assert result["status"] == "proposed"
     g = result["goal"]
     assert g["cadence"] == "weekly"
-    assert g["category"] == "reporting"
+    assert g["category"] == "monitoring"
     assert g["success_criteria"] == "Report sent to Obsidian."
     assert g["next_eval_at"] is None  # not set until approve
 
@@ -116,7 +118,7 @@ async def test_propose_persists_cadence_fields(eng):
     with Session(eng) as s:
         row = s.get(Goal, g["id"])
     assert row.cadence == "weekly"
-    assert row.category == "reporting"
+    assert row.category == "monitoring"
     assert row.success_criteria == "Report sent to Obsidian."
     assert row.next_eval_at is None
 
