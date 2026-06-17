@@ -21,7 +21,26 @@ _TABLE = {
     "adguard_control": (Risk.MEDIUM, Reversibility.REVERSIBLE_BY_INVERSE),
     "restart_service": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
     "vm_action": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
+    "service_logs": (Risk.LOW, Reversibility.REVERSIBLE),
+    "wol": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
 }
+
+
+def test_build_service_logs():
+    assert ha.build_command("service_logs", {"name": "jellyfin"}) == "logs for jellyfin"
+
+
+def test_build_wol():
+    assert ha.build_command("wol", {"host": "nas01"}) == "wake nas01"
+
+
+def test_wol_injection_rejected():
+    # wol is HIGH (agent needs-confirm) AND its arg is injection-defended.
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        ha.build_command("wol", {"host": "nas01; rm -rf /"})
+    with _pytest.raises(ValueError):
+        ha.build_command("service_logs", {})  # missing required arg
 
 
 def test_allowlist_has_exactly_the_table_verbs():

@@ -102,6 +102,19 @@ ALLOWLIST: dict[str, HermesVerb] = {
         required_args=("vm",), enum_args={"action": frozenset({"start", "stop", "reboot"})},
         build=lambda args: f"{args['action']} {args['vm'].strip()}",
     ),
+    # Read-only diagnostic: fetch a service's recent logs. Zero blast radius.
+    "service_logs": HermesVerb(
+        verb="service_logs", risk=Risk.LOW, reversibility=Reversibility.REVERSIBLE,
+        required_args=("name",), enum_args={},
+        build=lambda args: f"logs for {args['name'].strip()}",
+    ),
+    # Wake-on-LAN a machine. HIGH so an agent/autonomous actor ALWAYS needs a human
+    # tap (it powers on hardware); reversible by shutting the machine back down.
+    "wol": HermesVerb(
+        verb="wol", risk=Risk.HIGH, reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+        required_args=("host",), enum_args={},
+        build=lambda args: f"wake {args['host'].strip()}",
+    ),
 }
 
 
