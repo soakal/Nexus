@@ -69,6 +69,7 @@ async def test_notify_phone_disabled_returns_false():
          patch("backend.integrations.hermes.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = False
+        s.app_base_url = ""
         mock_settings.return_value = s
 
         from backend.events import notify_phone
@@ -84,14 +85,15 @@ async def test_notify_phone_disabled_returns_false():
 
 @pytest.mark.asyncio
 async def test_notify_phone_enabled_calls_hermes():
-    """When phone_notifications_enabled=True, notify_phone awaits hermes.notify
-    exactly once with the correct type and content in the payload."""
+    """When phone_notifications_enabled=True and app_base_url="" (no deep-link),
+    notify_phone awaits hermes.notify exactly once with the correct type and content."""
     hermes_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
          patch("backend.integrations.hermes.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
+        s.app_base_url = ""  # deep-link disabled for this test
         mock_settings.return_value = s
 
         from backend.events import notify_phone
@@ -116,6 +118,7 @@ async def test_notify_phone_best_effort_on_hermes_error():
          patch("backend.integrations.hermes.notify", side_effect=RuntimeError("boom")):
         s = MagicMock()
         s.phone_notifications_enabled = True
+        s.app_base_url = ""
         mock_settings.return_value = s
 
         from backend.events import notify_phone
@@ -363,6 +366,10 @@ def test_scheduler_registers_autonomy_digest_job():
         s.proposer_interval_hours = 6
         s.autonomy_digest_enabled = True
         s.autonomy_digest_time = "20:00"
+        s.backup_enabled = False
+        s.step_watchdog_enabled = False
+        s.watchdog_enabled = False
+        s.spend_report_enabled = False  # disable to avoid MagicMock day_of_week error
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")
@@ -383,6 +390,10 @@ def test_scheduler_no_digest_job_when_disabled():
         s = MagicMock()
         s.proposer_enabled = False
         s.autonomy_digest_enabled = False
+        s.backup_enabled = False
+        s.step_watchdog_enabled = False
+        s.watchdog_enabled = False
+        s.spend_report_enabled = False  # disable to avoid MagicMock day_of_week error
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")
@@ -403,6 +414,10 @@ def test_scheduler_digest_invalid_time_falls_back():
         s.proposer_enabled = False
         s.autonomy_digest_enabled = True
         s.autonomy_digest_time = "NOT_A_TIME"
+        s.backup_enabled = False
+        s.step_watchdog_enabled = False
+        s.watchdog_enabled = False
+        s.spend_report_enabled = False  # disable to avoid MagicMock day_of_week error
         mock_settings.return_value = s
 
         # Must not raise.

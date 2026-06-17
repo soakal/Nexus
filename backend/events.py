@@ -21,12 +21,20 @@ async def publish(event_type: str, payload: dict) -> None:
 async def notify_phone(content: str, *, kind: str = "autonomy_alert") -> bool:
     """Best-effort phone push via Hermes->Telegram. Gated by phone_notifications_enabled.
 
+    Appends a deep-link to the Safety page when app_base_url is configured so
+    Brian can tap straight through to Safety from any alert.
+
     NEVER raises (a notify failure must not affect the caller). Returns delivered bool.
     """
     try:
         from backend.config import get_settings
-        if not getattr(get_settings(), "phone_notifications_enabled", False):
+        settings = get_settings()
+        if not getattr(settings, "phone_notifications_enabled", False):
             return False
+        # Append deep-link when a base URL is configured.
+        base = str(getattr(settings, "app_base_url", "") or "").strip().rstrip("/")
+        if base:
+            content = f"{content}\nOpen: {base}/safety"
         from datetime import datetime
         from backend.integrations import hermes
         return await hermes.notify({"type": kind, "content": content, "timestamp": datetime.utcnow().isoformat()})

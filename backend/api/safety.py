@@ -223,6 +223,20 @@ async def metering_health(_=Depends(require_api_key)):
     return await asyncio.to_thread(governor.metering_health)
 
 
+@router.get("/spend-report")
+async def spend_report(days: int = 7, _=Depends(require_api_key)):
+    """Per-model spend breakdown for the last `days` days (1–90).
+
+    Returns grouped by_model rows sorted by cost descending, total_usd, total_calls,
+    and prices_verified so Brian can compare NEXUS's metered spend against his
+    actual Anthropic billing.
+    """
+    from backend.safety import governor
+
+    days = max(1, min(days, 90))
+    return await asyncio.to_thread(governor.spend_report, days)
+
+
 @router.post("/budget")
 async def set_budget(
     body: dict = Body(default_factory=dict),

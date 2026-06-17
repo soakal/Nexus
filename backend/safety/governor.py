@@ -203,6 +203,78 @@ def metering_health() -> dict:
     }
 
 
+def spend_report(days: int = 7) -> dict:
+    """Return a per-model spend breakdown for the last `days` days (sync).
+
+    Groups SpendLog rows by model over the window, sorts by cost descending,
+    and surfaces whether prices have been field-verified. Best-effort: any DB
+    error returns a safe error dict with empty by_model.
+
+    Callers MUST invoke via asyncio.to_thread — this opens its own Session.
+    """
+    from datetime import timedelta
+
+    prices_verified_flag = False
+    try:
+        from backend.config import get_settings
+        prices_verified_flag = bool(getattr(get_settings(), "prices_verified", False))
+    except Exception:
+        pass
+
+    try:
+        from sqlmodel import Session, func, select
+        from backend.database import SpendLog, engine
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        with Session(engine) as session:
+            rows = session.exec(
+                select(SpendLog).where(SpendLog.created_at >= cutoff)
+            ).all()
+
+        # Group by model in Python (SQLite GROUP BY + multiple aggregates is
+        # simpler here and the row count is small).
+        model_map: dict[str, dict] = {}
+        for row in rows:
+            m = row.model or "unknown"
+            if m not in model_map:
+                model_map[m] = {
+                    "model": m,
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": 0.0,
+                }
+            model_map[m]["calls"] += 1
+            model_map[m]["input_tokens"] += int(row.input_tokens or 0)
+            model_map[m]["output_tokens"] += int(row.output_tokens or 0)
+            model_map[m]["cost_usd"] += float(row.cost_usd or 0.0)
+
+        by_model = sorted(model_map.values(), key=lambda x: x["cost_usd"], reverse=True)
+        total_usd = sum(e["cost_usd"] for e in by_model)
+        total_calls = sum(e["calls"] for e in by_model)
+
+        return {
+            "days": days,
+            "since": cutoff.isoformat(),
+            "by_model": by_model,
+            "total_usd": total_usd,
+            "total_calls": total_calls,
+            "prices_verified": prices_verified_flag,
+        }
+
+    except Exception as e:
+        logger.warning(f"governor.spend_report failed (best-effort): {e}")
+        return {
+            "days": days,
+            "by_model": [],
+            "total_usd": 0.0,
+            "total_calls": 0,
+            "prices_verified": prices_verified_flag,
+            "error": str(e),
+        }
+
+
 def check_budget(task_id: int | None = None, task_start: datetime | None = None) -> None:
     """Raise BudgetExceeded if a cap is reached, else return None (sync).
 

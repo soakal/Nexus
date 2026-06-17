@@ -59,6 +59,15 @@ class Settings(BaseSettings):
     autonomy_digest_enabled: bool = True        # send a daily autonomy summary
     autonomy_digest_time: str = "20:00"         # 24h HH:MM for the daily digest job
 
+    # Deep-link base URL appended to every phone alert so Brian can tap straight
+    # to the Safety page. Set to "" to disable. .env-overridable.
+    app_base_url: str = "http://192.168.1.119:3000"
+
+    # Weekly spend reconciliation report (surfaced for manual comparison vs Anthropic billing).
+    spend_report_enabled: bool = True
+    spend_report_day: str = "mon"   # APScheduler day_of_week value for the weekly cron
+    spend_report_time: str = "08:00"  # 24h HH:MM
+
     # Local backup settings — db + secrets copied to backups/<timestamp>/ daily.
     # backups/ is gitignored; secrets NEVER leave the local machine via this path.
     backup_enabled: bool = True

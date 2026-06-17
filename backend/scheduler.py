@@ -181,6 +181,14 @@ async def _watchdog():
         logger.error(f"Watchdog job error: {e}")
 
 
+async def _spend_report():
+    try:
+        from backend.agents.digest import send_spend_report
+        await send_spend_report()
+    except Exception as e:
+        logger.error(f"Spend report job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -281,4 +289,22 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Scheduler stall watchdog enabled: runs every 5 minutes")
+    if getattr(s, "spend_report_enabled", False):
+        report_time = getattr(s, "spend_report_time", "08:00")
+        try:
+            rh, rm = report_time.split(":")
+            rh, rm = int(rh), int(rm)
+        except Exception:
+            logger.warning(
+                f"Invalid spend_report_time {report_time!r}; falling back to 08:00"
+            )
+            rh, rm = 8, 0
+        report_day = getattr(s, "spend_report_day", "mon")
+        scheduler.add_job(
+            _spend_report,
+            CronTrigger(day_of_week=report_day, hour=rh, minute=rm, timezone=timezone),
+            id="spend_report",
+            replace_existing=True,
+        )
+        logger.info(f"Spend report enabled: weekly on {report_day} at {rh:02d}:{rm:02d} {timezone}")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

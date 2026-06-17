@@ -162,3 +162,32 @@ async def send_autonomy_digest() -> dict:
     except Exception as e:
         logger.debug(f"send_autonomy_digest failed (best-effort): {e}")
         return {"delivered": False, "text": ""}
+
+
+async def send_spend_report() -> dict:
+    """Build and deliver the weekly spend reconciliation report via phone notification.
+
+    Surfaces NEXUS's metered spend per model over the last 7 days so Brian can
+    compare against his actual Anthropic billing. Best-effort: never raises.
+    Returns {"delivered": bool, "text": str}.
+    """
+    try:
+        from backend.safety import governor
+        from backend import events
+
+        rep = await asyncio.to_thread(governor.spend_report, 7)
+
+        verified_label = "VERIFIED" if rep.get("prices_verified") else "UNVERIFIED — compare to your Anthropic billing"
+        lines = [
+            f"NEXUS weekly spend (7d): ${rep['total_usd']:.2f} over {rep['total_calls']} calls",
+        ]
+        for entry in rep.get("by_model", []):
+            lines.append(f"- {entry['model']}: ${entry['cost_usd']:.2f} ({entry['calls']} calls)")
+        lines.append(f"Prices {verified_label}.")
+
+        text = "\n".join(lines)
+        delivered = await events.notify_phone(text, kind="spend_report")
+        return {"delivered": delivered, "text": text}
+    except Exception as e:
+        logger.debug(f"send_spend_report failed (best-effort): {e}")
+        return {"delivered": False, "text": ""}
