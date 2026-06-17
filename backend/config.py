@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     # Disable in .env to turn off re-dispatch without touching the kill switch.
     goal_recurrence_enabled: bool = True
 
+    # Success-criteria evaluation: when True and a goal has a success_criteria,
+    # a Haiku check runs after a task succeeds to decide if the criterion was
+    # actually met. False ignores criteria and marks the goal completed mechanically.
+    success_criteria_eval_enabled: bool = True
+
     # /api/trigger HMAC signing (Tier 1.6 autonomy ingress hardening).
     # trigger_hmac_required=False: backward-compatible — Bearer-only callers still work.
     # trigger_hmac_required=True: every call must carry a valid X-Timestamp / X-Signature.

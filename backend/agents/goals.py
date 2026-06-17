@@ -258,6 +258,16 @@ def _db_get_task_status(task_id: int) -> str | None:
         return t.status if t else None
 
 
+def _db_get_task_result(task_id: int) -> str | None:
+    """Return the result_json field for a Task, or None if not found.
+
+    Called exclusively via asyncio.to_thread — sync Session is safe here.
+    """
+    with Session(_db_mod.engine) as session:
+        t = session.get(Task, task_id)
+        return t.result_json if t else None
+
+
 def _db_create_task(prompt: str) -> int:
     """Insert a pending Task and return its id.  Called via asyncio.to_thread."""
     with Session(_db_mod.engine) as session:
@@ -293,6 +303,54 @@ def _db_due_recurring_goals(now: datetime) -> list[dict]:
         )
         goals = session.exec(stmt).all()
         return [_goal_to_dict(g) for g in goals]
+
+
+# ---------------------------------------------------------------------------
+# Success-criteria evaluator (best-effort; never raises out of reconcile)
+# ---------------------------------------------------------------------------
+
+async def _evaluate_success_criteria(goal: dict, output: str | None) -> dict:
+    """Ask Haiku whether the task output satisfied the goal's success_criteria.
+
+    Returns {"met": bool, "reason": str}. On ANY failure (network, budget,
+    parse error, timeout), falls back to {"met": True, "reason": "eval_unavailable"}
+    so a broken evaluator NEVER fails a goal mechanically — the task's success
+    stands. Haiku is a cheap, metered call; label "goal_criteria_eval".
+    """
+    safe_default = {"met": True, "reason": "eval_unavailable"}
+    try:
+        sc = goal.get("success_criteria") or ""
+        title = goal.get("title") or ""
+
+        # Truncate output to keep the prompt cheap.
+        output_excerpt = (output or "")[:2000]
+
+        prompt = (
+            f"Goal title: {title}\n"
+            f"Success criterion: {sc}\n\n"
+            f"Task output (truncated to 2000 chars):\n{output_excerpt}\n\n"
+            "Did the task output MEET the success criterion?\n"
+            'Reply with ONLY valid JSON: {"met": true|false, "reason": "one sentence"}.'
+        )
+
+        from backend.agents.router import haiku
+        raw = await haiku(prompt, label="goal_criteria_eval")
+
+        # Extract the first {...} block from the response (model sometimes adds prose).
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1:
+            return safe_default
+        import json
+        data = json.loads(raw[start : end + 1])
+        met = bool(data.get("met", True))
+        reason = str(data.get("reason", ""))
+        return {"met": met, "reason": reason}
+
+    except Exception:
+        # BudgetExceeded, network error, JSON parse error — all collapse to safe default.
+        logger.debug("_evaluate_success_criteria failed (best-effort, ignored)", exc_info=True)
+        return safe_default
 
 
 # ---------------------------------------------------------------------------
@@ -457,17 +515,42 @@ async def reconcile_running(
     """
     import asyncio
 
+    from backend.config import get_settings
+
     running_goals = await asyncio.to_thread(_db_find_running_with_task)
     now = datetime.utcnow()
     for g in running_goals:
         try:
             task_status = await asyncio.to_thread(_db_get_task_status, g["task_id"])
             if task_status == "success":
-                await asyncio.to_thread(
-                    _db_update_goal, g["id"],
-                    status="completed",
-                    updated_at=now,
-                )
+                sc = g.get("success_criteria")
+                if sc and getattr(get_settings(), "success_criteria_eval_enabled", True):
+                    output = await asyncio.to_thread(_db_get_task_result, g["task_id"])
+                    verdict = await _evaluate_success_criteria(g, output)
+                    if verdict.get("met", True):
+                        await asyncio.to_thread(
+                            _db_update_goal, g["id"],
+                            status="completed",
+                            updated_at=now,
+                        )
+                    else:
+                        # Criterion NOT met — treat as a failure so it retries on cadence/backoff.
+                        new_attempts = g["attempts"] + 1
+                        backoff_seconds = backoff_base_seconds * (2 ** min(new_attempts, 6))
+                        await asyncio.to_thread(
+                            _db_update_goal, g["id"],
+                            status="failed",
+                            attempts=new_attempts,
+                            backoff_until=now + timedelta(seconds=backoff_seconds),
+                            rejection_reason=f"criteria_not_met: {verdict.get('reason', '')}"[:300],
+                            updated_at=now,
+                        )
+                else:
+                    await asyncio.to_thread(
+                        _db_update_goal, g["id"],
+                        status="completed",
+                        updated_at=now,
+                    )
             elif task_status in ("failed", "stopped"):
                 new_attempts = g["attempts"] + 1
                 backoff_seconds = backoff_base_seconds * (2 ** min(new_attempts, 6))
