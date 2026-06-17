@@ -450,7 +450,8 @@ async def test_user_hermes_action_executes_and_logs(eng):  # AC2.2
     assert res.risk == Risk.HIGH
     assert res.result["command"] == "restart jellyfin"
     assert res.result["response"] == "done"
-    rl.assert_awaited_once_with("restart jellyfin")
+    rl.assert_awaited_once()
+    assert rl.await_args.args[0] == "restart jellyfin"
 
     logs = _all_logs(eng)
     action_logs = [l for l in logs if l.kind == "hermes_action"]
@@ -469,7 +470,8 @@ async def test_agent_low_hermes_action_executes(eng):  # AC2.3 — autonomy ON (
         )
     assert res.decision == Decision.EXECUTED
     assert res.risk == Risk.LOW
-    rl.assert_awaited_once_with("check proxmox")
+    rl.assert_awaited_once()
+    assert rl.await_args.args[0] == "check proxmox"
 
 
 @pytest.mark.asyncio
@@ -489,7 +491,8 @@ async def test_agent_high_hermes_action_needs_confirm_then_confirmed(eng):  # AC
             confirmed=True,
         )
     assert res2.decision == Decision.EXECUTED
-    rl.assert_awaited_once_with("restart jellyfin")
+    rl.assert_awaited_once()
+    assert rl.await_args.args[0] == "restart jellyfin"
 
 
 @pytest.mark.asyncio
@@ -606,7 +609,8 @@ async def test_chat_hermes_known_verb_routes_structured(eng):  # AC4.1
         out = await chat_mod.chat(None, "restart jellyfin")
 
     assert out["reply"] == "restarted"
-    rl.assert_awaited_once_with("restart jellyfin")
+    rl.assert_awaited_once()
+    assert rl.await_args.args[0] == "restart jellyfin"
 
     logs = _all_logs(eng)
     assert len([l for l in logs if l.kind == "hermes_action" and l.decision == "executed"]) == 1

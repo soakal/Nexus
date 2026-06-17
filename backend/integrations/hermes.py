@@ -137,7 +137,7 @@ async def action(payload: dict) -> bool:
         return False
 
 
-async def relay_action(message: str) -> dict:
+async def relay_action(message: str, idempotency_key: str | None = None) -> dict:
     """Structured relay used by the broker for agent/autonomous actions.
 
     Unlike relay() (which returns a human string and swallows transport errors
@@ -147,6 +147,10 @@ async def relay_action(message: str) -> dict:
     A transport error or non-200 yields ok=False with the detail in "response",
     so the broker records the action FAILED instead of silently "succeeding" on
     an error string. Back-compatible with pre-#2 Hermes via _ok_from_action_json.
+
+    When idempotency_key is given it is sent as the Idempotency-Key header so a
+    retry that races the broker's own dedup can't double-execute on Hermes
+    (Hermes-side #7). Older Hermes simply ignores the unknown header.
     """
     from backend.config import get_settings
     settings = get_settings()
@@ -155,6 +159,8 @@ async def relay_action(message: str) -> dict:
         headers["X-Webhook-Secret"] = settings.hermes_webhook_secret
     except Exception:
         pass
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(

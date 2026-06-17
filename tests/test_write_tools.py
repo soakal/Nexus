@@ -201,7 +201,8 @@ async def test_hermes_command_low_risk_verb_executed(eng):
         result = await _hermes_command({"verb": "proxmox_status", "args": {}})
 
     assert result.startswith("OK"), f"expected 'OK …', got: {result!r}"
-    rl.assert_awaited_once_with("check proxmox")
+    rl.assert_awaited_once()
+    assert rl.await_args.args[0] == "check proxmox"
 
 
 # ===========================================================================

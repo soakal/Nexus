@@ -229,7 +229,9 @@ async def _dispatch_hermes_action(target: str, payload: dict) -> dict:
     # response contract): it returns {"ok", "response", "intent"} so a Hermes-side
     # action failure (e.g. Proxmox 500 → "error: ...") is no longer swallowed into
     # a success string. Raise on ok=False so execute_action records this FAILED.
-    result = await hermes.relay_action(command)
+    # Forward the broker idempotency key (if any) so a retry racing our own dedup
+    # can't double-execute on Hermes (Hermes-side #7).
+    result = await hermes.relay_action(command, idempotency_key=payload.get("idempotency_key"))
     if not result.get("ok", True):
         raise RuntimeError(f"Hermes action failed: {result.get('response')}")
     return {"command": command, "response": result.get("response"), "intent": result.get("intent")}
@@ -610,8 +612,15 @@ async def execute_action(
             error=error,
         )
 
+    # Forward the broker idempotency key to the hermes_action dispatcher (so it can
+    # set the Hermes Idempotency-Key header). Non-mutating: only a local copy for
+    # this dispatch carries the extra field; the caller's payload is untouched.
+    dispatch_payload = payload
+    if kind == "hermes_action" and idempotency_key:
+        dispatch_payload = {**payload, "idempotency_key": idempotency_key}
+
     try:
-        result = await dispatcher(target, payload)
+        result = await dispatcher(target, dispatch_payload)
     except Exception as e:  # never re-raise — record the failure and return it
         logger.warning(f"Action dispatch failed kind={kind} target={target}: {e}")
         await asyncio.to_thread(

@@ -221,3 +221,26 @@ async def test_hermes_relay_action_unreachable():
         result = await relay_action("start 101")
         assert result["ok"] is False
         assert "not reachable" in result["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hermes_relay_action_sends_idempotency_key():
+    """When given an idempotency_key, relay_action sets the Idempotency-Key header;
+    when omitted, the header is absent (Hermes-side #7 wiring)."""
+    from backend.integrations.hermes import relay_action
+
+    for key in ("idem-abc", None):
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_resp = MagicMock(status_code=200)
+            mock_resp.json.return_value = {"ok": True, "response": "ok", "intent": "vm_action"}
+            post = AsyncMock(return_value=mock_resp)
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value.post = post
+            mock_client_cls.return_value = mock_client
+
+            await relay_action("stop 200", idempotency_key=key)
+            sent_headers = post.call_args.kwargs["headers"]
+            if key:
+                assert sent_headers.get("Idempotency-Key") == key
+            else:
+                assert "Idempotency-Key" not in sent_headers
