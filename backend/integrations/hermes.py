@@ -84,10 +84,17 @@ async def notify(payload: dict) -> bool:
             resp = await client.post(f"{settings.hermes_host}/hermes/notify", json=payload, headers=headers)
             if resp.status_code in (200, 201, 204):
                 return True
+            if resp.status_code in (401, 403):
+                logger.error(
+                    f"Hermes notify AUTH FAILED (HTTP {resp.status_code}) — "
+                    "HERMES_WEBHOOK_SECRET is missing or wrong. Retrying will NOT help. NOT queuing."
+                )
+                return False
+            logger.warning(f"Hermes notify returned HTTP {resp.status_code}; queuing for retry")
     except Exception as e:
         logger.warning(f"Hermes notify failed, queuing: {e}")
 
-    # Queue for retry
+    # Queue for retry (auth failures return early above and never reach here)
     _queue_delivery(payload, "notify")
     return False
 
@@ -323,6 +330,48 @@ async def relay(message: str) -> str:
         return f"Hermes is not reachable right now: {e}"
 
 
+def delivery_queue_health() -> dict:
+    """Sync helper: delivery queue stats for the safety status endpoint.
+
+    Run via asyncio.to_thread — never called directly from the event loop.
+    Returns pending_count, oldest_age_seconds, dead_lettered_count, secret_present.
+    Never raises.
+    """
+    try:
+        from sqlmodel import Session, select
+        from backend.database import PendingDelivery, engine
+        from backend.config import get_settings
+
+        settings = get_settings()
+        try:
+            secret_present = bool(settings.hermes_webhook_secret)
+        except Exception:
+            secret_present = False
+
+        with Session(engine) as session:
+            rows = session.exec(select(PendingDelivery)).all()
+            pending_count = len(rows)
+            dead_lettered_count = sum(1 for r in rows if r.attempts >= _MAX_ATTEMPTS)
+            oldest_age_seconds = (
+                int((datetime.utcnow() - min(r.created_at for r in rows)).total_seconds())
+                if rows else None
+            )
+
+        return {
+            "pending_count": pending_count,
+            "oldest_age_seconds": oldest_age_seconds,
+            "dead_lettered_count": dead_lettered_count,
+            "secret_present": secret_present,
+        }
+    except Exception:
+        return {
+            "pending_count": 0,
+            "oldest_age_seconds": None,
+            "dead_lettered_count": 0,
+            "secret_present": False,
+        }
+
+
 async def deliver_pending() -> None:
     # All synchronous SQLite I/O is pushed to a worker thread so the asyncio
     # event loop is never blocked by SQLite contention on Windows.
@@ -349,10 +398,32 @@ async def deliver_pending() -> None:
                 resp = await client.post(endpoint, json=payload, headers=headers)
                 if resp.status_code in (200, 201, 204):
                     delivered_ids.append(delivery["id"])
+                elif resp.status_code in (401, 403):
+                    logger.error(
+                        f"Retry delivery id={delivery['id']} type={delivery['delivery_type']} "
+                        f"AUTH FAILED (HTTP {resp.status_code}) — "
+                        "HERMES_WEBHOOK_SECRET missing/wrong; will not succeed on retry"
+                    )
+                    failed_ids.append(delivery["id"])
                 else:
+                    logger.warning(
+                        f"Retry delivery id={delivery['id']} type={delivery['delivery_type']} "
+                        f"got HTTP {resp.status_code} (attempt {delivery['attempts'] + 1})"
+                    )
                     failed_ids.append(delivery["id"])
             except Exception as e:
-                logger.warning(f"Retry delivery failed: {e}")
+                logger.warning(
+                    f"Retry delivery id={delivery['id']} type={delivery['delivery_type']} failed: {e}"
+                )
                 failed_ids.append(delivery["id"])
+
+    total = len(pending)
+    d, f = len(delivered_ids), len(failed_ids)
+    if f and not d:
+        logger.error(f"Hermes delivery cycle: 0/{total} delivered, {f} still failing")
+    elif f:
+        logger.warning(f"Hermes delivery cycle: {d}/{total} delivered, {f} failed")
+    else:
+        logger.info(f"Hermes delivery cycle: {d}/{total} delivered")
 
     await asyncio.to_thread(_apply_pending_results, delivered_ids, failed_ids)

@@ -129,21 +129,36 @@ const SECTIONS = [
 
 export default function Settings() {
   const [meta, setMeta] = useState({})
+  const [notifyChannel, setNotifyChannel] = useState(null)
 
   useEffect(() => {
     api.secrets.list().then(r => setMeta(r?.meta || {})).catch(() => {})
+    api.safety.status().then(r => setNotifyChannel(r?.notify_channel || null)).catch(() => {})
   }, [])
+
+  const notifyBroken = notifyChannel?.enabled === true && notifyChannel?.secret_present === false
 
   return (
     <div className="p-4 md:p-6 max-w-2xl">
       <h1 className="page-header mb-6">SYSTEM CONFIGURATION</h1>
       <div className="space-y-6">
+        {notifyBroken && (
+          <div className="rounded p-3 text-sm" style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.5)', color: '#ef4444' }}>
+            Phone notifications are enabled but <span className="font-mono">HERMES_WEBHOOK_SECRET</span> is missing — every alert is silently failing. Set it in the Agent Bridge section below.
+          </div>
+        )}
         <BrowserApiKey />
         {SECTIONS.map(section => (
           <div key={section.title} className="hud-panel p-4">
             <h2 className="hud-label mb-3">{section.title}</h2>
             {section.secrets.map(s => (
-              <SecretField key={s.key} secretKey={s.key} label={s.label} lastSet={meta[s.key]?.last_set} />
+              <SecretField
+                key={s.key}
+                secretKey={s.key}
+                label={s.label}
+                lastSet={meta[s.key]?.last_set}
+                missing={s.key === 'HERMES_WEBHOOK_SECRET' && notifyBroken}
+              />
             ))}
           </div>
         ))}

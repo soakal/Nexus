@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react'
 import { api } from '../lib/api'
-export default function SecretField({ secretKey, label, lastSet }) {
+export default function SecretField({ secretKey, label, lastSet, missing = false }) {
   const [visible, setVisible] = useState(false)
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
@@ -26,7 +26,14 @@ export default function SecretField({ secretKey, label, lastSet }) {
   return (
     <div className="flex items-center gap-3 py-2 border-b border-border-dark last:border-0">
       <div className="flex-1">
-        <div className="text-text-primary text-sm">{label}</div>
+        <div className="flex items-center gap-2">
+          <span className="text-text-primary text-sm">{label}</span>
+          {missing && (
+            <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.4)' }}>
+              MISSING — required
+            </span>
+          )}
+        </div>
         {lastSet && <div className="text-text-secondary text-xs font-mono">Last set: {new Date(lastSet.endsWith('Z') ? lastSet : lastSet + 'Z').toLocaleDateString()}</div>}
       </div>
       {editing ? (

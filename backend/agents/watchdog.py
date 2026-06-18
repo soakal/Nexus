@@ -123,6 +123,11 @@ async def check_dead_letters(*, threshold: int, cooldown_s: int) -> int:
         from backend import events
 
         rows = await asyncio.to_thread(_dead_letter_count, threshold)
+        if rows:
+            logger.error(
+                f"{len(rows)} Hermes deliveries dead-lettered (>= {threshold} retries) — "
+                "notification pipeline likely broken (check HERMES_WEBHOOK_SECRET / Hermes connectivity)"
+            )
         if rows and _should_alert("dead_letters", cooldown_s):
             await events.notify_phone(
                 f"NEXUS has {len(rows)} undelivered Hermes message(s) stuck"

@@ -200,17 +200,31 @@ async def resume_autonomy(_=Depends(require_api_key)):
 
 @router.get("/status")
 async def safety_status(_=Depends(require_api_key)):
-    """Current kill-switch + budget state plus today's spend."""
+    """Current kill-switch + budget state plus today's spend and notify-channel health."""
     from backend.safety import governor
+    from backend.integrations import hermes
+    from backend.config import get_settings
 
     state = await asyncio.to_thread(governor.get_system_state)
     spend = await asyncio.to_thread(governor.today_spend_usd)
+
+    notify_channel: dict = {}
+    try:
+        queue_health = await asyncio.to_thread(hermes.delivery_queue_health)
+        notify_channel = {
+            **queue_health,
+            "enabled": get_settings().phone_notifications_enabled,
+        }
+    except Exception:
+        pass
+
     return {
         "autonomy_enabled": state["autonomy_enabled"],
         "today_spend_usd": spend,
         "daily_budget_usd": state["daily_budget_usd"],
         "per_task_budget_usd": state["per_task_budget_usd"],
         "scheduler_running": _scheduler_running(),
+        "notify_channel": notify_channel,
     }
 
 

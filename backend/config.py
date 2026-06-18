@@ -1,5 +1,9 @@
 
+import logging
+
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -228,6 +232,19 @@ class Settings(BaseSettings):
                 missing.append(name)
         if missing:
             raise RuntimeError(f"Missing required secrets: {', '.join(missing)}")
+
+        # Non-fatal warning: notifications will 401 silently if the secret is absent.
+        if self.phone_notifications_enabled:
+            try:
+                secret = self.hermes_webhook_secret
+                if not secret:
+                    raise ValueError("empty")
+            except Exception:
+                logger.error(
+                    "phone_notifications_enabled=True but HERMES_WEBHOOK_SECRET is missing "
+                    "from the vault. ALL phone notifications will 401 and silently queue. "
+                    "Add it with: python tools/manage_vault.py set HERMES_WEBHOOK_SECRET"
+                )
 
     class Config:
         env_file = ".env"
