@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     pr_stale_hours: int = 48
     action_confirm_ttl_seconds: int = 3600
     goal_ttl_seconds: int = 86400          # pending-proposal TTL (24 h)
-    goal_debounce_seconds: int = 3600      # cooldown before same fingerprint re-proposed
+    goal_debounce_seconds: int = 21600     # cooldown before same fingerprint re-proposed (6h)
     goal_backoff_base_seconds: int = 300   # failure backoff base (seconds)
     goal_max_attempts: int = 5             # max retries before goal stays failed
     nexus_port: int = 3000

@@ -151,6 +151,9 @@ async def propose_goals_tick() -> dict:
         # ------------------------------------------------------------------
         now = datetime.utcnow()
         since = now - timedelta(days=7)
+        # Anomalies use a 24h window so stale samples (e.g. from a since-fixed
+        # infrastructure bug) don't keep triggering the same investigation goal.
+        since_anomalies = now - timedelta(hours=24)
 
         try:
             trend_rows = await asyncio.to_thread(_db_trend_summary, since)
@@ -158,7 +161,7 @@ async def propose_goals_tick() -> dict:
             trend_rows = []
 
         try:
-            anom_rows = await asyncio.to_thread(_db_uptime_anomalies, since)
+            anom_rows = await asyncio.to_thread(_db_uptime_anomalies, since_anomalies)
         except Exception:
             anom_rows = []
 

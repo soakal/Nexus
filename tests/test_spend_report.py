@@ -239,8 +239,9 @@ async def test_notify_phone_appends_deep_link_when_base_url_set():
     assert result is True
     hermes_notify_mock.assert_awaited_once()
     call_payload = hermes_notify_mock.await_args[0][0]
-    assert "Open: http://192.168.1.119:3000/safety" in call_payload["content"]
+    assert 'href="http://192.168.1.119:3000/safety"' in call_payload["content"]
     assert call_payload["content"].startswith("budget alert")
+    assert call_payload.get("parse_mode") == "HTML"
 
 
 @pytest.mark.asyncio
@@ -280,7 +281,8 @@ async def test_notify_phone_deep_link_strips_trailing_slash():
         await notify_phone("msg", kind="test")
 
     call_payload = hermes_notify_mock.await_args[0][0]
-    assert "Open: http://192.168.1.119:3000/safety" in call_payload["content"]
+    assert 'href="http://192.168.1.119:3000/safety"' in call_payload["content"]
+    assert call_payload.get("parse_mode") == "HTML"
     # Must not have double-slash.
     assert "//safety" not in call_payload["content"]
 

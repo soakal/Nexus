@@ -33,11 +33,19 @@ async def notify_phone(content: str, *, kind: str = "autonomy_alert") -> bool:
             return False
         # Append deep-link when a base URL is configured.
         base = str(getattr(settings, "app_base_url", "") or "").strip().rstrip("/")
+        parse_mode = None
         if base:
-            content = f"{content}\nOpen: {base}/safety"
+            url = f"{base}/safety"
+            # HTML link so Telegram renders it clickable even for non-dotted hostnames
+            # (bare hostnames like win11-vm-proxmox aren't auto-detected as URLs in plain text).
+            content = f"{content}\n<a href=\"{url}\">Open Safety</a>"
+            parse_mode = "HTML"
         from datetime import datetime
         from backend.integrations import hermes
-        return await hermes.notify({"type": kind, "content": content, "timestamp": datetime.utcnow().isoformat()})
+        payload: dict = {"type": kind, "content": content, "timestamp": datetime.utcnow().isoformat()}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        return await hermes.notify(payload)
     except Exception as e:
         logger.debug(f"events.notify_phone failed (ignored): {e}")
         return False
