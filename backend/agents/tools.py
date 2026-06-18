@@ -154,12 +154,17 @@ async def _channels_status(_input: dict) -> str:
         failed = _safe(data, "failed_recordings", [])
         if not isinstance(failed, list):
             failed = []
-        failed_str = ""
         if failed:
             titles = ", ".join(
                 (f.get("title", "?") if isinstance(f, dict) else str(f)) for f in failed[:5]
             )
             failed_str = f", failed/skipped(24h)={len(failed)} [{titles}]"
+        else:
+            # ALWAYS emit the count, even when zero — otherwise a healthy "no
+            # failures" run leaves the field absent, and the verifier can't confirm
+            # the "zero failed recordings" criterion (reads a missing field as
+            # "data unavailable" and rejects the goal). An explicit =0 satisfies it.
+            failed_str = ", failed/skipped(24h)=0"
         summary = (
             f"Channels DVR: recording={rec_str}, "
             f"storage={_safe(data, 'storage_used_gb', 0)}/{_safe(data, 'storage_total_gb', 0)} GB"

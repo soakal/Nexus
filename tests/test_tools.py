@@ -149,6 +149,22 @@ async def test_channels_status_surfaces_failed_recordings():
 
 
 @pytest.mark.asyncio
+async def test_channels_status_emits_zero_failed_count():
+    """Healthy 'no failures' case still emits failed/skipped(24h)=0 so the verifier
+    can confirm the zero-failures criterion (a missing field reads as 'unavailable')."""
+    from backend.agents import tools
+
+    data = MagicMock()
+    data.recording_now = []
+    data.storage_used_gb = 1.0
+    data.storage_total_gb = 2.0
+    data.failed_recordings = []
+    with patch("backend.integrations.channels_dvr.fetch", new=AsyncMock(return_value=data)):
+        out = await tools._channels_status({})
+    assert "failed/skipped(24h)=0" in out
+
+
+@pytest.mark.asyncio
 async def test_weather_normal_and_raise():
     from backend.agents import tools
 
