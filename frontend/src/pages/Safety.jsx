@@ -348,6 +348,24 @@ export default function Safety() {
     }
   }
 
+  async function handleGoalToggleDisabled(g) {
+    setGoalActingId(g.id)
+    setGoalErrors(prev => ({ ...prev, [g.id]: '' }))
+    try {
+      if (g.disabled) {
+        await api.goals.enable(g.id)
+      } else {
+        await api.goals.disable(g.id)
+      }
+      load()
+    } catch (err) {
+      const msg = err?.message || 'Failed to update goal.'
+      setGoalErrors(prev => ({ ...prev, [g.id]: msg }))
+    } finally {
+      setGoalActingId(null)
+    }
+  }
+
   function handleStartEdit(g) {
     setEditingGoalId(g.id)
     setEditFields({
@@ -796,8 +814,17 @@ export default function Safety() {
                       {g.category}
                     </span>
                   )}
+                  {/* Disabled badge */}
+                  {g.disabled && (
+                    <span
+                      className="font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded text-accent-orange"
+                      style={{ border: '1px solid rgba(255,149,0,0.5)', opacity: 0.9, fontSize: '0.6rem' }}
+                    >
+                      DISABLED
+                    </span>
+                  )}
                   {/* Title */}
-                  <span className="font-mono text-xs text-text-primary flex-1 min-w-0">{g.title}</span>
+                  <span className={`font-mono text-xs flex-1 min-w-0 ${g.disabled ? 'text-text-secondary line-through' : 'text-text-primary'}`}>{g.title}</span>
                   {/* Time */}
                   <span className="font-mono text-xs text-text-secondary">
                     {relativeTime(g.created_at)}
@@ -918,6 +945,16 @@ export default function Safety() {
                       style={{ border: '1px solid rgba(0,212,255,0.3)' }}
                     >
                       EDIT
+                    </button>
+                    {/* DISABLE / ENABLE — pause a goal without deleting it (gates
+                        future recurring runs; re-enable to resume). */}
+                    <button
+                      onClick={() => handleGoalToggleDisabled(g)}
+                      disabled={goalActingId === g.id}
+                      className="font-mono text-xs text-accent-orange px-3 py-1.5 rounded disabled:opacity-40"
+                      style={{ border: '1px solid rgba(255,149,0,0.35)' }}
+                    >
+                      {goalActingId === g.id ? '...' : (g.disabled ? 'ENABLE' : 'DISABLE')}
                     </button>
                     <button
                       onClick={() => handleGoalDelete(g.id)}

@@ -131,6 +131,8 @@ export const api = {
     reject: (id) => req('POST', `/goals/${id}/reject`),
     edit: (id, fields) => req('PATCH', `/goals/${id}`, fields),
     remove: (id) => req('DELETE', `/goals/${id}`),
+    disable: (id) => req('POST', `/goals/${id}/disable`),
+    enable: (id) => req('POST', `/goals/${id}/enable`),
   },
   facts: {
     list: () => req('GET', '/facts/'),

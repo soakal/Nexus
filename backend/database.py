@@ -269,6 +269,10 @@ class Goal(SQLModel, table=True):
     category: str | None = None
     success_criteria: str | None = None
     next_eval_at: datetime | None = None
+    # Human pause switch: a disabled goal is kept but never auto-dispatched by the
+    # recurring scheduler. Re-enable to resume. Does not affect a one-shot goal's
+    # existing state; it just gates future recurrence ticks.
+    disabled: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -344,6 +348,7 @@ def _ensure_goal_columns():
     column) and on test :memory: engines.
     """
     _safe_add_column("goal", "rejection_reason", "TEXT")
+    _safe_add_column("goal", "disabled", "BOOLEAN DEFAULT 0")
 
 
 def _ensure_goal_recurrence_columns():

@@ -152,3 +152,25 @@ async def delete_goal(goal_id: int, _=Depends(require_api_key)):
     if r["status"] == "not_found":
         raise HTTPException(status_code=404, detail="Goal not found")
     return r
+
+
+@router.post("/{goal_id}/disable")
+async def disable_goal(goal_id: int, _=Depends(require_api_key)):
+    """Pause a goal — kept but never auto-dispatched by the recurring scheduler."""
+    from backend.agents import goals
+
+    r = await goals.set_disabled(goal_id, True)
+    if r["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return r
+
+
+@router.post("/{goal_id}/enable")
+async def enable_goal(goal_id: int, _=Depends(require_api_key)):
+    """Resume a previously disabled goal."""
+    from backend.agents import goals
+
+    r = await goals.set_disabled(goal_id, False)
+    if r["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return r

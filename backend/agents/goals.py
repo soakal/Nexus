@@ -75,6 +75,7 @@ def _goal_to_dict(g: Goal) -> dict:
         "category": g.category,
         "success_criteria": g.success_criteria,
         "next_eval_at": g.next_eval_at.isoformat() if g.next_eval_at else None,
+        "disabled": bool(getattr(g, "disabled", False)),
         "created_at": g.created_at.isoformat() if g.created_at else None,
         "updated_at": g.updated_at.isoformat() if g.updated_at else None,
     }
@@ -312,6 +313,7 @@ def _db_due_recurring_goals(now: datetime) -> list[dict]:
             .where(Goal.next_eval_at.isnot(None))  # type: ignore[attr-defined]
             .where(Goal.next_eval_at <= now)  # type: ignore[operator]
             .where(Goal.status.in_(["completed", "failed"]))  # type: ignore[attr-defined]
+            .where(Goal.disabled == False)  # noqa: E712 — a disabled goal never auto-runs
         )
         goals = session.exec(stmt).all()
         return [_goal_to_dict(g) for g in goals]
@@ -584,6 +586,23 @@ async def delete(goal_id: int) -> dict:
 
     ok = await asyncio.to_thread(_db_delete_goal, goal_id)
     return {"status": "deleted"} if ok else {"status": "not_found"}
+
+
+async def set_disabled(goal_id: int, disabled: bool) -> dict:
+    """Pause (disable) or resume (enable) a goal. A disabled goal is kept but
+    never auto-dispatched by the recurring scheduler. Re-enabling resumes it.
+
+    Returns 'status': not_found | updated (+ 'goal').
+    """
+    import asyncio
+
+    g = await asyncio.to_thread(_db_get_goal, goal_id)
+    if g is None:
+        return {"status": "not_found"}
+    updated = await asyncio.to_thread(
+        _db_update_goal, goal_id, disabled=bool(disabled), updated_at=datetime.utcnow()
+    )
+    return {"status": "updated", "goal": updated}
 
 
 async def reconcile_running(

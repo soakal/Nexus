@@ -386,6 +386,69 @@ async def test_edit_invalid_risk_rejected(eng):
 
 
 # ---------------------------------------------------------------------------
+# 8c. disable / enable
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_set_disabled_toggles(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    r = await goals.propose("Pausable", "A goal to pause.")
+    gid = r["goal"]["id"]
+    assert r["goal"]["disabled"] is False
+
+    r_dis = await goals.set_disabled(gid, True)
+    assert r_dis["status"] == "updated"
+    assert r_dis["goal"]["disabled"] is True
+
+    r_en = await goals.set_disabled(gid, False)
+    assert r_en["goal"]["disabled"] is False
+
+    with Session(eng) as s:
+        assert s.get(Goal, gid).disabled is False
+
+
+@pytest.mark.asyncio
+async def test_set_disabled_missing(eng):
+    from backend.agents import goals
+
+    r = await goals.set_disabled(999999, True)
+    assert r["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_disabled_recurring_goal_not_due(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    # A due recurring goal that is disabled must NOT be returned by the scheduler.
+    past = datetime.utcnow() - timedelta(hours=1)
+    with Session(eng) as s:
+        g = Goal(
+            title="Recurring disabled",
+            description="x",
+            status="completed",
+            fingerprint="cccc2222cccc2222",
+            cadence="daily",
+            next_eval_at=past,
+            disabled=True,
+        )
+        s.add(g)
+        s.commit()
+        s.refresh(g)
+        gid = g.id
+
+    due = goals._db_due_recurring_goals(datetime.utcnow())
+    assert all(d["id"] != gid for d in due), "disabled recurring goal must not be due"
+
+    # Re-enable → now it should be due.
+    await goals.set_disabled(gid, False)
+    due2 = goals._db_due_recurring_goals(datetime.utcnow())
+    assert any(d["id"] == gid for d in due2), "enabled recurring goal should be due"
+
+
+# ---------------------------------------------------------------------------
 # 9. reconcile_running
 # ---------------------------------------------------------------------------
 
