@@ -89,6 +89,21 @@ STARTER_GOALS = [
         ),
         "success_criteria": "No failed or skipped recordings in the last day.",
     },
+    {
+        "title": "Proxmox pending-update check",
+        "category": "maintenance",
+        "cadence": "weekly",
+        "description": (
+            "Check for pending Proxmox (PVE) system updates using the proxmox_updates tool. "
+            "Report how many apt packages are upgradable on the node and list the notable "
+            "ones. If updates are pending, recommend scheduling a maintenance window to apply "
+            "them — do not install anything yourself."
+        ),
+        "success_criteria": (
+            "The pending Proxmox update count was retrieved and reported; if greater than "
+            "zero, a maintenance-window recommendation was made."
+        ),
+    },
 ]
 
 

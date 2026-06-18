@@ -201,6 +201,17 @@ async def _hermes_status(_input: dict) -> str:
         return _truncate(f"hermes_status unavailable: {e}")
 
 
+async def _proxmox_updates(_input: dict) -> str:
+    try:
+        from backend.integrations import hermes
+        # Read-only: relays the "proxmox updates" intent to Hermes, which queries
+        # the Proxmox apt/update API and returns a pending-update summary string.
+        result = await hermes.relay("proxmox updates")
+        return _truncate(result if isinstance(result, str) else str(result))
+    except Exception as e:
+        return _truncate(f"proxmox_updates unavailable: {e}")
+
+
 async def _vault_search(input: dict) -> str:
     query = (input or {}).get("query")
     if not query or not str(query).strip():
@@ -273,6 +284,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Read the Hermes homelab bot status: alive, last seen, pending actions. READ ONLY — does not command Hermes.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_hermes_status,
+    ),
+    ReadTool(
+        name="proxmox_updates",
+        description="Read pending Proxmox (PVE) system updates: how many apt packages are upgradable on the node, via Hermes. READ ONLY — does not install anything.",
+        input_schema=_NO_ARGS_SCHEMA,
+        dispatch=_proxmox_updates,
     ),
     ReadTool(
         name="vault_search",

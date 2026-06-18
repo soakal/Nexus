@@ -184,6 +184,22 @@ async def test_hermes_status_normal_and_raise():
 
 
 @pytest.mark.asyncio
+async def test_proxmox_updates_passthrough_and_raise():
+    from backend.agents import tools
+
+    # Relays "proxmox updates" to Hermes; returns its response string verbatim.
+    with patch("backend.integrations.hermes.relay",
+               new=AsyncMock(return_value="3 pending update(s) on pve: libc6, openssl")) as rl:
+        out = await tools._proxmox_updates({})
+    assert "3 pending update(s)" in out
+    rl.assert_awaited_once_with("proxmox updates")
+
+    with patch("backend.integrations.hermes.relay", new=AsyncMock(side_effect=Exception("x"))):
+        out = await tools._proxmox_updates({})
+    assert out.startswith("proxmox_updates unavailable:")
+
+
+@pytest.mark.asyncio
 async def test_vault_search_passthrough_and_missing_query():
     from backend.agents import tools
 
@@ -230,6 +246,7 @@ async def test_all_dispatchers_never_raise_on_error():
         "backend.integrations.weather.fetch",
         "backend.integrations.github.fetch",
         "backend.integrations.hermes.get_status",
+        "backend.integrations.hermes.relay",
         "backend.integrations.obsidian.vault_search",
         "backend.integrations.web_search.search",
     ]
@@ -295,7 +312,7 @@ def test_dispatcher_map_keys_match_registry():
     expected = {
         "homeassistant_status", "unraid_status", "unifi_status", "adguard_status",
         "channels_status", "weather", "github_status", "hermes_status",
-        "vault_search", "ddg_search",
+        "proxmox_updates", "vault_search", "ddg_search",
     }
     assert set(dmap.keys()) == expected
     # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the
