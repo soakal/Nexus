@@ -118,6 +118,10 @@ export default function Safety() {
   const [goals, setGoals]                 = useState([])
   const [goalActingId, setGoalActingId]   = useState(null)
   const [goalErrors, setGoalErrors]       = useState({})
+
+  // Inline goal edit state
+  const [editingGoalId, setEditingGoalId] = useState(null)
+  const [editFields, setEditFields]       = useState({ title: '', description: '', risk: 'medium', category: 'other' })
   const [metering, setMetering]           = useState(null)
 
   // Goal propose form state
@@ -304,6 +308,60 @@ export default function Safety() {
       load()
     } catch (err) {
       const msg = err?.message || 'Failed to reject goal.'
+      setGoalErrors(prev => ({ ...prev, [id]: msg }))
+    } finally {
+      setGoalActingId(null)
+    }
+  }
+
+  async function handleGoalDelete(id) {
+    if (!window.confirm('Delete this goal permanently? This cannot be undone.')) return
+    setGoalActingId(id)
+    setGoalErrors(prev => ({ ...prev, [id]: '' }))
+    try {
+      await api.goals.remove(id)
+      load()
+    } catch (err) {
+      const msg = err?.message || 'Failed to delete goal.'
+      setGoalErrors(prev => ({ ...prev, [id]: msg }))
+    } finally {
+      setGoalActingId(null)
+    }
+  }
+
+  function handleStartEdit(g) {
+    setEditingGoalId(g.id)
+    setEditFields({
+      title: g.title || '',
+      description: g.description || '',
+      risk: g.risk || 'medium',
+      category: g.category || 'other',
+    })
+    setGoalErrors(prev => ({ ...prev, [g.id]: '' }))
+  }
+
+  function handleCancelEdit() {
+    setEditingGoalId(null)
+  }
+
+  async function handleSaveEdit(id) {
+    if (!editFields.title.trim() || !editFields.description.trim()) {
+      setGoalErrors(prev => ({ ...prev, [id]: 'Title and description are required.' }))
+      return
+    }
+    setGoalActingId(id)
+    setGoalErrors(prev => ({ ...prev, [id]: '' }))
+    try {
+      await api.goals.edit(id, {
+        title: editFields.title.trim(),
+        description: editFields.description.trim(),
+        risk: editFields.risk,
+        category: editFields.category,
+      })
+      setEditingGoalId(null)
+      load()
+    } catch (err) {
+      const msg = err?.message || 'Failed to save goal.'
       setGoalErrors(prev => ({ ...prev, [id]: msg }))
     } finally {
       setGoalActingId(null)
@@ -741,24 +799,112 @@ export default function Safety() {
                   </div>
                 )}
 
-                {/* Proposed: approve/reject */}
-                {g.status === 'proposed' && (
+                {/* Inline edit form (proposed goals only) */}
+                {editingGoalId === g.id ? (
+                  <div className="space-y-2 mb-2 p-3 rounded" style={{ border: '1px solid rgba(0,212,255,0.2)' }}>
+                    <div>
+                      <label className="hud-label mb-1 block">TITLE</label>
+                      <input
+                        type="text"
+                        value={editFields.title}
+                        onChange={e => setEditFields(f => ({ ...f, title: e.target.value }))}
+                        className="hud-input w-full font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="hud-label mb-1 block">DESCRIPTION</label>
+                      <textarea
+                        value={editFields.description}
+                        onChange={e => setEditFields(f => ({ ...f, description: e.target.value }))}
+                        rows={3}
+                        className="hud-input w-full font-mono resize-y"
+                      />
+                    </div>
+                    <div className="flex gap-3 flex-wrap">
+                      <div>
+                        <label className="hud-label mb-1 block">RISK</label>
+                        <select
+                          value={editFields.risk}
+                          onChange={e => setEditFields(f => ({ ...f, risk: e.target.value }))}
+                          className="hud-input font-mono"
+                        >
+                          <option value="low">LOW</option>
+                          <option value="medium">MEDIUM</option>
+                          <option value="high">HIGH</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="hud-label mb-1 block">CATEGORY</label>
+                        <select
+                          value={editFields.category}
+                          onChange={e => setEditFields(f => ({ ...f, category: e.target.value }))}
+                          className="hud-input font-mono"
+                        >
+                          {categories.map(c => (
+                            <option key={c} value={c}>{c.toUpperCase()}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 flex-wrap pt-1">
+                      <button
+                        onClick={() => handleSaveEdit(g.id)}
+                        disabled={goalActingId === g.id}
+                        className="glow-btn px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
+                        style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
+                      >
+                        {goalActingId === g.id ? 'SAVING...' : 'SAVE'}
+                      </button>
+                      <button
+                        onClick={handleCancelEdit}
+                        className="font-mono text-xs text-text-secondary px-3 py-1.5 rounded"
+                        style={{ border: '1px solid rgba(255,255,255,0.12)' }}
+                      >
+                        CANCEL
+                      </button>
+                      {goalErrors[g.id] && (
+                        <span className="font-mono text-xs text-red-400">{goalErrors[g.id]}</span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* Action row — approve/reject/edit for proposed, delete always */
                   <div className="flex items-center gap-3 flex-wrap">
+                    {g.status === 'proposed' && (
+                      <>
+                        <button
+                          onClick={() => handleGoalApprove(g.id)}
+                          disabled={goalActingId === g.id}
+                          className="glow-btn px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
+                          style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
+                        >
+                          {goalActingId === g.id ? 'APPROVING...' : 'APPROVE'}
+                        </button>
+                        <button
+                          onClick={() => handleGoalReject(g.id)}
+                          disabled={goalActingId === g.id}
+                          className="font-mono text-xs text-text-secondary px-3 py-1.5 rounded disabled:opacity-40"
+                          style={{ border: '1px solid rgba(255,255,255,0.12)' }}
+                        >
+                          {goalActingId === g.id ? 'REJECTING...' : 'REJECT'}
+                        </button>
+                        <button
+                          onClick={() => handleStartEdit(g)}
+                          disabled={goalActingId === g.id}
+                          className="font-mono text-xs text-accent-cyan px-3 py-1.5 rounded disabled:opacity-40"
+                          style={{ border: '1px solid rgba(0,212,255,0.3)' }}
+                        >
+                          EDIT
+                        </button>
+                      </>
+                    )}
                     <button
-                      onClick={() => handleGoalApprove(g.id)}
+                      onClick={() => handleGoalDelete(g.id)}
                       disabled={goalActingId === g.id}
-                      className="glow-btn px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
-                      style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
+                      className="font-mono text-xs text-red-400 px-3 py-1.5 rounded disabled:opacity-40"
+                      style={{ border: '1px solid rgba(255,45,45,0.3)' }}
                     >
-                      {goalActingId === g.id ? 'APPROVING...' : 'APPROVE'}
-                    </button>
-                    <button
-                      onClick={() => handleGoalReject(g.id)}
-                      disabled={goalActingId === g.id}
-                      className="font-mono text-xs text-text-secondary px-3 py-1.5 rounded disabled:opacity-40"
-                      style={{ border: '1px solid rgba(255,255,255,0.12)' }}
-                    >
-                      {goalActingId === g.id ? 'REJECTING...' : 'REJECT'}
+                      {goalActingId === g.id ? '...' : 'DELETE'}
                     </button>
                     {goalErrors[g.id] && (
                       <span className="font-mono text-xs text-red-400">{goalErrors[g.id]}</span>

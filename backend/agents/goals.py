@@ -224,6 +224,18 @@ def _db_list_goals(status: str | None = None, limit: int = 100) -> list[dict]:
         return [_goal_to_dict(g) for g in goals]
 
 
+def _db_delete_goal(goal_id: int) -> bool:
+    """Hard-delete a Goal row. Returns True if a row was deleted, False if absent.
+    Called exclusively via asyncio.to_thread."""
+    with Session(_db_mod.engine) as session:
+        g = session.get(Goal, goal_id)
+        if g is None:
+            return False
+        session.delete(g)
+        session.commit()
+        return True
+
+
 def _db_recent_abandoned(limit: int = 8) -> list[dict]:
     """Return recently abandoned goals as [{title, rejection_reason}], newest first.
 
@@ -498,6 +510,79 @@ async def reject(goal_id: int, *, reason: str | None = None) -> dict:
         await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
         return {"status": "abandoned"}
     return {"status": "conflict", "current": g["status"]}
+
+
+# Editable fields (proposed goals only) and the risk vocabulary we accept.
+_EDITABLE_GOAL_FIELDS = {"title", "description", "risk", "category", "cadence", "success_criteria"}
+_VALID_RISKS = {"low", "medium", "high", "unclassifiable"}
+
+
+async def edit(goal_id: int, fields: dict) -> dict:
+    """Edit a PROPOSED goal's editable fields (title/description/risk/category/
+    cadence/success_criteria). Editing is allowed only while the goal is still
+    proposed — once approved/running the description has already become the task
+    prompt, so editing would be misleading.
+
+    Returns 'status': not_found | conflict | no_changes | updated (+ 'goal').
+    """
+    import asyncio
+
+    g = await asyncio.to_thread(_db_get_goal, goal_id)
+    if g is None:
+        return {"status": "not_found"}
+    if g["status"] != "proposed":
+        return {"status": "conflict", "current": g["status"]}
+
+    # Keep only known editable fields with a non-None value.
+    update_fields: dict = {}
+    for k in _EDITABLE_GOAL_FIELDS:
+        if k in fields and fields[k] is not None:
+            update_fields[k] = fields[k]
+
+    # Validate/normalize.
+    if "title" in update_fields:
+        update_fields["title"] = str(update_fields["title"]).strip()
+        if not update_fields["title"]:
+            return {"status": "conflict", "current": "title_required"}
+    if "description" in update_fields:
+        update_fields["description"] = str(update_fields["description"]).strip()
+        if not update_fields["description"]:
+            return {"status": "conflict", "current": "description_required"}
+    if "risk" in update_fields:
+        r = str(update_fields["risk"]).lower().strip()
+        if r not in _VALID_RISKS:
+            return {"status": "conflict", "current": "invalid_risk"}
+        update_fields["risk"] = r
+    if "category" in update_fields:
+        update_fields["category"] = normalize_category(update_fields["category"])
+
+    if not update_fields:
+        return {"status": "no_changes", "goal": g}
+
+    # Re-fingerprint if title/description changed so debounce stays consistent.
+    if "title" in update_fields or "description" in update_fields:
+        new_title = update_fields.get("title", g["title"])
+        new_desc = update_fields.get("description", g["description"])
+        update_fields["fingerprint"] = _fingerprint(new_title, new_desc)
+
+    update_fields["updated_at"] = datetime.utcnow()
+    updated = await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
+    return {"status": "updated", "goal": updated}
+
+
+async def delete(goal_id: int) -> dict:
+    """Hard-delete a goal row (human cleanup). Allowed from any status.
+
+    Returns 'status': not_found | deleted.
+
+    NOTE: deleting a 'running' goal removes only the Goal row; the underlying
+    durable Task is independent and continues/finishes on its own. The user is
+    explicitly choosing to stop tracking the goal.
+    """
+    import asyncio
+
+    ok = await asyncio.to_thread(_db_delete_goal, goal_id)
+    return {"status": "deleted"} if ok else {"status": "not_found"}
 
 
 async def reconcile_running(

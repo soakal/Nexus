@@ -34,6 +34,15 @@ class GoalReject(BaseModel):
     reason: str | None = None
 
 
+class GoalEdit(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    risk: str | None = None
+    category: str | None = None
+    cadence: str | None = None
+    success_criteria: str | None = None
+
+
 @router.post("/propose")
 async def propose_goal(body: GoalPropose, _=Depends(require_api_key)):
     from backend.agents import goals
@@ -114,4 +123,31 @@ async def reject_goal(goal_id: int, body: GoalReject = GoalReject(), _=Depends(r
         raise HTTPException(status_code=404, detail="Goal not found")
     if r["status"] == "conflict":
         raise HTTPException(status_code=409, detail=f"Goal cannot be rejected from status {r['current']}")
+    return r
+
+
+@router.patch("/{goal_id}")
+async def edit_goal(goal_id: int, body: GoalEdit, _=Depends(require_api_key)):
+    """Edit a proposed goal's editable fields. Only allowed while status=proposed."""
+    from backend.agents import goals
+
+    r = await goals.edit(goal_id, body.model_dump(exclude_unset=True))
+    if r["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="Goal not found")
+    if r["status"] == "conflict":
+        cur = r.get("current")
+        if cur in ("title_required", "description_required", "invalid_risk"):
+            raise HTTPException(status_code=422, detail=cur)
+        raise HTTPException(status_code=409, detail=f"Goal can only be edited while proposed (is {cur})")
+    return r
+
+
+@router.delete("/{goal_id}")
+async def delete_goal(goal_id: int, _=Depends(require_api_key)):
+    """Hard-delete a goal row (human cleanup). Allowed from any status."""
+    from backend.agents import goals
+
+    r = await goals.delete(goal_id)
+    if r["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="Goal not found")
     return r

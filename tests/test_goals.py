@@ -300,6 +300,90 @@ async def test_reject_proposed_goal(eng):
 
 
 # ---------------------------------------------------------------------------
+# 8b. delete + edit
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_delete_goal(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    r = await goals.propose("Delete me", "A goal to remove.")
+    goal_id = r["goal"]["id"]
+
+    r_del = await goals.delete(goal_id)
+    assert r_del["status"] == "deleted"
+
+    with Session(eng) as s:
+        assert s.get(Goal, goal_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_goal(eng):
+    from backend.agents import goals
+
+    r = await goals.delete(999999)
+    assert r["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_edit_proposed_goal(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    r = await goals.propose("Old title", "Old description.", risk="low", category="other")
+    goal_id = r["goal"]["id"]
+    old_fp = r["goal"]["fingerprint"]
+
+    r_edit = await goals.edit(goal_id, {
+        "title": "New title",
+        "description": "New description.",
+        "risk": "high",
+        "category": "storage",
+    })
+    assert r_edit["status"] == "updated"
+    assert r_edit["goal"]["title"] == "New title"
+    assert r_edit["goal"]["risk"] == "high"
+    assert r_edit["goal"]["category"] == "storage"
+    # Fingerprint must change when title/description change (debounce consistency).
+    assert r_edit["goal"]["fingerprint"] != old_fp
+
+    with Session(eng) as s:
+        g = s.get(Goal, goal_id)
+    assert g.title == "New title"
+    assert g.description == "New description."
+
+
+@pytest.mark.asyncio
+async def test_edit_non_proposed_goal_conflict(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    # Seed a non-proposed (running) goal directly.
+    with Session(eng) as s:
+        g = Goal(title="Running", description="x", status="running", fingerprint="ffff0000ffff0000")
+        s.add(g)
+        s.commit()
+        s.refresh(g)
+        gid = g.id
+
+    r = await goals.edit(gid, {"title": "nope"})
+    assert r["status"] == "conflict"
+    assert r["current"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_edit_invalid_risk_rejected(eng):
+    from backend.agents import goals
+
+    r = await goals.propose("Risky", "desc")
+    gid = r["goal"]["id"]
+    r_edit = await goals.edit(gid, {"risk": "extreme"})
+    assert r_edit["status"] == "conflict"
+    assert r_edit["current"] == "invalid_risk"
+
+
+# ---------------------------------------------------------------------------
 # 9. reconcile_running
 # ---------------------------------------------------------------------------
 

@@ -120,6 +120,8 @@ export const api = {
     propose: (title, description, risk, category, cadence, successCriteria) => req('POST', '/goals/propose', { title, description, risk: risk || 'medium', category: category || 'other', cadence: cadence || null, success_criteria: successCriteria || null }),
     approve: (id) => req('POST', `/goals/${id}/approve`),
     reject: (id) => req('POST', `/goals/${id}/reject`),
+    edit: (id, fields) => req('PATCH', `/goals/${id}`, fields),
+    remove: (id) => req('DELETE', `/goals/${id}`),
   },
   facts: {
     list: () => req('GET', '/facts/'),
