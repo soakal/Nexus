@@ -169,7 +169,7 @@ async def test_retry_step_durable(eng):
             return "I cannot complete this task"
         return "fixed"
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side):
         mock_opus.return_value = retry_json
         from backend.agents.orchestrator import run_task
@@ -213,7 +213,7 @@ async def test_replan_changes_step_count(eng):
             return "I cannot complete this task"  # bad-step fails -> replan
         return "good"
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side):
         mock_opus.return_value = replan
         from backend.agents.orchestrator import run_task
@@ -467,7 +467,7 @@ async def test_no_id_legacy_path(eng):
     """task_id=None uses the legacy in-memory loop (results reset each retry)."""
     plan_json = '{"steps": [{"index": 1, "description": "s", "prompt": "p"}]}'
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("sqlmodel.Session"):
         mock_opus.return_value = plan_json

@@ -398,13 +398,13 @@ async def test_opus_plan_injects_learning_block():
     in the prompt sent to opus."""
     captured = {}
 
-    async def fake_opus(prompt, *args, **kwargs):
+    async def fake_opus(model, prompt, *args, **kwargs):
         captured["prompt"] = prompt
         return '{"steps": [{"index": 1, "description": "step", "prompt": "do it"}]}'
 
     learning_text = "- [failed] the API returned 404\n- [failed] vault search timed out"
 
-    with patch("backend.agents.router.opus", new=fake_opus):
+    with patch("backend.agents.router.run_model", new=fake_opus):
         from backend.agents.orchestrator import _opus_plan
         plan = await _opus_plan("some task", learning=learning_text)
 
@@ -423,11 +423,11 @@ async def test_opus_plan_no_learning_block_when_empty():
     block — the prompt stays clean for first-run tasks."""
     captured = {}
 
-    async def fake_opus(prompt, *args, **kwargs):
+    async def fake_opus(model, prompt, *args, **kwargs):
         captured["prompt"] = prompt
         return '{"steps": [{"index": 1, "description": "step", "prompt": "do it"}]}'
 
-    with patch("backend.agents.router.opus", new=fake_opus):
+    with patch("backend.agents.router.run_model", new=fake_opus):
         from backend.agents.orchestrator import _opus_plan
         await _opus_plan("some task")
 
@@ -516,11 +516,11 @@ async def test_run_task_loads_learning_before_plan(eng):
 
     plan_prompts = []
 
-    async def fake_opus(prompt, *args, **kwargs):
+    async def fake_opus(model, prompt, *args, **kwargs):
         plan_prompts.append(prompt)
         return '{"steps": [{"index": 1, "description": "step", "prompt": "do it"}]}'
 
-    with patch("backend.agents.router.opus", new=fake_opus), \
+    with patch("backend.agents.router.run_model", new=fake_opus), \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("backend.agents.orchestrator._opus_verify", new_callable=AsyncMock) as mock_verify:
 

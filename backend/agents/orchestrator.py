@@ -97,7 +97,7 @@ def _is_failure(result: str) -> bool:
 
 
 async def _opus_plan(task_prompt: str, learning: str = "") -> Plan:
-    from backend.agents.router import opus
+    from backend.agents.router import run_model
     from backend.config import get_settings
 
     if get_settings().agent_write_enabled:
@@ -132,7 +132,7 @@ Return JSON only:
 
 Each step must be atomic and runnable on its own. Maximum 10 steps."""
 
-    raw = await opus(plan_prompt)
+    raw = await run_model(get_settings().orchestrator_planner_model, plan_prompt, label="orchestrator_plan")
     # Extract JSON from response
     start = raw.find("{")
     end = raw.rfind("}") + 1
@@ -182,7 +182,7 @@ tool. Always produce a useful, substantive answer."""
 
     try:
         return await router.run_with_tools(
-            model=router.SONNET_MODEL,
+            model=get_settings().orchestrator_executor_model,
             max_tokens=8192,
             prompt=full_prompt,
             system="",
@@ -199,7 +199,8 @@ tool. Always produce a useful, substantive answer."""
 
 
 async def _opus_debug(task: str, plan: Plan, failed_step: tuple, prior_results: list) -> dict:
-    from backend.agents.router import opus
+    from backend.agents.router import run_model
+    from backend.config import get_settings
     step, result = failed_step
     debug_prompt = f"""A task execution step has failed. Analyze and provide a fix.
 
@@ -222,7 +223,7 @@ Return JSON only:
   "new_prompt": "revised prompt if RETRY_STEP",
   "new_plan": {{"steps": [...]}} // if REPLAN
 }}"""
-    raw = await opus(debug_prompt)
+    raw = await run_model(get_settings().orchestrator_planner_model, debug_prompt, label="orchestrator_debug")
     start = raw.find("{")
     end = raw.rfind("}") + 1
     return json.loads(raw[start:end])
@@ -247,6 +248,7 @@ async def _opus_verify(task_prompt: str, final_output: list, plan: "Plan", *, ta
     """
     from backend.agents import router
     from backend.agents.tools import dispatcher_map, tool_specs
+    from backend.config import get_settings
 
     _SAFE_DEFAULT = {
         "verdict": "uncertain",
@@ -295,7 +297,7 @@ Respond with JSON only — no prose before or after:
 }}"""
 
         raw = await router.run_with_tools(
-            model=router.OPUS_MODEL,
+            model=get_settings().orchestrator_verifier_model,
             max_tokens=2048,
             prompt=verify_prompt,
             system="",

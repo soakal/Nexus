@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 async def test_happy_path():
     plan_json = '{"steps": [{"index": 1, "description": "say hello", "prompt": "say hello"}, {"index": 2, "description": "confirm", "prompt": "confirm"}]}'
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
@@ -36,7 +36,7 @@ async def test_failure_triggers_debug():
     plan_json = '{"steps": [{"index": 1, "description": "do thing", "prompt": "do thing"}]}'
     debug_json = '{"action": "ABORT", "reason": "Cannot complete"}'
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
@@ -62,7 +62,7 @@ async def test_retry_step():
             return "I cannot complete this task"
         return "Done successfully"
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side_effect), \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
@@ -80,7 +80,7 @@ async def test_replan():
     plan_json = '{"steps": [{"index": 1, "description": "step", "prompt": "try"}]}'
     replan_json = f'{{"action": "REPLAN", "reason": "needs replanning", "new_plan": {{"steps": [{{"index": 1, "description": "new step", "prompt": "different approach"}}]}}}}'
 
-    with patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
@@ -129,11 +129,11 @@ async def test_opus_plan_uses_planner_tool_block():
 
     captured = {}
 
-    async def fake_opus(prompt, *a, **k):
+    async def fake_run_model(model, prompt, *a, **k):
         captured["prompt"] = prompt
         return '{"steps": [{"index": 1, "description": "d", "prompt": "p"}]}'
 
-    with patch("backend.agents.router.opus", new=fake_opus):
+    with patch("backend.agents.router.run_model", new=fake_run_model):
         from backend.agents.orchestrator import _opus_plan
         await _opus_plan("some task")
 
@@ -179,7 +179,7 @@ async def test_budget_exceeded_mid_step_durable(tmp_path):
             raise BudgetExceeded("per_task", spend=9.0, cap=5.0, task_id=task_id)
 
     with patch.object(database, "engine", test_engine), \
-         patch("backend.agents.router.opus", new_callable=AsyncMock) as mock_opus, \
+         patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
          patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec, \
          patch("backend.safety.governor.check_budget", side_effect=fake_check_budget):
 

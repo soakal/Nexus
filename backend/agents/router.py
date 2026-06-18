@@ -443,3 +443,17 @@ async def sonnet(prompt: str, system: str = "", web_search: bool = False, label:
 
 async def haiku(prompt: str, system: str = "", label: str = "") -> str:
     return await _run(HAIKU_MODEL, 4096, prompt, system, label=label)
+
+
+async def run_model(
+    model: str, prompt: str, system: str = "", web_search: bool = False,
+    label: str = "", max_tokens: int = 8192,
+) -> str:
+    """Run an arbitrary model id through the metered _run path.
+
+    Lets callers (e.g. the orchestrator's configurable planner/debug roles) pick
+    the model at runtime from config instead of being hard-wired to opus/sonnet.
+    Pricing/metering works for any model in _PRICE_PER_MTOK; unknown models meter
+    as no-cost (no SpendLog row) but still run.
+    """
+    return await _run(model, max_tokens, prompt, system, web_search, label)
