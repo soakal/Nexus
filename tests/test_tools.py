@@ -135,6 +135,20 @@ async def test_channels_status_normal_and_raise():
 
 
 @pytest.mark.asyncio
+async def test_channels_status_surfaces_failed_recordings():
+    from backend.agents import tools
+
+    data = MagicMock()
+    data.recording_now = []
+    data.storage_used_gb = 1.0
+    data.storage_total_gb = 2.0
+    data.failed_recordings = [{"title": "Big Game", "reason": "failed"}]
+    with patch("backend.integrations.channels_dvr.fetch", new=AsyncMock(return_value=data)):
+        out = await tools._channels_status({})
+    assert "failed/skipped(24h)=1" in out and "Big Game" in out
+
+
+@pytest.mark.asyncio
 async def test_weather_normal_and_raise():
     from backend.agents import tools
 

@@ -29,6 +29,7 @@ class ChannelsData:
     library_movies: int = 0
     storage_used_gb: float = 0.0
     storage_total_gb: float = 0.0
+    failed_recordings: list = field(default_factory=list)
 
 
 @async_ttl_cache(10)
@@ -71,10 +72,9 @@ async def fetch() -> ChannelsData:
             if resp.status_code == 200:
                 jobs = resp.json() or []
                 now = time.time()
-                active, upcoming = [], []
+                day_ago = now - 86400
+                active, upcoming, failed = [], [], []
                 for j in jobs:
-                    if j.get("skipped") or j.get("failed"):
-                        continue
                     item = j.get("item") or {}
                     channels_list = j.get("channels") or []
                     start_ts = j.get("start_time") or 0
@@ -86,12 +86,20 @@ async def fetch() -> ChannelsData:
                         "end": _epoch_to_iso(end_ts),
                         "program_id": str(j.get("id", "")),
                     }
+                    if j.get("skipped") or j.get("failed"):
+                        # Surface only RECENT failures (last 24h) so the list stays
+                        # relevant and bounded — old skips aren't actionable.
+                        if max(start_ts, end_ts) >= day_ago:
+                            reason = "skipped" if j.get("skipped") else "failed"
+                            failed.append((start_ts, {**entry, "reason": reason}))
+                        continue
                     if start_ts <= now < end_ts:
                         active.append((start_ts, entry))
                     elif start_ts > now:
                         upcoming.append((start_ts, entry))
                 data.recording_now = [e for _, e in sorted(active, key=lambda t: t[0])]
                 data.upcoming = [e for _, e in sorted(upcoming, key=lambda t: t[0])[:10]]
+                data.failed_recordings = [e for _, e in sorted(failed, key=lambda t: t[0], reverse=True)[:10]]
         except Exception as e:
             logger.warning(f"Channels jobs failed: {e}")
 

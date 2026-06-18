@@ -151,9 +151,19 @@ async def _channels_status(_input: dict) -> str:
         rec_str = ", ".join(
             (r.get("title", "") if isinstance(r, dict) else str(r)) for r in rec_now
         ) if rec_now else "nothing"
+        failed = _safe(data, "failed_recordings", [])
+        if not isinstance(failed, list):
+            failed = []
+        failed_str = ""
+        if failed:
+            titles = ", ".join(
+                (f.get("title", "?") if isinstance(f, dict) else str(f)) for f in failed[:5]
+            )
+            failed_str = f", failed/skipped(24h)={len(failed)} [{titles}]"
         summary = (
             f"Channels DVR: recording={rec_str}, "
             f"storage={_safe(data, 'storage_used_gb', 0)}/{_safe(data, 'storage_total_gb', 0)} GB"
+            f"{failed_str}"
         )
         return _truncate(summary)
     except Exception as e:

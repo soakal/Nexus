@@ -117,7 +117,7 @@ export const api = {
   goals: {
     list: (category) => req('GET', `/goals/${category ? `?category=${encodeURIComponent(category)}` : ''}`),
     categories: () => req('GET', '/goals/categories'),
-    propose: (title, description, risk, category) => req('POST', '/goals/propose', { title, description, risk: risk || 'medium', category: category || 'other' }),
+    propose: (title, description, risk, category, cadence, successCriteria) => req('POST', '/goals/propose', { title, description, risk: risk || 'medium', category: category || 'other', cadence: cadence || null, success_criteria: successCriteria || null }),
     approve: (id) => req('POST', `/goals/${id}/approve`),
     reject: (id) => req('POST', `/goals/${id}/reject`),
   },

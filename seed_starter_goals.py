@@ -83,11 +83,12 @@ STARTER_GOALS = [
         "category": "media",
         "cadence": "daily",
         "description": (
-            "Check Channels DVR recent recording jobs using the channels_status tool for "
-            "any failed or skipped recordings in the last day, and report them with the "
-            "show/time so they can be re-scheduled."
+            "Check Channels DVR for failed or skipped recordings using the channels_status "
+            "tool, which reports a 'failed/skipped(24h)' count and titles. Report any failed "
+            "or skipped recordings in the last day with the show/title so they can be "
+            "re-scheduled. If the tool is unavailable, say so plainly — do not infer."
         ),
-        "success_criteria": "No failed or skipped recordings in the last day.",
+        "success_criteria": "channels_status reported zero failed/skipped recordings in the last 24 hours.",
     },
     {
         "title": "Proxmox pending-update check",

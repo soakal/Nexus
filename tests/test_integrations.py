@@ -122,6 +122,37 @@ async def test_channels_fetch():
 
 
 @pytest.mark.asyncio
+async def test_channels_fetch_failed_recordings():
+    """fetch() surfaces RECENT (last-24h) failed/skipped jobs in failed_recordings;
+    old failures are excluded."""
+    import time
+    now = time.time()
+    dvr_data = {"disk": {"total": 1024**3 * 100, "free": 1024**3 * 50, "used": 1024**3 * 50}}
+    jobs = [
+        # >24h old skip -> excluded
+        {"id": 1, "name": "Old Skip", "skipped": True,
+         "start_time": now - 200000, "end_time": now - 199000},
+        # recent failure -> included with reason="failed"
+        {"id": 2, "name": "Recent Fail", "failed": True,
+         "start_time": now - 3600, "end_time": now - 1800, "item": {"title": "Big Game"}},
+    ]
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_dvr = MagicMock(status_code=200)
+        mock_dvr.json.return_value = dvr_data
+        mock_jobs = MagicMock(status_code=200)
+        mock_jobs.json.return_value = jobs
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[mock_dvr, mock_jobs])
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.channels_dvr import fetch
+        data = await fetch()
+    assert len(data.failed_recordings) == 1
+    assert data.failed_recordings[0]["title"] == "Big Game"
+    assert data.failed_recordings[0]["reason"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_channels_fetch_dvr_non200_raises():
     """A non-200 /dvr disk-stats read must RAISE (treated as unavailable), NOT report
     0.0 GB storage that looks like data loss to the briefing/trends/proposer."""

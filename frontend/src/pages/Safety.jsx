@@ -125,6 +125,8 @@ export default function Safety() {
   const [proposeDesc, setProposeDesc]         = useState('')
   const [proposeRisk, setProposeRisk]         = useState('medium')
   const [proposeCategory, setProposeCategory] = useState('other')
+  const [proposeCadence, setProposeCadence]   = useState('')   // '' = one-shot
+  const [proposeSuccess, setProposeSuccess]   = useState('')
   const [proposing, setProposing]             = useState(false)
   const [proposeErr, setProposeErr]           = useState('')
 
@@ -314,11 +316,16 @@ export default function Safety() {
     if (!proposeDesc.trim())  { setProposeErr('Description is required.'); return }
     setProposing(true)
     try {
-      await api.goals.propose(proposeTitle.trim(), proposeDesc.trim(), proposeRisk, proposeCategory)
+      await api.goals.propose(
+        proposeTitle.trim(), proposeDesc.trim(), proposeRisk, proposeCategory,
+        proposeCadence || null, proposeSuccess.trim() || null,
+      )
       setProposeTitle('')
       setProposeDesc('')
       setProposeRisk('medium')
       setProposeCategory('other')
+      setProposeCadence('')
+      setProposeSuccess('')
       load()
     } catch (err) {
       setProposeErr(err?.message || 'Failed to propose goal.')
@@ -563,6 +570,31 @@ export default function Safety() {
                   ))}
                 </select>
               </div>
+              <div>
+                <label className="hud-label mb-1 block">CADENCE</label>
+                <select
+                  value={proposeCadence}
+                  onChange={e => setProposeCadence(e.target.value)}
+                  className="hud-input font-mono"
+                >
+                  <option value="">ONE-SHOT</option>
+                  <option value="daily">DAILY</option>
+                  <option value="weekly">WEEKLY</option>
+                  <option value="monthly">MONTHLY</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="hud-label mb-1 block">
+                SUCCESS CRITERIA <span className="text-text-secondary">(optional, for recurring goals)</span>
+              </label>
+              <input
+                type="text"
+                value={proposeSuccess}
+                onChange={e => setProposeSuccess(e.target.value)}
+                placeholder="A measurable check, e.g. 'Unraid usage < 85%'"
+                className="hud-input w-full font-mono"
+              />
             </div>
             <div className="flex items-center gap-3 flex-wrap pt-1">
               <button
