@@ -1,4 +1,18 @@
 import asyncio
+import sys
+
+# Windows: force the Selector event loop BEFORE uvicorn creates its loop (this
+# block runs at app-import time, which is before the server starts). The default
+# Windows ProactorEventLoop raises OSError [WinError 64] "The specified network
+# name is no longer available" under CONCURRENT outbound httpx connections — e.g.
+# /api/health fanning out to ~10 integrations at once — which surfaces to the user
+# as "app not loading data" (sequential calls work, concurrent ones don't). The
+# SelectorEventLoop handles that concurrency cleanly. NEXUS spawns no in-loop
+# subprocesses (the memo watcher is a daemon thread), so Selector's limitations
+# (no subprocess transport, ~512 sockets) do not apply here.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import logging
 import pathlib
 from contextlib import asynccontextmanager
