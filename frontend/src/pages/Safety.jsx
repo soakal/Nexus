@@ -888,16 +888,18 @@ export default function Safety() {
                         >
                           {goalActingId === g.id ? 'REJECTING...' : 'REJECT'}
                         </button>
-                        <button
-                          onClick={() => handleStartEdit(g)}
-                          disabled={goalActingId === g.id}
-                          className="font-mono text-xs text-accent-cyan px-3 py-1.5 rounded disabled:opacity-40"
-                          style={{ border: '1px solid rgba(0,212,255,0.3)' }}
-                        >
-                          EDIT
-                        </button>
                       </>
                     )}
+                    {/* EDIT available on any goal (editing an already-run goal
+                        changes the stored text only — it does not re-run it). */}
+                    <button
+                      onClick={() => handleStartEdit(g)}
+                      disabled={goalActingId === g.id}
+                      className="font-mono text-xs text-accent-cyan px-3 py-1.5 rounded disabled:opacity-40"
+                      style={{ border: '1px solid rgba(0,212,255,0.3)' }}
+                    >
+                      EDIT
+                    </button>
                     <button
                       onClick={() => handleGoalDelete(g.id)}
                       disabled={goalActingId === g.id}

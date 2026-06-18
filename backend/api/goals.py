@@ -128,7 +128,8 @@ async def reject_goal(goal_id: int, body: GoalReject = GoalReject(), _=Depends(r
 
 @router.patch("/{goal_id}")
 async def edit_goal(goal_id: int, body: GoalEdit, _=Depends(require_api_key)):
-    """Edit a proposed goal's editable fields. Only allowed while status=proposed."""
+    """Edit a goal's editable fields from any status. Editing an already-run goal
+    does not re-run it — see goals.edit()."""
     from backend.agents import goals
 
     r = await goals.edit(goal_id, body.model_dump(exclude_unset=True))
@@ -138,7 +139,7 @@ async def edit_goal(goal_id: int, body: GoalEdit, _=Depends(require_api_key)):
         cur = r.get("current")
         if cur in ("title_required", "description_required", "invalid_risk"):
             raise HTTPException(status_code=422, detail=cur)
-        raise HTTPException(status_code=409, detail=f"Goal can only be edited while proposed (is {cur})")
+        raise HTTPException(status_code=409, detail=f"Goal cannot be edited ({cur})")
     return r
 
 

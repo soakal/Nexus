@@ -518,10 +518,13 @@ _VALID_RISKS = {"low", "medium", "high", "unclassifiable"}
 
 
 async def edit(goal_id: int, fields: dict) -> dict:
-    """Edit a PROPOSED goal's editable fields (title/description/risk/category/
-    cadence/success_criteria). Editing is allowed only while the goal is still
-    proposed — once approved/running the description has already become the task
-    prompt, so editing would be misleading.
+    """Edit a goal's editable fields (title/description/risk/category/
+    cadence/success_criteria) from ANY status.
+
+    NOTE: editing a goal that has already been approved/run does NOT re-run it —
+    the task was dispatched from the description at approval time. Editing here
+    only changes the stored goal text (e.g. to fix/re-propose later). A proposed
+    goal, by contrast, picks up the edit before it is ever dispatched.
 
     Returns 'status': not_found | conflict | no_changes | updated (+ 'goal').
     """
@@ -530,8 +533,6 @@ async def edit(goal_id: int, fields: dict) -> dict:
     g = await asyncio.to_thread(_db_get_goal, goal_id)
     if g is None:
         return {"status": "not_found"}
-    if g["status"] != "proposed":
-        return {"status": "conflict", "current": g["status"]}
 
     # Keep only known editable fields with a non-None value.
     update_fields: dict = {}

@@ -355,11 +355,11 @@ async def test_edit_proposed_goal(eng):
 
 
 @pytest.mark.asyncio
-async def test_edit_non_proposed_goal_conflict(eng):
+async def test_edit_non_proposed_goal_allowed(eng):
     from backend.agents import goals
     from backend.database import Goal
 
-    # Seed a non-proposed (running) goal directly.
+    # Editing is now allowed from any status (e.g. a running/failed goal).
     with Session(eng) as s:
         g = Goal(title="Running", description="x", status="running", fingerprint="ffff0000ffff0000")
         s.add(g)
@@ -367,9 +367,11 @@ async def test_edit_non_proposed_goal_conflict(eng):
         s.refresh(g)
         gid = g.id
 
-    r = await goals.edit(gid, {"title": "nope"})
-    assert r["status"] == "conflict"
-    assert r["current"] == "running"
+    r = await goals.edit(gid, {"title": "edited running goal"})
+    assert r["status"] == "updated"
+    assert r["goal"]["title"] == "edited running goal"
+    # Status is unchanged by an edit.
+    assert r["goal"]["status"] == "running"
 
 
 @pytest.mark.asyncio
