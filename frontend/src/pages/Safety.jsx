@@ -398,6 +398,63 @@ export default function Safety() {
       </div>
 
       {/* ------------------------------------------------------------------ */}
+      {/* Notify channel health                                                */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">NOTIFY CHANNEL</div>
+
+      <div className="hud-panel-sm p-4 mb-6">
+        {status === null || !status.notify_channel ? (
+          <div className="hud-label opacity-40">NO NOTIFY CHANNEL DATA</div>
+        ) : (() => {
+          const nc = status.notify_channel
+          const broken = nc.enabled && !nc.secret_present
+          const healthy = nc.enabled && nc.secret_present && (nc.dead_lettered_count ?? 0) === 0
+          return (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className={broken ? 'arc-dot-err' : healthy ? 'arc-dot' : 'arc-dot-warn'} />
+                <span
+                  className={`font-mono text-xs font-bold tracking-widest ${broken ? 'text-red-400' : healthy ? 'text-accent-cyan' : 'text-accent-orange'}`}
+                >
+                  {!nc.enabled ? 'NOTIFICATIONS DISABLED'
+                    : broken ? 'SECRET MISSING — ALERTS FAILING'
+                    : healthy ? 'HEALTHY'
+                    : 'DELIVERIES STUCK'}
+                </span>
+              </div>
+              {broken && (
+                <div className="font-mono text-xs text-red-400 pl-5">
+                  HERMES_WEBHOOK_SECRET is missing. Set it in Settings → Agent Bridge.
+                </div>
+              )}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                <div>
+                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>SECRET</div>
+                  <div className={`font-mono text-sm ${nc.secret_present ? 'text-accent-cyan' : 'text-red-400'}`}>
+                    {nc.secret_present ? 'SET' : 'MISSING'}
+                  </div>
+                </div>
+                <div>
+                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>PENDING</div>
+                  <div className="font-mono text-sm text-text-primary">{nc.pending_count ?? 0}</div>
+                </div>
+                <div>
+                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>DEAD-LETTERED</div>
+                  <div className={`font-mono text-sm ${(nc.dead_lettered_count ?? 0) > 0 ? 'text-red-400' : 'text-text-secondary'}`}>
+                    {nc.dead_lettered_count ?? 0}
+                  </div>
+                </div>
+                <div>
+                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>OLDEST (S)</div>
+                  <div className="font-mono text-sm text-text-secondary">{nc.oldest_age_seconds ?? '—'}</div>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+      </div>
+
+      {/* ------------------------------------------------------------------ */}
       {/* Live event feed (WebSocket)                                          */}
       {/* ------------------------------------------------------------------ */}
       <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3 flex items-center gap-3">
@@ -674,6 +731,13 @@ export default function Safety() {
                 {(g.status === 'running' || g.status === 'approved') && g.task_id && (
                   <div className="font-mono text-xs text-accent-orange mb-2">
                     TASK #{g.task_id}
+                  </div>
+                )}
+
+                {/* Failed: explain WHY (verify_rejected reason etc.) */}
+                {g.status === 'failed' && g.rejection_reason && (
+                  <div className="font-mono text-xs text-red-400 mb-2 opacity-90">
+                    {g.rejection_reason}
                   </div>
                 )}
 

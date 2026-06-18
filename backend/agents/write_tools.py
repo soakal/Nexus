@@ -257,6 +257,37 @@ async def _obsidian_complete_task(input: dict) -> str:  # noqa: A002
         return f"obsidian_complete_task error: {e}"
 
 
+async def _send_notification(input: dict) -> str:  # noqa: A002
+    """Send a phone (Telegram) notification to the owner via Hermes.
+
+    Goes through the safety broker (Risk.LOW reversible → agent ALLOWED, but
+    per-verb throttled and kill-switch-gated). This is the tool that makes a
+    "send a test notification" goal genuinely succeed.
+    """
+    try:
+        content = (input or {}).get("content", "")
+        if not content or not str(content).strip():
+            return (
+                "send_notification error: 'content' is required and must be a non-empty string; "
+                f"got {content!r}"
+            )
+
+        content = str(content).strip()
+        key = _idem_key_for("send_notification", {"content": content})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="send_notification",
+            target="owner",
+            payload={"content": content},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"send_notification error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Write tool registry
 # ---------------------------------------------------------------------------
@@ -370,6 +401,25 @@ WRITE_TOOLS: list[ReadTool] = [
             "required": ["note_path", "task_text"],
         },
         dispatch=_obsidian_complete_task,
+    ),
+    ReadTool(
+        name="send_notification",
+        description=(
+            "Send a phone (Telegram) notification to the owner. "
+            "Use this to confirm something, surface a finding, or send a requested message. "
+            "Goes through the safety broker (LOW risk — auto-allowed for agents, but rate-limited)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The message text to send to the owner's phone.",
+                },
+            },
+            "required": ["content"],
+        },
+        dispatch=_send_notification,
     ),
 ]
 

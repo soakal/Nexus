@@ -145,6 +145,13 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # Check off a vault task — low blast radius, reversible by unchecking.
         return Risk.LOW, Reversibility.REVERSIBLE
 
+    if kind == "send_notification":
+        # Send a Telegram message to the OWNER only — trivial blast radius (a
+        # message to yourself). LOW + REVERSIBLE so an agent may send; per-verb
+        # throttle (verb_throttle_max/window) caps the spam surface, and the
+        # kill switch forbids it when autonomy is off.
+        return Risk.LOW, Reversibility.REVERSIBLE
+
     # Unknown kind — we have no policy for it.
     return Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN
 
@@ -271,6 +278,22 @@ async def _dispatch_obsidian_task(target: str, payload: dict) -> dict:
     return {"ok": True}
 
 
+async def _dispatch_send_notification(target: str, payload: dict) -> dict:
+    """Send a phone (Telegram) notification to the owner via Hermes.
+
+    Wraps events.notify_phone. A delivery failure (e.g. Hermes down or a 401)
+    returns delivered=False; we RAISE so execute_action records the action FAILED
+    — this gives the verifier an honest success/failure signal to ground against
+    instead of silently "succeeding" on an undelivered message.
+    """
+    from backend import events
+
+    delivered = await events.notify_phone(payload["content"], kind="agent_message")
+    if not delivered:
+        raise RuntimeError("notification not delivered (Hermes unreachable or auth failed)")
+    return {"delivered": True}
+
+
 _DISPATCHERS = {
     "ha_service": _dispatch_ha_service,
     "hermes_relay": _dispatch_hermes_relay,
@@ -278,6 +301,7 @@ _DISPATCHERS = {
     "channels_record": _dispatch_channels_record,
     "unraid_docker": _dispatch_unraid_docker,
     "obsidian_task": _dispatch_obsidian_task,
+    "send_notification": _dispatch_send_notification,
 }
 
 

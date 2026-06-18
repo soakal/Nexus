@@ -254,8 +254,8 @@ def test_combined_providers_all_tool_specs():
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 5, (
-        f"expected {len(read_specs) + 5} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 6, (
+        f"expected {len(read_specs) + 6} specs, got {len(all_specs)}"
     )
 
 
@@ -281,7 +281,8 @@ def test_write_tool_names():
     assert "channels_record" in names
     assert "unraid_docker_restart" in names
     assert "obsidian_complete_task" in names
-    assert len(names) == 5
+    assert "send_notification" in names
+    assert len(names) == 6
 
 
 # ===========================================================================
@@ -610,3 +611,83 @@ async def test_hermes_command_idem_key_threading(eng):
                 assert captured_keys[-1] is not None and len(captured_keys[-1]) > 0
             finally:
                 reset_write_context(tok)
+
+
+# ===========================================================================
+# send_notification write tool (P2 — makes a test-notification goal succeed)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_send_notification_executed(eng):
+    """Autonomy on + delivered → LOW risk → ALLOWED → 'OK'; ActionLog executed."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _send_notification
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as np:
+        result = await _send_notification({"content": "hello from a goal"})
+
+    assert result.startswith("OK"), f"expected OK, got: {result!r}"
+    np.assert_awaited_once()
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].actor == "agent"
+    assert logs[0].kind == "send_notification"
+    assert logs[0].decision == "executed"
+
+
+@pytest.mark.asyncio
+async def test_send_notification_undelivered_is_failed(eng):
+    """notify_phone returns False (e.g. 401) → broker records FAILED, tool says FAILED."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _send_notification
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        result = await _send_notification({"content": "will not deliver"})
+
+    assert result.startswith("FAILED"), f"expected FAILED, got: {result!r}"
+    logs = _all_logs(eng)
+    assert logs[-1].kind == "send_notification"
+    assert logs[-1].decision == "failed"
+
+
+@pytest.mark.asyncio
+async def test_send_notification_forbidden_kill_switch(eng):
+    """Kill switch OFF → FORBIDDEN; notify_phone never called."""
+    _seed_state(eng, autonomy=False)
+
+    from backend.agents.write_tools import _send_notification
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as np:
+        result = await _send_notification({"content": "blocked"})
+
+    assert result.startswith("FORBIDDEN"), f"expected FORBIDDEN, got: {result!r}"
+    np.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_notification_bad_input_no_broker(eng):
+    """Empty content → helpful error, broker not called."""
+    from backend.agents.write_tools import _send_notification
+
+    with patch(
+        "backend.safety.broker.execute_action",
+        new_callable=AsyncMock,
+    ) as mock_broker:
+        result = await _send_notification({"content": "   "})
+
+    assert "content" in result.lower() or "error" in result.lower()
+    mock_broker.assert_not_awaited()

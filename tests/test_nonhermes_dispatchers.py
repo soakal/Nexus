@@ -362,14 +362,14 @@ async def test_obsidian_complete_task_never_raises_on_broker_exception(eng):
 # ===========================================================================
 
 def test_all_tool_specs_length():
-    """all_tool_specs() == read specs + 5 write specs."""
+    """all_tool_specs() == read specs + 6 write specs."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 5, (
-        f"expected {len(read_specs) + 5} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 6, (
+        f"expected {len(read_specs) + 6} specs, got {len(all_specs)}"
     )
 
 
@@ -387,7 +387,7 @@ def test_all_dispatchers_contains_new_kinds():
 
 
 def test_write_tool_names_includes_new_tools():
-    """write_tool_names() includes all five write tools."""
+    """write_tool_names() includes all six write tools."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
@@ -396,7 +396,8 @@ def test_write_tool_names_includes_new_tools():
     assert "obsidian_complete_task" in names
     assert "home_control" in names
     assert "hermes_command" in names
-    assert len(names) == 5
+    assert "send_notification" in names
+    assert len(names) == 6
 
 
 # ===========================================================================

@@ -555,11 +555,27 @@ async def reconcile_running(
                 new_attempts = g["attempts"] + 1
                 backoff_seconds = backoff_base_seconds * (2 ** min(new_attempts, 6))
                 backoff_until = now + timedelta(seconds=backoff_seconds)
+                # Carry the failed task's reason onto the goal row so the Safety UI
+                # can explain WHY (e.g. verify_rejected + the verifier's reason)
+                # instead of showing a bare "FAILED" chip. Best-effort parse.
+                reason = None
+                try:
+                    raw = await asyncio.to_thread(_db_get_task_result, g["task_id"])
+                    if raw:
+                        import json as _json
+                        data = _json.loads(raw)
+                        if isinstance(data, dict):
+                            err = data.get("error")
+                            why = data.get("reason")
+                            reason = (f"{err}: {why}" if err and why else (err or why))
+                except Exception:
+                    reason = None
                 await asyncio.to_thread(
                     _db_update_goal, g["id"],
                     status="failed",
                     attempts=new_attempts,
                     backoff_until=backoff_until,
+                    rejection_reason=(str(reason)[:300] if reason else None),
                     updated_at=now,
                 )
                 # Best-effort phone alert for auto-approved goals that failed.
