@@ -4,6 +4,25 @@ param([switch]$dev, [int]$port = 3000)
 
 $ErrorActionPreference = "Stop"
 
+# --- Single-instance guard ---------------------------------------------------
+# Two overlapping start.ps1 runs used to race: one invocation's port-kill could
+# kill the OTHER invocation's freshly-started backend, leaving :8000 down. A
+# named mutex makes a second concurrent run abort cleanly instead of racing.
+# The OS releases the mutex automatically when this process exits (any path), so
+# it only guards the kill+start *sequence*, not the running app's lifetime.
+$startMutex = New-Object System.Threading.Mutex($false, "Global\NEXUS_START_LOCK")
+$acquired = $false
+try {
+    $acquired = $startMutex.WaitOne([TimeSpan]::FromSeconds(2))
+} catch [System.Threading.AbandonedMutexException] {
+    # A previous start died holding the lock — we now own it. Proceed.
+    $acquired = $true
+}
+if (-not $acquired) {
+    Write-Host "Another NEXUS start/restart is already in progress - aborting this one." -ForegroundColor Yellow
+    exit 0
+}
+
 if (-not (Test-Path ".vault.key")) {
     Write-Host "ERROR: .vault.key not found. Run .\setup.ps1 first." -ForegroundColor Red
     exit 1
@@ -15,16 +34,33 @@ if (-not (Test-Path "nexus.vault")) {
 
 Write-Host "Starting NEXUS..." -ForegroundColor Cyan
 
-# Kill any existing NEXUS processes on these ports
+# Kill any existing NEXUS processes on these ports (PID file first, then port owners)
+if (Test-Path ".nexus.pids") {
+    try {
+        $oldPids = Get-Content ".nexus.pids" | ConvertFrom-Json
+        foreach ($id in @($oldPids.backend, $oldPids.frontend)) {
+            if ($id) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+        }
+    } catch {}
+}
 @(8000, $port) | ForEach-Object {
     $p = $_
     try {
         $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
         if ($conn) {
             Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
         }
     } catch {}
+}
+# Wait until both ports are actually FREE before starting — otherwise we'd launch
+# the new backend while the old one is still releasing the socket (the race that
+# left :8000 down). Bounded to ~5s per port.
+foreach ($p in @(8000, $port)) {
+    for ($i = 0; $i -lt 20; $i++) {
+        $still = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+        if (-not $still) { break }
+        Start-Sleep -Milliseconds 250
+    }
 }
 
 # Start backend
