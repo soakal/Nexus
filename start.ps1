@@ -68,7 +68,10 @@ foreach ($p in @(8000, $port)) {
 $backendLog = ".\logs\backend.log"
 $backendErr = ".\logs\backend.err.log"
 New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
-$backendArgs = "-m uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+# Launch via run.py (NOT `-m uvicorn`): run.py pins the Selector event loop on
+# Windows BEFORE uvicorn builds its loop — the only place early enough to avoid
+# the ProactorEventLoop WinError 64 that kills concurrent connections.
+$backendArgs = "run.py"
 if ($dev) { $backendArgs += " --reload" }
 $backend = Start-Process -PassThru -WindowStyle Hidden `
     -FilePath ".\venv\Scripts\python.exe" -ArgumentList $backendArgs `
