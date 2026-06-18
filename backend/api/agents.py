@@ -12,8 +12,10 @@ class WebSocketManager:
     def __init__(self):
         self.active: list[WebSocket] = []
 
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
+    async def connect(self, ws: WebSocket, subprotocol: str | None = None):
+        # Echo the negotiated subprotocol so the browser handshake completes when
+        # the client offered one (used to pass the API key out of the URL).
+        await ws.accept(subprotocol=subprotocol)
         self.active.append(ws)
 
     def disconnect(self, ws: WebSocket):

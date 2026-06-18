@@ -83,6 +83,26 @@ def test_ws_accepts_correct_key(lan_client):
         assert ws is not None
 
 
+def test_ws_accepts_key_via_subprotocol(lan_client):
+    """Key passed as the 2nd subprotocol after the sentinel: accepted, key NOT in URL."""
+    from backend.config import get_settings
+    real_key = get_settings().nexus_api_key
+    with lan_client.websocket_connect(
+        "/ws/logs", subprotocols=["nexus-api-key", real_key]
+    ) as ws:
+        assert ws is not None
+
+
+def test_ws_rejects_wrong_key_via_subprotocol(lan_client):
+    """Wrong key in the subprotocol slot: rejected before accept."""
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises((WebSocketDisconnect, Exception)):
+        with lan_client.websocket_connect(
+            "/ws/logs", subprotocols=["nexus-api-key", "WRONG_KEY"]
+        ):
+            pass
+
+
 # ---------------------------------------------------------------------------
 # CORS allowlist
 # ---------------------------------------------------------------------------

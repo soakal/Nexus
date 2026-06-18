@@ -11,9 +11,18 @@ const _base = import.meta.env.VITE_API_BASE
 export const API_BASE = _base
 export const WS_BASE = _base.replace(/^http/, 'ws')
 
+// The live-feed WS URL (no key in the URL — see wsLogsProtocols).
 export function wsLogsUrl() {
+  return `${WS_BASE}/ws/logs`
+}
+
+// Pass the API key as a WebSocket subprotocol instead of a query param so it
+// never appears in the URL (and therefore never in server access logs). The
+// server validates subprotocols[1] after the "nexus-api-key" sentinel and echoes
+// only the sentinel back. Returns [] when no key is set (handshake will be rejected).
+export function wsLogsProtocols() {
   const k = localStorage.getItem('nexus_api_key') || ''
-  return `${WS_BASE}/ws/logs?key=${encodeURIComponent(k)}`
+  return k ? ['nexus-api-key', k] : []
 }
 
 const BASE = `${_base}/api`

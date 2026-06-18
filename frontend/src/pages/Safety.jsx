@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ShieldCheck } from 'lucide-react'
-import { api, wsLogsUrl } from '../lib/api'
+import { api, wsLogsUrl, wsLogsProtocols } from '../lib/api'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -143,6 +143,7 @@ export default function Safety() {
   const wsRef       = useRef(null)
   const wsAliveRef  = useRef(true)
   const reconnTimer = useRef(null)
+  const backfilledRef = useRef(false)  // seed live feed from history exactly once
 
   // ---------------------------------------------------------------------------
   // REST load (10s poll)
@@ -166,6 +167,24 @@ export default function Safety() {
     }).catch(() => { /* use fallback */ })
   }, [])
 
+  // Backfill the live feed once from recent actions so it isn't empty before any
+  // new event streams in. LIVE ACTIVITY is real-time; this just primes it with
+  // the latest history (marked _backfill) so the panel is never confusingly blank.
+  useEffect(() => {
+    if (backfilledRef.current || !actions || actions.length === 0) return
+    backfilledRef.current = true
+    const seeded = actions.slice(0, 15).map(a => ({
+      type: 'action',
+      actor: a.actor,
+      kind: a.kind,
+      target: a.target,
+      decision: a.decision,
+      _t: a.created_at ? new Date(a.created_at.endsWith('Z') ? a.created_at : a.created_at + 'Z').getTime() : Date.now(),
+      _backfill: true,
+    }))
+    setEvents(prev => (prev.length === 0 ? seeded : prev))
+  }, [actions])
+
   useEffect(() => {
     load()
     const timer = setInterval(load, 10000)
@@ -187,7 +206,7 @@ export default function Safety() {
 
     function connect() {
       if (!wsAliveRef.current) return
-      const ws = new WebSocket(wsLogsUrl())
+      const ws = new WebSocket(wsLogsUrl(), wsLogsProtocols())
       wsRef.current = ws
 
       ws.onopen = () => {

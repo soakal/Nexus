@@ -197,10 +197,20 @@ async def get_weather(_=Depends(require_api_key)):
 
 @app.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
-    # Authenticate on the handshake: browsers can't set WS headers, so the key
-    # comes as ?key=. Reject (close 1008) before accepting if it doesn't match.
+    # Authenticate on the handshake. Preferred: the key is offered as the second
+    # WebSocket subprotocol after the "nexus-api-key" sentinel — this keeps the
+    # secret OUT of the URL, so it never lands in uvicorn's access log. Legacy
+    # fallback: the ?key= query param (still works, but logs the key — avoid).
+    # Reject (close 1008) before accepting if it doesn't match.
     import hmac
-    provided = websocket.query_params.get("key", "")
+    provided = ""
+    accept_subprotocol = None
+    subprotocols = websocket.scope.get("subprotocols", []) or []
+    if len(subprotocols) >= 2 and subprotocols[0] == "nexus-api-key":
+        provided = subprotocols[1]
+        accept_subprotocol = "nexus-api-key"  # echo the sentinel, NOT the key
+    if not provided:
+        provided = websocket.query_params.get("key", "")
     try:
         from backend.config import get_settings
         expected = get_settings().nexus_api_key
@@ -210,7 +220,7 @@ async def websocket_logs(websocket: WebSocket):
         await websocket.close(code=1008)  # policy violation
         return
     from backend.api.agents import ws_manager
-    await ws_manager.connect(websocket)
+    await ws_manager.connect(websocket, subprotocol=accept_subprotocol)
     try:
         while True:
             await websocket.receive_text()
