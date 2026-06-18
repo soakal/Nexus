@@ -89,7 +89,7 @@ def _is_noise(entity: dict) -> bool:
     return is_noise_entity(entity_id, state)
 
 
-@async_ttl_cache(8)
+@async_ttl_cache(30)
 async def fetch() -> HAData:
     from backend.config import get_settings
     settings = get_settings()
@@ -164,7 +164,7 @@ async def try_reload_cloud(host: str, headers: dict, client: httpx.AsyncClient) 
         raise
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

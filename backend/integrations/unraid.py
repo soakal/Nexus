@@ -33,7 +33,7 @@ class UnraidData:
     storage_total_gb: float = 0.0
 
 
-@async_ttl_cache(10)
+@async_ttl_cache(30)
 async def fetch() -> UnraidData:
     from backend.config import get_settings
     settings = get_settings()
@@ -89,7 +89,7 @@ async def fetch() -> UnraidData:
     return data
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

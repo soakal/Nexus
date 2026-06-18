@@ -82,7 +82,7 @@ async def fetch() -> UniFiData:
     )
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

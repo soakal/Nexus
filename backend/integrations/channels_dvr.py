@@ -32,7 +32,7 @@ class ChannelsData:
     failed_recordings: list = field(default_factory=list)
 
 
-@async_ttl_cache(10)
+@async_ttl_cache(30)
 async def fetch() -> ChannelsData:
     from backend.config import get_settings
     settings = get_settings()
@@ -106,7 +106,7 @@ async def fetch() -> ChannelsData:
     return data
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

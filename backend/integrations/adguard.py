@@ -31,7 +31,7 @@ def _get_adguard_pass(settings):
         return ""
 
 
-@async_ttl_cache(10)
+@async_ttl_cache(30)
 async def fetch() -> AdGuardData:
     from backend.config import get_settings
     settings = get_settings()
@@ -62,7 +62,7 @@ async def fetch() -> AdGuardData:
     )
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings

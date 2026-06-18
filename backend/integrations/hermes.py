@@ -61,7 +61,7 @@ async def fetch() -> HermesStatus:
     return await get_status()
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     status = await get_status()
     return status.alive

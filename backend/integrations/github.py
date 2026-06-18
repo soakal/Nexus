@@ -65,7 +65,7 @@ async def fetch() -> GitHubData:
     return GitHubData(open_prs=open_prs, assigned_issues=assigned_issues, recent_commits=recent_commits, stale_prs=stale_prs)
 
 
-@async_ttl_cache(12)
+@async_ttl_cache(30)
 async def health_check() -> bool:
     try:
         from backend.config import get_settings
