@@ -198,6 +198,30 @@ async def _goal_recurrence():
         logger.error(f"Goal recurrence job error: {e}")
 
 
+async def _run_brain_organizer():
+    try:
+        import subprocess
+        from pathlib import Path
+        module_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
+        python_exe = module_dir / "venv" / "Scripts" / "python.exe"
+        script = module_dir / "brain_organizer.py"
+        if not python_exe.exists() or not script.exists():
+            logger.warning("Brain Organizer module not found — skipping run")
+            return
+        import asyncio
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [str(python_exe), str(script)],
+            capture_output=True, text=True, cwd=str(module_dir),
+        )
+        if result.returncode != 0:
+            logger.error(f"Brain Organizer failed (rc={result.returncode}): {result.stderr[:500]}")
+        else:
+            logger.info("Brain Organizer run complete")
+    except Exception as e:
+        logger.error(f"Brain Organizer job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -324,4 +348,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Goal recurrence tick enabled: runs every 30 minutes")
+    from pathlib import Path as _Path
+    _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
+    if (_bo_dir / "venv" / "Scripts" / "python.exe").exists():
+        scheduler.add_job(
+            _run_brain_organizer,
+            IntervalTrigger(hours=4),
+            id="brain_organizer",
+            replace_existing=True,
+        )
+        logger.info("Brain Organizer job registered: runs every 4 hours")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")
