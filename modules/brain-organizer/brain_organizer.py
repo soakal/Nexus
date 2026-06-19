@@ -323,7 +323,12 @@ def detect_topics(
         client,
     )
     try:
-        data = json.loads(text)
+        # Haiku (and some other models) wrap JSON in markdown code fences — strip them.
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1]
+            cleaned = cleaned.rsplit("```", 1)[0].strip()
+        data = json.loads(cleaned)
         topics = data.get("topics", [])
         if not isinstance(topics, list) or not topics:
             return ["Uncategorized"]

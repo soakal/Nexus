@@ -387,6 +387,29 @@ def test_topics_registry_accumulates_across_runs(
 
 
 # ---------------------------------------------------------------------------
+# Topic detection — code-fence stripping
+# ---------------------------------------------------------------------------
+
+def test_detect_topics_strips_markdown_code_fences(
+    tmp_config: dict[str, Any], mock_anthropic_client: MagicMock
+) -> None:
+    """Haiku often wraps JSON in ```json ... ``` fences — verify they are stripped."""
+    fenced = '```json\n{"topics": ["NEXUS", "Unraid"]}\n```'
+    mock_anthropic_client.messages.create.side_effect = [make_message(fenced)]
+    topics = bo.detect_topics("some note content", tmp_config, mock_anthropic_client)
+    assert topics == ["NEXUS", "Unraid"]
+
+
+def test_detect_topics_strips_plain_code_fences(
+    tmp_config: dict[str, Any], mock_anthropic_client: MagicMock
+) -> None:
+    fenced = '```\n{"topics": ["Hermes"]}\n```'
+    mock_anthropic_client.messages.create.side_effect = [make_message(fenced)]
+    topics = bo.detect_topics("some note content", tmp_config, mock_anthropic_client)
+    assert topics == ["Hermes"]
+
+
+# ---------------------------------------------------------------------------
 # Hermes notification
 # ---------------------------------------------------------------------------
 
