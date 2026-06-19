@@ -58,6 +58,13 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
     logs_folder.mkdir(parents=True, exist_ok=True)
     log_file = logs_folder / "organizer.log"
 
+    # Windows consoles default to cp1252 which can't encode emoji in log output.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     handlers: list[logging.Handler] = [
         logging.FileHandler(log_file, encoding="utf-8"),
