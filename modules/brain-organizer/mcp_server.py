@@ -137,7 +137,7 @@ def create_app(
     @app.route("/wiki/<topic>")
     def read_wiki(topic: str) -> Any:
         safe = sanitize_topic_name(topic)
-        if not safe or safe == "Uncategorized" and topic.strip() != "Uncategorized":
+        if (not safe) or (safe == "Uncategorized" and topic.strip() != "Uncategorized"):
             return jsonify({"error": "Invalid topic name"}), 400
 
         wiki_file = _wiki_folder() / f"{safe}.md"

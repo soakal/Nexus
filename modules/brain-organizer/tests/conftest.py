@@ -13,6 +13,14 @@ from anthropic.types import TextBlock
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+def _make_message(text: str, stop_reason: str = "end_turn") -> MagicMock:
+    """Build a mock anthropic.Message with a real TextBlock so isinstance checks pass."""
+    msg = MagicMock()
+    msg.content = [TextBlock(type="text", text=text)]
+    msg.stop_reason = stop_reason
+    return msg
+
+
 @pytest.fixture
 def tmp_vault(tmp_path: Path) -> Path:
     """Minimal vault directory structure."""
@@ -38,17 +46,13 @@ def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
         "mcp_host": "0.0.0.0",
         "haiku_model": "claude-haiku-4-5-20251001",
         "sonnet_model": "claude-sonnet-4-6",
+        "sonnet_max_tokens": 8192,
         "max_file_chars": 50000,
         "hermes_host": "",
         "api_provider": "anthropic",
+        "max_file_attempts": 5,
+        "mcp_write_token": "",
     }
-
-
-def _make_message(text: str) -> MagicMock:
-    """Build a mock anthropic.Message with a real TextBlock so isinstance checks pass."""
-    msg = MagicMock()
-    msg.content = [TextBlock(type="text", text=text)]
-    return msg
 
 
 @pytest.fixture

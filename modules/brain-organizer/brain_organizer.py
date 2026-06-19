@@ -18,8 +18,8 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,19 @@ import anthropic
 import httpx
 from anthropic.types import TextBlock
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 CONFIG_PATH = Path(__file__).parent / "config.json"
+
+# Anthropic errors that warrant a retry before falling back to OpenRouter
+_RETRYABLE_ERRORS = (
+    anthropic.APITimeoutError,
+    anthropic.RateLimitError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +71,11 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
 # File helpers
 # ---------------------------------------------------------------------------
 
+def _make_temp_path(directory: Path, prefix: str, suffix: str) -> Path:
+    """Return a unique temp path without the deprecated tempfile.mktemp."""
+    return directory / f"{prefix}{uuid.uuid4().hex}{suffix}"
+
+
 def compute_sha256(file_path: Path) -> str:
     h = hashlib.sha256()
     with open(file_path, "rb") as fh:
@@ -79,11 +96,47 @@ def save_processed(config: dict[str, Any], processed: dict[str, Any]) -> None:
     """Atomic write via temp-file + os.replace so a kill mid-write never corrupts the ledger."""
     path = Path(config["processed_file"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mktemp(dir=path.parent, prefix=".processed_", suffix=".tmp"))
+    tmp = _make_temp_path(path.parent, ".processed_", ".tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(processed, fh, indent=2)
         os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Topics registry (_meta/topics-registry.json)
+# ---------------------------------------------------------------------------
+
+def update_topics_registry(
+    config: dict[str, Any],
+    topics: list[str],
+    wiki_folder: Path,
+) -> None:
+    """Upsert topic → wiki file path in _meta/topics-registry.json (atomic write)."""
+    meta_folder = Path(config["vault_path"]) / config["meta_folder"]
+    meta_folder.mkdir(parents=True, exist_ok=True)
+    registry_path = meta_folder / "topics-registry.json"
+
+    registry: dict[str, str] = {}
+    if registry_path.exists():
+        try:
+            with open(registry_path, encoding="utf-8") as fh:
+                registry = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for topic in topics:
+        safe_name = sanitize_topic_name(topic)
+        registry[topic] = str(wiki_folder / f"{safe_name}.md")
+
+    tmp = _make_temp_path(meta_folder, ".topics-registry_", ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(registry, fh, indent=2, sort_keys=True)
+        os.replace(tmp, registry_path)
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
@@ -131,7 +184,6 @@ def scan_raw_folder(
 def backup_file(config: dict[str, Any], file_path: Path) -> Path:
     backup_folder = Path(config["vault_path"]) / config["backup_folder"]
     backup_folder.mkdir(parents=True, exist_ok=True)
-    # Microsecond timestamp makes same-second collisions virtually impossible
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S_%f")
     backup_path = backup_folder / f"{timestamp}_{file_path.name}"
     shutil.copy2(file_path, backup_path)
@@ -146,6 +198,94 @@ def sanitize_topic_name(topic: str) -> str:
     safe = re.sub(r"[^\w\s\-]", "", topic)
     safe = re.sub(r"\s+", "-", safe.strip())
     return safe or "Uncategorized"
+
+
+# ---------------------------------------------------------------------------
+# Core API call — Anthropic with retry + OpenRouter fallback
+# ---------------------------------------------------------------------------
+
+def _call_api(
+    model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    config: dict[str, Any],
+    client: anthropic.Anthropic,
+    *,
+    max_retries: int = 3,
+) -> tuple[str, str]:
+    """
+    Call Anthropic with exponential-backoff retry (3 attempts), then fall back
+    to OpenRouter on persistent failure.
+
+    Returns (text, stop_reason). Raises RuntimeError if both providers fail.
+    """
+    logger = logging.getLogger("brain_organizer")
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            msg = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=messages,  # type: ignore[arg-type]
+            )
+            block = next((b for b in msg.content if isinstance(b, TextBlock)), None)
+            if block is None:
+                raise ValueError("Anthropic response contained no text block")
+            return block.text.strip(), (msg.stop_reason or "")
+        except _RETRYABLE_ERRORS as exc:
+            last_exc = exc
+            wait = 2 ** attempt
+            logger.warning(
+                "Anthropic %s on attempt %d/%d — retrying in %ds",
+                type(exc).__name__, attempt, max_retries, wait,
+            )
+            if attempt < max_retries:
+                time.sleep(wait)
+        except anthropic.APIStatusError as exc:
+            if exc.status_code >= 500:
+                last_exc = exc
+                wait = 2 ** attempt
+                logger.warning(
+                    "Anthropic HTTP %d on attempt %d/%d — retrying in %ds",
+                    exc.status_code, attempt, max_retries, wait,
+                )
+                if attempt < max_retries:
+                    time.sleep(wait)
+            else:
+                raise
+
+    # All Anthropic retries exhausted — fall back to OpenRouter
+    logger.warning("Anthropic API exhausted after %d retries — falling back to OpenRouter", max_retries)
+    or_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not or_key:
+        raise RuntimeError(
+            f"Anthropic API failed ({last_exc}) and OPENROUTER_API_KEY is not set — no fallback available"
+        ) from last_exc
+
+    try:
+        # OpenRouter uses the OpenAI-compatible chat/completions endpoint.
+        # Prefix the model name with "anthropic/" for the Claude models.
+        or_model = f"anthropic/{model}"
+        resp = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {or_key}",
+                "Content-Type": "application/json",
+            },
+            json={"model": or_model, "max_tokens": max_tokens, "messages": messages},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = (data["choices"][0]["message"]["content"] or "").strip()
+        finish_reason = data["choices"][0].get("finish_reason", "")
+        logger.info("OpenRouter fallback succeeded (finish_reason=%s)", finish_reason)
+        return text, finish_reason
+    except Exception as or_exc:
+        raise RuntimeError(
+            f"Both Anthropic ({last_exc}) and OpenRouter ({or_exc}) failed"
+        ) from or_exc
 
 
 # ---------------------------------------------------------------------------
@@ -168,19 +308,15 @@ def detect_topics(
         f"Note content:\n{content[:max_chars]}"
     )
 
-    message = client.messages.create(
-        model=config["haiku_model"],
-        max_tokens=256,
-        messages=[{"role": "user", "content": prompt}],
+    text, _ = _call_api(
+        config["haiku_model"],
+        [{"role": "user", "content": prompt}],
+        256,
+        config,
+        client,
     )
-
-    # Select the first TextBlock regardless of block ordering
-    block = next((b for b in message.content if isinstance(b, TextBlock)), None)
-    if block is None:
-        return ["Uncategorized"]
-    raw = block.text.strip()
     try:
-        data = json.loads(raw)
+        data = json.loads(text)
         topics = data.get("topics", [])
         if not isinstance(topics, list) or not topics:
             return ["Uncategorized"]
@@ -231,16 +367,23 @@ def synthesize_wiki(
             "Return the complete Wiki document only."
         )
 
-    message = client.messages.create(
-        model=config["sonnet_model"],
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
+    # 8192 tokens gives room for large wiki merges; still check for truncation.
+    max_tokens: int = config.get("sonnet_max_tokens", 8192)
+    text, stop_reason = _call_api(
+        config["sonnet_model"],
+        [{"role": "user", "content": prompt}],
+        max_tokens,
+        config,
+        client,
     )
 
-    block = next((b for b in message.content if isinstance(b, TextBlock)), None)
-    if block is None:
-        raise ValueError("Anthropic response contained no text block")
-    return block.text.strip()
+    if stop_reason == "max_tokens":
+        raise ValueError(
+            f"Synthesis for topic '{topic}' hit max_tokens ({max_tokens}) — "
+            "skipping write to prevent data loss. Increase sonnet_max_tokens in config.json."
+        )
+
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -285,12 +428,12 @@ def process_file(
     client: anthropic.Anthropic,
     logger: logging.Logger,
 ) -> list[str]:
-    """Backup → detect topics → write wiki (atomic) → delete raw.
+    """
+    Backup → detect topics → synthesize ALL wikis first → write all atomically → update registry → delete raw.
 
-    Returns updated topic names.
-    Raises on backup failure so caller leaves the file in raw/ for retry.
-    Wiki files are written atomically (temp → os.replace) so a mid-write kill
-    leaves the prior version intact rather than a corrupt partial file.
+    Phase 1 (synthesis) must fully succeed before Phase 2 (writes) begins.
+    This prevents partial application: if topic 2 of 3 fails synthesis, topic 1's
+    wiki is untouched and the raw file stays for a clean retry.
     """
     logger.info("Processing: %s", file_path.name)
 
@@ -298,32 +441,40 @@ def process_file(
     logger.info("Backed up to: %s", backup_path)
 
     content = file_path.read_text(encoding="utf-8")
-
     topics = detect_topics(content, config, client)
     logger.info("Topics detected: %s", topics)
 
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     wiki_folder.mkdir(parents=True, exist_ok=True)
 
-    updated_topics: list[str] = []
+    # Phase 1: synthesize ALL topics into memory before touching the filesystem
+    topic_results: list[tuple[str, str, str]] = []  # (topic, safe_name, wiki_content)
     for topic in topics:
         safe_name = sanitize_topic_name(topic)
         wiki_file = wiki_folder / f"{safe_name}.md"
         existing = wiki_file.read_text(encoding="utf-8") if wiki_file.exists() else ""
         wiki_content = synthesize_wiki(topic, content, existing, config, client)
+        topic_results.append((topic, safe_name, wiki_content))
+        logger.info("Synthesis complete for topic: %s", topic)
 
-        # Atomic write: temp file → os.replace so partial writes never corrupt
-        tmp = Path(tempfile.mktemp(dir=wiki_folder, prefix=f".{safe_name}_", suffix=".tmp"))
+    # Phase 2: all synthesized — write each wiki atomically
+    updated_topics: list[str] = []
+    for topic, safe_name, wiki_content in topic_results:
+        wiki_file = wiki_folder / f"{safe_name}.md"
+        tmp = _make_temp_path(wiki_folder, f".{safe_name}_", ".tmp")
         try:
             tmp.write_text(wiki_content, encoding="utf-8")
             os.replace(tmp, wiki_file)
         finally:
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
-
         logger.info("Wiki written: %s", wiki_file)
         updated_topics.append(topic)
 
+    # Phase 3: update _meta/topics-registry.json
+    update_topics_registry(config, updated_topics, wiki_folder)
+
+    # Phase 4: raw file deleted only after all writes confirmed
     file_path.unlink()
     logger.info("Deleted raw file: %s", file_path.name)
 
@@ -379,7 +530,6 @@ def run(
             logger.error("Failed to process %s: %s", file_path.name, exc, exc_info=True)
             failed_count += 1
 
-            # Record failure with attempt count so we stop re-billing on persistent failures
             existing = processed.get(sha, {})
             attempts = existing.get("attempts", 0) + 1
             processed[sha] = {

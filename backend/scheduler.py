@@ -200,6 +200,8 @@ async def _goal_recurrence():
 
 async def _run_brain_organizer():
     try:
+        import asyncio
+        import os
         import subprocess
         from pathlib import Path
         module_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
@@ -208,11 +210,27 @@ async def _run_brain_organizer():
         if not python_exe.exists() or not script.exists():
             logger.warning("Brain Organizer module not found — skipping run")
             return
-        import asyncio
+        # Inherit the current environment then inject secrets from the NEXUS vault.
+        # This ensures ANTHROPIC_API_KEY, OPENROUTER_API_KEY, and HERMES_HOST reach
+        # the subprocess even when the parent process does not export them by default.
+        env = os.environ.copy()
+        try:
+            from backend.config import get_settings
+            s = get_settings()
+            for attr, var in [
+                ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+                ("openrouter_api_key", "OPENROUTER_API_KEY"),
+                ("hermes_host", "HERMES_HOST"),
+            ]:
+                val = getattr(s, attr, None)
+                if val:
+                    env[var] = str(val)
+        except Exception as e:
+            logger.warning(f"Brain Organizer: could not inject secrets from vault ({e}) — using inherited env")
         result = await asyncio.to_thread(
             subprocess.run,
             [str(python_exe), str(script)],
-            capture_output=True, text=True, cwd=str(module_dir),
+            capture_output=True, text=True, cwd=str(module_dir), env=env,
         )
         if result.returncode != 0:
             logger.error(f"Brain Organizer failed (rc={result.returncode}): {result.stderr[:500]}")
@@ -353,9 +371,9 @@ def setup_scheduler(briefing_time: str, timezone: str):
     if (_bo_dir / "venv" / "Scripts" / "python.exe").exists():
         scheduler.add_job(
             _run_brain_organizer,
-            IntervalTrigger(hours=4),
+            CronTrigger(hour=2, minute=0, timezone=timezone),
             id="brain_organizer",
             replace_existing=True,
         )
-        logger.info("Brain Organizer job registered: runs every 4 hours")
+        logger.info("Brain Organizer job registered: runs daily at 02:00 %s", timezone)
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")
