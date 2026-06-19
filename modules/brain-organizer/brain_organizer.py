@@ -502,7 +502,8 @@ def process_file(
     update_topics_registry(config, updated_topics, wiki_folder)
 
     # Phase 4: raw file deleted only after all writes confirmed
-    file_path.unlink()
+    # missing_ok=True: iCloud may have evicted the file between read and delete — still a success
+    file_path.unlink(missing_ok=True)
     logger.info("Deleted raw file: %s", file_path.name)
 
     return updated_topics
