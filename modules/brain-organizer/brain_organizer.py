@@ -162,11 +162,18 @@ def scan_raw_folder(
     max_attempts: int = config.get("max_file_attempts", 5)
     logger = logging.getLogger("brain_organizer")
 
+    backup_folder = Path(config["vault_path"]) / config["backup_folder"]
     results: list[tuple[Path, str]] = []
     for ext in (".md", ".txt"):
-        for f in sorted(raw_folder.glob(f"*{ext}")):
+        for f in sorted(raw_folder.rglob(f"*{ext}")):
             if not f.is_file():
                 continue
+            # Skip anything already inside the backups subfolder
+            try:
+                f.relative_to(backup_folder)
+                continue
+            except ValueError:
+                pass
             sha = compute_sha256(f)
             record = processed.get(sha)
             if record is None:
@@ -447,7 +454,9 @@ def process_file(
     This prevents partial application: if topic 2 of 3 fails synthesis, topic 1's
     wiki is untouched and the raw file stays for a clean retry.
     """
-    logger.info("Processing: %s", file_path.name)
+    raw_folder = Path(config["vault_path"]) / config["raw_folder"]
+    display_name = file_path.relative_to(raw_folder) if file_path.is_relative_to(raw_folder) else file_path.name
+    logger.info("Processing: %s", display_name)
 
     backup_path = backup_file(config, file_path)
     logger.info("Backed up to: %s", backup_path)

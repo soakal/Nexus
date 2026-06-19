@@ -88,6 +88,22 @@ def test_scan_raw_folder_skips_permanently_failed_file(
     assert results == []
 
 
+def test_scan_raw_folder_finds_files_in_subfolders(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
+    sub = tmp_vault / "raw" / "work"
+    sub.mkdir(parents=True, exist_ok=True)
+    (sub / "meeting.md").write_text("Meeting notes", encoding="utf-8")
+    results = bo.scan_raw_folder(tmp_config, {})
+    assert any(p.name == "meeting.md" for p, _ in results)
+
+
+def test_scan_raw_folder_excludes_backup_subfolder(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
+    backup = tmp_vault / "raw" / "backups"
+    backup.mkdir(parents=True, exist_ok=True)
+    (backup / "old-backup.md").write_text("Old backup", encoding="utf-8")
+    results = bo.scan_raw_folder(tmp_config, {})
+    assert results == []
+
+
 # ---------------------------------------------------------------------------
 # backup_file
 # ---------------------------------------------------------------------------
