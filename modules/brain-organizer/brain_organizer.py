@@ -597,7 +597,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Brain Organizer — process raw vault files")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.json")
     args = parser.parse_args()
-    sys.exit(run(args.config))
+
+    lock_path = Path(__file__).parent / ".organizer.lock"
+    if lock_path.exists():
+        try:
+            pid = int(lock_path.read_text().strip())
+            import psutil  # type: ignore[import-untyped]
+            if psutil.pid_exists(pid):
+                print(f"Brain Organizer already running (PID {pid}) — skipping.", flush=True)
+                sys.exit(0)
+        except Exception:
+            pass  # stale lock — proceed
+
+    lock_path.write_text(str(os.getpid()))
+    try:
+        sys.exit(run(args.config))
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
