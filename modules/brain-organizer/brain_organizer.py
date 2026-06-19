@@ -266,6 +266,11 @@ def _call_api(
                 )
                 if attempt < max_retries:
                     time.sleep(wait)
+            elif exc.status_code == 400 and "usage limits" in str(exc).lower():
+                # Hard usage cap — no point retrying Anthropic; go straight to OpenRouter
+                last_exc = exc
+                logger.warning("Anthropic usage limit reached — skipping retries, falling back to OpenRouter")
+                break
             else:
                 raise
 
@@ -279,8 +284,9 @@ def _call_api(
 
     try:
         # OpenRouter uses the OpenAI-compatible chat/completions endpoint.
-        # Prefix the model name with "anthropic/" for the Claude models.
-        or_model = f"anthropic/{model}"
+        # Prefix with "anthropic/" and strip trailing date suffixes (-YYYYMMDD)
+        # that OpenRouter doesn't recognise (e.g. claude-haiku-4-5-20251001).
+        or_model = "anthropic/" + re.sub(r"-\d{8}$", "", model)
         resp = httpx.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
