@@ -6,6 +6,7 @@ import WeatherCard from '../components/WeatherCard'
 import AdGuardToggle from '../components/AdGuardToggle'
 import SourceCard from '../components/SourceCard'
 import RecordingCard from '../components/RecordingCard'
+import BrainOrganizerCard from '../components/BrainOrganizerCard'
 
 export default function Dashboard() {
   const [sources, setSources] = useState({})
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const [adguard, setAdguard] = useState(null)
   const [channels, setChannels] = useState(null)
   const [unraid, setUnraid] = useState(null)
+  const [brain, setBrain] = useState(null)
   const [dockerOpen, setDockerOpen] = useState(false)
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingError, setBriefingError] = useState(false)
@@ -26,6 +28,7 @@ export default function Dashboard() {
     api.channels.get().then(setChannels).catch(() => {})
     api.unraid.get().then(setUnraid).catch(() => {})
     api.briefing.latest().then(b => setLastBriefing(b?.created_at)).catch(() => {})
+    api.brain.status().then(setBrain).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -143,6 +146,11 @@ export default function Dashboard() {
             <div className="hud-label opacity-40">STORAGE DATA UNAVAILABLE</div>
           )}
         </div>
+      )}
+
+      {/* Brain Organizer card */}
+      {brain !== null && (
+        <BrainOrganizerCard data={brain} onRun={load} />
       )}
 
       {/* Unraid card */}

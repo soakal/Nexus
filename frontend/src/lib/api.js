@@ -134,6 +134,10 @@ export const api = {
     disable: (id) => req('POST', `/goals/${id}/disable`),
     enable: (id) => req('POST', `/goals/${id}/enable`),
   },
+  brain: {
+    status: () => req('GET', '/brain-organizer/status'),
+    run: () => req('POST', '/brain-organizer/run'),
+  },
   facts: {
     list: () => req('GET', '/facts/'),
     recall: (q) => req('GET', `/facts/recall?query=${encodeURIComponent(q)}`),
