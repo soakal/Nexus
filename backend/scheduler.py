@@ -222,7 +222,10 @@ async def _run_brain_organizer():
                 ("openrouter_api_key", "OPENROUTER_API_KEY"),
                 ("hermes_host", "HERMES_HOST"),
             ]:
-                val = getattr(s, attr, None)
+                try:
+                    val = getattr(s, attr, None)
+                except Exception:
+                    val = None
                 if val:
                     env[var] = str(val)
         except Exception as e:

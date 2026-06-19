@@ -112,7 +112,10 @@ async def brain_organizer_run(_=Depends(require_api_key)):
             ("openrouter_api_key", "OPENROUTER_API_KEY"),
             ("hermes_host", "HERMES_HOST"),
         ]:
-            val = getattr(s, attr, None)
+            try:
+                val = getattr(s, attr, None)
+            except Exception:
+                val = None
             if val:
                 env[var] = str(val)
     except Exception:
