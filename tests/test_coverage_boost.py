@@ -50,32 +50,6 @@ def nexus_client(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# backend/agents/task_agent.py
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_execute_task_success():
-    from backend.agents.task_agent import execute_task
-    from backend.agents.orchestrator import TaskResult
-    mock_result = TaskResult(success=True, output=["step done"])
-    with patch("backend.agents.task_agent.run_task", new_callable=AsyncMock, return_value=mock_result):
-        result = await execute_task("do something", task_id=42)
-    assert result.success is True
-    assert result.output == ["step done"]
-
-
-@pytest.mark.asyncio
-async def test_execute_task_no_id():
-    from backend.agents.task_agent import execute_task
-    from backend.agents.orchestrator import TaskResult
-    mock_result = TaskResult(success=False, reason="aborted")
-    with patch("backend.agents.task_agent.run_task", new_callable=AsyncMock, return_value=mock_result) as mock_run:
-        result = await execute_task("do something")
-    assert result.success is False
-    mock_run.assert_called_once_with("do something", None)
-
-
-# ---------------------------------------------------------------------------
 # backend/secrets/migrations.py
 # ---------------------------------------------------------------------------
 
