@@ -1,5 +1,23 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../lib/api'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import ScreenHeader from '../components/ScreenHeader'
+
+// Render a calendar line with time highlighted in accent cyan if it matches HH:MM AM/PM pattern
+function AgendaLine({ line }) {
+  const match = line.match(/^(\s*)(\d{1,2}:\d{2}\s*[AP]M)\s+(.*)/)
+  if (match) {
+    return (
+      <div style={{ lineHeight: 1.7 }}>
+        <span style={{ color: 'var(--accent)', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", fontSize: '13px' }}>{match[2]}</span>
+        {' '}
+        <span style={{ color: '#dbe3f0', fontSize: '14px' }}>{match[3]}</span>
+      </div>
+    )
+  }
+  return <div style={{ color: '#dbe3f0', fontSize: '14px', lineHeight: 1.7 }}>{line}</div>
+}
 
 export default function Today() {
   const [data, setData] = useState(null)
@@ -21,27 +39,53 @@ export default function Today() {
     }
   }, [load])
 
+  const calendarLines = data?.calendar
+    ? data.calendar.split('\n')
+    : []
+
   return (
-    <div className="p-4 md:p-6 max-w-2xl">
-      <h1 className="page-header mb-6">TODAY</h1>
+    <div style={{
+      width: '100%',
+      maxWidth: '1100px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader section="Today" title="Today" />
 
       {!data ? (
-        <div className="hud-label animate-pulse">LOADING...</div>
+        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
       ) : (
-        <div className="space-y-6">
-          <div className="hud-panel p-4">
-            <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">AGENDA</div>
-            <p className="text-text-primary text-sm font-mono whitespace-pre-line">
-              {data.calendar}
-            </p>
-          </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--gap)' }}>
 
-          <div className="hud-panel p-4">
-            <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">INBOX</div>
-            <p className="text-text-primary text-sm font-mono whitespace-pre-line">
-              {data.email}
-            </p>
-          </div>
+          {/* Agenda card */}
+          <Card flex="1 1 320px">
+            <Eyebrow style={{ display: 'block', marginBottom: '16px' }}>Agenda</Eyebrow>
+            {calendarLines.length > 0 ? (
+              <div>
+                {calendarLines.map((line, i) => (
+                  <AgendaLine key={i} line={line} />
+                ))}
+              </div>
+            ) : (
+              <div style={{ whiteSpace: 'pre-line', color: '#dbe3f0', fontSize: '14px', lineHeight: 1.7 }}>
+                {data?.calendar}
+              </div>
+            )}
+          </Card>
+
+          {/* Inbox card */}
+          <Card flex="1.4 1 360px">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <Eyebrow>Inbox</Eyebrow>
+            </div>
+            <div style={{ whiteSpace: 'pre-line', color: '#aab4c7', fontSize: '13px', lineHeight: 1.7 }}>
+              {data?.email}
+            </div>
+          </Card>
+
         </div>
       )}
     </div>

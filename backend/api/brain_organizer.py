@@ -93,6 +93,23 @@ async def brain_organizer_status(_=Depends(require_api_key)):
     }
 
 
+@router.post("/reset-failed")
+async def brain_organizer_reset_failed(_=Depends(require_api_key)):
+    """Remove all failed entries from processed.json so the organiser retries them."""
+    if not _PROCESSED.exists():
+        return {"reset": 0}
+    try:
+        data = json.loads(_PROCESSED.read_text(encoding="utf-8"))
+        before = len(data)
+        data = {k: v for k, v in data.items() if v.get("status") != "failed"}
+        tmp = _PROCESSED.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(_PROCESSED)
+        return {"reset": before - len(data)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.post("/run")
 async def brain_organizer_run(_=Depends(require_api_key)):
     if _running[0] is not None and _running[0].poll() is None:

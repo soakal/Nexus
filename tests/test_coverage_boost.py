@@ -255,8 +255,10 @@ def test_setup_scheduler_adds_jobs():
     # db_checkpoint + db_backup (backup_enabled=True by default) +
     # watchdog (watchdog_enabled=True by default) +
     # spend_report (spend_report_enabled=True by default) +
-    # goal_recurrence (goal_recurrence_enabled=True by default).
-    assert mock_add.call_count == 13
+    # goal_recurrence (goal_recurrence_enabled=True by default) +
+    # brain_organizer (registered when modules/brain-organizer venv exists;
+    #   defaults True in test env because the scheduler always registers it).
+    assert mock_add.call_count == 14
     # Verify jobs by checking the id kwarg in each call
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -275,6 +277,7 @@ def test_setup_scheduler_adds_jobs():
         "watchdog",
         "spend_report",
         "goal_recurrence",
+        "brain_organizer",
     }
 
 

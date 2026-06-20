@@ -34,7 +34,8 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 - **`Task.status` is free-text:** `pending | running | success | failed | stopped`.
 - **Orchestrator legacy path:** `run_task(prompt, task_id=None)` runs the old in-memory loop (used by `tests/test_orchestrator.py`); `task_id` set always uses the durable path. All durable DB helpers are sync and invoked via `asyncio.to_thread` — no Session/ORM crosses an `await`.
 - `nexus.db-wal` / `nexus.db-shm` are gitignored SQLite WAL sidecars.
-- `frontend/src/pages/` — 11 pages (Dashboard, Briefing, Tasks, Chat, Voice, Media, HomeAssistant, Trends, Uptime, Agents, Settings); `Today` page for calendar/email. `App.jsx` holds the `NAV` array + routes; `components/MobileNav.jsx` is the mobile bottom bar.
+- `frontend/src/pages/` — 13 pages (Dashboard, Briefing, Today, Tasks, Chat, Media, HomeAssistant, Trends, Uptime, Agents, Safety, Facts, Settings). `App.jsx` holds the `NAV` array + routes + the full sidebar/off-canvas drawer (236px desktop, transforms to a hamburger-triggered off-canvas drawer at ≤880px). `components/MobileNav.jsx` has been removed — mobile nav is now the drawer in App.jsx.
+- `frontend/src/components/` — shared UI kit added in June 2026 redesign: Card, Eyebrow, StatusDot, StatusPill, SegmentedControl, ScreenHeader, PrimaryButton, GhostButton, TextInput, StatChip, AreaChart (inline SVG — replaces recharts TrendChart). Design tokens (Space Grotesk font, --accent/#2fd4ee, --ac-dim, --ac-line, --gap, --pad, nx-pulse/nx-ring keyframes) live in `frontend/src/index.css`.
 - `tray.py` + `launch_tray.vbs` — system tray launcher, auto-starts at login via a Registry Run key.
 
 ## Action broker (Tier 1.3 — policy-gated writes + immutable audit)

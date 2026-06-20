@@ -37,6 +37,7 @@ class HermesStatus:
     pending_actions: int = 0
 
 
+@async_ttl_cache(30)
 async def get_status() -> HermesStatus:
     from backend.config import get_settings
     settings = get_settings()

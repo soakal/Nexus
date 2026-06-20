@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import logging
@@ -19,7 +20,10 @@ import re
 import shutil
 import sys
 import time
+import threading
 import uuid
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -215,8 +219,211 @@ def sanitize_topic_name(topic: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Title normalisation — used by build_wiki_catalog, find_similar_page,
+# consolidate_wiki.py (imported from here).
+# ---------------------------------------------------------------------------
+
+_STEM_SUFFIXES = ("tion", "ing", "ion", "ed", "es", "s")
+
+
+def _normalize_title(s: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace, and stem common suffixes.
+
+    Examples:
+        "Financial Forecasting" → "financial forecast"
+        "Financial Forecast"    → "financial forecast"
+        "Startups"              → "startup"
+    """
+    s = s.lower().strip()
+    s = re.sub(r"[^\w\s]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    words = s.split()
+    stemmed = []
+    for word in words:
+        for suffix in _STEM_SUFFIXES:
+            if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+                word = word[: len(word) - len(suffix)]
+                break
+        stemmed.append(word)
+    return " ".join(stemmed)
+
+
+# ---------------------------------------------------------------------------
+# Per-page catalog entry extractor
+# ---------------------------------------------------------------------------
+
+def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
+    """Parse a wiki .md file and return a catalog entry dict.
+
+    Keys: title, filename, path_str, headers, summary.
+    """
+    text = f.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    # --- title: first line starting with exactly one "#" ---
+    title = f.stem
+    h1_index = 0
+    for i, line in enumerate(lines):
+        if line.startswith("# ") and not line.startswith("## "):
+            title = line[2:].strip()
+            h1_index = i
+            break
+
+    # --- headers: all "## " lines (first 10, joined) ---
+    raw_headers = [
+        ln[3:].strip() for ln in lines if ln.startswith("## ")
+    ][:10]
+    headers_joined = " | ".join(raw_headers)
+
+    # --- summary: first prose paragraph after the H1 ---
+    _meta_re = re.compile(r"^\*\*[\w\s]+:\*\*|^>\s*\*\*[\w\s]+:\*\*")
+    _rule_re = re.compile(r"^[-*_]{3,}$")
+    prose_lines: list[str] = []
+    collecting = False
+    for line in lines[h1_index + 1 :]:
+        stripped = line.strip()
+        # Skip blanks, rules, any header, metadata patterns
+        if not stripped:
+            if collecting and prose_lines:
+                break  # end of first prose paragraph
+            continue
+        if stripped.startswith("#"):
+            break  # hit a new section — stop
+        if _rule_re.match(stripped):
+            continue
+        if _meta_re.match(stripped):
+            continue
+        prose_lines.append(stripped)
+        collecting = True
+
+    summary = " ".join(prose_lines)
+    if len(summary) > summary_chars:
+        summary = summary[:summary_chars]
+
+    return {
+        "title": title,
+        "filename": f.name,
+        "path_str": str(f),
+        "headers": headers_joined,
+        "summary": summary,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Wiki catalog builder (incremental, cached in _meta/wiki-catalog.json)
+# ---------------------------------------------------------------------------
+
+def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, Any]]:
+    """Build (or incrementally refresh) a catalog of all wiki pages.
+
+    Returns a list of entry dicts (title, filename, path_str, headers, summary),
+    sorted by title (case-insensitive). On catastrophic failure returns [].
+    """
+    logger = logging.getLogger("brain_organizer")
+    try:
+        cache_path = meta_folder / "wiki-catalog.json"
+        cached_by_filename: dict[str, dict[str, Any]] = {}
+        built_at_ts = 0.0
+
+        if cache_path.exists():
+            try:
+                with open(cache_path, encoding="utf-8") as fh:
+                    cache = json.load(fh)
+                built_at_dt = datetime.fromisoformat(cache.get("built_at", ""))
+                built_at_ts = built_at_dt.timestamp()
+                cached_by_filename = {p["filename"]: p for p in cache.get("pages", [])}
+            except Exception:
+                built_at_ts = 0.0
+                cached_by_filename = {}
+
+        pages: list[dict[str, Any]] = []
+        for f in sorted(wiki_folder.glob("*.md")):
+            try:
+                if f.name in cached_by_filename and f.stat().st_mtime <= built_at_ts:
+                    pages.append(cached_by_filename[f.name])
+                else:
+                    pages.append(_extract_page_entry(f))
+            except Exception as exc:
+                logger.warning("catalog: skipping %s: %s", f.name, exc)
+                continue
+
+        pages.sort(key=lambda p: p["title"].lower())
+
+        # Atomic write
+        meta_folder.mkdir(parents=True, exist_ok=True)
+        tmp = _make_temp_path(meta_folder, ".wiki-catalog_", ".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {"built_at": datetime.now(UTC).isoformat(), "pages": pages},
+                    fh, indent=2, ensure_ascii=False,
+                )
+            os.replace(tmp, cache_path)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+
+        return pages
+    except Exception as exc:
+        logging.getLogger("brain_organizer").warning(
+            "build_wiki_catalog failed catastrophically: %s", exc
+        )
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Near-duplicate page finder
+# ---------------------------------------------------------------------------
+
+def find_similar_page(
+    title: str,
+    catalog: list[dict[str, Any]],
+    threshold: float = 0.82,
+) -> dict[str, Any] | None:
+    """Return the best catalog entry whose title is near-duplicate of *title*.
+
+    Only call this for titles intended as NEW — an exact-match title will
+    trivially self-match at ratio 1.0, which is a false positive if the title
+    is already a confirmed existing page.
+
+    Returns None if no entry meets the threshold.
+    """
+    norm_title = _normalize_title(title)
+    if not norm_title:
+        return None
+
+    best_entry: dict[str, Any] | None = None
+    best_ratio = 0.0
+
+    for entry in catalog:
+        norm_entry = _normalize_title(entry["title"])
+        ratio = difflib.SequenceMatcher(None, norm_title, norm_entry).ratio()
+        is_candidate = ratio >= threshold
+
+        # Jaccard boost (only when both titles are multi-word)
+        if not is_candidate:
+            words_a = set(norm_title.split())
+            words_b = set(norm_entry.split())
+            if len(words_a) > 1 and len(words_b) > 1:
+                union = words_a | words_b
+                jaccard = len(words_a & words_b) / len(union) if union else 0.0
+                if jaccard > 0.7:
+                    is_candidate = True
+
+        if is_candidate and ratio > best_ratio:
+            best_ratio = ratio
+            best_entry = entry
+
+    return best_entry
+
+
+# ---------------------------------------------------------------------------
 # Core API call — Anthropic with retry + OpenRouter fallback
 # ---------------------------------------------------------------------------
+
+class _APIUsageCapped(RuntimeError):
+    """Raised when ALL providers are hard-capped (not transient) — caller should abort the run."""
+
 
 def _call_api(
     model: str,
@@ -225,16 +432,18 @@ def _call_api(
     config: dict[str, Any],
     client: anthropic.Anthropic,
     *,
-    max_retries: int = 3,
+    max_retries: int = 6,
 ) -> tuple[str, str]:
     """
-    Call Anthropic with exponential-backoff retry (3 attempts), then fall back
-    to OpenRouter on persistent failure.
+    Call Anthropic with exponential-backoff retry, then fall back to OpenRouter.
 
-    Returns (text, stop_reason). Raises RuntimeError if both providers fail.
+    Returns (text, stop_reason).
+    Raises _APIUsageCapped when both providers are hard-capped (abort the run).
+    Raises RuntimeError on transient dual failure.
     """
     logger = logging.getLogger("brain_organizer")
     last_exc: Exception | None = None
+    anthropic_usage_capped = False
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -249,7 +458,7 @@ def _call_api(
             return block.text.strip(), (msg.stop_reason or "")
         except _RETRYABLE_ERRORS as exc:
             last_exc = exc
-            wait = 2 ** attempt
+            wait = min(2 ** attempt, 60)
             logger.warning(
                 "Anthropic %s on attempt %d/%d — retrying in %ds",
                 type(exc).__name__, attempt, max_retries, wait,
@@ -259,7 +468,7 @@ def _call_api(
         except anthropic.APIStatusError as exc:
             if exc.status_code >= 500:
                 last_exc = exc
-                wait = 2 ** attempt
+                wait = min(2 ** attempt, 60)
                 logger.warning(
                     "Anthropic HTTP %d on attempt %d/%d — retrying in %ds",
                     exc.status_code, attempt, max_retries, wait,
@@ -267,9 +476,10 @@ def _call_api(
                 if attempt < max_retries:
                     time.sleep(wait)
             elif exc.status_code == 400 and "usage limits" in str(exc).lower():
-                # Hard usage cap — no point retrying Anthropic; go straight to OpenRouter
+                # Hard usage cap — no point retrying Anthropic at all
+                anthropic_usage_capped = True
                 last_exc = exc
-                logger.warning("Anthropic usage limit reached — skipping retries, falling back to OpenRouter")
+                logger.warning("Anthropic hard usage cap hit — skipping retries, falling back to OpenRouter")
                 break
             else:
                 raise
@@ -278,14 +488,13 @@ def _call_api(
     logger.warning("Anthropic API exhausted after %d retries — falling back to OpenRouter", max_retries)
     or_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not or_key:
-        raise RuntimeError(
-            f"Anthropic API failed ({last_exc}) and OPENROUTER_API_KEY is not set — no fallback available"
-        ) from last_exc
+        raise _APIUsageCapped(
+            "Anthropic usage-capped and OPENROUTER_API_KEY is not set — no provider available"
+        ) if anthropic_usage_capped else RuntimeError(
+            f"Anthropic API failed ({last_exc}) and OPENROUTER_API_KEY is not set"
+        )
 
     try:
-        # OpenRouter uses the OpenAI-compatible chat/completions endpoint.
-        # Prefix with "anthropic/" and strip trailing date suffixes (-YYYYMMDD)
-        # that OpenRouter doesn't recognise (e.g. claude-haiku-4-5-20251001).
         or_model = "anthropic/" + re.sub(r"-\d{8}$", "", model)
         resp = httpx.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -296,12 +505,20 @@ def _call_api(
             json={"model": or_model, "max_tokens": max_tokens, "messages": messages},
             timeout=60.0,
         )
+        if resp.status_code == 403:
+            msg_text = f"OpenRouter 403 Forbidden — API key invalid or out of credits (check openrouter.ai)"
+            logger.error(msg_text)
+            raise _APIUsageCapped(
+                f"Anthropic capped + {msg_text}"
+            ) if anthropic_usage_capped else RuntimeError(msg_text)
         resp.raise_for_status()
         data = resp.json()
         text = (data["choices"][0]["message"]["content"] or "").strip()
         finish_reason = data["choices"][0].get("finish_reason", "")
         logger.info("OpenRouter fallback succeeded (finish_reason=%s)", finish_reason)
         return text, finish_reason
+    except _APIUsageCapped:
+        raise
     except Exception as or_exc:
         raise RuntimeError(
             f"Both Anthropic ({last_exc}) and OpenRouter ({or_exc}) failed"
@@ -309,7 +526,157 @@ def _call_api(
 
 
 # ---------------------------------------------------------------------------
-# Topic detection (Haiku)
+# Catalog-aware routing (Haiku)
+# ---------------------------------------------------------------------------
+
+def route_topics(
+    content: str,
+    catalog: list[dict[str, Any]],
+    existing_registry: dict[str, str],
+    config: dict[str, Any],
+    client: anthropic.Anthropic,
+) -> list[tuple[str, Path, bool]]:
+    """Route note content to existing wiki pages or propose new ones.
+
+    Returns list of (title, wiki_path, is_new) tuples (1-3 routes, de-duped by path).
+    Haiku is given the catalog and strongly biased toward existing pages.
+    Near-duplicate guard prevents new pages that are synonyms of existing ones.
+
+    The system prompt is folded into the user message because _call_api only
+    accepts a messages list (no top-level system= parameter).
+    """
+    logger = logging.getLogger("brain_organizer")
+    wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
+
+    def _uncategorized_fallback() -> list[tuple[str, Path, bool]]:
+        return [("Uncategorized", wiki_folder / "Uncategorized.md", True)]
+
+    # Build numbered catalog block (capped at config limit, already sorted by title)
+    max_in_prompt: int = config.get("catalog_max_pages_in_prompt", 60)
+    catalog_pages = catalog[:max_in_prompt]
+    catalog_lines: list[str] = []
+    for i, page in enumerate(catalog_pages, 1):
+        title = page["title"]
+        headers = page.get("headers", "")
+        summary = page.get("summary", "").replace("\n", " ")
+        if headers:
+            line = f"{i}. {title} — Covers: {headers}. {summary}"
+        else:
+            line = f"{i}. {title}. {summary}"
+        catalog_lines.append(line)
+    catalog_block = "\n".join(catalog_lines)
+
+    # System prompt folded into user message (see docstring)
+    system_text = (
+        "You are a routing assistant for a personal wiki. Your job is to route note content "
+        "into the best-matching EXISTING pages. Only propose a new page title when no existing "
+        "page is a genuine match."
+    )
+    user_text = (
+        f"EXISTING WIKI PAGES (route to these whenever possible):\n{catalog_block}\n\n"
+        f"NOTE TO ROUTE:\n{content[:3000]}\n\n"
+        'Return ONLY a JSON object, no other text:\n'
+        '{"routes": [\n'
+        '  {"match": "existing", "title": "Exact Title From Catalog Above"},\n'
+        '  {"match": "new", "title": "Concise New Topic"}\n'
+        ']}\n\n'
+        "Rules:\n"
+        "- Use 1 to 3 routes.\n"
+        '- STRONGLY prefer "match":"existing". Use the EXACT title text from the catalog.\n'
+        '- Only use "match":"new" when NO existing page is a genuine subject match.\n'
+        '- Never create a near-synonym of an existing title (e.g. do not invent '
+        '"Financial Forecasting" when "Financial Forecast" exists).'
+    )
+    full_prompt = system_text + "\n\n" + user_text
+
+    text, _ = _call_api(
+        config["haiku_model"],
+        [{"role": "user", "content": full_prompt}],
+        config.get("route_max_tokens", 1024),
+        config,
+        client,
+    )
+
+    # Strip markdown code fences
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1]
+        cleaned = cleaned.rsplit("```", 1)[0].strip()
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("route_topics: JSON decode failed — using Uncategorized fallback")
+        return _uncategorized_fallback()
+
+    routes_raw = data.get("routes", [])
+    if not isinstance(routes_raw, list) or not routes_raw:
+        logger.warning("route_topics: empty/missing 'routes' key — using Uncategorized fallback")
+        return _uncategorized_fallback()
+
+    # Build lookup: first entry wins on duplicate titles
+    by_title: dict[str, dict[str, Any]] = {}
+    for p in catalog:
+        if p["title"] not in by_title:
+            by_title[p["title"]] = p
+
+    result: list[tuple[str, Path, bool]] = []
+    seen_paths: set[str] = set()
+
+    for route in routes_raw[:3]:
+        if not isinstance(route, dict):
+            continue
+        match_type = str(route.get("match", "")).strip()
+        title = str(route.get("title", "")).strip()
+        if not title:
+            continue
+
+        if match_type == "existing":
+            if title in by_title:
+                entry = by_title[title]
+                wiki_path = Path(entry["path_str"])
+                path_key = str(wiki_path)
+                if path_key not in seen_paths:
+                    seen_paths.add(path_key)
+                    result.append((entry["title"], wiki_path, False))
+                continue
+            else:
+                # Hallucinated existing title — re-check via near-dup guard
+                logger.warning(
+                    "route_topics: hallucinated existing title %r — re-checking as new", title
+                )
+                match_type = "new"
+
+        if match_type == "new":
+            similar = find_similar_page(
+                title, catalog, config.get("new_page_similarity_threshold", 0.82)
+            )
+            if similar is not None:
+                logger.info(
+                    "Near-duplicate guard: %r -> %r", title, similar["title"]
+                )
+                wiki_path = Path(similar["path_str"])
+                path_key = str(wiki_path)
+                if path_key not in seen_paths:
+                    seen_paths.add(path_key)
+                    result.append((similar["title"], wiki_path, False))
+            else:
+                safe = sanitize_topic_name(title)
+                wiki_path = wiki_folder / f"{safe}.md"
+                path_key = str(wiki_path)
+                if path_key not in seen_paths:
+                    seen_paths.add(path_key)
+                    result.append((title, wiki_path, True))
+
+    if not result:
+        logger.warning("route_topics: no valid routes resolved — using Uncategorized fallback")
+        return _uncategorized_fallback()
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Topic detection (Haiku) — back-compat wrapper around route_topics
 # ---------------------------------------------------------------------------
 
 def detect_topics(
@@ -317,37 +684,26 @@ def detect_topics(
     config: dict[str, Any],
     client: anthropic.Anthropic,
 ) -> list[str]:
-    max_chars: int = config.get("max_file_chars", 50000)
-    prompt = (
-        "You are a topic classifier. Read the following note and return ONLY a JSON object with no other text.\n"
-        "Identify 1 to 5 topic tags that best describe the main subjects covered.\n"
-        'Topics should be short title-case labels like "NEXUS", "Home Assistant", "Unraid", "Hermes", '
-        '"Voice Memos", "Networking", etc.\n'
-        'If no clear topic, use "Uncategorized".\n\n'
-        'Return format: {"topics": ["Topic1", "Topic2"]}\n\n'
-        f"Note content:\n{content[:max_chars]}"
-    )
+    """Back-compat wrapper: returns a list of topic title strings.
 
-    text, _ = _call_api(
-        config["haiku_model"],
-        [{"role": "user", "content": prompt}],
-        256,
-        config,
-        client,
-    )
-    try:
-        # Haiku (and some other models) wrap JSON in markdown code fences — strip them.
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-            cleaned = cleaned.rsplit("```", 1)[0].strip()
-        data = json.loads(cleaned)
-        topics = data.get("topics", [])
-        if not isinstance(topics, list) or not topics:
-            return ["Uncategorized"]
-        return [str(t) for t in topics[:5]]
-    except json.JSONDecodeError:
-        return ["Uncategorized"]
+    Builds the wiki catalog, loads the registry, calls route_topics, then
+    extracts just the titles so existing callers/tests see an unchanged return type.
+    """
+    wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
+    meta_folder = Path(config["vault_path"]) / config["meta_folder"]
+    catalog = build_wiki_catalog(wiki_folder, meta_folder)
+
+    registry: dict[str, str] = {}
+    registry_path = meta_folder / "topics-registry.json"
+    if registry_path.exists():
+        try:
+            with open(registry_path, encoding="utf-8") as fh:
+                registry = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            registry = {}
+
+    routes = route_topics(content, catalog, registry, config, client)
+    return [title for (title, _path, _is_new) in routes]
 
 
 # ---------------------------------------------------------------------------
@@ -360,26 +716,182 @@ def synthesize_wiki(
     existing_content: str,
     config: dict[str, Any],
     client: anthropic.Anthropic,
+    *,
+    catalog_entry: dict[str, Any] | None = None,
+    catalog: list[dict[str, Any]] | None = None,
 ) -> str:
-    max_chars: int = config.get("max_file_chars", 50000)
+    """Synthesize or merge a wiki page for *topic*.
 
-    if existing_content:
+    Branch selector:
+        is_merge + is_large → 5b: section-splice (returns only changed ## blocks)
+        is_merge + normal   → 5a: full merge with optional scope contract
+        create              → 5c: new page with related-pages wikilink hint
+
+    Args:
+        catalog_entry: Populated for EXISTING pages (is_merge). Provides scope
+            contract (headers, title) so the model stays on-topic.
+        catalog:       Full page list. Used in the CREATE branch (5c) to compute
+            related-page wikilink suggestions.
+    """
+    max_chars: int = config.get("max_file_chars", 50000)
+    large_threshold: int = config.get("large_page_threshold_chars", 35000)
+
+    is_merge = bool(existing_content)
+    is_large = is_merge and len(existing_content) > large_threshold
+
+    # -----------------------------------------------------------------
+    # Scope-contract block (injected into merge prompts when we have a
+    # catalog entry for the target page).
+    # -----------------------------------------------------------------
+    if catalog_entry is not None:
+        scope_block = (
+            f"PAGE SCOPE: This page covers: {catalog_entry['title']}.\n"
+            f"Existing sections: {catalog_entry['headers']}.\n"
+            "RULE: Merge ONLY content that belongs to this page's subject. "
+            "If the new material contains content about a DIFFERENT subject, "
+            "OMIT it entirely — it is being routed to other pages separately. "
+            "Preserve the existing ## section structure. "
+            "Add new ## sections only for genuinely new aspects of this same subject.\n"
+        )
+    else:
+        scope_block = ""
+
+    # -----------------------------------------------------------------
+    # 5b — LARGE-page merge: request only changed/new ## sections then
+    # splice them into the existing document locally.
+    # This prevents max_tokens failures on pages > large_threshold chars.
+    # -----------------------------------------------------------------
+    if is_large:
+        existing_headers = (
+            catalog_entry["headers"] if catalog_entry else "(unknown)"
+        )
         prompt = (
-            "You are a personal knowledge base curator. Intelligently merge new information into an existing Wiki document.\n\n"
+            "You are a personal knowledge base curator updating a LARGE existing wiki page. "
+            "To save space, do NOT return the whole page. "
+            "Return ONLY the markdown ## sections that are NEW or CHANGED, "
+            "each as a complete \"## Header\" block. "
+            "Do not return unchanged sections. Do not return the H1 title. "
+            "If nothing should change, return the single line: NO_CHANGES.\n\n"
+            + (scope_block + "\n" if scope_block else "")
+            + f"PAGE TITLE: {topic}\n"
+            f"EXISTING SECTION HEADERS: {existing_headers}\n\n"
+            "New information to integrate:\n"
+            f"{new_content[:max_chars]}\n\n"
+            "Return only the changed/new ## blocks (or NO_CHANGES)."
+        )
+
+        logger = logging.getLogger("brain_organizer")
+        max_tokens: int = config.get("sonnet_max_tokens", 8192)
+        text, stop_reason = _call_api(
+            config["sonnet_model"],
+            [{"role": "user", "content": prompt}],
+            max_tokens,
+            config,
+            client,
+        )
+
+        # The large-merge path outputs small diffs; max_tokens here is anomalous.
+        if stop_reason == "max_tokens":
+            raise ValueError(
+                f"Large-page synthesis for topic '{topic}' hit max_tokens ({max_tokens}) — "
+                "this is unexpected for a diff-only response. "
+                "Increase sonnet_max_tokens in config.json."
+            )
+
+        if text.strip() == "NO_CHANGES":
+            return existing_content
+
+        # --- Splice returned sections into existing_content ---
+        try:
+            # Split returned text on lines that START a new ## section.
+            # re.split with a lookahead keeps the delimiter (## …) in each chunk.
+            raw_chunks = re.split(r"(?m)(?=^## )", text)
+            # Discard any leading preamble chunk that doesn't start with "##"
+            section_chunks = [c for c in raw_chunks if c.lstrip().startswith("## ")]
+
+            result = existing_content
+            for chunk in section_chunks:
+                chunk = chunk.rstrip()
+                if not chunk:
+                    continue
+                # Extract the header line (first line of the chunk)
+                header_line = chunk.splitlines()[0].rstrip()
+                # Find and replace the matching section in the existing content,
+                # or append if not present.
+                # A section spans from its ## header to the next ## header (or EOF).
+                pattern = (
+                    r"(?m)^"
+                    + re.escape(header_line)
+                    + r"\s*\n"          # header line
+                    r"(?:(?!^## ).*\n)*"  # body lines (up to next ## or EOF)
+                )
+                match = re.search(pattern, result)
+                if match:
+                    # Replace existing section
+                    result = result[: match.start()] + chunk + "\n" + result[match.end() :]
+                else:
+                    # Append new section at end
+                    if not result.endswith("\n"):
+                        result += "\n"
+                    result += "\n" + chunk + "\n"
+
+            return result
+        except Exception as exc:
+            logger.warning(
+                "Large-page splice failed for '%s': %s — returning existing content unchanged",
+                topic, exc,
+            )
+            return existing_content
+
+    # -----------------------------------------------------------------
+    # 5a — Normal MERGE (existing page, within size threshold)
+    # -----------------------------------------------------------------
+    if is_merge:
+        prompt = (
+            "You are a personal knowledge base curator. "
+            "Intelligently merge new information into an existing Wiki document.\n\n"
             "Rules:\n"
             "- Never lose any existing information\n"
             "- Add new info where it logically fits within existing sections\n"
             "- Create new sections if needed\n"
             "- Remove duplicates\n"
             "- Clean Markdown with ## headers\n"
-            "- No commentary about what you changed\n\n"
-            f'Existing Wiki for topic "{topic}":\n'
+            "- No commentary about what you changed\n"
+            + (scope_block + "\n" if scope_block else "\n")
+            + f'Existing Wiki for topic "{topic}":\n'
             f"{existing_content[:max_chars]}\n\n"
             "New information to merge:\n"
             f"{new_content[:max_chars]}\n\n"
             "Return the complete updated Wiki document only."
         )
     else:
+        # -----------------------------------------------------------------
+        # 5c — CREATE branch: new page with related-pages wikilink hint
+        # -----------------------------------------------------------------
+        related_block = ""
+        if catalog:
+            # Rank catalog by normalized-title similarity to topic, exclude
+            # an exact title match (would be the page being created itself).
+            norm_topic = _normalize_title(topic)
+            scored = []
+            for entry in catalog:
+                if entry["title"] == topic:
+                    continue
+                ratio = difflib.SequenceMatcher(
+                    None, norm_topic, _normalize_title(entry["title"])
+                ).ratio()
+                scored.append((ratio, entry["title"]))
+            scored.sort(reverse=True)
+            top5 = [t for _, t in scored[:5] if _ > 0.0]
+            if top5:
+                related_block = (
+                    "Related pages in this wiki: "
+                    + ", ".join(f"[[{t}]]" for t in top5)
+                    + ".\n"
+                    "Use [[wikilinks]] to reference them where relevant. "
+                    "Do not duplicate content from those pages.\n\n"
+                )
+
         prompt = (
             f'You are a personal knowledge base curator. Create a new Wiki document for the topic "{topic}".\n\n'
             "Rules:\n"
@@ -387,13 +899,14 @@ def synthesize_wiki(
             "- Clean Markdown formatting\n"
             "- Thorough but concise\n"
             "- No commentary\n\n"
-            "Source material:\n"
+            + related_block
+            + "Source material:\n"
             f"{new_content[:max_chars]}\n\n"
             "Return the complete Wiki document only."
         )
 
     # 8192 tokens gives room for large wiki merges; still check for truncation.
-    max_tokens: int = config.get("sonnet_max_tokens", 8192)
+    max_tokens = config.get("sonnet_max_tokens", 8192)
     text, stop_reason = _call_api(
         config["sonnet_model"],
         [{"role": "user", "content": prompt}],
@@ -432,13 +945,15 @@ def send_hermes_notification(
         logging.getLogger("brain_organizer").debug("Hermes host not configured — skipping notification")
         return
 
+    secret = os.environ.get("HERMES_WEBHOOK_SECRET", "")
+    headers = {"X-Webhook-Secret": secret} if secret else {}
     payload = {"message": message, "priority": priority}
     try:
         if http_client is not None:
-            http_client.post(f"{host}/notify", json=payload)
+            http_client.post(f"{host}/hermes/notify", json=payload, headers=headers)
         else:
             with httpx.Client(timeout=10.0) as c:
-                c.post(f"{host}/notify", json=payload)
+                c.post(f"{host}/hermes/notify", json=payload, headers=headers)
     except Exception as exc:
         logging.getLogger("brain_organizer").warning("Hermes notification failed: %s", exc)
 
@@ -452,13 +967,22 @@ def process_file(
     config: dict[str, Any],
     client: anthropic.Anthropic,
     logger: logging.Logger,
+    catalog: list[dict[str, Any]],
+    *,
+    _routes: list[tuple[str, Path, bool]] | None = None,
+    _catalog_lock: threading.Lock | None = None,
+    _registry_lock: threading.Lock | None = None,
 ) -> list[str]:
     """
-    Backup → detect topics → synthesize ALL wikis first → write all atomically → update registry → delete raw.
+    Backup → route to existing/new pages → synthesize ALL wikis first → write all atomically
+    → update registry → delete raw.
 
     Phase 1 (synthesis) must fully succeed before Phase 2 (writes) begins.
-    This prevents partial application: if topic 2 of 3 fails synthesis, topic 1's
+    This prevents partial application: if route 2 of 3 fails synthesis, route 1's
     wiki is untouched and the raw file stays for a clean retry.
+
+    catalog is mutated in-place during Phase 2 so later files in the same run
+    route against fresh content (prevents same-run duplicate page creation).
     """
     raw_folder = Path(config["vault_path"]) / config["raw_folder"]
     display_name = file_path.relative_to(raw_folder) if file_path.is_relative_to(raw_folder) else file_path.name
@@ -468,27 +992,53 @@ def process_file(
     logger.info("Backed up to: %s", backup_path)
 
     content = file_path.read_text(encoding="utf-8")
-    topics = detect_topics(content, config, client)
-    logger.info("Topics detected: %s", topics)
+
+    meta_folder = Path(config["vault_path"]) / config["meta_folder"]
+    registry_path = meta_folder / "topics-registry.json"
+    registry: dict[str, str] = {}
+    if registry_path.exists():
+        try:
+            with open(registry_path, encoding="utf-8") as fh:
+                registry = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            registry = {}
+
+    if _routes is not None:
+        routes = _routes
+        logger.info("Routes (pre-computed): %s", [(t, is_new) for (t, _p, is_new) in routes])
+    else:
+        routes = route_topics(content, catalog, registry, config, client)
+        logger.info("Routes: %s", [(t, is_new) for (t, _p, is_new) in routes])
+    logger.info(
+        "Routed '%s' -> [%s]",
+        display_name,
+        ", ".join(t for (t, _p, _is_new) in routes),
+    )
 
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     wiki_folder.mkdir(parents=True, exist_ok=True)
 
-    # Phase 1: synthesize ALL topics into memory before touching the filesystem
-    topic_results: list[tuple[str, str, str]] = []  # (topic, safe_name, wiki_content)
-    for topic in topics:
-        safe_name = sanitize_topic_name(topic)
-        wiki_file = wiki_folder / f"{safe_name}.md"
-        existing = wiki_file.read_text(encoding="utf-8") if wiki_file.exists() else ""
-        wiki_content = synthesize_wiki(topic, content, existing, config, client)
-        topic_results.append((topic, safe_name, wiki_content))
-        logger.info("Synthesis complete for topic: %s", topic)
+    # Build a quick title -> catalog entry lookup for scope contracts
+    catalog_by_title: dict[str, dict[str, Any]] = {p["title"]: p for p in catalog}
 
-    # Phase 2: all synthesized — write each wiki atomically
+    # Phase 1: synthesize ALL routes into memory before touching the filesystem.
+    # (topic, wiki_file_path, wiki_content)
+    topic_results: list[tuple[str, Path, str]] = []
+    for topic, wiki_path, is_new in routes:
+        existing = wiki_path.read_text(encoding="utf-8") if wiki_path.exists() else ""
+        catalog_entry = None if is_new else catalog_by_title.get(topic)
+        wiki_content = synthesize_wiki(
+            topic, content, existing, config, client,
+            catalog_entry=catalog_entry,
+            catalog=catalog,
+        )
+        topic_results.append((topic, wiki_path, wiki_content))
+        logger.info("Synthesis complete for route: %s (new=%s)", topic, is_new)
+
+    # Phase 2: all synthesized — write each wiki atomically to its RESOLVED path
     updated_topics: list[str] = []
-    for topic, safe_name, wiki_content in topic_results:
-        wiki_file = wiki_folder / f"{safe_name}.md"
-        tmp = _make_temp_path(wiki_folder, f".{safe_name}_", ".tmp")
+    for topic, wiki_file, wiki_content in topic_results:
+        tmp = _make_temp_path(wiki_folder, f".{wiki_file.stem}_", ".tmp")
         try:
             tmp.write_text(wiki_content, encoding="utf-8")
             os.replace(tmp, wiki_file)
@@ -498,8 +1048,35 @@ def process_file(
         logger.info("Wiki written: %s", wiki_file)
         updated_topics.append(topic)
 
+        # Refresh the in-memory catalog entry so later files in THIS run route
+        # against fresh content (prevents same-run duplicate creation).
+        try:
+            refreshed = _extract_page_entry(
+                wiki_file, config.get("catalog_summary_chars", 300)
+            )
+            def _do_catalog_update():
+                replaced = False
+                for idx, p in enumerate(catalog):
+                    if p["filename"] == refreshed["filename"]:
+                        catalog[idx] = refreshed
+                        replaced = True
+                        break
+                if not replaced:
+                    catalog.append(refreshed)
+            if _catalog_lock is not None:
+                with _catalog_lock:
+                    _do_catalog_update()
+            else:
+                _do_catalog_update()
+        except Exception as exc:
+            logger.warning("catalog refresh failed for %s: %s", wiki_file.name, exc)
+
     # Phase 3: update _meta/topics-registry.json
-    update_topics_registry(config, updated_topics, wiki_folder)
+    if _registry_lock is not None:
+        with _registry_lock:
+            update_topics_registry(config, updated_topics, wiki_folder)
+    else:
+        update_topics_registry(config, updated_topics, wiki_folder)
 
     # Phase 4: raw file deleted only after all writes confirmed
     # missing_ok=True: iCloud may have evicted the file between read and delete — still a success
@@ -537,44 +1114,151 @@ def run(
         logger.info("Nothing to process")
         return 0
 
+    # Build catalog ONCE after the empty-check so we don't pay the disk scan
+    # cost on runs that have nothing to do.
+    wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
+    meta_folder = Path(config["vault_path"]) / config["meta_folder"]
+    catalog = build_wiki_catalog(wiki_folder, meta_folder)
+    logger.info("Wiki catalog: %d page(s)", len(catalog))
+
     logger.info("Found %d new file(s) to process", len(files))
     start = time.monotonic()
     success_count = 0
     failed_count = 0
     all_topics: set[str] = set()
 
-    for file_path, sha in files:
-        try:
-            updated = process_file(file_path, config, client, logger)
-            processed[sha] = {
-                "filename": file_path.name,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "topics": updated,
-            }
-            save_processed(config, processed)
-            success_count += 1
-            all_topics.update(updated)
-        except Exception as exc:
-            logger.error("Failed to process %s: %s", file_path.name, exc, exc_info=True)
-            failed_count += 1
+    max_workers = config.get("max_parallel_files", 1)
 
-            existing = processed.get(sha, {})
-            attempts = existing.get("attempts", 0) + 1
-            processed[sha] = {
-                "filename": file_path.name,
-                "status": "failed",
-                "attempts": attempts,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "error": str(exc)[:500],
-            }
-            save_processed(config, processed)
+    if max_workers <= 1:
+        # --- Sequential path (original, unchanged) ---
+        for file_path, sha in files:
+            try:
+                updated = process_file(file_path, config, client, logger, catalog)
+                processed[sha] = {
+                    "filename": file_path.name,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "topics": updated,
+                }
+                save_processed(config, processed)
+                success_count += 1
+                all_topics.update(updated)
+            except _APIUsageCapped as exc:
+                logger.error("API hard-capped — aborting run: %s", exc)
+                send_hermes_notification(
+                    config,
+                    f"🧠 Brain Organizer — API capped, run aborted.\n{exc}",
+                    priority="high",
+                    http_client=_http_client,
+                )
+                break
+            except Exception as exc:
+                logger.error("Failed to process %s: %s", file_path.name, exc, exc_info=True)
+                failed_count += 1
+                existing = processed.get(sha, {})
+                attempts = existing.get("attempts", 0) + 1
+                processed[sha] = {
+                    "filename": file_path.name,
+                    "status": "failed",
+                    "attempts": attempts,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "error": str(exc)[:500],
+                }
+                save_processed(config, processed)
+                send_hermes_notification(
+                    config,
+                    f"🧠 Brain Organizer — ⚠️ Error\nFile: {file_path.name}\nError: {exc}",
+                    priority="high",
+                    http_client=_http_client,
+                )
+    else:
+        # --- Parallel path ---
+        catalog_lock = threading.Lock()
+        registry_lock = threading.Lock()
+        state_lock = threading.Lock()  # protects success_count, failed_count, all_topics, processed
 
-            send_hermes_notification(
-                config,
-                f"🧠 Brain Organizer — ⚠️ Error\nFile: {file_path.name}\nError: {exc}",
-                priority="high",
-                http_client=_http_client,
-            )
+        # Phase A: route all files in parallel (Haiku, read-only, safe)
+        def _route_one(fp_sha):
+            fp, _sha = fp_sha
+            try:
+                content = fp.read_text(encoding="utf-8")
+                registry_path = meta_folder / "topics-registry.json"
+                reg: dict[str, str] = {}
+                if registry_path.exists():
+                    try:
+                        reg = json.loads(registry_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                # Snapshot catalog for routing — routing is read-only
+                routes = route_topics(content, list(catalog), reg, config, client)
+                logger.info("[parallel] Routed %s -> %s", fp.name, [t for t, _, _ in routes])
+                return fp, _sha, routes
+            except Exception as exc:
+                logger.error("[parallel] Routing failed for %s: %s", fp.name, exc)
+                return fp, _sha, []
+
+        route_workers = min(max_workers * 2, 8)
+        logger.info("Parallel routing %d file(s) with %d workers", len(files), route_workers)
+        with ThreadPoolExecutor(max_workers=route_workers) as ex:
+            routing_results = list(ex.map(_route_one, files))
+
+        # Group files by primary target wiki page (prevents concurrent writes to same page)
+        page_groups: dict[str, list[tuple[Path, str, list]]] = defaultdict(list)
+        for fp, sha, routes in routing_results:
+            key = str(routes[0][1]) if routes else f"_ungrouped_{fp.stem}"
+            page_groups[key].append((fp, sha, routes))
+
+        logger.info(
+            "Parallel synthesis: %d file(s) in %d page group(s), %d workers",
+            len(files), len(page_groups), max_workers,
+        )
+
+        def _process_group(group_items):
+            nonlocal success_count, failed_count
+            for fp, sha, routes in group_items:
+                try:
+                    updated = process_file(
+                        fp, config, client, logger, catalog,
+                        _routes=routes,
+                        _catalog_lock=catalog_lock,
+                        _registry_lock=registry_lock,
+                    )
+                    with state_lock:
+                        processed[sha] = {
+                            "filename": fp.name,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "topics": updated,
+                        }
+                        save_processed(config, processed)
+                        success_count += 1
+                        all_topics.update(updated)
+                except Exception as exc:
+                    logger.error("Failed to process %s: %s", fp.name, exc, exc_info=True)
+                    with state_lock:
+                        existing = processed.get(sha, {})
+                        attempts = existing.get("attempts", 0) + 1
+                        processed[sha] = {
+                            "filename": fp.name,
+                            "status": "failed",
+                            "attempts": attempts,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "error": str(exc)[:500],
+                        }
+                        save_processed(config, processed)
+                        failed_count += 1
+                    send_hermes_notification(
+                        config,
+                        f"🧠 Brain Organizer — ⚠️ Error\nFile: {fp.name}\nError: {exc}",
+                        priority="high",
+                        http_client=_http_client,
+                    )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_process_group, items) for items in page_groups.values()]
+            for fut in as_completed(futs):
+                try:
+                    fut.result()
+                except Exception as exc:
+                    logger.error("Page group error: %s", exc)
 
     duration = time.monotonic() - start
 
@@ -604,9 +1288,12 @@ def main() -> None:
         try:
             pid = int(lock_path.read_text().strip())
             import psutil  # type: ignore[import-untyped]
-            if psutil.pid_exists(pid):
+            lock_age_s = time.time() - lock_path.stat().st_mtime
+            if psutil.pid_exists(pid) and lock_age_s < 3600:
                 print(f"Brain Organizer already running (PID {pid}) — skipping.", flush=True)
                 sys.exit(0)
+            elif psutil.pid_exists(pid):
+                print(f"Brain Organizer lock held by PID {pid} for {lock_age_s/60:.0f}m — treating as stale and reclaiming.", flush=True)
         except Exception:
             pass  # stale lock — proceed
 

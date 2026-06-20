@@ -2,6 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import { api } from '../lib/api'
 import { parseUTC } from '../lib/parseUTC'
 import RecordingCard from '../components/RecordingCard'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import StatusDot from '../components/StatusDot'
+import ScreenHeader from '../components/ScreenHeader'
 
 function formatDateTime(iso) {
   if (!iso) return null
@@ -63,110 +67,201 @@ export default function Media() {
     }
   }
 
+  const pct = data?.storage_total_gb > 0
+    ? Math.round(data.storage_used_gb / data.storage_total_gb * 100)
+    : 0
+
   return (
-    <div className="p-4 md:p-6 max-w-2xl">
-      <h1 className="page-header mb-6">MEDIA OPERATIONS</h1>
-      {!data ? (
-        <div className="hud-label animate-pulse">LOADING...</div>
-      ) : (
-        <div className="space-y-6">
+    <div style={{
+      width: '100%',
+      maxWidth: '1100px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader section="Media" title="Media Operations" />
 
-          {/* Now Recording */}
-          <div>
-            <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">NOW RECORDING</div>
-            {data.recording_now?.length > 0
-              ? <div className="space-y-2">{data.recording_now.map((r, i) => <RecordingCard key={i} recording={r} />)}</div>
-              : <div className="hud-label opacity-40">NOTHING RECORDING</div>}
-          </div>
+      {!data && (
+        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
+      )}
 
-          {/* Upcoming */}
-          <div>
-            <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">UPCOMING</div>
-            {(data.upcoming || []).length > 0 ? (
-              <div className="space-y-2">
-                {data.upcoming.map((r, i) => {
-                  const startLabel = formatDateTime(r.start)
-                  const schedState = r.program_id ? scheduling[r.program_id] : undefined
+      {/* Top row: Now Recording + Upcoming */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--gap)' }}>
 
-                  let recLabel = 'REC'
-                  let recStyle = {}
-                  if (schedState === 'scheduling') {
-                    recLabel = '...'
-                    recStyle = { opacity: 0.6 }
-                  } else if (schedState === 'scheduled') {
-                    recLabel = 'SCHEDULED'
-                    recStyle = { color: 'rgba(0,212,255,1)', borderColor: 'rgba(0,212,255,0.8)' }
-                  } else if (schedState === 'error') {
-                    recLabel = 'ERROR'
-                    recStyle = { color: 'rgba(255,120,0,0.9)', borderColor: 'rgba(255,120,0,0.6)' }
+        {/* Now Recording */}
+        <Card style={{ flex: '1 1 300px' }}>
+          <Eyebrow style={{ marginBottom: '14px' }}>Now Recording</Eyebrow>
+          {data?.recording_now?.length > 0
+            ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {data.recording_now.map((r, i) => <RecordingCard key={i} recording={r} />)}
+              </div>
+            )
+            : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#8a96ad' }}>
+                <StatusDot color="#7c8aa3" size={8} glow={false} />
+                <span style={{ fontSize: '14px' }}>Nothing recording</span>
+              </div>
+            )
+          }
+        </Card>
+
+        {/* Upcoming */}
+        <Card style={{ flex: '1 1 320px' }}>
+          <Eyebrow style={{ marginBottom: '14px' }}>Upcoming</Eyebrow>
+          {(data?.upcoming || []).length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {(data.upcoming || []).map((r, i) => {
+                const startLabel = formatDateTime(r.start)
+                const schedState = r.program_id ? scheduling[r.program_id] : undefined
+
+                let recLabel = 'REC'
+                let recStyle = {
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  color: '#fb7185',
+                  padding: '3px 9px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(251,113,133,0.3)',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }
+                if (schedState === 'scheduling') {
+                  recLabel = '...'
+                  recStyle = { ...recStyle, opacity: 0.6, cursor: 'not-allowed' }
+                } else if (schedState === 'scheduled') {
+                  recLabel = 'SCHEDULED'
+                  recStyle = {
+                    ...recStyle,
+                    color: 'rgba(0,212,255,1)',
+                    border: '1px solid rgba(0,212,255,0.8)',
+                    cursor: 'not-allowed',
                   }
+                } else if (schedState === 'error') {
+                  recLabel = 'ERROR'
+                  recStyle = {
+                    ...recStyle,
+                    color: 'rgba(255,120,0,0.9)',
+                    border: '1px solid rgba(255,120,0,0.6)',
+                    cursor: 'not-allowed',
+                  }
+                }
 
-                  return (
-                    <div key={i} className="hud-panel-sm p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 min-w-0">
-                      <span className="text-text-primary text-sm truncate w-full sm:w-auto leading-snug">{r.title}</span>
-                      <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
-                        {r.channel && (
-                          <span className="inline-block bg-bg-secondary border border-accent-cyan text-accent-cyan font-mono text-xs px-1.5 py-0.5 leading-none tracking-wider">
-                            CH {r.channel}
-                          </span>
-                        )}
-                        {startLabel && (
-                          <span className="hud-label text-xs whitespace-nowrap">{startLabel}</span>
-                        )}
-                        {r.program_id && (
-                          <button
-                            onClick={() => schedule(r.program_id)}
-                            disabled={!!schedState}
-                            className="glow-btn"
-                            style={{
-                              fontSize: '0.6rem',
-                              padding: '2px 6px',
-                              opacity: schedState ? 0.7 : 1,
-                              cursor: schedState ? 'not-allowed' : 'pointer',
-                              whiteSpace: 'nowrap',
-                              ...recStyle,
-                            }}
-                          >
-                            {recLabel}
-                          </button>
-                        )}
-                      </div>
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '12px',
+                      flexWrap: 'wrap',
+                      padding: '13px 14px',
+                      borderRadius: '11px',
+                      background: 'rgba(255,255,255,0.022)',
+                      border: '1px solid rgba(120,160,220,0.08)',
+                    }}
+                  >
+                    {/* Left: title + channel chip */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                      <span style={{
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        color: '#dbe3f0',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {r.title}
+                      </span>
+                      {r.channel && (
+                        <span style={{
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontSize: '11px',
+                          color: 'var(--accent)',
+                          padding: '3px 8px',
+                          border: '1px solid var(--ac-line)',
+                          borderRadius: '6px',
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0,
+                        }}>
+                          CH {r.channel}
+                        </span>
+                      )}
                     </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="hud-label opacity-40">NO UPCOMING RECORDINGS</div>
-            )}
-          </div>
 
-          {/* Storage */}
-          {data.storage_total_gb > 0 ? (
-            <div className="hud-panel p-4">
-              <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">STORAGE</div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="hud-label">{data.storage_used_gb}GB used of {data.storage_total_gb}GB</span>
-                <span className="hud-label">{Math.round(data.storage_used_gb / data.storage_total_gb * 100)}%</span>
-              </div>
-              <div className="w-full bg-bg-secondary border border-border-dark h-3">
-                <div
-                  className="bg-accent-cyan h-full"
-                  style={{
-                    width: `${data.storage_used_gb / data.storage_total_gb * 100}%`,
-                    boxShadow: '0 0 12px rgba(0,212,255,0.5)',
-                  }}
-                />
-              </div>
+                    {/* Right: start time + badge */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                      {startLabel && (
+                        <span style={{ fontSize: '12px', color: '#8a96ad', whiteSpace: 'nowrap' }}>
+                          {startLabel}
+                        </span>
+                      )}
+                      {r.program_id && (
+                        <button
+                          onClick={() => schedule(r.program_id)}
+                          disabled={!!schedState}
+                          style={recStyle}
+                        >
+                          {/* red dot indicator */}
+                          <span style={{
+                            display: 'inline-block',
+                            width: '6px',
+                            height: '6px',
+                            borderRadius: '50%',
+                            background: schedState === 'scheduled'
+                              ? 'rgba(0,212,255,1)'
+                              : schedState === 'error'
+                                ? 'rgba(255,120,0,0.9)'
+                                : '#fb7185',
+                            flexShrink: 0,
+                          }} />
+                          {recLabel}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           ) : (
-            <div className="hud-panel p-4">
-              <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-1">STORAGE</div>
-              <div className="hud-label opacity-40 mt-2">STORAGE DATA UNAVAILABLE</div>
-            </div>
+            <div style={{ color: '#5d6982', fontSize: '13px' }}>No upcoming recordings</div>
           )}
+        </Card>
+      </div>
 
+      {/* Storage — full width */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+          <Eyebrow>Storage</Eyebrow>
+          <span style={{ fontSize: '13px', color: '#8a96ad' }}>
+            {(data?.storage_used_gb / 1000 || 0).toFixed(1)} GB of {(data?.storage_total_gb / 1000 || 0).toFixed(1)} GB
+            {' · '}
+            <strong style={{ color: '#5b8cff' }}>{pct}%</strong>
+          </span>
         </div>
-      )}
+        <div style={{
+          height: '10px',
+          borderRadius: '6px',
+          background: 'rgba(120,160,220,0.12)',
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            width: `${pct}%`,
+            height: '100%',
+            background: 'linear-gradient(90deg,#5b8cff,#2fd4ee)',
+            borderRadius: '6px',
+            transition: 'width 0.4s ease',
+          }} />
+        </div>
+      </Card>
     </div>
   )
 }

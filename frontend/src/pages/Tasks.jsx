@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 import TaskCard from '../components/TaskCard'
+import ScreenHeader from '../components/ScreenHeader'
+import TextInput from '../components/TextInput'
+import PrimaryButton from '../components/PrimaryButton'
 
 export default function Tasks() {
   const [tasks, setTasks] = useState([])
@@ -68,18 +71,35 @@ export default function Tasks() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-2xl space-y-6">
-      <h1 className="page-header">MISSION CONTROL</h1>
-      <div className="flex flex-wrap gap-2">
-        <input value={prompt} onChange={e => setPrompt(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()}
-          className="hud-input flex-1"
-          placeholder="ENTER MISSION PARAMETERS..." />
-        <button onClick={submit} disabled={loading || !prompt.trim()}
-          className="glow-btn px-5 py-2 disabled:opacity-40">
-          {loading ? '...' : 'EXECUTE'}
-        </button>
+    <div style={{
+      width: '100%',
+      maxWidth: '1100px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader section="Tasks" title="Mission Control" />
+
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <TextInput
+          style={{ flex: '1 1 280px' }}
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && submit()}
+          placeholder="Enter mission parameters…"
+        />
+        <PrimaryButton
+          onClick={submit}
+          disabled={loading || !prompt.trim()}
+          style={{ padding: '12px 22px', borderRadius: '11px' }}
+        >
+          {loading ? '…' : 'Execute'}
+        </PrimaryButton>
       </div>
-      <div className="space-y-3">
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {tasks.map(t => (
           <TaskCard
             key={t.id}

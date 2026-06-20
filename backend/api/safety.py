@@ -228,6 +228,38 @@ async def safety_status(_=Depends(require_api_key)):
     }
 
 
+@router.delete("/deliveries/dead")
+async def clear_dead_letter_deliveries(_=Depends(require_api_key)):
+    """Delete all PendingDelivery rows that have exhausted retries.
+
+    Clears stuck messages so the watchdog stops alerting and the Safety page
+    delivery count resets. Also resets the DB-backed alert cooldown so the next
+    genuine outage fires a fresh alert immediately.
+    """
+    def _purge() -> int:
+        from sqlmodel import Session, select
+        from backend.database import PendingDelivery, SystemState, engine
+        from backend.integrations.hermes import _MAX_ATTEMPTS
+
+        with Session(engine) as session:
+            dead = session.exec(
+                select(PendingDelivery).where(PendingDelivery.attempts >= _MAX_ATTEMPTS)
+            ).all()
+            count = len(dead)
+            for row in dead:
+                session.delete(row)
+            # Also reset the alert cooldown so the next real outage fires fresh.
+            state = session.get(SystemState, 1)
+            if state:
+                state.last_dead_letter_alert_at = None
+                session.add(state)
+            session.commit()
+            return count
+
+    cleared = await asyncio.to_thread(_purge)
+    return {"cleared": cleared}
+
+
 @router.get("/metering")
 async def metering_health(_=Depends(require_api_key)):
     """Live spend-metering health: process-lifetime outcome counters + today's

@@ -84,5 +84,9 @@ async def _test_anthropic() -> bool:
 
     from backend.config import get_settings
     client = anthropic.AsyncAnthropic(api_key=get_settings().anthropic_api_key)
-    models = await client.models.list()
-    return len(models.data) > 0
+    msg = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=5,
+        messages=[{"role": "user", "content": "ping"}],
+    )
+    return bool(msg.content)

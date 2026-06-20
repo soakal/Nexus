@@ -2,10 +2,13 @@ import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 import BriefingPanel from '../components/BriefingPanel'
 import { fmtDateTime } from '../lib/parseUTC'
+import ScreenHeader from '../components/ScreenHeader'
+import PrimaryButton from '../components/PrimaryButton'
 
 export default function Briefing() {
   const [briefing, setBriefing] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     api.briefing.latest().then(b => setBriefing(b)).catch(() => {})
@@ -13,32 +16,58 @@ export default function Briefing() {
 
   const trigger = async () => {
     setLoading(true)
+    setError(null)
     try {
       const r = await api.briefing.trigger()
       setBriefing({ content: r.briefing, created_at: new Date().toISOString() })
-    } catch {}
+    } catch (e) {
+      setError('Failed to generate briefing.')
+    }
     setLoading(false)
   }
 
-  const created = briefing ? fmtDateTime(briefing.created_at) : ''
+  const subline = briefing
+    ? 'Generated ' + new Date(briefing.created_at || Date.now()).toLocaleString()
+    : null
 
   return (
-    <div className="p-4 md:p-6 max-w-3xl">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-        <h1 className="page-header">INTEL BRIEFING</h1>
-        <button onClick={trigger} disabled={loading} className="glow-btn disabled:opacity-50">
-          {loading ? 'GENERATING...' : 'GENERATE'}
-        </button>
-      </div>
-      {briefing && (
-        <div className="mb-4">
-          <span className="hud-label">TIMESTAMP </span>
-          <span className="font-mono text-text-secondary text-xs">
-            {created}
-          </span>
-        </div>
+    <div style={{
+      width: '100%',
+      maxWidth: 1000,
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader
+        section="Briefing"
+        title="Intel Briefing"
+        subline={subline}
+        right={
+          <PrimaryButton
+            onClick={trigger}
+            disabled={loading}
+            icon={
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            }
+          >
+            {loading ? 'Generating…' : 'Generate'}
+          </PrimaryButton>
+        }
+      />
+
+      {loading && !briefing && (
+        <div style={{ color: '#5d6982', fontSize: 13 }}>Generating briefing…</div>
       )}
-      <BriefingPanel content={briefing?.content} />
+
+      {error && (
+        <div style={{ color: '#fb7185', fontSize: 13 }}>{error}</div>
+      )}
+
+      {briefing && <BriefingPanel content={briefing.content} />}
     </div>
   )
 }

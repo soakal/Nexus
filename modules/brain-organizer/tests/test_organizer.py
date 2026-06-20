@@ -29,10 +29,15 @@ def make_message(text: str, stop_reason: str = "end_turn") -> MagicMock:
     return msg
 
 
-def make_client(topic_text: str, wiki_text: str, stop_reason: str = "end_turn") -> MagicMock:
+def make_client(routes_text: str, wiki_text: str, stop_reason: str = "end_turn") -> MagicMock:
+    """Build a mock client with a routing response followed by a wiki synthesis response.
+
+    routes_text must already be in the new routes JSON shape:
+        '{"routes": [{"title":"...", "match": "new"}]}'
+    """
     client = MagicMock()
     client.messages.create.side_effect = [
-        make_message(topic_text),
+        make_message(routes_text),
         make_message(wiki_text, stop_reason=stop_reason),
     ]
     return client
@@ -130,7 +135,9 @@ def test_backup_creates_timestamped_filename(tmp_vault: Path, tmp_config: dict[s
 
 def test_topic_detection_returns_valid_json(tmp_config: dict[str, Any]) -> None:
     client = MagicMock()
-    client.messages.create.return_value = make_message('{"topics": ["NEXUS", "Home Assistant"]}')
+    client.messages.create.return_value = make_message(
+        '{"routes": [{"title":"NEXUS", "match": "new"}, {"title":"Home Assistant", "match": "new"}]}'
+    )
     topics = bo.detect_topics("Some content about NEXUS and Home Assistant", tmp_config, client)
     assert topics == ["NEXUS", "Home Assistant"]
 
@@ -144,22 +151,22 @@ def test_topic_detection_falls_back_on_bad_json(tmp_config: dict[str, Any]) -> N
 
 def test_topic_detection_falls_back_on_empty_list(tmp_config: dict[str, Any]) -> None:
     client = MagicMock()
-    client.messages.create.return_value = make_message('{"topics": []}')
+    client.messages.create.return_value = make_message('{"routes": []}')
     topics = bo.detect_topics("content", tmp_config, client)
     assert topics == ["Uncategorized"]
 
 
 def test_topic_detection_caps_at_five(tmp_config: dict[str, Any]) -> None:
     client = MagicMock()
-    many = ["A", "B", "C", "D", "E", "F", "G"]
-    client.messages.create.return_value = make_message(json.dumps({"topics": many}))
+    many_routes = [{"title":t, "match": "new"} for t in ["A", "B", "C", "D", "E", "F", "G"]]
+    client.messages.create.return_value = make_message(json.dumps({"routes": many_routes}))
     topics = bo.detect_topics("content", tmp_config, client)
     assert len(topics) <= 5
 
 
 def test_topic_detection_uses_haiku_model(tmp_config: dict[str, Any]) -> None:
     client = MagicMock()
-    client.messages.create.return_value = make_message('{"topics": ["Test"]}')
+    client.messages.create.return_value = make_message('{"routes": [{"title":"Test", "match": "new"}]}')
     bo.detect_topics("content", tmp_config, client)
     assert client.messages.create.call_args.kwargs["model"] == tmp_config["haiku_model"]
 
@@ -221,7 +228,7 @@ def test_api_retries_on_timeout_then_succeeds(tmp_config: dict[str, Any]) -> Non
     client = MagicMock()
     client.messages.create.side_effect = [
         anthropic.APITimeoutError(request=MagicMock()),
-        make_message('{"topics": ["NEXUS"]}'),
+        make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'),
     ]
     topics = bo.detect_topics("content", tmp_config, client)
     assert topics == ["NEXUS"]
@@ -232,7 +239,7 @@ def test_api_retries_on_rate_limit_then_succeeds(tmp_config: dict[str, Any]) -> 
     client = MagicMock()
     client.messages.create.side_effect = [
         anthropic.RateLimitError(message="rate limited", response=MagicMock(), body={}),
-        make_message('{"topics": ["NEXUS"]}'),
+        make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'),
     ]
     with patch("brain_organizer.time.sleep"):
         topics = bo.detect_topics("content", tmp_config, client)
@@ -249,7 +256,7 @@ def test_openrouter_fallback_on_anthropic_failure(
     client.messages.create.side_effect = anthropic.APITimeoutError(request=MagicMock())
 
     or_response = {
-        "choices": [{"message": {"content": '{"topics": ["NEXUS"]}'}, "finish_reason": "stop"}]
+        "choices": [{"message": {"content": '{"routes": [{"title":"NEXUS", "match": "new"}]}'}, "finish_reason": "stop"}]
     }
 
     with patch("brain_organizer.time.sleep"), \
@@ -293,7 +300,9 @@ def test_multi_topic_partial_synthesis_failure_leaves_existing_wikis_intact(
     raw_file = write_raw(tmp_vault, "note.md", "Content about NEXUS and Hermes")
 
     client = MagicMock()
-    topic_resp = make_message('{"topics": ["NEXUS", "Hermes"]}')
+    topic_resp = make_message(
+        '{"routes": [{"title":"NEXUS", "match": "new"}, {"title":"Hermes", "match": "new"}]}'
+    )
     nexus_wiki_resp = make_message("# NEXUS\n\nUpdated content.")
     hermes_fail = RuntimeError("Hermes synthesis failed")
     client.messages.create.side_effect = [topic_resp, nexus_wiki_resp, hermes_fail]
@@ -322,7 +331,7 @@ def test_processed_json_tracking(
 
 def test_raw_file_deleted_after_success(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
     raw_file = write_raw(tmp_vault, "note.md", "NEXUS content")
-    client = make_client('{"topics": ["NEXUS"]}', "# NEXUS\n\nWiki content.")
+    client = make_client('{"routes": [{"title":"NEXUS", "match": "new"}]}', "# NEXUS\n\nWiki content.")
     result = bo.run(_client=client, _config=tmp_config)
     assert result == 0
     assert not raw_file.exists()
@@ -331,7 +340,7 @@ def test_raw_file_deleted_after_success(tmp_vault: Path, tmp_config: dict[str, A
 def test_raw_file_kept_on_failure(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
     raw_file = write_raw(tmp_vault, "note.md", "NEXUS content")
     client = MagicMock()
-    topic_resp = make_message('{"topics": ["NEXUS"]}')
+    topic_resp = make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}')
     client.messages.create.side_effect = [topic_resp, RuntimeError("API down")]
     result = bo.run(_client=client, _config=tmp_config)
     assert result == 1
@@ -342,7 +351,7 @@ def test_failure_records_attempt_count(tmp_vault: Path, tmp_config: dict[str, An
     raw_file = write_raw(tmp_vault, "note.md", "Content")
     sha = bo.compute_sha256(raw_file)
     client = MagicMock()
-    client.messages.create.side_effect = [make_message('{"topics": ["NEXUS"]}'), RuntimeError("fail")]
+    client.messages.create.side_effect = [make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'), RuntimeError("fail")]
     bo.run(_client=client, _config=tmp_config)
     processed = bo.load_processed(tmp_config)
     assert processed[sha]["status"] == "failed"
@@ -357,7 +366,7 @@ def test_failure_stops_retrying_after_max_attempts(
 
     def make_failing_client() -> MagicMock:
         c = MagicMock()
-        c.messages.create.side_effect = [make_message('{"topics": ["NEXUS"]}'), RuntimeError("fail")]
+        c.messages.create.side_effect = [make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'), RuntimeError("fail")]
         return c
 
     bo.run(_client=make_failing_client(), _config=tmp_config)
@@ -376,7 +385,7 @@ def test_topics_registry_updated_after_success(
     tmp_vault: Path, tmp_config: dict[str, Any]
 ) -> None:
     write_raw(tmp_vault, "note.md", "NEXUS content")
-    client = make_client('{"topics": ["NEXUS"]}', "# NEXUS\n\nWiki content.")
+    client = make_client('{"routes": [{"title":"NEXUS", "match": "new"}]}', "# NEXUS\n\nWiki content.")
     bo.run(_client=client, _config=tmp_config)
 
     registry_path = tmp_vault / "_meta" / "topics-registry.json"
@@ -390,11 +399,11 @@ def test_topics_registry_accumulates_across_runs(
     tmp_vault: Path, tmp_config: dict[str, Any]
 ) -> None:
     write_raw(tmp_vault, "note1.md", "NEXUS content")
-    client1 = make_client('{"topics": ["NEXUS"]}', "# NEXUS\n\nContent.")
+    client1 = make_client('{"routes": [{"title":"NEXUS", "match": "new"}]}', "# NEXUS\n\nContent.")
     bo.run(_client=client1, _config=tmp_config)
 
     write_raw(tmp_vault, "note2.md", "Hermes content")
-    client2 = make_client('{"topics": ["Hermes"]}', "# Hermes\n\nContent.")
+    client2 = make_client('{"routes": [{"title":"Hermes", "match": "new"}]}', "# Hermes\n\nContent.")
     bo.run(_client=client2, _config=tmp_config)
 
     registry = json.loads((tmp_vault / "_meta" / "topics-registry.json").read_text(encoding="utf-8"))
@@ -410,7 +419,7 @@ def test_detect_topics_strips_markdown_code_fences(
     tmp_config: dict[str, Any], mock_anthropic_client: MagicMock
 ) -> None:
     """Haiku often wraps JSON in ```json ... ``` fences — verify they are stripped."""
-    fenced = '```json\n{"topics": ["NEXUS", "Unraid"]}\n```'
+    fenced = '```json\n{"routes": [{"title":"NEXUS", "match": "new"}, {"title":"Unraid", "match": "new"}]}\n```'
     mock_anthropic_client.messages.create.side_effect = [make_message(fenced)]
     topics = bo.detect_topics("some note content", tmp_config, mock_anthropic_client)
     assert topics == ["NEXUS", "Unraid"]
@@ -419,7 +428,7 @@ def test_detect_topics_strips_markdown_code_fences(
 def test_detect_topics_strips_plain_code_fences(
     tmp_config: dict[str, Any], mock_anthropic_client: MagicMock
 ) -> None:
-    fenced = '```\n{"topics": ["Hermes"]}\n```'
+    fenced = '```\n{"routes": [{"title":"Hermes", "match": "new"}]}\n```'
     mock_anthropic_client.messages.create.side_effect = [make_message(fenced)]
     topics = bo.detect_topics("some note content", tmp_config, mock_anthropic_client)
     assert topics == ["Hermes"]

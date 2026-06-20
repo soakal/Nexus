@@ -1,6 +1,7 @@
 {
   "ANTHROPIC_API_KEY": {
-    "last_set": "2026-06-08T00:27:19.028685"
+    "last_set": "2026-06-20T01:56:05.151026",
+    "last_rotated": "2026-06-20T01:56:05.151026"
   },
   "OPENROUTER_API_KEY": {
     "last_set": "2026-06-08T00:28:36.082400"
@@ -28,5 +29,9 @@
   },
   "NEXUS_API_KEY": {
     "last_set": "2026-06-08T01:00:18.522704"
+  },
+  "HERMES_WEBHOOK_SECRET": {
+    "last_set": "2026-06-18T20:32:32.024709",
+    "last_rotated": "2026-06-18T20:32:32.024709"
   }
 }

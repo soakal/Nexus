@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ShieldCheck } from 'lucide-react'
 import { api, wsLogsUrl, wsLogsProtocols } from '../lib/api'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import StatusDot from '../components/StatusDot'
+import ScreenHeader from '../components/ScreenHeader'
+import PrimaryButton from '../components/PrimaryButton'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,70 +31,113 @@ function relativeTime(isoStr) {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
-function verdictColor(verdict) {
-  switch ((verdict || '').toLowerCase()) {
-    case 'success':  return 'text-accent-cyan'
-    case 'failure':  return 'text-red-400'
-    case 'partial':  return 'text-accent-orange'
-    default:         return 'text-text-secondary'
-  }
+// ---------------------------------------------------------------------------
+// Tone + Badge helpers
+// ---------------------------------------------------------------------------
+
+const tone = (s) => {
+  if (!s) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  const u = s.toLowerCase()
+  if (u.includes('executed') || u.includes('allowed') || u.includes('success'))
+    return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
+  if (u.includes('confirm') || u.includes('warn') || u.includes('partial'))
+    return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+  return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
 }
 
-function decisionColor(decision) {
-  switch ((decision || '').toLowerCase()) {
-    case 'allowed':
-    case 'executed':      return 'text-accent-cyan'
-    case 'needs_confirm': return 'text-accent-orange'
-    default:              return 'text-red-400'
-  }
+const toneRisk = (r) => {
+  if (!r) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  const u = r.toLowerCase()
+  if (u === 'low') return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
+  if (u === 'medium') return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+  return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
 }
 
-function riskColor(risk) {
-  switch ((risk || '').toLowerCase()) {
-    case 'low':    return 'text-accent-cyan'
-    case 'medium': return 'text-accent-orange'
-    case 'high':   return 'text-red-400'
-    default:       return 'text-text-secondary'
-  }
+const toneStatus = (s) => {
+  if (!s) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  const u = s.toLowerCase()
+  if (u === 'completed' || u === 'approved') return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
+  if (u === 'running' || u === 'proposed') return { c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.30)' }
+  if (u === 'failed') return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
+  return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
 }
 
-function goalStatusColor(status) {
-  switch ((status || '').toLowerCase()) {
-    case 'proposed':  return 'text-accent-cyan'
-    case 'approved':
-    case 'running':   return 'text-accent-orange'
-    case 'completed': return 'text-accent-cyan'
-    case 'failed':    return 'text-red-400'
-    default:          return 'text-text-secondary'
-  }
-}
+const Badge = ({ label, t }) => (
+  <span style={{
+    display: 'inline-flex', alignItems: 'center', gap: '5px',
+    padding: '3px 8px', borderRadius: '6px',
+    background: t.bg, border: `1px solid ${t.bd}`,
+    fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: t.c,
+    textTransform: 'uppercase', whiteSpace: 'nowrap',
+  }}>{label}</span>
+)
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// SpendBar
 // ---------------------------------------------------------------------------
 
 function SpendBar({ spend, budget }) {
   const pct = budget > 0 ? Math.min(100, (spend / budget) * 100) : 0
-  const barColor = pct >= 100 ? '#ff2d2d' : pct >= 80 ? '#ff9500' : '#00d4ff'
+  const barColor = pct >= 100 ? '#fb7185' : pct >= 80 ? '#fbbf24' : '#2fd4ee'
   return (
-    <div className="mt-3">
-      <div
-        className="relative h-3 rounded-full overflow-hidden"
-        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(0,212,255,0.18)' }}
-      >
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, background: barColor, boxShadow: `0 0 6px ${barColor}` }}
-        />
+    <div style={{ marginTop: '8px' }}>
+      <div style={{
+        position: 'relative', height: '6px', borderRadius: '999px',
+        overflow: 'hidden', background: 'rgba(255,255,255,0.06)',
+        border: '1px solid rgba(120,160,220,0.12)',
+      }}>
+        <div style={{
+          height: '100%', borderRadius: '999px',
+          width: `${pct}%`,
+          background: `linear-gradient(90deg, ${barColor}99, ${barColor})`,
+          boxShadow: `0 0 8px ${barColor}66`,
+          transition: 'width 0.5s ease',
+        }} />
       </div>
-      <div className="flex justify-between font-mono text-xs text-text-secondary mt-1">
-        <span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
+        <span style={{ fontSize: '12px', color: '#8a96ad', fontFamily: "'JetBrains Mono', monospace" }}>
           {fmtUsd(spend)} / {fmtUsd(budget)}
         </span>
-        <span style={{ color: barColor }}>{fmtPct(pct)}</span>
+        <span style={{ fontSize: '12px', fontFamily: "'JetBrains Mono', monospace", color: barColor }}>
+          {fmtPct(pct)}
+        </span>
       </div>
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Inline styles for form fields
+// ---------------------------------------------------------------------------
+
+const inputStyle = {
+  background: 'rgba(255,255,255,0.03)',
+  color: '#e9eef8',
+  border: '1px solid rgba(120,160,220,0.16)',
+  borderRadius: '10px',
+  padding: '10px 12px',
+  fontSize: '13px',
+  outline: 'none',
+  width: '100%',
+  boxSizing: 'border-box',
+  fontFamily: "'Space Grotesk', sans-serif",
+}
+
+const selectStyle = {
+  ...inputStyle,
+  cursor: 'pointer',
+  appearance: 'none',
+  WebkitAppearance: 'none',
+}
+
+const labelStyle = {
+  fontSize: '10px',
+  textTransform: 'uppercase',
+  letterSpacing: '0.1em',
+  color: '#5d6982',
+  fontWeight: 600,
+  marginBottom: '4px',
+  display: 'block',
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +149,15 @@ export default function Safety() {
   const [outcomes, setOutcomes] = useState(null)
   const [actions, setActions]   = useState(null)
   const [toggling, setToggling] = useState(false)
+
+  // Dead-letter clear
+  const [clearing, setClearing] = useState(false)
+  const clearDeadLetters = async () => {
+    setClearing(true)
+    try { await api.safety.clearDeadLetters() } catch (_) {}
+    setClearing(false)
+    load()
+  }
 
   // Budget editor state
   const [dailyInput, setDailyInput]     = useState('')
@@ -129,7 +185,7 @@ export default function Safety() {
   const [proposeDesc, setProposeDesc]         = useState('')
   const [proposeRisk, setProposeRisk]         = useState('medium')
   const [proposeCategory, setProposeCategory] = useState('other')
-  const [proposeCadence, setProposeCadence]   = useState('')   // '' = one-shot
+  const [proposeCadence, setProposeCadence]   = useState('')
   const [proposeSuccess, setProposeSuccess]   = useState('')
   const [proposing, setProposing]             = useState(false)
   const [proposeErr, setProposeErr]           = useState('')
@@ -139,11 +195,11 @@ export default function Safety() {
   const [categories, setCategories]       = useState(FALLBACK_CATEGORIES)
   const [categoryFilter, setCategoryFilter] = useState('all')
 
-  // WebSocket refs (prevent stale closures / leak on unmount)
+  // WebSocket refs
   const wsRef       = useRef(null)
   const wsAliveRef  = useRef(true)
   const reconnTimer = useRef(null)
-  const backfilledRef = useRef(false)  // seed live feed from history exactly once
+  const backfilledRef = useRef(false)
 
   // ---------------------------------------------------------------------------
   // REST load (10s poll)
@@ -164,12 +220,9 @@ export default function Safety() {
   useEffect(() => {
     api.goals.categories().then(data => {
       if (data?.categories?.length) setCategories(data.categories)
-    }).catch(() => { /* use fallback */ })
+    }).catch(() => {})
   }, [])
 
-  // Backfill the live feed once from recent actions so it isn't empty before any
-  // new event streams in. LIVE ACTIVITY is real-time; this just primes it with
-  // the latest history (marked _backfill) so the panel is never confusingly blank.
   useEffect(() => {
     if (backfilledRef.current || !actions || actions.length === 0) return
     backfilledRef.current = true
@@ -240,7 +293,7 @@ export default function Safety() {
       wsAliveRef.current = false
       clearTimeout(reconnTimer.current)
       if (wsRef.current) {
-        wsRef.current.onclose = null  // prevent reconnect loop on intentional close
+        wsRef.current.onclose = null
         wsRef.current.close()
         wsRef.current = null
       }
@@ -261,7 +314,7 @@ export default function Safety() {
       }
       await api.safety.status().then(setStatus).catch(() => {})
     } catch {
-      // swallow; load() will refresh state
+      // swallow
     } finally {
       setToggling(false)
       load()
@@ -431,175 +484,222 @@ export default function Safety() {
 
   const autonomyOn = status?.autonomy_enabled ?? null
 
+  // ---------------------------------------------------------------------------
+  // Row style for activity / verdict items
+  // ---------------------------------------------------------------------------
+  const rowStyle = {
+    display: 'flex', alignItems: 'center', gap: '12px',
+    padding: '11px 14px', borderRadius: '11px',
+    background: 'rgba(255,255,255,0.022)',
+    border: '1px solid rgba(120,160,220,0.08)',
+    marginBottom: '6px',
+  }
+
   return (
-    <div className="p-4 md:p-6 max-w-4xl">
-      <h1 className="page-header mb-6">SAFETY &amp; GOVERNANCE</h1>
+    <div style={{
+      width: '100%', maxWidth: '1100px', margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex', flexDirection: 'column', gap: 'var(--gap)',
+    }}>
+      <ScreenHeader section="Safety" title="Safety & Governance" />
 
       {/* ------------------------------------------------------------------ */}
-      {/* Kill switch + status                                                 */}
+      {/* 1. Autonomy Control                                                  */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">AUTONOMY CONTROL</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
-        {status === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
-        ) : (
-          <>
-            {/* State line */}
-            <div className="flex items-center gap-3 mb-4">
-              <ShieldCheck
-                size={20}
-                style={{ color: autonomyOn ? '#00d4ff' : '#ff2d2d', filter: autonomyOn ? 'drop-shadow(0 0 6px rgba(0,212,255,0.7))' : 'drop-shadow(0 0 6px rgba(255,45,45,0.7))' }}
+      <Card accent="cyan">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '14px' }}>
+          {/* Left: shield + label */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+              stroke={autonomyOn ? '#34d399' : '#fb7185'}
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              style={{ filter: autonomyOn ? 'drop-shadow(0 0 5px rgba(52,211,153,0.5))' : 'drop-shadow(0 0 5px rgba(251,113,133,0.5))' }}
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+            <span style={{ fontSize: '15px', fontWeight: 600, color: autonomyOn ? '#5fe0b4' : '#fb7185' }}>
+              {autonomyOn ? 'Autonomy enabled' : 'Autonomy disabled'}
+            </span>
+            {autonomyOn !== null && (
+              <StatusDot
+                color={autonomyOn ? '#34d399' : '#fb7185'}
+                size={8}
+                pulse={autonomyOn}
+                glow
               />
-              <span
-                className={`font-mono text-sm font-bold tracking-widest ${autonomyOn ? 'text-accent-cyan glow-cyan-text' : 'text-red-400'}`}
-              >
-                {autonomyOn ? 'AUTONOMY ENABLED' : 'AUTONOMY PAUSED (KILL SWITCH ON)'}
-              </span>
-              <span className={autonomyOn ? 'arc-dot' : 'arc-dot-err'} />
-            </div>
+            )}
+          </div>
 
-            {/* Toggle button */}
-            <div className="flex items-center gap-4">
+          {/* Right: action buttons */}
+          {status !== null && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               {autonomyOn ? (
                 <button
                   onClick={handleToggle}
                   disabled={toggling}
-                  className="glow-btn-gold px-4 py-2 text-xs tracking-widest disabled:opacity-40"
+                  style={{
+                    border: '1px solid rgba(251,191,36,0.4)',
+                    background: 'rgba(251,191,36,0.08)',
+                    color: '#fbbf24',
+                    padding: '9px 16px',
+                    borderRadius: '10px',
+                    fontWeight: 700,
+                    fontSize: '13px',
+                    cursor: toggling ? 'not-allowed' : 'pointer',
+                    opacity: toggling ? 0.5 : 1,
+                    fontFamily: 'inherit',
+                  }}
                 >
-                  {toggling ? 'PAUSING...' : 'PAUSE / KILL SWITCH'}
+                  {toggling ? 'Pausing...' : 'Pause / Kill Switch'}
                 </button>
               ) : (
-                <button
-                  onClick={handleToggle}
-                  disabled={toggling}
-                  className="glow-btn px-4 py-2 text-xs tracking-widest disabled:opacity-40"
-                  style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
-                >
-                  {toggling ? 'RESUMING...' : 'RESUME AUTONOMY'}
-                </button>
+                <PrimaryButton onClick={handleToggle} disabled={toggling}>
+                  {toggling ? 'Resuming...' : 'Resume Autonomy'}
+                </PrimaryButton>
               )}
-
-              {/* Scheduler dot */}
-              <div className="flex items-center gap-2">
-                <span className={status.scheduler_running ? 'arc-dot' : 'arc-dot-warn'} />
-                <span className="hud-label">
-                  SCHEDULER {status.scheduler_running ? 'RUNNING' : 'PAUSED'}
-                </span>
-              </div>
             </div>
-          </>
+          )}
+        </div>
+
+        {status && (
+          <div style={{ marginTop: '10px', fontSize: '12px', color: '#5d6982' }}>
+            Scheduler {status.scheduler_running ? 'running' : 'stopped'}
+          </div>
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Notify channel health                                                */}
+      {/* 2. Notify Channel / Deliveries                                       */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">NOTIFY CHANNEL</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
+      <Card accent="amber">
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Deliveries</Eyebrow>
         {status === null || !status.notify_channel ? (
-          <div className="hud-label opacity-40">NO NOTIFY CHANNEL DATA</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>No notify channel data</span>
         ) : (() => {
           const nc = status.notify_channel
           const broken = nc.enabled && !nc.secret_present
           const healthy = nc.enabled && nc.secret_present && (nc.dead_lettered_count ?? 0) === 0
+          const pendingCount = nc.pending_count ?? 0
+          const deadCount = nc.dead_lettered_count ?? 0
+          const oldestSec = nc.oldest_age_seconds ?? null
           return (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <span className={broken ? 'arc-dot-err' : healthy ? 'arc-dot' : 'arc-dot-warn'} />
-                <span
-                  className={`font-mono text-xs font-bold tracking-widest ${broken ? 'text-red-400' : healthy ? 'text-accent-cyan' : 'text-accent-orange'}`}
-                >
-                  {!nc.enabled ? 'NOTIFICATIONS DISABLED'
-                    : broken ? 'SECRET MISSING — ALERTS FAILING'
-                    : healthy ? 'HEALTHY'
-                    : 'DELIVERIES STUCK'}
-                </span>
-              </div>
-              {broken && (
-                <div className="font-mono text-xs text-red-400 pl-5">
-                  HERMES_WEBHOOK_SECRET is missing. Set it in Settings → Agent Bridge.
-                </div>
-              )}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+            <>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))',
+                gap: '14px',
+                marginBottom: '14px',
+              }}>
+                {/* Secret */}
                 <div>
-                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>SECRET</div>
-                  <div className={`font-mono text-sm ${nc.secret_present ? 'text-accent-cyan' : 'text-red-400'}`}>
-                    {nc.secret_present ? 'SET' : 'MISSING'}
+                  <div style={labelStyle}>Secret</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: nc.secret_present ? 'var(--accent)' : '#fb7185' }}>
+                    {nc.secret_present ? 'Set' : 'Missing'}
                   </div>
                 </div>
+                {/* Pending */}
                 <div>
-                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>PENDING</div>
-                  <div className="font-mono text-sm text-text-primary">{nc.pending_count ?? 0}</div>
-                </div>
-                <div>
-                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>DEAD-LETTERED</div>
-                  <div className={`font-mono text-sm ${(nc.dead_lettered_count ?? 0) > 0 ? 'text-red-400' : 'text-text-secondary'}`}>
-                    {nc.dead_lettered_count ?? 0}
+                  <div style={labelStyle}>Pending</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: pendingCount > 0 ? '#fbbf24' : '#e9eef8' }}>
+                    {pendingCount}
                   </div>
                 </div>
+                {/* Dead-lettered */}
                 <div>
-                  <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>OLDEST (S)</div>
-                  <div className="font-mono text-sm text-text-secondary">{nc.oldest_age_seconds ?? '—'}</div>
+                  <div style={labelStyle}>Dead-lettered</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: deadCount > 0 ? '#fb7185' : '#e9eef8' }}>
+                    {deadCount}
+                  </div>
+                </div>
+                {/* Oldest */}
+                <div>
+                  <div style={labelStyle}>Oldest (s)</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: (oldestSec != null && oldestSec > 10) ? '#fbbf24' : '#e9eef8' }}>
+                    {oldestSec ?? '—'}
+                  </div>
                 </div>
               </div>
-            </div>
+
+              {/* Status line */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <StatusDot
+                    color={broken ? '#fb7185' : healthy ? '#34d399' : '#fbbf24'}
+                    size={7}
+                    glow
+                  />
+                  <span style={{
+                    fontSize: '12px', fontWeight: 600,
+                    color: broken ? '#fb7185' : healthy ? '#5fe0b4' : '#f4d27a',
+                  }}>
+                    {!nc.enabled ? 'Notifications disabled'
+                      : broken ? 'Secret missing — alerts failing'
+                      : healthy ? 'Healthy'
+                      : 'Deliveries stuck'}
+                  </span>
+                </div>
+                {deadCount > 0 && (
+                  <button onClick={clearDeadLetters} disabled={clearing} style={{
+                    fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '7px',
+                    border: '1px solid rgba(251,113,133,0.35)', background: 'rgba(251,113,133,0.08)',
+                    color: '#fb7185', cursor: clearing ? 'not-allowed' : 'pointer', opacity: clearing ? 0.6 : 1,
+                  }}>
+                    {clearing ? 'Clearing…' : `Clear ${deadCount} stuck`}
+                  </button>
+                )}
+              </div>
+            </>
           )
         })()}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Live event feed (WebSocket)                                          */}
+      {/* 3. Live Activity                                                      */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3 flex items-center gap-3">
-        LIVE ACTIVITY
-        <span className={wsConnected ? 'arc-dot' : 'arc-dot-err'} />
-        <span className="font-mono text-xs text-text-secondary">
-          {wsConnected ? 'CONNECTED' : 'DISCONNECTED'}
-        </span>
-      </div>
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+          <Eyebrow>Live Activity</Eyebrow>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+            <StatusDot color={wsConnected ? '#34d399' : '#8a96ad'} size={7} glow={wsConnected} />
+            <span style={{ fontSize: '12px', color: wsConnected ? '#5fe0b4' : '#8a96ad' }}>
+              {wsConnected ? 'Connected' : 'Disconnected'}
+            </span>
+          </div>
+        </div>
 
-      <div className="hud-panel-sm p-4 mb-6">
         {events.length === 0 ? (
-          <div className="hud-label opacity-40">WAITING FOR ACTIVITY...</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Waiting for activity...</span>
         ) : (
-          <div className="space-y-1">
+          <div>
             {events.map((evt, idx) => (
-              <div
-                key={`${evt._t}-${idx}`}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5"
-                style={{ borderBottom: '1px solid rgba(0,212,255,0.06)' }}
-              >
+              <div key={`${evt._t}-${idx}`} style={rowStyle}>
                 {evt.type === 'action' ? (
                   <>
-                    <span
-                      className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${decisionColor(evt.decision)}`}
-                      style={{ border: '1px solid currentColor', opacity: 0.85, fontSize: '0.6rem' }}
-                    >
-                      {evt.decision}
+                    <Badge label={evt.decision || 'event'} t={tone(evt.decision)} />
+                    <span style={{ fontSize: '12px', color: '#8a96ad' }}>
+                      {[evt.actor, evt.kind].filter(Boolean).join(' / ')}
                     </span>
-                    <span className="font-mono text-xs text-accent-cyan uppercase">{evt.actor}</span>
-                    <span className="text-text-secondary text-xs">›</span>
-                    <span className="font-mono text-xs text-text-primary">{evt.kind}</span>
-                    {evt.target && (
-                      <span className="font-mono text-xs text-text-secondary truncate max-w-xs">{evt.target}</span>
-                    )}
-                    <span className="font-mono text-xs text-text-secondary ml-auto">
+                    <span style={{
+                      flex: 1, fontSize: '13px', color: '#dbe3f0',
+                      fontFamily: "'JetBrains Mono', monospace",
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {evt.target || ''}
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
                       {relativeTime(new Date(evt._t).toISOString())}
                     </span>
                   </>
                 ) : evt.type === 'autonomy' ? (
                   <>
-                    <span className={`font-mono text-xs font-bold tracking-widest ${evt.enabled ? 'text-accent-cyan' : 'text-red-400'}`}>
-                      AUTONOMY {evt.enabled ? 'ENABLED' : 'PAUSED'}
-                    </span>
-                    <span className="font-mono text-xs text-text-secondary ml-auto">
+                    <Badge label={evt.enabled ? 'autonomy on' : 'autonomy off'} t={tone(evt.enabled ? 'allowed' : 'denied')} />
+                    <span style={{ flex: 1 }} />
+                    <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
                       {relativeTime(new Date(evt._t).toISOString())}
                     </span>
                   </>
                 ) : (
-                  <span className="font-mono text-xs text-text-secondary">
+                  <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
                     {JSON.stringify(evt)}
                   </span>
                 )}
@@ -607,365 +707,366 @@ export default function Safety() {
             ))}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Pending confirmations                                                */}
+      {/* 4. Pending Confirmations (only if any)                               */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-orange pl-2 mb-3">PENDING CONFIRMATIONS</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
-        {pendingActions.length === 0 ? (
-          <div className="hud-label opacity-40">NO ACTIONS AWAITING CONFIRMATION</div>
-        ) : (
-          <div className="space-y-2">
+      {pendingActions?.length > 0 && (
+        <Card>
+          <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Pending Confirmations</Eyebrow>
+          <div>
             {pendingActions.map((a) => (
-              <div
-                key={a.id}
-                className="py-3"
-                style={{ borderBottom: '1px solid rgba(0,212,255,0.08)' }}
-              >
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2">
-                  {/* Risk chip */}
-                  <span
-                    className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${riskColor(a.risk)}`}
-                    style={{ border: '1px solid currentColor', opacity: 0.9, fontSize: '0.6rem' }}
-                  >
-                    {a.risk || 'RISK?'}
+              <div key={a.id} style={{ ...rowStyle, flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px', marginBottom: '8px' }}>
+                <Badge label={a.risk || 'risk?'} t={toneRisk(a.risk)} />
+                <span style={{ fontSize: '12px', color: '#8a96ad' }}>
+                  {[a.actor, a.kind].filter(Boolean).join(' / ')}
+                </span>
+                {a.target && (
+                  <span style={{
+                    flex: 1, fontSize: '13px', color: '#dbe3f0',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}>
+                    {a.target}
                   </span>
-                  {/* Actor */}
-                  <span className="font-mono text-xs text-accent-cyan uppercase">{a.actor}</span>
-                  <span className="text-text-secondary text-xs">›</span>
-                  {/* Kind */}
-                  <span className="font-mono text-xs text-text-primary">{a.kind}</span>
-                  {/* Target */}
-                  {a.target && (
-                    <span className="font-mono text-xs text-text-secondary truncate max-w-xs">{a.target}</span>
-                  )}
-                  <span className="font-mono text-xs text-text-secondary ml-auto">
-                    {relativeTime(a.created_at)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3 flex-wrap">
+                )}
+                <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                  {relativeTime(a.created_at)}
+                </span>
+                <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                   <button
                     onClick={() => handleConfirm(a.id)}
                     disabled={confirmingId === a.id}
-                    className="glow-btn-gold px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
+                    style={{
+                      border: '1px solid rgba(251,191,36,0.3)',
+                      background: 'rgba(251,191,36,0.06)',
+                      color: '#fbbf24',
+                      padding: '7px 14px',
+                      borderRadius: '8px',
+                      fontWeight: 700,
+                      fontSize: '12px',
+                      cursor: confirmingId === a.id ? 'not-allowed' : 'pointer',
+                      opacity: confirmingId === a.id ? 0.5 : 1,
+                      fontFamily: 'inherit',
+                    }}
                   >
-                    {confirmingId === a.id ? 'CONFIRMING...' : 'CONFIRM'}
+                    {confirmingId === a.id ? 'Confirming...' : 'Confirm'}
                   </button>
                   {confirmErrors[a.id] && (
-                    <span className="font-mono text-xs text-red-400">{confirmErrors[a.id]}</span>
+                    <span style={{ fontSize: '12px', color: '#fb7185' }}>{confirmErrors[a.id]}</span>
                   )}
                 </div>
               </div>
             ))}
           </div>
-        )}
-      </div>
+        </Card>
+      )}
 
       {/* ------------------------------------------------------------------ */}
-      {/* Goals                                                                */}
+      {/* 5. Goals                                                             */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-1">GOALS</div>
-      <div className="font-mono text-xs text-text-secondary mb-3 pl-3">
-        Approving a goal dispatches a task you authorized — autonomy stays off; nothing self-proposes.
-      </div>
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Goals</Eyebrow>
 
-      <div className="hud-panel-sm p-4 mb-6">
         {/* Propose form */}
-        <div className="mb-4 pb-4" style={{ borderBottom: '1px solid rgba(0,212,255,0.12)' }}>
-          <div className="hud-label mb-3">PROPOSE NEW GOAL</div>
-          <div className="space-y-2">
-            <div>
-              <label className="hud-label mb-1 block">TITLE</label>
-              <input
-                type="text"
-                value={proposeTitle}
-                onChange={e => { setProposeTitle(e.target.value); setProposeErr('') }}
-                placeholder="Short goal title"
-                className="hud-input w-full font-mono"
-              />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '4px' }}>
+          <div>
+            <label style={labelStyle}>Title</label>
+            <input
+              type="text"
+              value={proposeTitle}
+              onChange={e => { setProposeTitle(e.target.value); setProposeErr('') }}
+              placeholder="Short goal title"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Description</label>
+            <textarea
+              value={proposeDesc}
+              onChange={e => { setProposeDesc(e.target.value); setProposeErr('') }}
+              placeholder="Describe the goal in detail"
+              rows={3}
+              style={{ ...inputStyle, resize: 'vertical' }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 120px' }}>
+              <label style={labelStyle}>Risk</label>
+              <select value={proposeRisk} onChange={e => setProposeRisk(e.target.value)} style={selectStyle}>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
             </div>
-            <div>
-              <label className="hud-label mb-1 block">DESCRIPTION</label>
-              <textarea
-                value={proposeDesc}
-                onChange={e => { setProposeDesc(e.target.value); setProposeErr('') }}
-                placeholder="Describe the goal in detail"
-                rows={3}
-                className="hud-input w-full font-mono resize-y"
-              />
+            <div style={{ flex: '1 1 120px' }}>
+              <label style={labelStyle}>Category</label>
+              <select value={proposeCategory} onChange={e => setProposeCategory(e.target.value)} style={selectStyle}>
+                {categories.map(c => (
+                  <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                ))}
+              </select>
             </div>
-            <div className="flex gap-3 flex-wrap">
-              <div>
-                <label className="hud-label mb-1 block">RISK</label>
-                <select
-                  value={proposeRisk}
-                  onChange={e => setProposeRisk(e.target.value)}
-                  className="hud-input font-mono"
-                >
-                  <option value="low">LOW</option>
-                  <option value="medium">MEDIUM</option>
-                  <option value="high">HIGH</option>
-                </select>
-              </div>
-              <div>
-                <label className="hud-label mb-1 block">CATEGORY</label>
-                <select
-                  value={proposeCategory}
-                  onChange={e => setProposeCategory(e.target.value)}
-                  className="hud-input font-mono"
-                >
-                  {categories.map(c => (
-                    <option key={c} value={c}>{c.toUpperCase()}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="hud-label mb-1 block">CADENCE</label>
-                <select
-                  value={proposeCadence}
-                  onChange={e => setProposeCadence(e.target.value)}
-                  className="hud-input font-mono"
-                >
-                  <option value="">ONE-SHOT</option>
-                  <option value="daily">DAILY</option>
-                  <option value="weekly">WEEKLY</option>
-                  <option value="monthly">MONTHLY</option>
-                </select>
-              </div>
+            <div style={{ flex: '1 1 120px' }}>
+              <label style={labelStyle}>Cadence</label>
+              <select value={proposeCadence} onChange={e => setProposeCadence(e.target.value)} style={selectStyle}>
+                <option value="">One-shot</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
             </div>
-            <div>
-              <label className="hud-label mb-1 block">
-                SUCCESS CRITERIA <span className="text-text-secondary">(optional, for recurring goals)</span>
-              </label>
-              <input
-                type="text"
-                value={proposeSuccess}
-                onChange={e => setProposeSuccess(e.target.value)}
-                placeholder="A measurable check, e.g. 'Unraid usage < 85%'"
-                className="hud-input w-full font-mono"
-              />
-            </div>
-            <div className="flex items-center gap-3 flex-wrap pt-1">
-              <button
-                onClick={handlePropose}
-                disabled={proposing}
-                className="glow-btn px-4 py-2 text-xs tracking-widest disabled:opacity-40"
-                style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
-              >
-                {proposing ? 'PROPOSING...' : 'PROPOSE GOAL'}
-              </button>
-              {proposeErr && (
-                <span className="font-mono text-xs text-red-400">{proposeErr}</span>
-              )}
-            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>
+              Success criteria <span style={{ color: '#5d6982', textTransform: 'none', letterSpacing: 0 }}>(optional, for recurring goals)</span>
+            </label>
+            <input
+              type="text"
+              value={proposeSuccess}
+              onChange={e => setProposeSuccess(e.target.value)}
+              placeholder="A measurable check, e.g. 'Unraid usage < 85%'"
+              style={inputStyle}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <PrimaryButton onClick={handlePropose} disabled={proposing}>
+              {proposing ? 'Proposing...' : 'Propose goal'}
+            </PrimaryButton>
+            {proposeErr && (
+              <span style={{ fontSize: '12px', color: '#fb7185' }}>{proposeErr}</span>
+            )}
           </div>
         </div>
 
+        {/* Divider */}
+        <div style={{ height: '1px', background: 'rgba(120,160,220,0.10)', margin: '18px 0' }} />
+
         {/* Category filter */}
-        <div className="mb-3 flex items-center gap-2">
-          <label className="hud-label">FILTER BY CATEGORY:</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+          <span style={labelStyle}>Filter by category:</span>
           <select
             value={categoryFilter}
             onChange={e => setCategoryFilter(e.target.value)}
-            className="hud-input font-mono"
+            style={{ ...selectStyle, width: 'auto', padding: '7px 10px' }}
           >
-            <option value="all">ALL</option>
+            <option value="all">All</option>
             {categories.map(c => (
-              <option key={c} value={c}>{c.toUpperCase()}</option>
+              <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
             ))}
           </select>
         </div>
 
         {/* Goals list */}
         {goals.length === 0 ? (
-          <div className="hud-label opacity-40">NO GOALS YET</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>No goals yet.</span>
         ) : (
-          <div className="space-y-2">
+          <div>
             {goals.filter(g => categoryFilter === 'all' || g.category === categoryFilter).map((g) => (
               <div
                 key={g.id}
-                className="py-3"
-                style={{ borderBottom: '1px solid rgba(0,212,255,0.08)' }}
+                style={{
+                  background: 'rgba(255,255,255,0.022)',
+                  border: '1px solid rgba(120,160,220,0.08)',
+                  borderRadius: '12px',
+                  padding: '14px 16px',
+                  marginBottom: '8px',
+                }}
               >
-                <div className="flex flex-wrap items-start gap-x-2 gap-y-1 mb-2">
-                  {/* Status chip */}
-                  <span
-                    className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${goalStatusColor(g.status)}`}
-                    style={{ border: '1px solid currentColor', opacity: 0.9, fontSize: '0.6rem' }}
-                  >
-                    {g.status}
-                  </span>
-                  {/* Risk chip */}
-                  <span
-                    className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${riskColor(g.risk)}`}
-                    style={{ border: '1px solid currentColor', opacity: 0.85, fontSize: '0.6rem' }}
-                  >
-                    {g.risk || 'MEDIUM'}
-                  </span>
-                  {/* Category chip */}
+                {/* Badges row */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                  <Badge label={g.status} t={toneStatus(g.status)} />
+                  <Badge label={g.risk || 'medium'} t={toneRisk(g.risk)} />
                   {g.category && (
-                    <span
-                      className="font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded text-accent-cyan"
-                      style={{ border: '1px solid rgba(0,212,255,0.45)', opacity: 0.8, fontSize: '0.6rem' }}
-                    >
-                      {g.category}
-                    </span>
+                    <Badge label={g.category} t={{ c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.30)' }} />
                   )}
-                  {/* Disabled badge */}
                   {g.disabled && (
-                    <span
-                      className="font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded text-accent-orange"
-                      style={{ border: '1px solid rgba(255,149,0,0.5)', opacity: 0.9, fontSize: '0.6rem' }}
-                    >
-                      DISABLED
-                    </span>
+                    <Badge label="Disabled" t={{ c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }} />
                   )}
-                  {/* Title */}
-                  <span className={`font-mono text-xs flex-1 min-w-0 ${g.disabled ? 'text-text-secondary line-through' : 'text-text-primary'}`}>{g.title}</span>
-                  {/* Time */}
-                  <span className="font-mono text-xs text-text-secondary">
+                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982' }}>
                     {relativeTime(g.created_at)}
                   </span>
                 </div>
 
+                {/* Title */}
+                <div style={{
+                  fontSize: '14px', fontWeight: 600, color: '#dbe3f0',
+                  marginTop: '6px',
+                  textDecoration: g.disabled ? 'line-through' : 'none',
+                  opacity: g.disabled ? 0.6 : 1,
+                }}>
+                  {g.title}
+                </div>
+
                 {/* Running: show task_id */}
                 {(g.status === 'running' || g.status === 'approved') && g.task_id && (
-                  <div className="font-mono text-xs text-accent-orange mb-2">
-                    TASK #{g.task_id}
+                  <div style={{ fontSize: '12px', color: '#2fd4ee', marginTop: '4px', fontFamily: "'JetBrains Mono', monospace" }}>
+                    task #{g.task_id}
                   </div>
                 )}
 
-                {/* Failed: explain WHY (verify_rejected reason etc.) */}
+                {/* Failed: reason */}
                 {g.status === 'failed' && g.rejection_reason && (
-                  <div className="font-mono text-xs text-red-400 mb-2 opacity-90">
+                  <div style={{ fontSize: '12px', color: '#fb7185', marginTop: '4px' }}>
                     {g.rejection_reason}
                   </div>
                 )}
 
-                {/* Inline edit form (proposed goals only) */}
+                {/* Inline edit form */}
                 {editingGoalId === g.id ? (
-                  <div className="space-y-2 mb-2 p-3 rounded" style={{ border: '1px solid rgba(0,212,255,0.2)' }}>
+                  <div style={{
+                    marginTop: '12px', padding: '14px',
+                    borderRadius: '10px', border: '1px solid rgba(120,160,220,0.20)',
+                    display: 'flex', flexDirection: 'column', gap: '10px',
+                  }}>
                     <div>
-                      <label className="hud-label mb-1 block">TITLE</label>
+                      <label style={labelStyle}>Title</label>
                       <input
                         type="text"
                         value={editFields.title}
                         onChange={e => setEditFields(f => ({ ...f, title: e.target.value }))}
-                        className="hud-input w-full font-mono"
+                        style={inputStyle}
                       />
                     </div>
                     <div>
-                      <label className="hud-label mb-1 block">DESCRIPTION</label>
+                      <label style={labelStyle}>Description</label>
                       <textarea
                         value={editFields.description}
                         onChange={e => setEditFields(f => ({ ...f, description: e.target.value }))}
                         rows={3}
-                        className="hud-input w-full font-mono resize-y"
+                        style={{ ...inputStyle, resize: 'vertical' }}
                       />
                     </div>
-                    <div className="flex gap-3 flex-wrap">
-                      <div>
-                        <label className="hud-label mb-1 block">RISK</label>
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                      <div style={{ flex: '1 1 120px' }}>
+                        <label style={labelStyle}>Risk</label>
                         <select
                           value={editFields.risk}
                           onChange={e => setEditFields(f => ({ ...f, risk: e.target.value }))}
-                          className="hud-input font-mono"
+                          style={selectStyle}
                         >
-                          <option value="low">LOW</option>
-                          <option value="medium">MEDIUM</option>
-                          <option value="high">HIGH</option>
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
                         </select>
                       </div>
-                      <div>
-                        <label className="hud-label mb-1 block">CATEGORY</label>
+                      <div style={{ flex: '1 1 120px' }}>
+                        <label style={labelStyle}>Category</label>
                         <select
                           value={editFields.category}
                           onChange={e => setEditFields(f => ({ ...f, category: e.target.value }))}
-                          className="hud-input font-mono"
+                          style={selectStyle}
                         >
                           {categories.map(c => (
-                            <option key={c} value={c}>{c.toUpperCase()}</option>
+                            <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
                           ))}
                         </select>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3 flex-wrap pt-1">
-                      <button
-                        onClick={() => handleSaveEdit(g.id)}
-                        disabled={goalActingId === g.id}
-                        className="glow-btn px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
-                        style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
-                      >
-                        {goalActingId === g.id ? 'SAVING...' : 'SAVE'}
-                      </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                      <PrimaryButton onClick={() => handleSaveEdit(g.id)} disabled={goalActingId === g.id}>
+                        {goalActingId === g.id ? 'Saving...' : 'Save'}
+                      </PrimaryButton>
                       <button
                         onClick={handleCancelEdit}
-                        className="font-mono text-xs text-text-secondary px-3 py-1.5 rounded"
-                        style={{ border: '1px solid rgba(255,255,255,0.12)' }}
+                        style={{
+                          border: '1px solid rgba(120,160,220,0.20)',
+                          background: 'transparent',
+                          color: '#8a96ad',
+                          padding: '7px 14px',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          cursor: 'pointer',
+                          fontFamily: 'inherit',
+                        }}
                       >
-                        CANCEL
+                        Cancel
                       </button>
                       {goalErrors[g.id] && (
-                        <span className="font-mono text-xs text-red-400">{goalErrors[g.id]}</span>
+                        <span style={{ fontSize: '12px', color: '#fb7185' }}>{goalErrors[g.id]}</span>
                       )}
                     </div>
                   </div>
                 ) : (
-                  /* Action row — approve/reject/edit for proposed, delete always */
-                  <div className="flex items-center gap-3 flex-wrap">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '10px' }}>
                     {g.status === 'proposed' && (
                       <>
-                        <button
-                          onClick={() => handleGoalApprove(g.id)}
-                          disabled={goalActingId === g.id}
-                          className="glow-btn px-4 py-1.5 text-xs tracking-widest disabled:opacity-40"
-                          style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
-                        >
-                          {goalActingId === g.id ? 'APPROVING...' : 'APPROVE'}
-                        </button>
+                        <PrimaryButton onClick={() => handleGoalApprove(g.id)} disabled={goalActingId === g.id}>
+                          {goalActingId === g.id ? 'Approving...' : 'Approve'}
+                        </PrimaryButton>
                         <button
                           onClick={() => handleGoalReject(g.id)}
                           disabled={goalActingId === g.id}
-                          className="font-mono text-xs text-text-secondary px-3 py-1.5 rounded disabled:opacity-40"
-                          style={{ border: '1px solid rgba(255,255,255,0.12)' }}
+                          style={{
+                            border: '1px solid rgba(120,160,220,0.20)',
+                            background: 'transparent',
+                            color: '#8a96ad',
+                            padding: '7px 14px',
+                            borderRadius: '8px',
+                            fontSize: '13px',
+                            cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
+                            opacity: goalActingId === g.id ? 0.5 : 1,
+                            fontFamily: 'inherit',
+                          }}
                         >
-                          {goalActingId === g.id ? 'REJECTING...' : 'REJECT'}
+                          {goalActingId === g.id ? 'Rejecting...' : 'Reject'}
                         </button>
                       </>
                     )}
-                    {/* EDIT available on any goal (editing an already-run goal
-                        changes the stored text only — it does not re-run it). */}
                     <button
                       onClick={() => handleStartEdit(g)}
                       disabled={goalActingId === g.id}
-                      className="font-mono text-xs text-accent-cyan px-3 py-1.5 rounded disabled:opacity-40"
-                      style={{ border: '1px solid rgba(0,212,255,0.3)' }}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--accent)',
+                        padding: '7px 12px',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
+                        opacity: goalActingId === g.id ? 0.5 : 1,
+                        fontFamily: 'inherit',
+                      }}
                     >
-                      EDIT
+                      Edit
                     </button>
-                    {/* DISABLE / ENABLE — pause a goal without deleting it (gates
-                        future recurring runs; re-enable to resume). */}
                     <button
                       onClick={() => handleGoalToggleDisabled(g)}
                       disabled={goalActingId === g.id}
-                      className="font-mono text-xs text-accent-orange px-3 py-1.5 rounded disabled:opacity-40"
-                      style={{ border: '1px solid rgba(255,149,0,0.35)' }}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: '#8a96ad',
+                        padding: '7px 12px',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
+                        opacity: goalActingId === g.id ? 0.5 : 1,
+                        fontFamily: 'inherit',
+                      }}
                     >
-                      {goalActingId === g.id ? '...' : (g.disabled ? 'ENABLE' : 'DISABLE')}
+                      {goalActingId === g.id ? '...' : (g.disabled ? 'Enable' : 'Disable')}
                     </button>
                     <button
                       onClick={() => handleGoalDelete(g.id)}
                       disabled={goalActingId === g.id}
-                      className="font-mono text-xs text-red-400 px-3 py-1.5 rounded disabled:opacity-40"
-                      style={{ border: '1px solid rgba(255,45,45,0.3)' }}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: '#fb7185',
+                        padding: '7px 12px',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
+                        opacity: goalActingId === g.id ? 0.5 : 1,
+                        fontFamily: 'inherit',
+                      }}
                     >
-                      {goalActingId === g.id ? '...' : 'DELETE'}
+                      {goalActingId === g.id ? '...' : 'Delete'}
                     </button>
                     {goalErrors[g.id] && (
-                      <span className="font-mono text-xs text-red-400">{goalErrors[g.id]}</span>
+                      <span style={{ fontSize: '12px', color: '#fb7185' }}>{goalErrors[g.id]}</span>
                     )}
                   </div>
                 )}
@@ -973,256 +1074,244 @@ export default function Safety() {
             ))}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Metering health                                                      */}
+      {/* 6. Verifications                                                     */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">METERING HEALTH</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
-        {metering === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Recent Verdicts</Eyebrow>
+        {outcomes === null ? (
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+        ) : outcomes.length === 0 ? (
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>No verdicts yet.</span>
         ) : (
-          <div className="space-y-3">
-            {/* Prices verified badge */}
-            <div className="flex items-center gap-2">
-              <span className={metering.prices_verified ? 'arc-dot' : 'arc-dot-warn'} />
-              <span
-                className={`font-mono text-xs font-bold tracking-widest ${metering.prices_verified ? 'text-accent-cyan' : 'text-accent-orange'}`}
+          <div>
+            {outcomes.map((o) => (
+              <div
+                key={o.id}
+                style={{
+                  display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px',
+                  padding: '12px 14px', borderRadius: '11px',
+                  background: 'rgba(255,255,255,0.022)',
+                  border: '1px solid rgba(120,160,220,0.08)',
+                  marginBottom: '6px',
+                }}
               >
-                {metering.prices_verified ? 'PRICES VERIFIED' : 'PRICES UNVERIFIED'}
+                {/* Row 1 */}
+                <Badge label={o.verdict || 'unknown'} t={tone(o.verdict)} />
+                <span style={{ fontSize: '13px', color: '#8a96ad' }}>
+                  {Math.round((o.confidence ?? 0) * 100)}%
+                </span>
+                {o.grounded && (
+                  <Badge label="Grounded" t={{ c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.32)' }} />
+                )}
+                <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
+                  task #{o.task_id}
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982' }}>
+                  {relativeTime(o.created_at)}
+                </span>
+                {/* Row 2 */}
+                {o.reason && (
+                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55 }}>
+                    {o.reason}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* 7. Metering Health                                                   */}
+      {/* ------------------------------------------------------------------ */}
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Metering Health</Eyebrow>
+        {metering === null ? (
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            {/* Prices verified status */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <StatusDot
+                color={metering.prices_verified ? '#34d399' : '#fbbf24'}
+                size={7}
+                glow
+              />
+              <span style={{
+                fontSize: '13px', fontWeight: 600,
+                color: metering.prices_verified ? '#5fe0b4' : '#f4d27a',
+              }}>
+                {metering.prices_verified ? 'Prices verified' : 'Prices unverified — cost caps may be inaccurate'}
               </span>
             </div>
-            {!metering.prices_verified && (
-              <div className="font-mono text-xs text-text-secondary pl-5">
-                Cost caps may be inaccurate until verified.
-              </div>
-            )}
 
             {/* Today stats */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '14px' }}>
               <div>
-                <div className="hud-label mb-1">TODAY SPEND</div>
-                <div className="font-mono text-sm text-accent-cyan">{fmtUsd(metering.today_spend_usd)}</div>
+                <div style={labelStyle}>Today spend</div>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--accent)' }}>
+                  {fmtUsd(metering.today_spend_usd)}
+                </div>
               </div>
               <div>
-                <div className="hud-label mb-1">ROWS TODAY</div>
-                <div className="font-mono text-sm text-text-primary">{metering.today_row_count ?? 0}</div>
+                <div style={labelStyle}>Rows today</div>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: '#e9eef8' }}>
+                  {metering.today_row_count ?? 0}
+                </div>
               </div>
             </div>
 
             {/* Counters */}
             {metering.counters && (
-              <div className="pt-1">
-                <div className="hud-label mb-2">SPEND LOG COUNTERS</div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <Eyebrow style={{ display: 'block', marginBottom: '10px' }}>Spend log counters</Eyebrow>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '14px' }}>
                   <div>
-                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>RECORDED</div>
-                    <div className="font-mono text-sm text-accent-cyan">{metering.counters.recorded ?? 0}</div>
+                    <div style={labelStyle}>Recorded</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#5fe0b4' }}>
+                      {metering.counters.recorded ?? 0}
+                    </div>
                   </div>
                   <div>
-                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>SKIPPED (NO USAGE)</div>
-                    <div className="font-mono text-sm text-text-secondary">{metering.counters.skipped_no_usage ?? 0}</div>
+                    <div style={labelStyle}>Skipped (no usage)</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#8a96ad' }}>
+                      {metering.counters.skipped_no_usage ?? 0}
+                    </div>
                   </div>
                   <div>
-                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>SKIPPED (UNPARSEABLE)</div>
-                    <div className="font-mono text-sm text-accent-orange">{metering.counters.skipped_unparseable ?? 0}</div>
+                    <div style={labelStyle}>Skipped (unparseable)</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#f4d27a' }}>
+                      {metering.counters.skipped_unparseable ?? 0}
+                    </div>
                   </div>
                   <div>
-                    <div className="hud-label mb-1" style={{ fontSize: '0.6rem' }}>FAILED</div>
-                    <div className="font-mono text-sm text-red-400">{metering.counters.failed ?? 0}</div>
+                    <div style={labelStyle}>Failed</div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#fb7185' }}>
+                      {metering.counters.failed ?? 0}
+                    </div>
                   </div>
                 </div>
               </div>
             )}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Spend meter                                                          */}
+      {/* 8. Today's Spend                                                     */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">TODAY&apos;S SPEND</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '10px' }}>Today's Spend</Eyebrow>
         {status === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
         ) : (
           <SpendBar spend={status.today_spend_usd ?? 0} budget={status.daily_budget_usd ?? 25} />
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Budget caps editor                                                   */}
+      {/* 9. Budget Caps Editor                                                */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">BUDGET CAPS</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Budget Caps</Eyebrow>
         {status === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
         ) : (
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
               <div>
-                <label className="hud-label mb-1 block">DAILY LIMIT (USD)</label>
+                <label style={labelStyle}>Daily limit (USD)</label>
                 <input
                   type="number"
                   step="0.01"
                   min="0.01"
                   value={dailyInput}
                   onChange={e => { setDailyInput(e.target.value); setBudgetSaved(false); setBudgetErr('') }}
-                  className="hud-input w-full font-mono"
+                  style={inputStyle}
                 />
               </div>
               <div>
-                <label className="hud-label mb-1 block">PER-TASK LIMIT (USD)</label>
+                <label style={labelStyle}>Per-task limit (USD)</label>
                 <input
                   type="number"
                   step="0.01"
                   min="0.01"
                   value={perTaskInput}
                   onChange={e => { setPerTaskInput(e.target.value); setBudgetSaved(false); setBudgetErr('') }}
-                  className="hud-input w-full font-mono"
+                  style={inputStyle}
                 />
               </div>
             </div>
-
-            <div className="flex items-center gap-3">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
               <button
                 onClick={handleSaveBudget}
-                className="glow-btn-gold px-4 py-2 text-xs tracking-widest"
+                style={{
+                  border: '1px solid rgba(251,191,36,0.4)',
+                  background: 'rgba(251,191,36,0.08)',
+                  color: '#fbbf24',
+                  padding: '9px 16px',
+                  borderRadius: '10px',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
               >
-                SAVE CAPS
+                Save caps
               </button>
               {budgetSaved && (
-                <div className="flex items-center gap-1.5">
-                  <span className="arc-dot" />
-                  <span className="text-accent-cyan text-xs font-mono">SAVED</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <StatusDot color="#34d399" size={7} glow />
+                  <span style={{ fontSize: '13px', color: '#5fe0b4' }}>Saved</span>
                 </div>
               )}
               {budgetErr && (
-                <span className="text-red-400 text-xs font-mono">{budgetErr}</span>
+                <span style={{ fontSize: '13px', color: '#fb7185' }}>{budgetErr}</span>
               )}
             </div>
           </div>
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Recent verdicts                                                      */}
+      {/* 10. Recent Actions                                                   */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">RECENT VERDICTS</div>
-
-      <div className="hud-panel-sm p-4 mb-6">
-        {outcomes === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
-        ) : outcomes.length === 0 ? (
-          <div className="hud-label opacity-40">NO VERDICTS YET</div>
-        ) : (
-          <div className="space-y-2">
-            {outcomes.map((o) => (
-              <div
-                key={o.id}
-                className="flex flex-wrap items-start gap-x-3 gap-y-1 py-2"
-                style={{ borderBottom: '1px solid rgba(0,212,255,0.08)' }}
-              >
-                {/* Verdict chip */}
-                <span
-                  className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ${verdictColor(o.verdict)}`}
-                  style={{ border: `1px solid currentColor`, opacity: 0.9 }}
-                >
-                  {o.verdict}
-                </span>
-
-                {/* Confidence */}
-                <span className="font-mono text-xs text-text-secondary">
-                  {Math.round((o.confidence ?? 0) * 100)}%
-                </span>
-
-                {/* Grounded badge */}
-                {o.grounded && (
-                  <span
-                    className="font-mono text-xs text-accent-cyan px-1.5 py-0.5 rounded"
-                    style={{ border: '1px solid rgba(0,212,255,0.4)', fontSize: '0.6rem' }}
-                  >
-                    GROUNDED
-                  </span>
-                )}
-
-                {/* Task ref */}
-                <span className="font-mono text-xs text-text-secondary">
-                  task #{o.task_id}
-                </span>
-
-                {/* Timestamp */}
-                <span className="font-mono text-xs text-text-secondary ml-auto">
-                  {relativeTime(o.created_at)}
-                </span>
-
-                {/* Reason — full width second line */}
-                <div className="w-full font-mono text-xs text-text-primary opacity-80 pl-0.5 mt-0.5">
-                  {o.reason}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ------------------------------------------------------------------ */}
-      {/* Recent actions                                                       */}
-      {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">RECENT ACTIONS</div>
-
-      <div className="hud-panel-sm p-4">
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Recent Actions</Eyebrow>
         {actions === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
         ) : actions.length === 0 ? (
-          <div className="hud-label opacity-40">NO ACTIONS LOGGED YET</div>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>No actions logged yet.</span>
         ) : (
-          <div className="space-y-1">
+          <div>
             {actions.map((a) => (
-              <div
-                key={a.id}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5"
-                style={{ borderBottom: '1px solid rgba(0,212,255,0.06)' }}
-              >
-                {/* Actor */}
-                <span className="font-mono text-xs text-accent-cyan uppercase tracking-wide">
-                  {a.actor}
+              <div key={a.id} style={rowStyle}>
+                <Badge label={a.decision || 'unknown'} t={tone(a.decision)} />
+                <span style={{ fontSize: '12px', color: '#8a96ad' }}>
+                  {[a.actor, a.kind].filter(Boolean).join(' / ')}
                 </span>
-                <span className="text-text-secondary text-xs">›</span>
-
-                {/* Kind */}
-                <span className="font-mono text-xs text-text-primary">
-                  {a.kind}
-                </span>
-
-                {/* Target */}
                 {a.target && (
-                  <span className="font-mono text-xs text-text-secondary truncate max-w-xs">
+                  <span style={{
+                    flex: 1, fontSize: '13px', color: '#dbe3f0',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
                     {a.target}
                   </span>
                 )}
-
-                {/* Decision chip */}
-                <span
-                  className={`font-mono text-xs font-bold uppercase tracking-widest px-2 py-0.5 rounded ml-auto ${decisionColor(a.decision)}`}
-                  style={{ border: '1px solid currentColor', opacity: 0.85, fontSize: '0.6rem' }}
-                >
-                  {a.decision}
-                </span>
-
-                {/* Timestamp */}
-                <span className="font-mono text-xs text-text-secondary">
+                {!a.target && <span style={{ flex: 1 }} />}
+                <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
                   {relativeTime(a.created_at)}
                 </span>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </Card>
+
     </div>
   )
 }

@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import SecretField from '../components/SecretField'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import ScreenHeader from '../components/ScreenHeader'
+import PrimaryButton from '../components/PrimaryButton'
+import GhostButton from '../components/GhostButton'
+import TextInput from '../components/TextInput'
 import { api } from '../lib/api'
 
 function BrowserApiKey() {
@@ -20,7 +26,6 @@ function BrowserApiKey() {
     try {
       await navigator.clipboard.writeText(link)
     } catch {
-      // Fallback for browsers/contexts without the async clipboard API
       const ta = document.createElement('textarea')
       ta.value = link
       document.body.appendChild(ta)
@@ -33,54 +38,56 @@ function BrowserApiKey() {
   }
 
   return (
-    <div className="hud-panel p-4" style={{ boxShadow: '0 0 12px rgba(0,212,255,0.25), inset 0 0 20px rgba(0,212,255,0.04)' }}>
-      <h2 className="hud-label mb-1">Browser Authentication</h2>
-      <p className="text-text-secondary text-xs mb-3">
+    <Card>
+      <Eyebrow style={{ marginBottom: '12px', display: 'block' }}>Browser Authentication</Eyebrow>
+      <p style={{ fontSize: '12px', color: '#8a96ad', marginBottom: '12px', margin: '0 0 12px 0' }}>
         Stored in this browser only (localStorage). Required before any other settings will load.
       </p>
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <input
+
+      {/* Input row */}
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: '1 1 280px' }}>
+          <TextInput
             type={visible ? 'text' : 'password'}
             value={value}
             onChange={e => { setValue(e.target.value); setSaved(false) }}
             placeholder="Paste your NEXUS API key..."
-            className="hud-input w-full pr-8"
+            style={{
+              width: '100%',
+              paddingRight: '40px',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '13px',
+              boxSizing: 'border-box',
+            }}
           />
           <button
             type="button"
             onClick={() => setVisible(v => !v)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-accent-cyan"
+            style={{
+              position: 'absolute', right: '11px', top: '50%', transform: 'translateY(-50%)',
+              background: 'none', border: 'none', cursor: 'pointer', color: '#8a96ad',
+              display: 'flex', alignItems: 'center',
+            }}
             title={visible ? 'Hide' : 'Show'}
           >
             {visible ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
         </div>
-        <button
-          onClick={save}
-          disabled={!value.trim()}
-          className="glow-btn disabled:opacity-40"
-        >
-          Save
-        </button>
+
+        <PrimaryButton onClick={save} disabled={!value.trim()}>
+          {saved ? 'Saved...' : 'Save'}
+        </PrimaryButton>
       </div>
-      {saved && (
-        <div className="flex items-center gap-2 mt-2">
-          <span className="arc-dot" />
-          <span className="text-accent-green text-xs">Saved. Reloading...</span>
-        </div>
-      )}
+
+      {/* Copy setup link */}
       {value.trim() && (
-        <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(0,212,255,0.12)' }}>
-          <p className="text-text-secondary text-xs mb-2">
-            Add another device (phone/tablet): copy this one-time setup link, open it on that device, and it auto-configures.
-          </p>
-          <button onClick={copySetupLink} className="glow-btn text-xs px-3 py-1.5">
-            {linkCopied ? 'LINK COPIED ✓' : 'COPY DEVICE SETUP LINK'}
-          </button>
+        <div style={{ marginTop: '8px' }}>
+          <GhostButton onClick={copySetupLink}>
+            {linkCopied ? 'Link copied' : 'Copy device setup link'}
+          </GhostButton>
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -139,30 +146,47 @@ export default function Settings() {
   const notifyBroken = notifyChannel?.enabled === true && notifyChannel?.secret_present === false
 
   return (
-    <div className="p-4 md:p-6 max-w-2xl">
-      <h1 className="page-header mb-6">SYSTEM CONFIGURATION</h1>
-      <div className="space-y-6">
-        {notifyBroken && (
-          <div className="rounded p-3 text-sm" style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.5)', color: '#ef4444' }}>
-            Phone notifications are enabled but <span className="font-mono">HERMES_WEBHOOK_SECRET</span> is missing — every alert is silently failing. Set it in the Agent Bridge section below.
-          </div>
-        )}
-        <BrowserApiKey />
-        {SECTIONS.map(section => (
-          <div key={section.title} className="hud-panel p-4">
-            <h2 className="hud-label mb-3">{section.title}</h2>
-            {section.secrets.map(s => (
-              <SecretField
-                key={s.key}
-                secretKey={s.key}
-                label={s.label}
-                lastSet={meta[s.key]?.last_set}
-                missing={s.key === 'HERMES_WEBHOOK_SECRET' && notifyBroken}
-              />
-            ))}
-          </div>
-        ))}
-      </div>
+    <div style={{
+      width: '100%',
+      maxWidth: '1000px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader section="Settings" title="System Configuration" />
+
+      {/* Notification broken banner */}
+      {notifyBroken && (
+        <Card style={{
+          border: '1px solid rgba(251,113,133,0.3)',
+          background: 'rgba(251,113,133,0.05)',
+        }}>
+          <p style={{ margin: 0, fontSize: '13px', color: '#fb7185', lineHeight: '1.5' }}>
+            Phone notifications are enabled but{' '}
+            <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>HERMES_WEBHOOK_SECRET</span>
+            {' '}is missing — every alert is silently failing. Set it in the Agent Bridge section below.
+          </p>
+        </Card>
+      )}
+
+      <BrowserApiKey />
+
+      {SECTIONS.map(section => (
+        <Card key={section.title}>
+          <Eyebrow style={{ marginBottom: '14px', display: 'block' }}>{section.title}</Eyebrow>
+          {section.secrets.map(f => (
+            <SecretField
+              key={f.key}
+              secretKey={f.key}
+              label={f.label}
+              lastSet={meta[f.key]?.last_set}
+              missing={f.key === 'HERMES_WEBHOOK_SECRET' && notifyBroken}
+            />
+          ))}
+        </Card>
+      ))}
     </div>
   )
 }

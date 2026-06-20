@@ -1,10 +1,14 @@
 import { useState } from 'react'
 import { Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react'
 import { api } from '../lib/api'
+import TextInput from './TextInput'
+import PrimaryButton from './PrimaryButton'
+import GhostButton from './GhostButton'
+
 export default function SecretField({ secretKey, label, lastSet, missing = false }) {
   const [visible, setVisible] = useState(false)
   const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState('')
+  const [inputVal, setInputVal] = useState('')
   const [testResult, setTestResult] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -16,59 +20,111 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
     } catch { setTestResult({ ok: false, error: 'Request failed' }) }
     setLoading(false)
   }
+
   const save = async () => {
-    if (!value) return
-    await api.secrets.set(secretKey, value)
+    if (!inputVal) return
+    await api.secrets.set(secretKey, inputVal)
     setEditing(false)
-    setValue('')
+    setInputVal('')
   }
 
+  const cancel = () => {
+    setEditing(false)
+    setInputVal('')
+  }
+
+  const lastSetDisplay = lastSet
+    ? `Last set: ${new Date(lastSet.endsWith('Z') ? lastSet : lastSet + 'Z').toLocaleDateString()}`
+    : null
+
   return (
-    <div className="flex items-center gap-3 py-2 border-b border-border-dark last:border-0">
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-text-primary text-sm">{label}</span>
-          {missing && (
-            <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.4)' }}>
-              MISSING — required
-            </span>
-          )}
-        </div>
-        {lastSet && <div className="text-text-secondary text-xs font-mono">Last set: {new Date(lastSet.endsWith('Z') ? lastSet : lastSet + 'Z').toLocaleDateString()}</div>}
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '12px',
+      flexWrap: 'wrap',
+      padding: '13px 0',
+      borderBottom: '1px solid rgba(120,160,220,0.07)',
+    }}>
+      {/* Left: label + last set */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0' }}>{label}</div>
+        {lastSetDisplay
+          ? <div style={{ fontSize: '11px', color: '#5d6982', marginTop: '2px' }}>{lastSetDisplay}</div>
+          : <div style={{ fontSize: '11px', color: '#f4d27a', marginTop: '2px' }}>Not set</div>
+        }
       </div>
+
+      {/* Right: view or edit cluster */}
       {editing ? (
-        <div className="flex gap-2 items-center">
-          <div className="relative">
-            <input
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative' }}>
+            <TextInput
               type={visible ? 'text' : 'password'}
-              value={value}
-              onChange={e => setValue(e.target.value)}
-              className="hud-input w-48 pr-8"
+              value={inputVal}
+              onChange={e => setInputVal(e.target.value)}
               placeholder="New value..."
+              style={{ width: '200px', paddingRight: '36px', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace" }}
             />
             <button
               type="button"
               onClick={() => setVisible(v => !v)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary hover:text-accent-cyan"
+              style={{
+                position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer', color: '#8a96ad',
+                display: 'flex', alignItems: 'center',
+              }}
               title={visible ? 'Hide' : 'Show'}
             >
               {visible ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           </div>
-          <button onClick={save} className="glow-btn text-xs px-2 py-1">Save</button>
-          <button onClick={() => setEditing(false)} className="hud-label hover:text-text-primary">Cancel</button>
-        </div>
-      ) : (
-        <div className="flex gap-2 items-center">
-          <span className="font-mono text-text-secondary text-sm tracking-widest">••••••••</span>
-          <button onClick={() => setEditing(true)} className="text-accent-cyan text-xs glow-on-hover">Edit</button>
-          <button onClick={test} disabled={loading} className="text-text-secondary text-xs hover:text-text-primary">
-            {loading ? '...' : 'Test'}
-          </button>
+          <PrimaryButton onClick={save} disabled={!inputVal} style={{ padding: '7px 14px', fontSize: '12px' }}>Save</PrimaryButton>
+          <GhostButton onClick={cancel} style={{ padding: '7px 12px', fontSize: '12px' }}>Cancel</GhostButton>
           {testResult && (
             testResult.ok
-              ? <CheckCircle size={14} className="text-accent-green" />
-              : <span title={testResult.error}><XCircle size={14} className="text-accent-red" /></span>
+              ? <CheckCircle size={14} color="#5fe0b4" />
+              : <span title={testResult.error}><XCircle size={14} color="#fb7185" /></span>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: 'none' }}>
+          {/* Masked value or MISSING badge */}
+          {missing ? (
+            <span style={{
+              fontSize: '10px', fontWeight: 700, color: '#fb7185',
+              background: 'rgba(251,113,133,0.1)', border: '1px solid rgba(251,113,133,0.3)',
+              padding: '2px 7px', borderRadius: '5px',
+            }}>MISSING</span>
+          ) : (
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              color: '#465069',
+              letterSpacing: '2px',
+              fontSize: '13px',
+            }}>••••••••</span>
+          )}
+
+          <button
+            onClick={() => setEditing(true)}
+            style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            Edit
+          </button>
+
+          <button
+            onClick={test}
+            disabled={loading}
+            style={{ fontSize: '12px', color: '#8a96ad', background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            {loading ? '...' : 'Test'}
+          </button>
+
+          {testResult && (
+            testResult.ok
+              ? <CheckCircle size={14} color="#5fe0b4" />
+              : <span title={testResult.error}><XCircle size={14} color="#fb7185" /></span>
           )}
         </div>
       )}

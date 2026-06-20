@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../lib/api'
-import TrendChart from '../components/TrendChart'
+import AreaChart from '../components/AreaChart'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import StatusDot from '../components/StatusDot'
+import ScreenHeader from '../components/ScreenHeader'
 
 export default function Uptime() {
   const [summary, setSummary] = useState(null)
@@ -28,100 +32,106 @@ export default function Uptime() {
     }
   }, [load])
 
-  const sources = summary?.sources ?? null
-  const speedData = speedtest?.data ?? null
-  const latest = speedtest?.latest ?? null
-
-  // Map speedtest history for TrendChart
-  const downloadChartData = speedData
-    ? speedData.map(d => ({ timestamp: d.timestamp, value: d.download_mbps }))
-    : []
+  // Map speedtest history for AreaChart
+  const downloadChartData = speedtest?.history?.map(h => ({ value: h.download_mbps })) || []
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl">
-      <h1 className="page-header mb-6">UPTIME &amp; CONNECTIVITY</h1>
+    <div style={{
+      width: '100%',
+      maxWidth: 1200,
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader section="Uptime" title="Uptime & Connectivity" />
 
-      {/* Source uptime grid */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">SOURCE UPTIME — LAST 7 DAYS</div>
-
-      {sources === null ? (
-        <div className="hud-label animate-pulse mb-6">LOADING...</div>
-      ) : sources.length === 0 ? (
-        <div className="hud-label opacity-40 mb-6">NO DATA YET — COLLECTING...</div>
+      {/* Section 1 — Source Uptime */}
+      {!summary ? (
+        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
       ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
-          {sources.map((s) => {
-            // Prefer live cached status for the dot; fall back to the last sample.
-            const live = liveStatus[s.source]
-            const isUp = live ? live.healthy : s.current_ok
-            return (
-            <div
-              key={s.source}
-              className="hud-panel-sm p-3"
-              style={{ borderColor: isUp ? 'rgba(0,212,255,0.2)' : 'rgba(255,45,45,0.3)' }}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-mono text-xs text-text-primary uppercase tracking-wider">
-                  {s.source}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <span className={isUp ? 'arc-dot' : 'arc-dot-err'} />
-                  <span className="hud-label">{isUp ? 'UP' : 'DOWN'}</span>
-                </div>
-              </div>
-              <div className={`font-mono text-lg glow-cyan-text ${isUp ? 'text-text-primary' : 'text-accent-orange'}`}>
-                {s.uptime_pct}%
-              </div>
-              <div className="text-text-secondary text-xs font-mono mt-1">
-                {s.avg_latency_ms}ms avg &middot; {s.samples} samples
-              </div>
-            </div>
-            )
-          })}
+        <div>
+          <Eyebrow style={{ marginBottom: 12 }}>Source Uptime — Last 7 Days</Eyebrow>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))',
+            gap: 12,
+          }}>
+            {(summary?.sources || []).map(s => {
+              const isUp = liveStatus[s.source]?.healthy ?? s.current_ok
+              return (
+                <Card key={s.source} style={{ borderRadius: 14, padding: 16 }}>
+                  {/* Top row: name + status */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#dbe3f0' }}>
+                      {s.source}
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <StatusDot status={isUp ? 'green' : 'red'} />
+                      <span style={{ fontSize: 11, fontWeight: 600, color: isUp ? '#5fe0b4' : '#fb7185' }}>
+                        {isUp ? 'UP' : 'DOWN'}
+                      </span>
+                    </div>
+                  </div>
+                  {/* Big pct */}
+                  <div style={{
+                    fontSize: 26,
+                    fontWeight: 700,
+                    color: isUp ? 'var(--accent)' : '#fbbf24',
+                    lineHeight: 1.1,
+                  }}>
+                    {s.uptime_pct}%
+                  </div>
+                  {/* Sub */}
+                  <div style={{ fontSize: 11, color: '#5d6982', marginTop: 4 }}>
+                    {s.avg_latency_ms}ms avg · {s.samples} samples
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
         </div>
       )}
 
-      {/* Internet Speed section */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">INTERNET SPEED</div>
-
-      {speedData === null ? (
-        <div className="hud-label animate-pulse">LOADING...</div>
-      ) : speedData.length === 0 ? (
-        <div className="hud-label opacity-40">NO DATA YET — COLLECTING...</div>
-      ) : (
-        <>
-          {/* Latest stat blocks */}
-          {latest && (
-            <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="hud-panel-sm p-3">
-                <div className="hud-label mb-1">DOWNLOAD</div>
-                <div className="font-mono text-lg text-text-primary glow-cyan-text">
-                  {latest.download_mbps} <span className="text-xs text-text-secondary">Mbps</span>
-                </div>
-              </div>
-              <div className="hud-panel-sm p-3">
-                <div className="hud-label mb-1">UPLOAD</div>
-                <div className="font-mono text-lg text-text-primary glow-cyan-text">
-                  {latest.upload_mbps} <span className="text-xs text-text-secondary">Mbps</span>
-                </div>
-              </div>
-              <div className="hud-panel-sm p-3">
-                <div className="hud-label mb-1">PING</div>
-                <div className="font-mono text-lg text-text-primary glow-cyan-text">
-                  {latest.ping_ms} <span className="text-xs text-text-secondary">ms</span>
-                </div>
-              </div>
+      {/* Section 2 — Internet Speed */}
+      <div>
+        <Eyebrow style={{ marginBottom: 12 }}>Internet Speed</Eyebrow>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 14 }}>
+            <Eyebrow style={{ marginBottom: 6 }}>Download</Eyebrow>
+            <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent)', lineHeight: 1.1 }}>
+              {speedtest?.latest?.download_mbps || '—'}
             </div>
-          )}
+            <div style={{ fontSize: 13, color: '#5d6982', fontWeight: 500, marginTop: 2 }}>Mbps</div>
+          </Card>
+          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 14 }}>
+            <Eyebrow style={{ marginBottom: 6 }}>Upload</Eyebrow>
+            <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent)', lineHeight: 1.1 }}>
+              {speedtest?.latest?.upload_mbps || '—'}
+            </div>
+            <div style={{ fontSize: 13, color: '#5d6982', fontWeight: 500, marginTop: 2 }}>Mbps</div>
+          </Card>
+          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 14 }}>
+            <Eyebrow style={{ marginBottom: 6 }}>Ping</Eyebrow>
+            <div style={{ fontSize: 26, fontWeight: 700, color: '#fbbf24', lineHeight: 1.1 }}>
+              {speedtest?.latest?.ping_ms || '—'}
+            </div>
+            <div style={{ fontSize: 13, color: '#5d6982', fontWeight: 500, marginTop: 2 }}>ms</div>
+          </Card>
+        </div>
+      </div>
 
-          {/* Download history chart */}
-          <TrendChart
-            title="Download Speed (Mbps)"
-            data={downloadChartData}
-            unit=" Mbps"
-          />
-        </>
-      )}
+      {/* Section 3 — Download Speed chart */}
+      <Card style={{ borderRadius: 14, padding: 16 }}>
+        <Eyebrow style={{ marginBottom: 12 }}>Download Speed (Mbps)</Eyebrow>
+        <AreaChart
+          data={downloadChartData}
+          color="#2fd4ee"
+          height={160}
+          gridLines={[45, 95]}
+        />
+      </Card>
     </div>
   )
 }

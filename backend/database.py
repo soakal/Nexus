@@ -239,6 +239,9 @@ class SystemState(SQLModel, table=True):
     daily_budget_usd: float = 25.0
     per_task_budget_usd: float = 5.0
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Persisted alert cooldown — survives process restarts so stuck-delivery
+    # Telegram alerts don't fire on every boot while the queue is stuck.
+    last_dead_letter_alert_at: datetime | None = Field(default=None)
 
 
 class Goal(SQLModel, table=True):
@@ -376,6 +379,15 @@ def _ensure_fact_columns():
     _safe_add_column("fact", "dismissed_at", "TIMESTAMP")
 
 
+def _ensure_system_state_columns():
+    """Add columns introduced to SystemState after the initial schema shipped.
+
+    Only needed for existing DBs — create_all already adds these for fresh ones.
+    Best-effort: a failure is logged but never fatal to startup.
+    """
+    _safe_add_column("systemstate", "last_dead_letter_alert_at", "TIMESTAMP")
+
+
 def _ensure_system_state():
     """Idempotently seed the single SystemState row (id=1).
 
@@ -421,6 +433,7 @@ def create_db_and_tables():
     _ensure_goal_columns()
     _ensure_goal_recurrence_columns()
     _ensure_fact_columns()
+    _ensure_system_state_columns()
     _ensure_system_state()
 
 
