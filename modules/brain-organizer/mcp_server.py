@@ -30,6 +30,10 @@ from flask import Flask, jsonify, request
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
+# Matches [[target]], [[target|alias]], [[target#anchor]], [[target#anchor|alias]].
+# Negative lookbehind excludes embeds (![[image.png]]). Group 1=target, 2=anchor, 3=alias.
+_WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\[\]|#]*?)(#[^\[\]|]+)?(\|[^\[\]]+)?\]\]")
+
 
 def load_config(config_path: Path | None = None) -> dict[str, Any]:
     path = config_path or CONFIG_PATH
@@ -56,6 +60,69 @@ def _sanitize_filename(name: str) -> str:
     if not safe or not safe.strip("."):
         return ""
     return safe
+
+
+def _canonical_key(name: str) -> str:
+    """Normalize a stem or link target for case/spacing comparison."""
+    collapsed = re.sub(r"\s+", " ", name.strip())
+    return collapsed.lower().replace(" ", "-")
+
+
+def _build_stem_index(wiki_folder: Path) -> dict[str, str]:
+    """Return {canonical_key: actual_stem} for Brain root + wiki .md files.
+
+    Non-recursive globs of exactly two dirs means raw/, _meta/, .Trash,
+    .obsidian are never visited. Wiki entries win on key collision.
+    """
+    index: dict[str, str] = {}
+    brain_root = wiki_folder.parent
+    for folder in (brain_root, wiki_folder):  # wiki loaded last so it wins
+        if not folder.exists():
+            continue
+        for md in sorted(folder.glob("*.md")):
+            if md.is_file():
+                index[_canonical_key(md.stem)] = md.stem
+    return index
+
+
+def _normalize_wikilinks(content: str, index: dict[str, str]) -> str:
+    """Rewrite [[wikilinks]] to canonical file stems; flag unresolved ones.
+
+    Resolvable targets are rewritten to the actual stem (anchor + alias preserved).
+    Unresolved targets are left in place and listed in a ## Broken Links footer.
+    Pure same-file anchors ([[#heading]]) and embeds (![[...]]) are skipped.
+    """
+    broken: list[str] = []
+    seen_broken: set[str] = set()
+
+    def _sub(m: re.Match) -> str:  # type: ignore[type-arg]
+        target = m.group(1) or ""
+        anchor = m.group(2) or ""
+        alias = m.group(3) or ""
+
+        if not target.strip():  # pure same-file anchor [[#heading]] — leave alone
+            return m.group(0)
+
+        key = _canonical_key(target)
+        canonical = index.get(key)
+        if canonical is None:
+            if key and key not in seen_broken:
+                seen_broken.add(key)
+                broken.append(target.strip())
+            return m.group(0)
+        return f"[[{canonical}{anchor}{alias}]]"
+
+    new_content = _WIKILINK_RE.sub(_sub, content)
+
+    if broken and "## Broken Links" not in new_content:
+        footer_lines = "\n".join(f"- [[{t}]]" for t in broken)
+        sep = "" if new_content.endswith("\n") else "\n"
+        new_content = (
+            f"{new_content}{sep}\n## Broken Links\n\n"
+            f"<!-- auto-generated: targets with no matching wiki/root note -->\n"
+            f"{footer_lines}\n"
+        )
+    return new_content
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +236,13 @@ def create_app(
             return jsonify({"error": "JSON body with 'content' field required"}), 400
 
         content = str(data["content"])
+
+        try:
+            stem_index = _build_stem_index(_wiki_folder())
+            content = _normalize_wikilinks(content, stem_index)
+        except Exception as exc:  # never block a save on normalization
+            logger.warning("Wikilink normalization skipped: %s", exc)
+
         raw_name = data.get("filename") or f"remote-note-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.md"
 
         safe_name = _sanitize_filename(raw_name)
