@@ -428,17 +428,14 @@ If no entity matches, return:
                                 payload={"domain": domain, "service": service, "service_data": service_data},
                             )
                             if res.decision == Decision.EXECUTED:
-                                action_word = {
-                                    "turn_on": "Turned on",
-                                    "turn_off": "Turned off",
-                                    "toggle": "Toggled",
-                                    "set_temperature": f"Set {friendly} to {value}°",
-                                    "set_value": f"Set {friendly} to {value}",
-                                    "select_option": f"Set {friendly} to {option}",
-                                }.get(service)
-                                reply = f"{action_word or friendly} {'' if action_word and action_word.startswith('Set') else friendly + '.'}"
-                                if action_word and action_word.startswith("Set"):
-                                    reply = action_word + "."
+                                reply = {
+                                    "turn_on": f"Turned on {friendly}.",
+                                    "turn_off": f"Turned off {friendly}.",
+                                    "toggle": f"Toggled {friendly}.",
+                                    "set_temperature": f"Set {friendly} to {value}°.",
+                                    "set_value": f"Set {friendly} to {value}.",
+                                    "select_option": f"Set {friendly} to {option}.",
+                                }.get(service, f"{service.replace('_', ' ').capitalize()} {friendly}.")
                             elif res.decision == Decision.FAILED:
                                 reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
                             else:
