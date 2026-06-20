@@ -12,8 +12,6 @@ export default function Agents() {
   const [q, setQ] = useState('')
   useEffect(() => { api.agents.runs(q).then(setRuns).catch(() => {}) }, [q])
 
-  const filteredRuns = runs
-
   return (
     <div style={{
       width: '100%',
@@ -54,7 +52,7 @@ export default function Agents() {
           <Eyebrow>Run History</Eyebrow>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <RunHistory runs={filteredRuns} />
+          <RunHistory runs={runs} />
         </div>
       </div>
     </div>

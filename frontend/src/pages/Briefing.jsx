@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 import BriefingPanel from '../components/BriefingPanel'
-import { fmtDateTime } from '../lib/parseUTC'
 import ScreenHeader from '../components/ScreenHeader'
 import PrimaryButton from '../components/PrimaryButton'
 

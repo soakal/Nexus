@@ -7,7 +7,6 @@ import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusDot from '../components/StatusDot'
 import StatusPill from '../components/StatusPill'
-import SegmentedControl from '../components/SegmentedControl'
 import ScreenHeader from '../components/ScreenHeader'
 import PrimaryButton from '../components/PrimaryButton'
 
@@ -22,7 +21,6 @@ export default function Dashboard() {
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingError, setBriefingError] = useState(false)
   const [lastBriefing, setLastBriefing] = useState(null)
-  const [adgRange, setAdgRange] = useState('1h')
   const navigate = useNavigate()
 
   const load = useCallback(() => {
@@ -286,11 +284,6 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
-            <SegmentedControl
-              options={['15m', '30m', '1h', '3h']}
-              value={adgRange}
-              onChange={setAdgRange}
-            />
           </div>
         </Card>
 

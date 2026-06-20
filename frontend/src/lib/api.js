@@ -44,16 +44,13 @@ async function req(method, path, body) {
 export const api = {
   get: (path) => req('GET', path),
   post: (path, body) => req('POST', path, body),
-  health: () => req('GET', '/health'),
   briefing: {
     trigger: () => req('POST', '/briefing/trigger'),
     latest: () => req('GET', '/briefing/latest'),
-    list: () => req('GET', '/briefing/'),
   },
   tasks: {
     create: (prompt) => req('POST', '/tasks/', { prompt }),
     list: () => req('GET', '/tasks/'),
-    get: (id) => req('GET', `/tasks/${id}`),
     cancel: (id) => req('DELETE', `/tasks/${id}`),
     retry: (id) => req('POST', `/tasks/${id}/retry`),
   },
@@ -68,7 +65,6 @@ export const api = {
   trends: { get: (source, metric, days) => req('GET', `/trends/${source}/${metric}?days=${days || 7}`) },
   uptime: {
     summary: (days) => req('GET', `/uptime/summary?days=${days || 7}`),
-    history: (source, days) => req('GET', `/uptime/history/${source}?days=${days || 7}`),
     speedtest: (days) => req('GET', `/uptime/speedtest?days=${days || 7}`),
   },
   secrets: {
@@ -106,7 +102,6 @@ export const api = {
     },
   },
   chat: {
-    send: (message, conversationId) => req('POST', '/chat/', { message, conversation_id: conversationId ?? null }),
     stream: (message, conversationId) => fetch(`${BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getKey()}` },
@@ -114,7 +109,6 @@ export const api = {
     }).then(res => { if (!res.ok) throw new Error(res.status); return res }),
     conversations: () => req('GET', '/chat/conversations'),
     get: (id) => req('GET', `/chat/${id}`),
-    remove: (id) => req('DELETE', `/chat/${id}`),
   },
   today: { get: () => req('GET', '/today/') },
   safety: {
