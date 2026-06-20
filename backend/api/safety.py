@@ -103,17 +103,6 @@ async def list_outcomes(
     ]
 
 
-@router.get("/hermes-actions")
-async def list_hermes_actions(_=Depends(require_api_key)):
-    """The structured Hermes verb allowlist (Tier 1.4 relay quarantine).
-
-    Pure read of an in-memory allowlist — no DB, no to_thread. Returns a JSON-safe
-    description of every verb (no callables) so a client can present the menu.
-    """
-    from backend.safety import hermes_actions
-
-    return {"verbs": hermes_actions.allowed_verbs()}
-
 
 @router.post("/actions/{action_id}/confirm")
 async def confirm_action(
@@ -268,19 +257,6 @@ async def metering_health(_=Depends(require_api_key)):
 
     return await asyncio.to_thread(governor.metering_health)
 
-
-@router.get("/spend-report")
-async def spend_report(days: int = 7, _=Depends(require_api_key)):
-    """Per-model spend breakdown for the last `days` days (1–90).
-
-    Returns grouped by_model rows sorted by cost descending, total_usd, total_calls,
-    and prices_verified so Brian can compare NEXUS's metered spend against his
-    actual Anthropic billing.
-    """
-    from backend.safety import governor
-
-    days = max(1, min(days, 90))
-    return await asyncio.to_thread(governor.spend_report, days)
 
 
 @router.post("/budget")

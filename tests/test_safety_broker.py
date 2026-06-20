@@ -685,22 +685,3 @@ async def test_chat_hermes_invalid_json_falls_back(eng):  # AC4.4
     assert len([l for l in logs if l.kind == "hermes_relay"]) == 1
     assert len([l for l in logs if l.kind == "hermes_action"]) == 0
 
-
-# --- Item 5: GET /api/safety/hermes-actions ---
-
-def test_hermes_actions_endpoint_auth_and_list(safety_client, auth_headers):  # AC5.1, AC5.2
-    # 401 without a key
-    resp = safety_client.get("/api/safety/hermes-actions")
-    assert resp.status_code == 401
-
-    # 200 with a key, JSON-safe verbs
-    resp = safety_client.get("/api/safety/hermes-actions", headers=auth_headers)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "verbs" in data
-    verbs = data["verbs"]
-    assert any(v["verb"] == "restart_service" for v in verbs)
-    by_verb = {v["verb"]: v for v in verbs}
-    assert by_verb["vm_action"]["enum_args"] == {"action": ["reboot", "start", "stop"]}
-    for v in verbs:
-        assert set(v.keys()) == {"verb", "risk", "reversibility", "required_args", "enum_args"}

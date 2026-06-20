@@ -180,42 +180,6 @@ def safety_client(tmp_path, monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_spend_report_api_returns_correct_keys(safety_client, auth_headers):
-    """GET /api/safety/spend-report?days=7 returns 200 with required keys."""
-    now = datetime.utcnow()
-    _seed_spend(safety_client._engine, "claude-sonnet-4-6", 0.75, now - timedelta(days=1))
-    _seed_spend(safety_client._engine, "claude-opus-4-8", 1.25, now - timedelta(days=2))
-
-    resp = safety_client.get("/api/safety/spend-report?days=7", headers=auth_headers)
-    assert resp.status_code == 200
-
-    body = resp.json()
-    for key in ("by_model", "total_usd", "total_calls", "prices_verified", "days", "since"):
-        assert key in body, f"Missing key '{key}' in spend-report response"
-
-    assert body["total_calls"] == 2
-    assert body["total_usd"] == pytest.approx(2.00)
-    assert isinstance(body["by_model"], list)
-    assert len(body["by_model"]) == 2
-
-
-def test_spend_report_api_requires_auth(safety_client):
-    """Without a Bearer key, /api/safety/spend-report returns 401."""
-    resp = safety_client.get("/api/safety/spend-report")
-    assert resp.status_code == 401
-
-
-def test_spend_report_api_days_clamped(safety_client, auth_headers):
-    """days parameter is clamped to [1, 90]."""
-    resp = safety_client.get("/api/safety/spend-report?days=200", headers=auth_headers)
-    assert resp.status_code == 200
-    assert resp.json()["days"] == 90
-
-    resp2 = safety_client.get("/api/safety/spend-report?days=0", headers=auth_headers)
-    assert resp2.status_code == 200
-    assert resp2.json()["days"] == 1
-
-
 # ---------------------------------------------------------------------------
 # 3. notify_phone deep-link — appended when set, omitted when blank
 # ---------------------------------------------------------------------------

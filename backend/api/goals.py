@@ -90,15 +90,6 @@ async def list_goals(
     return all_goals
 
 
-@router.get("/{goal_id}")
-async def get_goal(goal_id: int, _=Depends(require_api_key)):
-    from backend.agents import goals
-
-    g = await asyncio.to_thread(goals._db_get_goal, goal_id)
-    if g is None:
-        raise HTTPException(status_code=404, detail="Goal not found")
-    return g
-
 
 @router.post("/{goal_id}/approve")
 async def approve_goal(goal_id: int, _=Depends(require_api_key)):
