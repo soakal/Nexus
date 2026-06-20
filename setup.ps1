@@ -218,15 +218,6 @@ if ($githubToken.Length -gt 5) { Set-VaultSecret "GITHUB_TOKEN" $githubToken }
 $githubUser = Read-Host "      GitHub username"
 if ($githubUser) { Write-EnvLine "GITHUB_USERNAME" $githubUser }
 
-# ── Notes ──
-Write-Host "`n      ── Notes ──────────────────────────────────────────" -ForegroundColor DarkCyan
-$obsidianHost = Read-Host "      Obsidian REST API host [http://localhost:27123]"
-if (-not $obsidianHost) { $obsidianHost = "http://localhost:27123" }
-Write-EnvLine "OBSIDIAN_HOST" $obsidianHost
-
-$obsidianToken = Get-SecureInput "      Obsidian token"
-if ($obsidianToken.Length -gt 0) { Set-VaultSecret "OBSIDIAN_TOKEN" $obsidianToken }
-
 # ── Weather ──
 Write-Host "`n      ── Weather ────────────────────────────────────────" -ForegroundColor DarkCyan
 $weatherKey = Get-SecureInput "      OpenWeatherMap API key"

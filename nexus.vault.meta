@@ -33,5 +33,13 @@
   "HERMES_WEBHOOK_SECRET": {
     "last_set": "2026-06-18T20:32:32.024709",
     "last_rotated": "2026-06-18T20:32:32.024709"
+  },
+  "HERMES_SSH_PASSWORD": {
+    "last_set": "2026-06-20T02:56:01.120401",
+    "last_rotated": "2026-06-20T02:56:01.120401"
+  },
+  "LXC201_SSH_PASSWORD": {
+    "last_set": "2026-06-20T04:00:18.653382",
+    "last_rotated": "2026-06-20T04:00:18.653382"
   }
 }

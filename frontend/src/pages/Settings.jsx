@@ -117,10 +117,6 @@ const SECTIONS = [
     secrets: [{ key: 'GITHUB_TOKEN', label: 'GitHub Personal Access Token' }],
   },
   {
-    title: 'Notes',
-    secrets: [{ key: 'OBSIDIAN_TOKEN', label: 'Obsidian REST API Token' }],
-  },
-  {
     title: 'Weather',
     secrets: [{ key: 'OPENWEATHER_API_KEY', label: 'OpenWeatherMap API Key' }],
   },

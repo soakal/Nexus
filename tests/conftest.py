@@ -9,7 +9,6 @@ os.environ.setdefault("HASS_HOST", "http://localhost:8123")
 os.environ.setdefault("UNIFI_HOST", "https://localhost")
 os.environ.setdefault("UNIFI_USERNAME", "admin")
 os.environ.setdefault("UNRAID_HOST", "192.168.1.1")
-os.environ.setdefault("OBSIDIAN_HOST", "http://localhost:27123")
 os.environ.setdefault("CHANNELS_HOST", "http://localhost:8089")
 os.environ.setdefault("ADGUARD_HOST", "http://localhost:3000")
 os.environ.setdefault("ADGUARD_USER", "admin")
@@ -22,7 +21,6 @@ MOCK_SECRETS = {
     "HASS_TOKEN": "test-hass-token",
     "UNIFI_PASSWORD": "test-password",
     "UNRAID_API_KEY": "test-unraid-key",
-    "OBSIDIAN_TOKEN": "test-obsidian-token",
     "GITHUB_TOKEN": "test-github-token",
     "OPENWEATHER_API_KEY": "test-weather-key",
     "OPENROUTER_API_KEY": "test-openrouter-key",
