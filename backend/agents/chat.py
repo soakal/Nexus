@@ -5,7 +5,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-_CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean"}
+_CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation"}
 
 CHAT_SYSTEM = """You are NEXUS, a direct, technical personal-AI assistant for a homelab power user.
 You have live access to homelab data shown in the snapshot below. Use it to answer questions about
@@ -245,7 +245,7 @@ User message: "{user_message}"
 Return exactly:
 {{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE", "reason": "brief reason"}}
 
-HOME_CONTROL = user wants to change a Home Assistant device state (turn on/off/toggle a light/switch/fan).
+HOME_CONTROL = user wants to change a Home Assistant device or configuration — turn on/off/toggle a light/switch/fan/automation, set a thermostat temperature, set a number helper value, or change a select/mode helper.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
 CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. The chat can search the web itself, so questions needing live info still go here.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
@@ -356,22 +356,31 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
                     reply = "No controllable devices found in Home Assistant."
                 else:
                     entity_list = json.dumps(controllable, indent=2)
-                    pick_prompt = f"""The user wants to control a Home Assistant device.
+                    pick_prompt = f"""The user wants to control or configure a Home Assistant entity.
 
 User request: "{user_message}"
 
 Available entities (entity_id, friendly_name, current state):
 {entity_list}
 
-Return JSON only — pick the best matching entity and service:
-{{"entity_id": "domain.entity_name", "service": "turn_on|turn_off|toggle"}}
+Return JSON only. Pick the best matching entity and service.
+Include "value" ONLY for input_number or climate, "option" ONLY for input_select:
+{{"entity_id": "domain.entity_name", "service": "...", "value": null, "option": null}}
+
+Services by domain:
+- light / switch / fan / input_boolean / automation: turn_on | turn_off | toggle
+- input_number: set_value  (set "value" to the number the user specified)
+- input_select: select_option  (set "option" to the exact option string)
+- climate: set_temperature  (set "value" to the temperature the user specified)
 
 If no entity matches, return:
-{{"entity_id": null, "service": null}}"""
+{{"entity_id": null, "service": null, "value": null, "option": null}}"""
 
                     raw_pick = await haiku(pick_prompt)
                     entity_id = None
                     service = None
+                    value = None
+                    option = None
                     try:
                         ps = raw_pick.find("{")
                         pe = raw_pick.rfind("}") + 1
@@ -379,31 +388,61 @@ If no entity matches, return:
                             pick = json.loads(raw_pick[ps:pe])
                             entity_id = pick.get("entity_id")
                             service = pick.get("service")
+                            value = pick.get("value")
+                            option = pick.get("option")
                     except Exception:
                         pass
 
                     if not entity_id or not service:
-                        reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\" or \"toggle the living room fan\"."
+                        reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\", \"set the thermostat to 72\", or \"disable the away automation\"."
                     else:
                         domain = entity_id.split(".")[0]
                         friendly = next(
                             (e["friendly_name"] for e in controllable if e["entity_id"] == entity_id),
                             entity_id,
                         )
-                        from backend.safety.broker import Decision, execute_action
-                        res = await execute_action(
-                            actor="user",
-                            kind="ha_service",
-                            target=entity_id,
-                            payload={"domain": domain, "service": service},
-                        )
-                        if res.decision == Decision.EXECUTED:
-                            action_word = {"turn_on": "Turned on", "turn_off": "Turned off", "toggle": "Toggled"}.get(service, service)
-                            reply = f"{action_word} {friendly}."
-                        elif res.decision == Decision.FAILED:
-                            reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+
+                        # Build service_data for parameterised services.
+                        if service == "set_temperature" and value is not None:
+                            service_data = {"entity_id": entity_id, "temperature": value}
+                        elif service == "set_value" and value is not None:
+                            service_data = {"entity_id": entity_id, "value": value}
+                        elif service == "select_option" and option:
+                            service_data = {"entity_id": entity_id, "option": option}
                         else:
-                            reply = "That action needs confirmation."
+                            service_data = {}
+
+                        # Guard: parameterised services with missing params.
+                        if service == "set_temperature" and value is None:
+                            reply = f"What temperature would you like to set {friendly} to?"
+                        elif service == "set_value" and value is None:
+                            reply = f"What value would you like to set {friendly} to?"
+                        elif service == "select_option" and not option:
+                            reply = f"Which option would you like to select for {friendly}?"
+                        else:
+                            from backend.safety.broker import Decision, execute_action
+                            res = await execute_action(
+                                actor="user",
+                                kind="ha_service",
+                                target=entity_id,
+                                payload={"domain": domain, "service": service, "service_data": service_data},
+                            )
+                            if res.decision == Decision.EXECUTED:
+                                action_word = {
+                                    "turn_on": "Turned on",
+                                    "turn_off": "Turned off",
+                                    "toggle": "Toggled",
+                                    "set_temperature": f"Set {friendly} to {value}°",
+                                    "set_value": f"Set {friendly} to {value}",
+                                    "select_option": f"Set {friendly} to {option}",
+                                }.get(service)
+                                reply = f"{action_word or friendly} {'' if action_word and action_word.startswith('Set') else friendly + '.'}"
+                                if action_word and action_word.startswith("Set"):
+                                    reply = action_word + "."
+                            elif res.decision == Decision.FAILED:
+                                reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+                            else:
+                                reply = "That action needs confirmation."
 
             except BudgetExceeded:
                 raise  # budget brake reaches the outer handler
