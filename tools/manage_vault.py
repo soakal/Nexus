@@ -34,6 +34,22 @@ def cmd_set(args) -> None:
     print(f"OK — {key} stored in vault.")
 
 
+def cmd_delete(args) -> None:
+    key = args.key
+    confirm = input(f"Delete '{key}' from vault? [y/N] ").strip().lower()
+    if confirm != "y":
+        print("Aborted.")
+        sys.exit(0)
+    from backend.secrets.vault import delete_secret, read_meta, META_PATH
+    import json
+    delete_secret(key)
+    meta = read_meta()
+    if key in meta:
+        del meta[key]
+        META_PATH.write_text(json.dumps(meta, indent=2))
+    print(f"OK — {key} removed from vault and metadata.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="NEXUS vault manager")
     sub = parser.add_subparsers(dest="command")
@@ -43,11 +59,16 @@ def main() -> None:
     p_set = sub.add_parser("set", help="Set a secret value (masked prompt)")
     p_set.add_argument("key", help="Secret name, e.g. HERMES_WEBHOOK_SECRET")
 
+    p_del = sub.add_parser("delete", help="Delete a secret from the vault")
+    p_del.add_argument("key", help="Secret name to remove")
+
     args = parser.parse_args()
     if args.command == "list":
         cmd_list(args)
     elif args.command == "set":
         cmd_set(args)
+    elif args.command == "delete":
+        cmd_delete(args)
     else:
         parser.print_help()
         sys.exit(1)
