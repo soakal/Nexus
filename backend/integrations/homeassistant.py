@@ -98,6 +98,9 @@ def _is_noise(entity: dict) -> bool:
     attrs = entity.get("attributes")
     if isinstance(attrs, dict):
         friendly = str(attrs.get("friendly_name") or "")
+        # HA marks diagnostic/config entities itself — trust that classification.
+        if attrs.get("entity_category") in ("diagnostic", "config"):
+            return True
 
     if "battery" in friendly.lower():
         return True
