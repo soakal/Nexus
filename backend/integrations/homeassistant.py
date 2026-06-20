@@ -25,23 +25,39 @@ class IntegrationError(Exception):
 # "available" state, so an "unavailable"/"unknown" reading is expected and
 # should NOT be flagged as a real problem.
 _NON_PERSISTENT_DOMAINS = {
-    "stt",          # speech-to-text: only active while speaking
-    "tts",          # text-to-speech: only active while speaking
-    "input_button", # stateless helper, fires events
-    "button",       # Matter/HomeKit identify buttons — stateless, never "available"
-    "scene",        # activation-only, no persistent state
-    "script",       # idle scripts report no meaningful state
-    "update",       # up-to-date entities report "off"/"unknown"
+    "stt",           # speech-to-text: only active while speaking
+    "tts",           # text-to-speech: only active while speaking
+    "input_button",  # stateless helper, fires events
+    "button",        # Matter/HomeKit/Proxmox action buttons — stateless
+    "scene",         # activation-only, no persistent state
+    "script",        # idle scripts report no meaningful state
+    "update",        # up-to-date entities report "off"/"unknown"
+    "notify",        # notification services — no persistent state
+    "event",         # HA event entities — fire-and-forget, always unknown at rest
+    "remote",        # remote control entities — no persistent availability
+    "device_tracker", # network presence — constantly changes as devices roam/sleep
 }
 
 # Domains that genuinely indicate a degraded device when "unavailable".
 _DEGRADABLE_DOMAINS = {
-    "device_tracker",
     "person",
     "media_player",
     "binary_sensor",
     "sensor",
 }
+
+# Entity ID substrings that are always noise regardless of domain.
+_NOISE_SUBSTRINGS = (
+    "battery",
+    "unifi_default_",    # UniFi MAC-address device trackers
+    "_next_alarm",       # Alexa polling sensors
+    "_next_reminder",    # Alexa polling sensors
+    "_next_timer",       # Alexa polling sensors
+    "_do_not_disturb",   # Alexa DND switches
+    "_voice_event",      # Alexa/Fire voice event entities
+    "blink_",            # Blink camera metadata (temp, wifi signal)
+    "_connectivity",     # Alexa/Fire connectivity binary sensors
+)
 
 
 def is_noise_entity(entity_id: str, state) -> bool:
@@ -55,16 +71,15 @@ def is_noise_entity(entity_id: str, state) -> bool:
         return False
 
     domain = entity_id.split(".", 1)[0]
+    eid_l = entity_id.lower()
     state_l = (state or "").lower() if isinstance(state, str) else ""
 
     # Inherently non-persistent domains never have a real "available" state.
     if domain in _NON_PERSISTENT_DOMAINS:
         return True
 
-    # Any "battery" helper/entity is treated as noise (input_button.battery is
-    # a helper, not a real sensor). Match on entity_id (friendly_name lives in
-    # attributes and is checked by the caller-aware variant below).
-    if "battery" in entity_id.lower():
+    # Substring-based noise patterns (cross-domain).
+    if any(sub in eid_l for sub in _NOISE_SUBSTRINGS):
         return True
 
     # A sensor reporting "unknown" usually just means "not yet read" (e.g.
