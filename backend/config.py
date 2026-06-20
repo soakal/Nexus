@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     unifi_host: str = "https://192.168.1.1"
     unifi_username: str = ""
     unraid_host: str = "192.168.1.1"
-    obsidian_host: str = "http://localhost:27123"
+    obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
+    brain_mcp_url: str = "http://localhost:8765"
+    brain_mcp_token: str = ""  # set in .env if mcp_write_token is configured
     channels_host: str = "http://localhost:8089"
     adguard_host: str = "http://localhost:3000"
     adguard_user: str = "admin"
@@ -156,11 +158,6 @@ class Settings(BaseSettings):
     def unraid_api_key(self) -> str:
         from backend.secrets.manager import get_secret
         return get_secret("UNRAID_API_KEY")
-
-    @property
-    def obsidian_token(self) -> str:
-        from backend.secrets.manager import get_secret
-        return get_secret("OBSIDIAN_TOKEN")
 
     @property
     def github_token(self) -> str:

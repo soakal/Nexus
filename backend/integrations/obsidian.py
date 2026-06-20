@@ -1,11 +1,29 @@
 import logging
 from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
 
 import httpx
 
 from backend.cache import async_ttl_cache
 
 logger = logging.getLogger(__name__)
+
+
+def _vault() -> Path:
+    from backend.config import get_settings
+    return Path(get_settings().obsidian_vault_path)
+
+
+def _mcp_url() -> str:
+    from backend.config import get_settings
+    return get_settings().brain_mcp_url.rstrip("/")
+
+
+def _mcp_headers() -> dict:
+    from backend.config import get_settings
+    token = get_settings().brain_mcp_token
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 @dataclass
@@ -16,36 +34,22 @@ class ObsidianData:
 
 
 async def fetch() -> ObsidianData:
-    from backend.config import get_settings
-    settings = get_settings()
-    try:
-        token = settings.obsidian_token
-    except Exception:
-        raise Exception("OBSIDIAN_TOKEN not configured")
+    vault = _vault()
+    if not vault.exists():
+        raise Exception(f"Obsidian vault not found at {vault}")
 
-    host = settings.obsidian_host
-    headers = {"Authorization": f"Bearer {token}"}
+    md_files = sorted(vault.rglob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    recent_notes = [str(f.relative_to(vault)) for f in md_files[:10]]
 
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:
-        # List vault files
-        resp = await client.get(f"{host}/vault/", headers=headers)
-        resp.raise_for_status()
-        files = resp.json().get("files", [])
-        recent_notes = sorted([f for f in files if f.endswith(".md")], reverse=True)[:10]
-
-        # Try to get daily note
-        from datetime import date
-        today = date.today().strftime("%Y-%m-%d")
-        daily_note = None
-        open_tasks = []
-        try:
-            note_resp = await client.get(f"{host}/vault/{today}.md", headers=headers)
-            if note_resp.status_code == 200:
-                content = note_resp.text
-                daily_note = content
-                open_tasks = [line.strip() for line in content.splitlines() if line.strip().startswith("- [ ]")]
-        except Exception:
-            pass
+    today = date.today().strftime("%Y-%m-%d")
+    daily_note = None
+    open_tasks = []
+    for candidate in [vault / "Brain" / "raw" / f"{today}.md", vault / f"{today}.md"]:
+        if candidate.exists():
+            content = candidate.read_text(encoding="utf-8")
+            daily_note = content
+            open_tasks = [ln.strip() for ln in content.splitlines() if ln.strip().startswith("- [ ]")]
+            break
 
     return ObsidianData(daily_note=daily_note, recent_notes=recent_notes, open_tasks=open_tasks)
 
@@ -53,104 +57,74 @@ async def fetch() -> ObsidianData:
 @async_ttl_cache(30)
 async def health_check() -> bool:
     try:
-        from backend.config import get_settings
-        settings = get_settings()
-        headers = {"Authorization": f"Bearer {settings.obsidian_token}"}
-        async with httpx.AsyncClient(timeout=2, verify=False) as client:
-            resp = await client.get(f"{settings.obsidian_host}/vault/", headers=headers)
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{_mcp_url()}/health")
             return resp.status_code == 200
     except Exception:
         return False
 
 
 async def write_daily_note(content: str) -> None:
-    from datetime import date
-
-    from backend.config import get_settings
-    settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.obsidian_token}", "Content-Type": "text/markdown"}
     today = date.today().strftime("%Y-%m-%d")
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:
-        await client.put(f"{settings.obsidian_host}/vault/{today}.md", content=content.encode(), headers=headers)
+    await _post_raw(content, filename=f"{today}.md")
 
 
 async def append_to_note(path: str, content: str) -> None:
-    from backend.config import get_settings
-    settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.obsidian_token}", "Content-Type": "text/markdown"}
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:
-        await client.post(f"{settings.obsidian_host}/vault/{path}", content=content.encode(), headers=headers)
+    note_path = _vault() / path
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    with note_path.open("a", encoding="utf-8") as f:
+        f.write(content)
 
 
 async def complete_task(note_path: str, task_text: str) -> None:
-    from backend.config import get_settings
-    settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.obsidian_token}"}
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:
-        resp = await client.get(f"{settings.obsidian_host}/vault/{note_path}", headers=headers)
-        if resp.status_code == 200:
-            content = resp.text.replace(f"- [ ] {task_text}", f"- [x] {task_text}")
-            headers["Content-Type"] = "text/markdown"
-            await client.put(f"{settings.obsidian_host}/vault/{note_path}", content=content.encode(), headers=headers)
+    path = _vault() / note_path
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+        updated = content.replace(f"- [ ] {task_text}", f"- [x] {task_text}")
+        path.write_text(updated, encoding="utf-8")
 
 
 async def vault_search(query: str, max_results: int = 10) -> str:
-    """Search the Obsidian vault using the Local REST API simple search."""
-    from backend.config import get_settings
-    settings = get_settings()
-    try:
-        token = settings.obsidian_token
-    except Exception:
-        return "Obsidian token not configured."
+    vault = _vault()
+    if not vault.exists():
+        return f"Obsidian vault not found at {vault}."
 
-    host = settings.obsidian_host
-    headers = {"Authorization": f"Bearer {token}"}
-
+    query_lower = query.lower()
+    results = []
     try:
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:
-            # Use the simple search endpoint
-            resp = await client.post(
-                f"{host}/search/simple/",
-                params={"query": query, "contextLength": 200},
-                headers=headers,
-            )
-            if resp.status_code == 200:
-                results = resp.json()
-                if not results:
-                    return f"No notes found matching '{query}'."
-                lines = []
-                for r in results[:max_results]:
-                    path = r.get("filename", "unknown")
-                    matches = r.get("matches", [])
-                    ctx = " ... ".join(
-                        m.get("match", {}).get("text", "") or
-                        (m.get("context", "") if isinstance(m.get("context"), str) else "")
-                        for m in matches[:2]
-                    ).strip()
-                    lines.append(f"**{path}**\n{ctx}" if ctx else f"**{path}**")
-                return "\n\n".join(lines)
-            # Fallback: list files and filter by name
-            resp2 = await client.get(f"{host}/vault/", headers=headers)
-            if resp2.status_code == 200:
-                files = resp2.json().get("files", [])
-                q_lower = query.lower()
-                matches = [f for f in files if q_lower in f.lower()][:max_results]
-                if matches:
-                    return "Notes matching by filename:\n" + "\n".join(f"- {f}" for f in matches)
-                return f"No notes found matching '{query}'."
+        for md_file in vault.rglob("*.md"):
+            try:
+                text = md_file.read_text(encoding="utf-8", errors="ignore")
+                if query_lower in text.lower() or query_lower in md_file.name.lower():
+                    ctx_lines = [ln for ln in text.splitlines() if query_lower in ln.lower()][:2]
+                    ctx = " ... ".join(ctx_lines).strip()
+                    rel = str(md_file.relative_to(vault))
+                    results.append(f"**{rel}**\n{ctx}" if ctx else f"**{rel}**")
+                    if len(results) >= max_results:
+                        break
+            except Exception:
+                continue
     except Exception as e:
         logger.warning(f"Vault search failed: {e}")
         return f"Vault search unavailable: {e}"
 
-    return f"No results for '{query}'."
+    if not results:
+        return f"No notes found matching '{query}'."
+    return "\n\n".join(results)
 
 
 async def create_note(title: str, content: str, folder: str = "NEXUS") -> str:
-    from backend.config import get_settings
-    settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.obsidian_token}", "Content-Type": "text/markdown"}
     safe_title = title.replace("/", "-").replace("\\", "-")
-    path = f"{folder}/{safe_title}.md"
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:
-        await client.put(f"{settings.obsidian_host}/vault/{path}", content=content.encode(), headers=headers)
-    return path
+    filename = f"{safe_title}.md"
+    await _post_raw(content, filename=filename)
+    return str(Path(folder) / filename)
+
+
+async def _post_raw(content: str, filename: str) -> None:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            f"{_mcp_url()}/raw",
+            json={"content": content, "filename": filename},
+            headers=_mcp_headers(),
+        )
+        resp.raise_for_status()
