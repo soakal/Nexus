@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Mic } from 'lucide-react'
 import { api } from '../lib/api'
+import ScreenHeader from '../components/ScreenHeader'
+import GhostButton from '../components/GhostButton'
+import PrimaryButton from '../components/PrimaryButton'
 
 // Inline markdown renderer reused from BriefingPanel style
 function renderInline(text) {
@@ -33,14 +36,14 @@ function renderMessageContent(content) {
     if (!listItems.length) return
     if (listType === 'ul') {
       elements.push(
-        <ul key={`list-${key}`} className="list-disc list-inside text-sm leading-relaxed space-y-0.5 ml-2 my-1">
-          {listItems.map((item, i) => <li key={i}>{renderInline(item)}</li>)}
+        <ul key={`list-${key}`} style={{ listStyleType: 'disc', paddingLeft: '20px', fontSize: '14px', lineHeight: '1.6', margin: '4px 0' }}>
+          {listItems.map((item, i) => <li key={i} style={{ marginBottom: '2px' }}>{renderInline(item)}</li>)}
         </ul>
       )
     } else if (listType === 'ol') {
       elements.push(
-        <ol key={`list-${key}`} className="list-decimal list-inside text-sm leading-relaxed space-y-0.5 ml-2 my-1">
-          {listItems.map((item, i) => <li key={i}>{renderInline(item)}</li>)}
+        <ol key={`list-${key}`} style={{ listStyleType: 'decimal', paddingLeft: '20px', fontSize: '14px', lineHeight: '1.6', margin: '4px 0' }}>
+          {listItems.map((item, i) => <li key={i} style={{ marginBottom: '2px' }}>{renderInline(item)}</li>)}
         </ol>
       )
     }
@@ -57,12 +60,12 @@ function renderMessageContent(content) {
     if (h2Match) {
       flushList(idx)
       elements.push(
-        <p key={`h2-${idx}`} className="text-accent-cyan hud-label mt-3 mb-1">{h2Match[1]}</p>
+        <p key={`h2-${idx}`} style={{ color: 'var(--accent)', fontSize: '11px', letterSpacing: '0.12em', fontWeight: 700, textTransform: 'uppercase', marginTop: '12px', marginBottom: '4px' }}>{h2Match[1]}</p>
       )
     } else if (h3Match) {
       flushList(idx)
       elements.push(
-        <p key={`h3-${idx}`} className="text-text-primary text-xs font-semibold tracking-wide mt-2 mb-0.5 uppercase">{h3Match[1]}</p>
+        <p key={`h3-${idx}`} style={{ color: '#e9eef8', fontSize: '12px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: '8px', marginBottom: '2px' }}>{h3Match[1]}</p>
       )
     } else if (bulletMatch) {
       if (listType === 'ol') flushList(idx)
@@ -77,7 +80,7 @@ function renderMessageContent(content) {
     } else {
       flushList(idx)
       elements.push(
-        <p key={`p-${idx}`} className="text-sm leading-relaxed">{renderInline(line)}</p>
+        <p key={`p-${idx}`} style={{ fontSize: '14px', lineHeight: '1.6', margin: '2px 0' }}>{renderInline(line)}</p>
       )
     }
   })
@@ -95,6 +98,13 @@ function formatTime(isoStr) {
 }
 
 const hasMediaRecorder = typeof window !== 'undefined' && !!window.MediaRecorder
+
+const PlusIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+)
 
 export default function Chat() {
   const [messages, setMessages] = useState([])
@@ -255,115 +265,195 @@ export default function Chat() {
   }
 
   return (
-    <div
-      className="p-4 md:p-6 max-w-3xl flex flex-col"
-      style={{ minHeight: 'calc(100vh - 120px)' }}
-    >
-      {/* Page header + controls */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <h1 className="page-header mr-auto">ASSISTANT</h1>
-        <button
-          onClick={startNewChat}
-          className="glow-btn px-3 py-1 text-xs"
-          disabled={sending}
-        >
-          NEW CHAT
-        </button>
-        {conversations.length > 0 && (
-          <select
-            className="hud-input text-xs py-1 px-2"
-            value={conversationId ?? ''}
-            onChange={e => loadConversation(e.target.value)}
-            disabled={loadingConv || sending}
-            style={{ maxWidth: 200 }}
-          >
-            <option value="">— history —</option>
-            {conversations.map(c => (
-              <option key={c.id} value={c.id}>
-                {c.title.length > 32 ? c.title.slice(0, 32) + '…' : c.title}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
+    <div style={{
+      width: '100%',
+      maxWidth: '900px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+      minHeight: 'calc(100vh - 4px)',
+    }}>
+      {/* Page header */}
+      <ScreenHeader
+        section="Chat"
+        title="Assistant"
+        right={
+          <div style={{ display: 'flex', flexDirection: 'row', gap: '10px', alignItems: 'center' }}>
+            <GhostButton
+              onClick={startNewChat}
+              disabled={sending}
+              icon={<PlusIcon />}
+            >
+              New chat
+            </GhostButton>
+            {conversations.length > 0 && (
+              <select
+                value={conversationId ?? ''}
+                onChange={e => loadConversation(e.target.value)}
+                disabled={loadingConv || sending}
+                style={{
+                  background: '#0c1320',
+                  color: '#e9eef8',
+                  border: '1px solid rgba(120,160,220,0.16)',
+                  borderRadius: '9px',
+                  padding: '7px 10px',
+                  fontSize: '12px',
+                  fontFamily: 'inherit',
+                  cursor: (loadingConv || sending) ? 'not-allowed' : 'pointer',
+                  opacity: (loadingConv || sending) ? 0.5 : 1,
+                  maxWidth: '200px',
+                  outline: 'none',
+                }}
+              >
+                <option value="">— history —</option>
+                {conversations.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.title.length > 32 ? c.title.slice(0, 32) + '…' : c.title}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        }
+      />
 
-      {/* Thread */}
-      <div className="flex-1 overflow-y-auto space-y-3 mb-4 min-h-0">
+      {/* Thread area */}
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: 0,
+      }}>
+        {/* Empty state */}
         {messages.length === 0 && !sending && (
-          <div className="flex items-center justify-center h-32">
-            <span className="hud-label text-text-secondary">
+          <div style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '16px',
+            color: '#5d6982',
+            textAlign: 'center',
+            padding: '40px 0',
+          }}>
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '18px',
+              background: 'var(--ac-dim)',
+              border: '1px solid var(--ac-line)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.6">
+                <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-4.9A8.4 8.4 0 1 1 21 11.5z" />
+              </svg>
+            </div>
+            <div style={{ fontSize: '15px', color: '#8a96ad', maxWidth: '380px' }}>
               Ask me anything about your homelab, or to run a task.
-            </span>
-          </div>
-        )}
-
-        {messages.map((msg, idx) => (
-          <div
-            key={idx}
-            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div
-              className={`max-w-[85%] ${
-                msg.role === 'user'
-                  ? 'hud-panel-sm p-3 border border-accent-cyan/30'
-                  : 'hud-panel-sm p-4'
-              }`}
-              style={
-                msg.role === 'user'
-                  ? { borderLeft: '2px solid rgba(0,212,255,0.5)', background: 'rgba(0,212,255,0.06)' }
-                  : { borderLeft: '2px solid rgba(0,212,255,0.25)' }
-              }
-            >
-              {msg.role === 'user' ? (
-                <p className="text-sm text-text-primary">{msg.content}</p>
-              ) : (
-                <div className="space-y-1 text-text-primary">
-                  {renderMessageContent(msg.content)}
-                </div>
-              )}
-              {msg.ts && (
-                <p className="hud-label mt-1.5 text-right opacity-50 text-xs">
-                  {formatTime(msg.ts)}
-                </p>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {sending && (
-          <div className="flex justify-start">
-            <div
-              className="hud-panel-sm p-3"
-              style={{ borderLeft: '2px solid rgba(0,212,255,0.25)' }}
-            >
-              <span className="hud-label animate-pulse">THINKING...</span>
             </div>
           </div>
         )}
 
-        <div ref={bottomRef} />
+        {/* Messages */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          {messages.map((msg, idx) => (
+            <div
+              key={idx}
+              style={{
+                display: 'flex',
+                justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: '85%',
+                  ...(msg.role === 'user'
+                    ? {
+                        background: 'var(--ac-dim)',
+                        border: '1px solid var(--ac-line)',
+                        borderRadius: '12px',
+                        padding: '11px 14px',
+                        color: '#e9eef8',
+                      }
+                    : {
+                        background: 'rgba(255,255,255,0.022)',
+                        border: '1px solid rgba(120,160,220,0.10)',
+                        borderRadius: '12px',
+                        padding: '14px 16px',
+                        color: '#cdd6e6',
+                      }),
+                }}
+              >
+                {msg.role === 'user' ? (
+                  <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5' }}>{msg.content}</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    {renderMessageContent(msg.content)}
+                  </div>
+                )}
+                {msg.ts && (
+                  <p style={{ margin: '6px 0 0 0', textAlign: 'right', fontSize: '11px', color: '#5d6982' }}>
+                    {formatTime(msg.ts)}
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {sending && (
+            <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+              <div style={{
+                background: 'rgba(255,255,255,0.022)',
+                border: '1px solid rgba(120,160,220,0.10)',
+                borderRadius: '12px',
+                padding: '14px 16px',
+              }}>
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  color: '#5d6982',
+                  fontSize: '13px',
+                  fontStyle: 'italic',
+                  animation: 'nx-pulse 1.4s ease-in-out infinite',
+                }}>Thinking...</span>
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
+        </div>
       </div>
 
-      {/* Input row */}
-      <div className="flex gap-2 pb-4 md:pb-0">
+      {/* Composer */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        padding: '8px',
+        borderRadius: '14px',
+        border: '1px solid rgba(120,160,220,0.14)',
+        background: 'rgba(255,255,255,0.03)',
+      }}>
         {hasMediaRecorder && (
           <button
             onClick={toggleRecording}
             disabled={sending || transcribing}
             title={recording ? 'Stop recording' : 'Start recording'}
             style={{
-              width: 40,
-              height: 40,
+              width: '40px',
+              height: '40px',
               borderRadius: '50%',
               border: recording
-                ? '1.5px solid rgba(255,45,45,0.8)'
-                : '1.5px solid rgba(0,212,255,0.5)',
+                ? '1px solid #fb7185'
+                : '1px solid var(--ac-line)',
               background: recording
-                ? 'rgba(255,45,45,0.12)'
-                : 'rgba(0,212,255,0.08)',
-              boxShadow: recording
-                ? '0 0 12px rgba(255,45,45,0.4)'
-                : '0 0 8px rgba(0,212,255,0.2)',
+                ? 'rgba(251,113,133,0.1)'
+                : 'var(--ac-dim)',
+              color: recording ? '#fb7185' : 'var(--accent)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -374,11 +464,18 @@ export default function Chat() {
             }}
           >
             {transcribing ? (
-              <span className="arc-dot animate-pulse" />
+              <span style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                background: 'var(--accent)',
+                display: 'inline-block',
+                animation: 'nx-pulse 1.4s ease-in-out infinite',
+              }} />
             ) : recording ? (
-              <Mic size={16} className="animate-pulse" style={{ color: 'rgba(255,45,45,0.9)' }} />
+              <Mic size={16} style={{ animation: 'nx-pulse 1.4s ease-in-out infinite' }} />
             ) : (
-              <Mic size={16} style={{ color: '#00d4ff' }} />
+              <Mic size={16} />
             )}
           </button>
         )}
@@ -387,18 +484,26 @@ export default function Chat() {
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="ASK ANYTHING..."
-          className="hud-input flex-1"
+          placeholder="Ask anything..."
           disabled={sending}
           autoFocus
+          style={{
+            flex: 1,
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            color: '#e9eef8',
+            fontSize: '14px',
+            fontFamily: 'inherit',
+          }}
         />
-        <button
+        <PrimaryButton
           onClick={() => send()}
           disabled={sending || !input.trim()}
-          className="glow-btn px-5 py-2 disabled:opacity-40"
+          style={{ padding: '11px 20px', borderRadius: '10px' }}
         >
-          {sending ? '...' : 'SEND'}
-        </button>
+          {sending ? '...' : 'Send'}
+        </PrimaryButton>
       </div>
     </div>
   )

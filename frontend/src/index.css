@@ -7,26 +7,17 @@
 html, body { max-width: 100%; overflow-x: hidden; }
 
 body {
-  background: #04080f;
-  color: #cce5f0;
-  font-family: 'DM Sans', sans-serif;
+  background: radial-gradient(1100px 560px at 80% -10%, rgba(47,212,238,0.06), transparent 60%), #070b13;
+  color: #e9eef8;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
   min-height: 100vh;
 }
 
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image: radial-gradient(rgba(0,212,255,0.06) 1px, transparent 1px);
-  background-size: 24px 24px;
-}
-
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #04080f; }
-::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.3); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,212,255,0.5); }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: rgba(120,150,200,0.18); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 
 .font-mono { font-family: 'JetBrains Mono', monospace; }
 .font-orbitron { font-family: 'Orbitron', sans-serif; }
@@ -168,6 +159,16 @@ body::before {
   background: linear-gradient(90deg, transparent, rgba(0,212,255,0.3), transparent);
   margin: 1rem 0;
 }
+
+input, textarea, select, button { font-family: inherit; }
+input::placeholder, textarea::placeholder { color: #5d6982; }
+@keyframes nx-pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes nx-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(52,211,153,.45) }
+  70%  { box-shadow: 0 0 0 6px rgba(52,211,153,0) }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0) }
+}
+.nx-nav a:hover { background: rgba(255,255,255,0.05); }
 
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor, 0 0 12px rgba(0,212,255,0.4); }

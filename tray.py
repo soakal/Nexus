@@ -327,13 +327,15 @@ class NexusTray:
 
     # ── background work ───────────────────────────────────────────────────────
 
-    def _do_start(self):
+    def _do_start(self, open_browser: bool = False):
         self._set_status("starting")
         result = self._run_ps("start.ps1")
         # Trust start.ps1's own health verification rather than re-checking
         # immediately (backend can be slow right after start.ps1 confirms it).
         if result.returncode == 0:
             self._set_status("running")
+            if open_browser:
+                webbrowser.open(DASHBOARD_URL)
         else:
             self._set_status("stopped")
 
@@ -371,7 +373,8 @@ class NexusTray:
             log.info("NEXUS already fully running — skipping auto-start")
         else:
             log.info("Auto-starting NEXUS on tray launch")
-            threading.Thread(target=self._do_start, daemon=True).start()
+            # open_browser=True only on this cold-boot path so we get one tab at login
+            threading.Thread(target=self._do_start, kwargs={"open_browser": True}, daemon=True).start()
 
     # ── menu ─────────────────────────────────────────────────────────────────
 

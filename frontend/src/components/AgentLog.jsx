@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { connectWS } from '../lib/ws'
+import StatusDot from './StatusDot'
+
 export default function AgentLog() {
   const [lines, setLines] = useState([])
   const ref = useRef(null)
@@ -8,25 +10,50 @@ export default function AgentLog() {
     return unsub
   }, [])
   useEffect(() => { ref.current?.scrollTo(0, ref.current.scrollHeight) }, [lines])
+
   return (
     <div
       ref={ref}
-      className="hud-panel p-3 h-64 overflow-y-auto font-mono text-xs relative"
-      style={{ backgroundColor: '#04080f', color: '#00ff9d' }}
+      style={{
+        background: '#070a11',
+        border: '1px solid rgba(120,160,220,0.10)',
+        borderRadius: 12,
+        padding: 18,
+        minHeight: 150,
+        maxHeight: 260,
+        overflowY: 'auto',
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 12,
+        position: 'relative',
+      }}
     >
       {lines.length === 0 ? (
-        <span className="text-text-secondary italic">Waiting for agent activity...</span>
+        <span style={{ fontStyle: 'italic', color: '#5d6982' }}>
+          Waiting for agent activity…
+        </span>
       ) : (
         <>
           {lines.map((l, i) => (
-            <div key={i} style={{ animation: 'data-flicker 3s ease-in-out infinite' }}>{l}</div>
+            <div key={i} style={{ color: '#94a6c0', lineHeight: 1.6 }}>{l}</div>
           ))}
-          <span style={{ animation: 'pulse-glow 1s steps(1) infinite' }}>|</span>
         </>
       )}
-      <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
-        <span className="arc-dot" />
-        <span className="hud-label">LIVE</span>
+
+      {/* LIVE badge */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 10,
+        letterSpacing: '0.1em',
+        color: '#5fe0b4',
+        fontWeight: 700,
+        position: 'absolute',
+        bottom: 14,
+        right: 16,
+      }}>
+        <StatusDot color="#34d399" size={6} pulse />
+        LIVE
       </div>
     </div>
   )

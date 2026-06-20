@@ -197,12 +197,13 @@ async def test_approve_happy_path(eng, monkeypatch):
     assert r_approve["goal"]["status"] == "running"
     assert r_approve["goal"]["task_id"] == r_approve["task_id"]
 
-    # A Task row was created with prompt == description.
+    # A Task row was created with prompt == "Goal: {title}\n\n{description}" (Fix 5).
     with Session(eng) as s:
         task = s.get(Task, r_approve["task_id"])
     assert task is not None
+    title = r_propose["goal"]["title"]
     desc = r_propose["goal"]["description"]
-    assert task.prompt == desc
+    assert task.prompt == f"Goal: {title}\n\n{desc}"
 
     # pool.enqueue was called exactly once.
     pool.enqueue.assert_awaited_once_with(r_approve["task_id"])

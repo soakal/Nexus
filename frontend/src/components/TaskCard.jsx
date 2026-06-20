@@ -1,8 +1,35 @@
 import { useState, useEffect } from 'react'
-import { fmtDateTime } from '../lib/parseUTC'
+import { parseUTC } from '../lib/parseUTC'
 import { connectWS } from '../lib/ws'
+import StatusDot from './StatusDot'
 
-const STATUS_COLORS = { success: 'text-accent-green', failed: 'text-accent-orange', running: 'text-accent-cyan', pending: 'text-text-secondary' }
+const TONE = {
+  success: { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)', label: 'COMPLETE' },
+  failed:  { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)', label: 'FAILED' },
+  running: { c: 'var(--accent)', bg: 'var(--ac-dim)', bd: 'var(--ac-line)', label: 'RUNNING' },
+  pending: { c: '#9aa6bd', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)', label: 'PENDING' },
+  stopped: { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)', label: 'STOPPED' },
+}
+
+function toneKey(status) {
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'failed'
+  if (status === 'running') return 'running'
+  if (status === 'pending') return 'pending'
+  if (status === 'stopped' || status === 'cancelled') return 'stopped'
+  return 'pending'
+}
+
+function relativeTime(s) {
+  if (!s) return ''
+  const d = parseUTC(s)
+  if (isNaN(d.getTime())) return ''
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000)
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
 
 function parsePlan(task) {
   try { return task.plan_json ? JSON.parse(task.plan_json) : null } catch { return null }
@@ -19,6 +46,9 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
   const result = parseResult(task)
   const isRunning = task.status === 'running' || task.status === 'pending'
   const isFailed = task.status === 'failed'
+
+  const tk = toneKey(task.status)
+  const t = TONE[tk]
 
   // Subscribe to live WebSocket logs while the task is running.
   // WS messages are global (server fans out all logs); we show the latest
@@ -49,136 +79,266 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
 
   const errorMsg = result && !Array.isArray(result) && result.error
 
-  const created = fmtDateTime(task.created_at)
-
-  const renderStatus = () => {
-    if (task.status === 'running') return (
-      <div className="flex items-center gap-2">
-        <span className="arc-dot" />
-        <span className="hud-label text-accent-cyan">RUNNING</span>
-      </div>
-    )
-    if (task.status === 'pending') return (
-      <div className="flex items-center gap-2">
-        <span className="arc-dot-dim" />
-        <span className="hud-label">PENDING</span>
-      </div>
-    )
-    if (task.status === 'success') return (
-      <div className="flex items-center gap-2">
-        <span className="arc-dot" style={{ animation: 'none' }} />
-        <span className="hud-label text-accent-green">COMPLETE</span>
-      </div>
-    )
-    if (task.status === 'failed') return (
-      <div className="flex items-center gap-2">
-        <span className="arc-dot-err" />
-        <span className="hud-label text-accent-red">FAILED</span>
-      </div>
-    )
-    return (
-      <div className="flex items-center gap-2">
-        <span className="arc-dot-dim" />
-        <span className="hud-label">{String(task.status).toUpperCase()}</span>
-      </div>
-    )
-  }
-
-  const renderActions = () => {
-    if (isRunning) {
-      // Running/pending: immediate cancel, no confirm required
-      return (
-        <button onClick={handleCancel} disabled={busy}
-          className="border border-accent-orange/50 text-accent-orange text-xs px-2 py-0.5 hover:bg-accent-orange/10 disabled:opacity-40">
-          Cancel
-        </button>
-      )
+  // Preview line content
+  const previewContent = (() => {
+    if (isFailed) return errorMsg ? `error: ${errorMsg}` : 'error: verify_rejected'
+    if (task.status === 'success' && Array.isArray(result) && result.length > 0) {
+      return String(result[result.length - 1]).split('\n').find(l => l.trim()) || ''
     }
+    if (isRunning) return liveLog || 'Running…'
+    return null
+  })()
 
-    if (confirmPending) {
-      // Two-click confirm state: show CONFIRM + ABORT
-      return (
-        <>
-          <button onClick={handleCancel} disabled={busy}
-            className="border border-accent-red/70 text-accent-red text-xs px-2 py-0.5 hover:bg-accent-red/10 disabled:opacity-40">
-            CONFIRM
-          </button>
-          <button onClick={handleAbortDelete} disabled={busy}
-            className="border border-border-dark text-text-secondary text-xs px-2 py-0.5 hover:border-accent-cyan/40 disabled:opacity-40">
-            ABORT
-          </button>
-        </>
-      )
-    }
+  const showPreview = previewContent && (isFailed || task.status === 'success' || isRunning)
 
-    // Default non-running state: show DELETE (first click triggers confirm in parent)
-    return (
-      <button onClick={handleCancel} disabled={busy}
-        className="border border-border-dark text-text-secondary text-xs px-2 py-0.5 hover:border-accent-orange/40 disabled:opacity-40">
-        Delete
-      </button>
-    )
-  }
+  const relTime = relativeTime(task.created_at)
+  const steps = task.steps_taken > 0 ? `${task.steps_taken} step${task.steps_taken !== 1 ? 's' : ''}` : null
+  const metaLine = [relTime, steps].filter(Boolean).join(' · ')
 
   return (
-    <div className="hud-panel-sm p-4 relative">
-      <div className="flex items-center justify-between gap-2">
-        {renderStatus()}
-        <div className="flex gap-2">
-          {isFailed && (
-            <button onClick={handleRetry} disabled={busy}
-              className="border border-accent-cyan/50 text-accent-cyan text-xs px-2 py-0.5 hover:bg-accent-cyan/10 disabled:opacity-40">
-              Retry
-            </button>
-          )}
-          {renderActions()}
-        </div>
-      </div>
-
-      <p className="text-text-primary text-sm mt-2 leading-relaxed">{task.prompt}</p>
-
-      {/* Live log line shown only while task is running */}
-      {isRunning && (
-        <div className="flex items-center gap-2 mt-1">
-          <span className="arc-dot-err" style={{ width: '6px', height: '6px' }} />
-          <span className="font-mono text-xs text-text-secondary truncate">
-            {liveLog || 'PROCESSING...'}
+    <div style={{
+      background: 'linear-gradient(180deg,rgba(255,255,255,0.022),rgba(255,255,255,0)),#0c1320',
+      border: '1px solid rgba(120,160,220,0.10)',
+      borderRadius: '14px',
+      padding: '16px 18px',
+    }}>
+      {/* Top row */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '10px',
+        flexWrap: 'wrap',
+        marginBottom: '10px',
+      }}>
+        {/* Status chip */}
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '7px',
+          padding: '4px 10px',
+          borderRadius: '7px',
+          background: t.bg,
+          border: `1px solid ${t.bd}`,
+        }}>
+          <StatusDot
+            color={t.c}
+            size={6}
+            glow={false}
+            pulse={tk === 'running'}
+          />
+          <span style={{
+            fontSize: '10px',
+            letterSpacing: '0.1em',
+            fontWeight: 700,
+            color: t.c,
+            fontFamily: "'Space Grotesk', sans-serif",
+          }}>
+            {t.label}
           </span>
         </div>
-      )}
 
-      <div className="flex items-center gap-3 mt-2">
-        <div className="font-mono text-xs text-text-secondary">
-          {created}
-        </div>
-        {task.steps_taken > 0 && <div className="font-mono text-xs text-text-secondary">{task.steps_taken} step{task.steps_taken !== 1 ? 's' : ''}</div>}
-        {(plan || result) && (
-          <button onClick={() => setOpen(o => !o)} className="text-accent-cyan text-xs font-mono cursor-pointer hover:underline">
-            {open ? '▲ hide' : '▼ show answer'}
-          </button>
+        {/* Meta: time + steps */}
+        {metaLine && (
+          <span style={{ fontSize: '11px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
+            {metaLine}
+          </span>
         )}
       </div>
 
-      {errorMsg && (
-        <div className="mt-2 text-accent-orange/80 text-xs font-mono bg-accent-orange/5 px-2 py-1 border-l-2 border-accent-orange/50">error: {errorMsg}</div>
-      )}
+      {/* Description */}
+      <p style={{ fontSize: '14px', color: '#cdd6e6', lineHeight: 1.6, margin: 0 }}>
+        {task.prompt}
+      </p>
 
-      {/* Collapsed preview — first line of the last result step */}
-      {!open && !errorMsg && Array.isArray(result) && result.length > 0 && (
-        <div className="mt-2 text-text-secondary text-xs italic line-clamp-2">
-          {String(result[result.length - 1]).split('\n').find(l => l.trim()) || ''}
+      {/* Action row */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '10px',
+        marginTop: '12px',
+      }}>
+        {/* Left: preview line */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {showPreview && (
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '12px',
+              color: t.c,
+              padding: '6px 10px',
+              borderRadius: '7px',
+              background: t.bg,
+              borderLeft: `2px solid ${t.c}`,
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
+              {previewContent}
+            </span>
+          )}
         </div>
-      )}
 
+        {/* Right: action buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          {/* Retry — only if failed */}
+          {isFailed && (
+            <button
+              onClick={handleRetry}
+              disabled={busy}
+              style={{
+                border: '1px solid var(--ac-line)',
+                background: 'transparent',
+                color: 'var(--accent)',
+                padding: '6px 13px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: busy ? 'not-allowed' : 'pointer',
+                opacity: busy ? 0.4 : 1,
+                fontFamily: "'Space Grotesk', sans-serif",
+              }}
+            >
+              Retry
+            </button>
+          )}
+
+          {/* Delete / Confirm / Abort */}
+          {!isRunning && (
+            confirmPending ? (
+              <>
+                <button
+                  onClick={handleCancel}
+                  disabled={busy}
+                  style={{
+                    border: '1px solid #fb7185',
+                    background: '#fb7185',
+                    color: '#070b13',
+                    padding: '6px 13px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                    opacity: busy ? 0.4 : 1,
+                    fontFamily: "'Space Grotesk', sans-serif",
+                  }}
+                >
+                  CONFIRM
+                </button>
+                <button
+                  onClick={handleAbortDelete}
+                  disabled={busy}
+                  style={{
+                    border: '1px solid rgba(120,160,220,0.20)',
+                    background: 'transparent',
+                    color: '#8a96ad',
+                    padding: '6px 13px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                    opacity: busy ? 0.4 : 1,
+                    fontFamily: "'Space Grotesk', sans-serif",
+                  }}
+                >
+                  ABORT
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleCancel}
+                disabled={busy}
+                style={{
+                  border: '1px solid rgba(251,113,133,0.35)',
+                  background: 'transparent',
+                  color: '#fb7185',
+                  padding: '6px 13px',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: busy ? 'not-allowed' : 'pointer',
+                  opacity: busy ? 0.4 : 1,
+                  fontFamily: "'Space Grotesk', sans-serif",
+                }}
+              >
+                Delete
+              </button>
+            )
+          )}
+
+          {/* Cancel — only if running */}
+          {isRunning && (
+            <button
+              onClick={handleCancel}
+              disabled={busy}
+              style={{
+                border: '1px solid rgba(120,160,220,0.20)',
+                background: 'transparent',
+                color: '#8a96ad',
+                padding: '6px 13px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: busy ? 'not-allowed' : 'pointer',
+                opacity: busy ? 0.4 : 1,
+                fontFamily: "'Space Grotesk', sans-serif",
+              }}
+            >
+              Cancel
+            </button>
+          )}
+
+          {/* Expand toggle */}
+          {(plan || (Array.isArray(result) && result.length > 0)) && (
+            <button
+              onClick={() => setOpen(o => !o)}
+              style={{
+                border: '1px solid rgba(47,212,238,0.20)',
+                background: 'transparent',
+                color: 'var(--accent)',
+                padding: '6px 13px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            >
+              {open ? '▲ hide' : '▼ details'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Expanded detail block */}
       {open && (
-        <div className="border-t border-border-dark mt-3 pt-3 space-y-3">
+        <div style={{
+          borderTop: '1px solid rgba(120,160,220,0.10)',
+          marginTop: '12px',
+          paddingTop: '12px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px',
+        }}>
           {plan && (
             <div>
-              <div className="hud-label mb-1">Plan</div>
-              <ol className="space-y-1">
+              <div style={{
+                fontSize: '10px',
+                letterSpacing: '0.12em',
+                fontWeight: 700,
+                color: '#5d6982',
+                textTransform: 'uppercase',
+                marginBottom: '8px',
+              }}>
+                Plan
+              </div>
+              <ol style={{ margin: 0, padding: '0 0 0 18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {plan.map(s => (
-                  <li key={s.index} className="text-xs text-text-primary">
-                    <span className="text-accent-cyan font-mono">{s.index}.</span> {s.description}
+                  <li key={s.index} style={{ fontSize: '12px', color: '#aab4c7', lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--accent)', fontFamily: "'JetBrains Mono', monospace" }}>{s.index}.</span>{' '}
+                    {s.description}
                   </li>
                 ))}
               </ol>
@@ -186,10 +346,32 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
           )}
           {Array.isArray(result) && result.length > 0 && (
             <div>
-              <div className="hud-label mb-1">Results</div>
-              <div className="space-y-2">
+              <div style={{
+                fontSize: '10px',
+                letterSpacing: '0.12em',
+                fontWeight: 700,
+                color: '#5d6982',
+                textTransform: 'uppercase',
+                marginBottom: '8px',
+              }}>
+                Results
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {result.map((r, i) => (
-                  <pre key={i} className="text-text-primary text-xs whitespace-pre-wrap bg-bg-primary p-2 border border-border-dark font-mono">{r}</pre>
+                  <pre key={i} style={{
+                    background: '#070a11',
+                    borderRadius: '8px',
+                    padding: '10px 12px',
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: '11px',
+                    color: '#94a6c0',
+                    overflow: 'auto',
+                    margin: 0,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}>
+                    {r}
+                  </pre>
                 ))}
               </div>
             </div>

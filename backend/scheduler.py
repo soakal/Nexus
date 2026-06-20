@@ -198,6 +198,51 @@ async def _goal_recurrence():
         logger.error(f"Goal recurrence job error: {e}")
 
 
+async def _run_brain_organizer():
+    try:
+        import asyncio
+        import os
+        import subprocess
+        from pathlib import Path
+        module_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
+        python_exe = module_dir / "venv" / "Scripts" / "python.exe"
+        script = module_dir / "brain_organizer.py"
+        if not python_exe.exists() or not script.exists():
+            logger.warning("Brain Organizer module not found — skipping run")
+            return
+        # Inherit the current environment then inject secrets from the NEXUS vault.
+        # This ensures ANTHROPIC_API_KEY, OPENROUTER_API_KEY, and HERMES_HOST reach
+        # the subprocess even when the parent process does not export them by default.
+        env = os.environ.copy()
+        try:
+            from backend.config import get_settings
+            s = get_settings()
+            for attr, var in [
+                ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+                ("openrouter_api_key", "OPENROUTER_API_KEY"),
+                ("hermes_host", "HERMES_HOST"),
+            ]:
+                try:
+                    val = getattr(s, attr, None)
+                except Exception:
+                    val = None
+                if val:
+                    env[var] = str(val)
+        except Exception as e:
+            logger.warning(f"Brain Organizer: could not inject secrets from vault ({e}) — using inherited env")
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [str(python_exe), str(script)],
+            capture_output=True, text=True, cwd=str(module_dir), env=env,
+        )
+        if result.returncode != 0:
+            logger.error(f"Brain Organizer failed (rc={result.returncode}): {result.stderr[:500]}")
+        else:
+            logger.info("Brain Organizer run complete")
+    except Exception as e:
+        logger.error(f"Brain Organizer job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -324,4 +369,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Goal recurrence tick enabled: runs every 30 minutes")
+    from pathlib import Path as _Path
+    _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
+    if (_bo_dir / "venv" / "Scripts" / "python.exe").exists():
+        scheduler.add_job(
+            _run_brain_organizer,
+            CronTrigger(hour=2, minute=0, timezone=timezone),
+            id="brain_organizer",
+            replace_existing=True,
+        )
+        logger.info("Brain Organizer job registered: runs daily at 02:00 %s", timezone)
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

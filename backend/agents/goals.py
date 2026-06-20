@@ -473,7 +473,10 @@ async def approve(goal_id: int, *, approved_by: str = "user") -> dict:
     # DISPATCH a durable Task — a human-approved action, not autonomy.
     # Uses the module-level get_pool reference so tests can monkeypatch it.
     import backend.agents.goals as _self
-    task_id = await asyncio.to_thread(_db_create_task, g["description"])
+    # Anchor the task to the goal's title so the planner/executor have an explicit
+    # topical anchor and don't drift off into unrelated territory from prose alone.
+    task_prompt = f"Goal: {g['title']}\n\n{g['description']}"
+    task_id = await asyncio.to_thread(_db_create_task, task_prompt)
     await _self.get_pool().enqueue(task_id)
 
     # Build the update fields — always set status + task linkage.
@@ -774,7 +777,8 @@ async def tick_recurring_goals() -> dict:
     count = 0
     for g in due:
         try:
-            task_id = await asyncio.to_thread(_db_create_task, g["description"])
+            task_prompt = f"Goal: {g['title']}\n\n{g['description']}"
+            task_id = await asyncio.to_thread(_db_create_task, task_prompt)
             await _self.get_pool().enqueue(task_id)
 
             cadence = g.get("cadence")

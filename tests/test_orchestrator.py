@@ -102,7 +102,8 @@ async def test_replan():
 @pytest.mark.asyncio
 async def test_executor_uses_run_with_tools():
     """_sonnet_execute delegates to router.run_with_tools with the read-only
-    tool set + hosted web search, NOT to router.sonnet."""
+    tool set and web_search=False (Fix 3 — hosted web_search removed;
+    ddg_search native tool stays in tool_specs for external lookups)."""
     from backend.agents.orchestrator import Step, _sonnet_execute
 
     with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
@@ -111,12 +112,16 @@ async def test_executor_uses_run_with_tools():
         assert out == "answer"
         assert mock_exec.call_count == 1
         kwargs = mock_exec.call_args.kwargs
-        assert kwargs["web_search"] is True
+        # Fix 3: hosted Anthropic web_search tool is disabled; executor uses
+        # native ddg_search from tool_specs instead.
+        assert kwargs["web_search"] is False
         assert kwargs["label"] == "orchestrator_execute"
+        # Fix 2: executor now has a real system prompt, not an empty string.
+        assert kwargs["system"] != ""
+        assert "native" in kwargs["system"].lower() or "homelab" in kwargs["system"].lower()
         # The read-only tool registry is wired in.
         names = {s["name"] for s in kwargs["tool_specs"]}
-        # ITEM 5: the local DuckDuckGo tool is now named ddg_search (the hosted
-        # web_search is added separately via web_search=True, not in tool_specs).
+        # The local DuckDuckGo tool is named ddg_search (not the hosted web_search).
         assert "ddg_search" in names and "vault_search" in names
         assert "do it" in kwargs["prompt"]
 

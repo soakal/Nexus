@@ -132,8 +132,6 @@ if ($dev) {
 Start-Sleep -Seconds 2
 Write-Host "  Frontend ready (pid $($frontend.Id))" -ForegroundColor Green
 
-# Open browser
-Start-Process "http://localhost:$port"
 
 Write-Host ""
 Write-Host "NEXUS is running" -ForegroundColor Green

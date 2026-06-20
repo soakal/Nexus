@@ -1,12 +1,21 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api'
-import TrendChart from '../components/TrendChart'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import SegmentedControl from '../components/SegmentedControl'
+import ScreenHeader from '../components/ScreenHeader'
+import AreaChart from '../components/AreaChart'
 
-const RANGE_OPTIONS = [
-  { label: '7D',  days: 7 },
-  { label: '30D', days: 30 },
-  { label: '90D', days: 90 },
-]
+function getHiLo(data) {
+  const vals = (data || []).map(d => (typeof d === 'number' ? d : d?.value)).filter(v => v != null)
+  if (!vals.length) return { hi: null, lo: null }
+  return { hi: Math.max(...vals), lo: Math.min(...vals) }
+}
+
+function fmt(val, unit) {
+  if (val == null) return '—'
+  return unit === '%' ? `${val.toFixed(1)}%` : `${val.toFixed(1)} GB`
+}
 
 export default function Trends() {
   const [days, setDays] = useState(7)
@@ -25,37 +34,59 @@ export default function Trends() {
     api.trends.get('adguard', 'blocked_pct', days).then(setAdguardTrend).catch(() => {})
   }, [days])
 
+  const charts = [
+    { label: 'Unraid Storage', data: unraidTrend?.data || [], color: '#2fd4ee', unit: 'GB' },
+    { label: 'Channels DVR Storage', data: channelsTrend?.data || [], color: '#5b8cff', unit: 'GB' },
+    { label: 'AdGuard Blocked %', data: adguardTrend?.data || [], color: '#34d399', unit: '%' },
+  ]
+
   return (
-    <div className="p-4 md:p-6 max-w-3xl space-y-6">
-      <h1 className="page-header">INTELLIGENCE FEED</h1>
+    <div style={{
+      width: '100%',
+      maxWidth: '1100px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
+      <ScreenHeader
+        section="Trends"
+        title="Intelligence Feed"
+        right={
+          <SegmentedControl
+            options={[
+              { value: 7, label: '7D' },
+              { value: 30, label: '30D' },
+              { value: 90, label: '90D' },
+            ]}
+            value={days}
+            onChange={setDays}
+          />
+        }
+      />
 
-      {/* Range selector */}
-      <div className="flex items-center gap-2">
-        {RANGE_OPTIONS.map(({ label, days: d }) => {
-          const active = d === days
-          return (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className="glow-btn"
-              style={{
-                opacity: active ? 1 : 0.4,
-                boxShadow: active
-                  ? '0 0 10px rgba(0,212,255,0.5)'
-                  : 'none',
-                fontWeight: active ? '600' : '400',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              {label}
-            </button>
-          )
-        })}
-      </div>
+      {!unraidTrend && (
+        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading trends…</div>
+      )}
 
-      <TrendChart title="Unraid Storage Used (GB)" data={unraidTrend?.data} projection={unraidTrend?.projection} unit="GB" />
-      <TrendChart title="Channels DVR Storage Used (GB)" data={channelsTrend?.data} projection={channelsTrend?.projection} unit="GB" />
-      <TrendChart title="AdGuard Blocked %" data={adguardTrend?.data} projection={adguardTrend?.projection} unit="%" />
+      {charts.map(({ label, data, color, unit }) => {
+        const { hi, lo } = getHiLo(data)
+        return (
+          <Card key={label}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+              <Eyebrow>{label}</Eyebrow>
+              <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                Hi {fmt(hi, unit)}
+              </span>
+            </div>
+            <AreaChart data={data} color={color} height={150} />
+            <div style={{ fontSize: '11px', color: '#5d6982', marginTop: '4px' }}>
+              Lo {fmt(lo, unit)}
+            </div>
+          </Card>
+        )
+      })}
     </div>
   )
 }

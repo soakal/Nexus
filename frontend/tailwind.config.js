@@ -18,7 +18,7 @@ export default {
       },
       fontFamily: {
         mono: ['JetBrains Mono', 'monospace'],
-        sans: ['DM Sans', 'sans-serif'],
+        sans: ['Space Grotesk', 'system-ui', 'sans-serif'],
         orbitron: ['Orbitron', 'sans-serif'],
       },
       animation: {

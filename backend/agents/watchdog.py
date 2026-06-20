@@ -13,24 +13,29 @@ Two complementary checks run on a 5-minute schedule:
    has been unreachable for many consecutive retries.
 
 Both checks are BEST-EFFORT (never raise), phone-alert via events.notify_phone,
-and debounced per-condition via a process-local in-memory dict so a sustained
-outage doesn't spam Telegram every 5 minutes.
+and debounced per-condition. The dead-letter alert uses a DB-backed cooldown
+(SystemState.last_dead_letter_alert_at) so the cooldown survives process
+restarts — preventing a spam burst every time NEXUS reboots while the queue is
+stuck. Scheduler-stall alerts use a process-local in-memory dict (acceptable
+since stalls only matter while the process is running).
 """
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-# Process-local debounce state: maps a string key -> monotonic timestamp of
-# last alert sent.  Reset by reset() in tests.
+# Process-local debounce state for scheduler-stall alerts only.
+# Reset by reset() in tests.
 _last_alert: dict[str, float] = {}
 
 
 def _should_alert(key: str, cooldown_s: float, now: float | None = None) -> bool:
-    """Return True (and record the timestamp) if enough time has passed since
-    the last alert for *key*.  Passing an explicit *now* makes the logic
+    """In-memory cooldown for scheduler-stall alerts.
+
+    Returns True (and records the timestamp) if enough time has passed since
+    the last alert for *key*. Passing an explicit *now* makes the logic
     deterministic in tests without sleeping.
     """
     now = now if now is not None else time.monotonic()
@@ -39,6 +44,35 @@ def _should_alert(key: str, cooldown_s: float, now: float | None = None) -> bool
         _last_alert[key] = now
         return True
     return False
+
+
+def _should_alert_dead_letters_db(cooldown_s: float) -> bool:
+    """DB-backed cooldown for dead-letter alerts — survives process restarts.
+
+    Reads SystemState.last_dead_letter_alert_at (wall-clock UTC). Returns True
+    and updates the field if cooldown_s has elapsed since the last alert.
+    Falls back to True on any DB error (fail-open: better to over-alert than
+    silently suppress). Sync — call via asyncio.to_thread.
+    """
+    try:
+        from sqlmodel import Session
+        from backend.database import SystemState, engine
+
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        with Session(engine) as session:
+            row = session.get(SystemState, 1)
+            if row is None:
+                return True  # no state row yet — allow alert
+            last = row.last_dead_letter_alert_at
+            if last is None or (now_utc - last).total_seconds() >= cooldown_s:
+                row.last_dead_letter_alert_at = now_utc
+                session.add(row)
+                session.commit()
+                return True
+            return False
+    except Exception as exc:
+        logger.warning(f"_should_alert_dead_letters_db error (fail-open): {exc}")
+        return True
 
 
 def reset() -> None:
@@ -128,7 +162,7 @@ async def check_dead_letters(*, threshold: int, cooldown_s: int) -> int:
                 f"{len(rows)} Hermes deliveries dead-lettered (>= {threshold} retries) — "
                 "notification pipeline likely broken (check HERMES_WEBHOOK_SECRET / Hermes connectivity)"
             )
-        if rows and _should_alert("dead_letters", cooldown_s):
+        if rows and await asyncio.to_thread(_should_alert_dead_letters_db, cooldown_s):
             await events.notify_phone(
                 f"NEXUS has {len(rows)} undelivered Hermes message(s) stuck"
                 f" (>= {threshold} retries). Check Hermes connectivity.",

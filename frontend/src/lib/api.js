@@ -122,6 +122,7 @@ export const api = {
     metering: () => req('GET', '/safety/metering'),
     confirmAction: (id) => req('POST', `/safety/actions/${id}/confirm`),
     pendingActions: (limit) => req('GET', `/safety/actions?decision=needs_confirm&limit=${limit || 20}`),
+    clearDeadLetters: () => req('DELETE', '/safety/deliveries/dead'),
   },
   goals: {
     list: (category) => req('GET', `/goals/${category ? `?category=${encodeURIComponent(category)}` : ''}`),
@@ -133,6 +134,11 @@ export const api = {
     remove: (id) => req('DELETE', `/goals/${id}`),
     disable: (id) => req('POST', `/goals/${id}/disable`),
     enable: (id) => req('POST', `/goals/${id}/enable`),
+  },
+  brain: {
+    status: () => req('GET', '/brain-organizer/status'),
+    run: () => req('POST', '/brain-organizer/run'),
+    resetFailed: () => req('POST', '/brain-organizer/reset-failed'),
   },
   facts: {
     list: () => req('GET', '/facts/'),

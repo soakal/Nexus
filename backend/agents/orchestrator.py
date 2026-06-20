@@ -180,15 +180,26 @@ tool. Always produce a useful, substantive answer."""
     else:
         _wtok = None
 
+    executor_system = (
+        "You are the NEXUS homelab assistant's task executor. You have native "
+        "read-only tools that return live state for every system in this homelab "
+        "(adguard_status, hermes_status, unraid_status, unifi_status, "
+        "homeassistant_status, channels_status, github_status, proxmox_updates, "
+        "weather, vault_search). For ANY question about homelab system state, "
+        "ALWAYS call the matching native tool first and answer from its result — "
+        "never guess and never web-search what a native tool already reports. "
+        "Use the ddg_search web tool ONLY for information that no native tool can "
+        "provide (current external facts, versions, news, prices, dates)."
+    )
     try:
         return await router.run_with_tools(
             model=get_settings().orchestrator_executor_model,
             max_tokens=8192,
             prompt=full_prompt,
-            system="",
+            system=executor_system,
             tool_specs=specs,
             dispatch=dispatch,
-            web_search=True,
+            web_search=False,
             label="orchestrator_execute",
             task_id=task_id,
             task_start=task_start,
@@ -551,8 +562,10 @@ def _load_learning_context(limit: int = 5) -> str:
     """Return a compact plain-text block of the most recent failed signals.
 
     Pulls (newest-first) failed TaskOutcome rows (reason) and failed AgentRun
-    rows (prompt_snippet + output_snippet), combined and capped to `limit` items.
-    Each entry is truncated to ~200 chars. Returns "" if nothing or on any error.
+    rows (prompt_snippet ONLY — NOT output_snippet), combined and capped to
+    `limit` items. The raw executor output is deliberately excluded: it can be
+    arbitrary web-search text and poisons the planner's failure context. Each
+    entry is truncated to ~200 chars. Returns "" if nothing or on any error.
 
     Sync — must only be called via asyncio.to_thread.
     """
@@ -584,9 +597,12 @@ def _load_learning_context(limit: int = 5) -> str:
                     .limit(remaining)
                 ).all()
                 for r in runs:
-                    prompt_part = (r.prompt_snippet or "")[:100]
-                    output_part = (r.output_snippet or "")[:100]
-                    snippet = f"{prompt_part} -> {output_part}"[:200]
+                    # Only the executor's own prompt is fed back to the planner —
+                    # NOT r.output_snippet. The raw output is the first 200 chars of
+                    # whatever the executor returned (e.g. arbitrary web-search text),
+                    # which poisoned the planner's failure context. The trustworthy
+                    # failure signal (verifier's reason) is kept via TaskOutcome above.
+                    snippet = (r.prompt_snippet or "")[:200]
                     items.append(f"- [failed] {snippet}")
 
         return "\n".join(items)

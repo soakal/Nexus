@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _bo_proc: list = [None]  # mutable slot for the Brain Organizer MCP server subprocess
+
     # Startup
     from backend.database import create_db_and_tables
     create_db_and_tables()
@@ -87,6 +89,22 @@ async def lifespan(app: FastAPI):
             from backend.agents.worker_pool import get_pool
             await get_pool().start()
 
+            # Brain Organizer MCP server — optional, only starts if the module is installed
+            try:
+                import subprocess
+                from pathlib import Path
+                _bo_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
+                _bo_py = _bo_dir / "venv" / "Scripts" / "python.exe"
+                _bo_srv = _bo_dir / "mcp_server.py"
+                if _bo_py.exists() and _bo_srv.exists():
+                    _bo_proc[0] = subprocess.Popen(
+                        [str(_bo_py), str(_bo_srv)],
+                        cwd=str(_bo_dir),
+                    )
+                    logger.info(f"Brain Organizer MCP server started (PID {_bo_proc[0].pid})")
+            except Exception as e:
+                logger.warning(f"Brain Organizer MCP server not started: {e}")
+
             logger.info("NEXUS backend started")
         except Exception as e:
             logger.warning(f"Startup partial: {e}")
@@ -96,6 +114,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    try:
+        if _bo_proc[0] is not None:
+            _bo_proc[0].terminate()
+            _bo_proc[0].wait(timeout=5)
+    except Exception:
+        pass
     try:
         from backend.scheduler import scheduler
         if scheduler.running:
@@ -146,6 +170,7 @@ async def health():
 from backend.api import (
     adguard,
     agents,
+    brain_organizer,
     briefing,
     channels,
     chat,
@@ -164,6 +189,7 @@ from backend.api import (
 )
 from backend.api.trigger import router as trigger_router
 
+app.include_router(brain_organizer.router, prefix="/api/brain-organizer", tags=["brain-organizer"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(facts.router, prefix="/api/facts", tags=["facts"])
 app.include_router(goals.router, prefix="/api/goals", tags=["goals"])

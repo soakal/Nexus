@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Brain } from 'lucide-react'
 import { api } from '../lib/api'
+import Card from '../components/Card'
+import Eyebrow from '../components/Eyebrow'
+import ScreenHeader from '../components/ScreenHeader'
+import PrimaryButton from '../components/PrimaryButton'
+import TextInput from '../components/TextInput'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,19 +20,15 @@ function relativeTime(isoStr) {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
-function confColor(aboveFloor) {
-  return aboveFloor ? 'text-accent-cyan' : 'text-accent-orange'
-}
-
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function Facts() {
-  const [facts, setFacts]           = useState(null)
+  const [facts, setFacts]             = useState(null)
   const [recallQuery, setRecallQuery] = useState('')
   const [recallResult, setRecallResult] = useState(null)
-  const [recalling, setRecalling]   = useState(false)
+  const [recalling, setRecalling]     = useState(false)
   const [dismissingId, setDismissingId] = useState(null)
 
   // ---------------------------------------------------------------------------
@@ -86,142 +86,196 @@ export default function Facts() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl">
-      <div className="flex items-center gap-3 mb-6">
-        <Brain
-          size={22}
-          style={{ color: '#00d4ff', filter: 'drop-shadow(0 0 6px rgba(0,212,255,0.7))' }}
-        />
-        <h1 className="page-header">FACT STORE</h1>
-      </div>
+    <div style={{
+      width: '100%',
+      maxWidth: '1000px',
+      margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 'var(--gap)',
+    }}>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Recall tester                                                        */}
+      {/* Header                                                               */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">RECALL TESTER</div>
+      <ScreenHeader section="Facts" title="Fact Store" />
 
-      <div className="hud-panel-sm p-4 mb-6">
-        <div className="font-mono text-xs text-text-secondary mb-3">
+      {/* ------------------------------------------------------------------ */}
+      {/* Recall Tester                                                        */}
+      {/* ------------------------------------------------------------------ */}
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '8px' }}>Recall Tester</Eyebrow>
+        <p style={{ fontSize: '12px', color: '#8a96ad', margin: '0 0 12px 0' }}>
           Test what facts a query would surface from memory recall.
-        </div>
-        <div className="flex flex-wrap gap-3 mb-4">
-          <input
-            type="text"
+        </p>
+
+        {/* Input row */}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <TextInput
+            style={{ flex: '1 1 280px' }}
+            placeholder="Enter a query to test…"
             value={recallQuery}
             onChange={e => setRecallQuery(e.target.value)}
             onKeyDown={handleRecallKey}
-            placeholder="Enter a query to test..."
-            className="hud-input flex-1 font-mono min-w-0"
           />
-          <button
-            onClick={handleRecall}
-            disabled={recalling || !recallQuery.trim()}
-            className="glow-btn px-4 py-2 text-xs tracking-widest disabled:opacity-40"
-            style={{ boxShadow: '0 0 10px rgba(0,212,255,0.35)' }}
-          >
-            {recalling ? 'TESTING...' : 'TEST RECALL'}
-          </button>
+          <PrimaryButton onClick={handleRecall} disabled={recalling || !recallQuery.trim()}>
+            {recalling ? 'Testing…' : 'Test recall'}
+          </PrimaryButton>
         </div>
 
+        {/* Recall result */}
         {recallResult !== null && (
-          <div>
-            <div className="hud-label mb-2">
-              RESULT FOR: <span className="text-accent-cyan">{recallResult.query}</span>
-            </div>
-            <div
-              className="font-mono text-xs text-text-primary whitespace-pre-wrap p-3 rounded"
-              style={{ background: 'rgba(0,212,255,0.04)', border: '1px solid rgba(0,212,255,0.12)' }}
-            >
-              {recallResult.result
-                ? recallResult.result
-                : <span className="text-text-secondary opacity-60">NO FACTS MATCHED THIS QUERY</span>
-              }
-            </div>
+          <div style={{
+            background: 'rgba(47,212,238,0.04)',
+            border: '1px solid rgba(47,212,238,0.12)',
+            borderRadius: '10px',
+            padding: '12px',
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '12px',
+            color: '#94a6c0',
+            marginTop: '12px',
+            whiteSpace: 'pre-wrap',
+          }}>
+            {recallResult.result
+              ? recallResult.result
+              : <span style={{ color: '#5d6982' }}>No facts matched this query.</span>
+            }
           </div>
         )}
-      </div>
+      </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Known facts list                                                     */}
+      {/* Known Facts                                                          */}
       {/* ------------------------------------------------------------------ */}
-      <div className="hud-label border-l-2 border-accent-cyan pl-2 mb-3">
-        KNOWN FACTS
-        {facts !== null && (
-          <span className="ml-3 font-mono text-xs text-text-secondary">
-            ({facts.length} active)
-          </span>
+      <div>
+        <div style={{ marginBottom: '12px' }}>
+          <Eyebrow>
+            Known Facts{' '}
+            <span style={{ color: '#465069' }}>({facts?.length || 0} active)</span>
+          </Eyebrow>
+        </div>
+
+        {/* Loading */}
+        {facts === null && (
+          <Card>
+            <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
+              Loading…
+            </span>
+          </Card>
         )}
-      </div>
 
-      <div className="hud-panel-sm p-4">
-        {facts === null ? (
-          <div className="hud-label animate-pulse">LOADING...</div>
-        ) : facts.length === 0 ? (
-          <div className="hud-label opacity-40">NO FACTS YET</div>
-        ) : (
-          <div className="space-y-1">
+        {/* Empty state */}
+        {facts !== null && facts.length === 0 && (
+          <Card dashed style={{
+            padding: '40px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '12px',
+            textAlign: 'center',
+          }}>
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#5d6982" strokeWidth="1.5">
+              <circle cx="12" cy="12" r="9"/>
+              <path d="M12 8h.01M11 12h1v4h1"/>
+            </svg>
+            <span style={{ fontSize: '14px', color: '#5d6982' }}>No facts yet</span>
+          </Card>
+        )}
+
+        {/* Facts list */}
+        {facts !== null && facts.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {facts.map((f) => (
               <div
                 key={f.id}
-                className="py-3"
-                style={{ borderBottom: '1px solid rgba(0,212,255,0.06)' }}
+                style={{
+                  background: 'rgba(255,255,255,0.022)',
+                  border: '1px solid rgba(120,160,220,0.08)',
+                  borderRadius: '11px',
+                  padding: '12px 14px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  gap: '12px',
+                }}
               >
-                {/* Subject / predicate / value */}
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2">
-                  <span className="font-mono text-xs text-accent-cyan font-bold uppercase tracking-wide">
-                    {f.subject}
-                  </span>
-                  <span className="text-text-secondary text-xs">›</span>
-                  <span className="font-mono text-xs text-text-secondary uppercase">
-                    {f.predicate}
-                  </span>
-                  <span className="text-text-secondary text-xs">›</span>
-                  <span className="font-mono text-xs text-text-primary flex-1 min-w-0">
+                {/* Left: fact content + meta */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '4px' }}>
+                    {f.subject}{' '}
+                    <span style={{ color: '#5d6982', fontWeight: 400 }}>·</span>{' '}
+                    {f.predicate}{' '}
+                    <span style={{ color: '#5d6982', fontWeight: 400 }}>·</span>{' '}
                     {f.value}
-                  </span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#5d6982', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    {f.source && (
+                      <span style={{
+                        background: 'rgba(255,255,255,0.04)',
+                        border: '1px solid rgba(120,160,220,0.12)',
+                        borderRadius: '5px',
+                        padding: '1px 6px',
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: '10px',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                      }}>
+                        {f.source}
+                      </span>
+                    )}
+                    <span>{relativeTime(f.created_at)}</span>
+                  </div>
                 </div>
 
-                {/* Meta row */}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {/* Effective confidence */}
-                  <span
-                    className={`font-mono text-xs font-bold ${confColor(f.above_floor)}`}
-                    title={f.above_floor ? 'Above recall floor' : 'Below recall floor — will not surface'}
-                  >
-                    {Math.round((f.effective_confidence ?? 0) * 100)}% EFF
+                {/* Right: badges + dismiss */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', flexShrink: 0 }}>
+                  {/* Confidence badge */}
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    color: f.above_floor ? '#2fd4ee' : '#fbbf24',
+                    background: f.above_floor ? 'rgba(47,212,238,0.08)' : 'rgba(251,191,36,0.08)',
+                    border: `1px solid ${f.above_floor ? 'rgba(47,212,238,0.20)' : 'rgba(251,191,36,0.20)'}`,
+                    borderRadius: '6px',
+                    padding: '2px 7px',
+                  }}>
+                    {Math.round((f.effective_confidence ?? 0) * 100)}% eff
                   </span>
 
-                  {/* Floor badge */}
+                  {/* Below floor badge */}
                   {!f.above_floor && (
-                    <span
-                      className="font-mono text-xs text-accent-orange px-1.5 py-0.5 rounded"
-                      style={{ border: '1px solid rgba(255,149,0,0.4)', fontSize: '0.6rem' }}
-                    >
-                      BELOW FLOOR
+                    <span style={{
+                      fontSize: '10px',
+                      fontFamily: "'JetBrains Mono', monospace",
+                      color: '#fbbf24',
+                      border: '1px solid rgba(251,191,36,0.30)',
+                      borderRadius: '5px',
+                      padding: '1px 6px',
+                      letterSpacing: '0.05em',
+                      textTransform: 'uppercase',
+                    }}>
+                      Below floor
                     </span>
                   )}
-
-                  {/* Source chip */}
-                  <span
-                    className="font-mono text-xs text-text-secondary px-1.5 py-0.5 rounded"
-                    style={{ border: '1px solid rgba(255,255,255,0.1)', fontSize: '0.6rem' }}
-                  >
-                    {(f.source || 'chat').toUpperCase()}
-                  </span>
-
-                  {/* Age */}
-                  <span className="font-mono text-xs text-text-secondary">
-                    {relativeTime(f.created_at)}
-                  </span>
 
                   {/* Dismiss button */}
                   <button
                     onClick={() => handleDismiss(f.id)}
                     disabled={dismissingId === f.id}
-                    className="font-mono text-xs text-text-secondary px-3 py-1 rounded ml-auto disabled:opacity-40 hover:text-red-400 transition-colors"
-                    style={{ border: '1px solid rgba(255,255,255,0.1)' }}
+                    style={{
+                      fontSize: '12px',
+                      color: dismissingId === f.id ? '#5d6982' : '#fb7185',
+                      background: 'none',
+                      border: 'none',
+                      cursor: dismissingId === f.id ? 'not-allowed' : 'pointer',
+                      padding: '2px 4px',
+                      opacity: dismissingId === f.id ? 0.5 : 1,
+                      fontFamily: 'inherit',
+                    }}
                   >
-                    {dismissingId === f.id ? 'DISMISSING...' : 'DISMISS'}
+                    {dismissingId === f.id ? 'Dismissing…' : 'Dismiss'}
                   </button>
                 </div>
               </div>
