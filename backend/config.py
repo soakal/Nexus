@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # to the Safety page. Set to "" to disable. .env-overridable.
     # Uses the Tailscale MagicDNS name (not the LAN IP 192.168.1.119) so taps from
     # phone notifications work from anywhere on the tailnet, not just at home.
-    app_base_url: str = "http://win11-vm-proxmox:3000"
+    app_base_url: str = "http://win11-vm-proxmox.tailfa52c.ts.net:3000"
 
     # Weekly spend reconciliation report (surfaced for manual comparison vs Anthropic billing).
     spend_report_enabled: bool = True
