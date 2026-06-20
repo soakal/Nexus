@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import date
@@ -33,7 +34,7 @@ class ObsidianData:
     open_tasks: list = field(default_factory=list)
 
 
-async def fetch() -> ObsidianData:
+def _fetch_sync() -> ObsidianData:
     vault = _vault()
     if not vault.exists():
         raise Exception(f"Obsidian vault not found at {vault}")
@@ -52,6 +53,11 @@ async def fetch() -> ObsidianData:
             break
 
     return ObsidianData(daily_note=daily_note, recent_notes=recent_notes, open_tasks=open_tasks)
+
+
+@async_ttl_cache(60)
+async def fetch() -> ObsidianData:
+    return await asyncio.to_thread(_fetch_sync)
 
 
 @async_ttl_cache(30)
