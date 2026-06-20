@@ -197,6 +197,10 @@ async def run_briefing() -> str:
     briefing_text = await sonnet(prompt)
     logger.info("Briefing generated")
 
+    # Extract durable facts from briefing content (best-effort, never raises)
+    from backend.agents.facts import extract_and_store as _extract_facts
+    await _extract_facts(briefing_text, None, source="briefing")
+
     # Store in DB
     with Session(engine) as session:
         b = Briefing(content=briefing_text, context_json=json.dumps(context))

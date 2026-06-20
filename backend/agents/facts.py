@@ -310,7 +310,7 @@ async def dismiss_fact(fact_id: int) -> bool:
     return await asyncio.to_thread(_db_dismiss_fact, fact_id)
 
 
-async def extract_and_store(user_message: str, conversation_id: int | None) -> None:
+async def extract_and_store(user_message: str, conversation_id: int | None, source: str = "chat") -> None:
     """Extract durable facts from the user message and persist them.
 
     Uses Haiku to extract a JSON array of facts. Best-effort: NEVER raises,
@@ -354,7 +354,7 @@ async def extract_and_store(user_message: str, conversation_id: int | None) -> N
                     continue
                 conf = float(item.get("confidence") or 0.6)
                 await asyncio.to_thread(
-                    _db_upsert_fact, subj, pred, val, conf, "chat", conversation_id
+                    _db_upsert_fact, subj, pred, val, conf, source, conversation_id
                 )
             except Exception as item_exc:
                 logger.warning(f"extract_and_store: skipping item {item!r}: {item_exc}")
