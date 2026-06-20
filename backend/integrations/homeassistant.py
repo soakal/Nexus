@@ -28,6 +28,7 @@ _NON_PERSISTENT_DOMAINS = {
     "stt",          # speech-to-text: only active while speaking
     "tts",          # text-to-speech: only active while speaking
     "input_button", # stateless helper, fires events
+    "button",       # Matter/HomeKit identify buttons — stateless, never "available"
     "scene",        # activation-only, no persistent state
     "script",       # idle scripts report no meaningful state
     "update",       # up-to-date entities report "off"/"unknown"
