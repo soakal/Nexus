@@ -135,7 +135,7 @@ class Settings(BaseSettings):
     # watchdog_alert_cooldown_s: minimum seconds between repeat phone alerts for the same condition.
     watchdog_enabled: bool = True
     scheduler_stall_grace_s: int = 600
-    dead_letter_attempts: int = 5
+    dead_letter_attempts: int = 8
     watchdog_alert_cooldown_s: int = 3600
 
     # Secret properties via vault (lazy)

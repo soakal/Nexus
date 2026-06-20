@@ -269,8 +269,9 @@ def _apply_pending_results(delivered_ids: list[int], failed_ids: list[int]) -> N
                 if delivery.attempts >= _MAX_ATTEMPTS:
                     logger.warning(
                         f"Dead-lettering pending delivery id={delivery.id} "
-                        f"type={delivery.delivery_type} after {delivery.attempts} attempts"
+                        f"type={delivery.delivery_type} after {delivery.attempts} attempts — purging"
                     )
+                    session.delete(delivery)
         session.commit()
 
 
