@@ -19,6 +19,7 @@ class UniFiData:
     new_devices: list = field(default_factory=list)
 
 
+@async_ttl_cache(60)
 async def fetch() -> UniFiData:
     from backend.config import get_settings
     from backend.database import KnownDevice, engine
