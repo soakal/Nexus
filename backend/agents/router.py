@@ -433,6 +433,49 @@ async def run_with_tools(
     return text if text else "(tool loop reached max rounds without a final answer)"
 
 
+def _create_streaming_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool, loop, q) -> None:
+    """Executor thread: streams from Anthropic and deposits events into an asyncio.Queue."""
+    client = get_client()
+    kwargs: dict = {
+        "model": model, "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        kwargs["system"] = system
+    if web_search:
+        kwargs["tools"] = [_WEB_SEARCH_TOOL]
+    try:
+        with client.messages.stream(**kwargs) as stream:
+            for text in stream.text_stream:
+                loop.call_soon_threadsafe(q.put_nowait, ("token", text))
+            loop.call_soon_threadsafe(q.put_nowait, ("done", stream.get_final_message()))
+    except Exception as e:
+        loop.call_soon_threadsafe(q.put_nowait, ("error", str(e)))
+
+
+async def stream_sonnet(prompt: str, system: str = "", web_search: bool = False):
+    """Async generator yielding text tokens streamed from Sonnet. Budget-gated."""
+    await _budget_brake()
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    task_id = _current_task_id.get()
+    fut = loop.run_in_executor(
+        None,
+        functools.partial(_create_streaming_sync, SONNET_MODEL, 8192, prompt, system, web_search, loop, q),
+    )
+    while True:
+        kind, data = await q.get()
+        if kind == "token":
+            yield data
+        elif kind == "done":
+            await loop.run_in_executor(None, functools.partial(_record_spend, SONNET_MODEL, data, "stream_sonnet", task_id))
+            break
+        elif kind == "error":
+            await fut
+            raise RuntimeError(data)
+    await fut
+
+
 async def opus(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:
     return await _run(OPUS_MODEL, 8192, prompt, system, web_search, label)
 

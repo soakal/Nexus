@@ -1,6 +1,8 @@
 import asyncio
+import json
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -23,6 +25,27 @@ async def send_message(
     from backend.agents.chat import chat
     result = await chat(body.conversation_id, body.message)
     return result
+
+
+@router.post("/stream")
+async def stream_message(body: ChatRequest, _=Depends(require_api_key)):
+    """SSE stream: CHAT intent yields tokens; other intents yield a single done event."""
+    from backend.agents.chat import chat
+
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def event_gen():
+        task = asyncio.create_task(chat(body.conversation_id, body.message, token_queue=q))
+        while True:
+            token = await q.get()
+            if token is None:
+                break
+            yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+        result = await task
+        yield f"data: {json.dumps({'type': 'done', 'conversation_id': result['conversation_id'], 'reply': result['reply']})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @router.get("/conversations")

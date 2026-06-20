@@ -221,8 +221,9 @@ _BUDGET_REACHED_REPLY = (
 )
 
 
-async def chat(conversation_id: int | None, user_message: str) -> dict:
-    from backend.agents.router import haiku, sonnet
+async def chat(conversation_id: int | None, user_message: str, *, token_queue=None) -> dict:
+    """token_queue: if set (asyncio.Queue), CHAT replies stream tokens into it; None sentinel marks end."""
+    from backend.agents.router import haiku, sonnet, stream_sonnet
     from backend.safety.governor import BudgetExceeded
 
     # 1. Conversation handling — all DB ops off the event loop
@@ -317,16 +318,24 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
             user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
                            else f"User: {user_message}")
             try:
-                reply = await sonnet(user_prompt, system=system, web_search=True)
+                if token_queue is not None:
+                    reply = ""
+                    async for token in stream_sonnet(user_prompt, system=system, web_search=True):
+                        reply += token
+                        await token_queue.put(token)
+                else:
+                    reply = await sonnet(user_prompt, system=system, web_search=True)
             except BudgetExceeded:
-                # Budget brake — must reach the outer handler, not the web-search
-                # fallback below (a second sonnet call would just re-raise anyway).
                 raise
             except Exception as e:
-                # If the hosted web search tool is unavailable (e.g. not enabled on
-                # the account), fall back to a plain reply so chat still works.
                 logger.warning(f"Chat web search unavailable, answering without it: {e}")
-                reply = await sonnet(user_prompt, system=system)
+                if token_queue is not None:
+                    reply = ""
+                    async for token in stream_sonnet(user_prompt, system=system):
+                        reply += token
+                        await token_queue.put(token)
+                else:
+                    reply = await sonnet(user_prompt, system=system)
 
         elif intent == "HOME_CONTROL":
             from backend.integrations import homeassistant
@@ -527,5 +536,8 @@ If they're saving something from the conversation, use the relevant prior assist
     # 6. Fact extraction (best-effort; guards itself, never raises; runs for ALL intents)
     from backend.agents import facts
     await facts.extract_and_store(user_message, conversation_id)
+
+    if token_queue is not None:
+        await token_queue.put(None)  # sentinel: stream done
 
     return {"conversation_id": conversation_id, "reply": reply}

@@ -182,16 +182,63 @@ export default function Chat() {
     setInput('')
     setSending(true)
 
-    // Optimistic append
-    setMessages(prev => [...prev, { role: 'user', content: text, ts: new Date().toISOString() }])
+    const now = new Date().toISOString()
+    // Add user msg + empty assistant placeholder to stream into
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', content: text, ts: now },
+      { role: 'assistant', content: '', ts: now },
+    ])
 
     try {
-      const res = await api.chat.send(text, conversationId)
-      setConversationId(res.conversation_id)
-      setMessages(prev => [...prev, { role: 'assistant', content: res.reply, ts: new Date().toISOString() }])
+      const res = await api.chat.stream(text, conversationId)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() // hold incomplete line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6)
+          if (raw === '[DONE]') break
+          let event
+          try { event = JSON.parse(raw) } catch { continue }
+
+          if (event.type === 'token') {
+            setMessages(prev => {
+              const next = [...prev]
+              const last = next[next.length - 1]
+              next[next.length - 1] = { ...last, content: last.content + event.text }
+              return next
+            })
+          } else if (event.type === 'done') {
+            setConversationId(event.conversation_id)
+            // Non-streaming intents (home control, tasks, etc.) send reply in done event
+            if (event.reply) {
+              setMessages(prev => {
+                const next = [...prev]
+                const last = next[next.length - 1]
+                if (!last.content) next[next.length - 1] = { ...last, content: event.reply }
+                return next
+              })
+            }
+          }
+        }
+      }
+
       await refreshConversations()
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `(error: ${err.message})`, ts: new Date().toISOString() }])
+      setMessages(prev => {
+        const next = [...prev]
+        next[next.length - 1] = { ...next[next.length - 1], content: `(error: ${err.message})` }
+        return next
+      })
     }
 
     setSending(false)
@@ -405,7 +452,7 @@ export default function Chat() {
             </div>
           ))}
 
-          {sending && (
+          {sending && messages.length > 0 && messages[messages.length - 1].content === '' && (
             <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
               <div style={{
                 background: 'rgba(255,255,255,0.022)',

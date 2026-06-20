@@ -107,6 +107,11 @@ export const api = {
   },
   chat: {
     send: (message, conversationId) => req('POST', '/chat/', { message, conversation_id: conversationId ?? null }),
+    stream: (message, conversationId) => fetch(`${BASE}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getKey()}` },
+      body: JSON.stringify({ message, conversation_id: conversationId ?? null }),
+    }).then(res => { if (!res.ok) throw new Error(res.status); return res }),
     conversations: () => req('GET', '/chat/conversations'),
     get: (id) => req('GET', `/chat/${id}`),
     remove: (id) => req('DELETE', `/chat/${id}`),
