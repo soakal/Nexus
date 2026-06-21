@@ -34,3 +34,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code session directory
+.claude/
