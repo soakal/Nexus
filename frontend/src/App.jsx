@@ -321,10 +321,10 @@ export default function App() {
             paddingBottom: mobileNav ? '64px' : 0,
           }}
         >
-          {/* Mobile top bar */}
+          {/* Mobile top bar — hidden when bottom nav is active */}
           <div
             style={{
-              display: mobile ? 'flex' : 'none',
+              display: (mobile && !mobileNav) ? 'flex' : 'none',
               alignItems: 'center',
               gap: '12px',
               padding: '0 16px',
