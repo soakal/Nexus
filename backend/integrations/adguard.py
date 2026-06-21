@@ -67,9 +67,16 @@ async def health_check() -> bool:
     try:
         from backend.config import get_settings
         settings = get_settings()
-        async with httpx.AsyncClient(timeout=2) as client:
-            resp = await client.get(f"{settings.adguard_host}/control/stats", auth=_auth(settings))
-            return resp.status_code == 200
+        async with httpx.AsyncClient(timeout=5) as client:
+            for attempt in range(2):
+                try:
+                    resp = await client.get(f"{settings.adguard_host}/control/stats", auth=_auth(settings))
+                    if resp.status_code == 200:
+                        return True
+                except Exception:
+                    if attempt == 0:
+                        await asyncio.sleep(1)
+        return False
     except Exception:
         return False
 
