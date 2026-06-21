@@ -123,8 +123,11 @@ async def ingest_file(file_path: str) -> dict:
             f"You have a list of items extracted from a session note and a list of existing wiki pages.\n"
             f"{_hint_line}"
             f"Existing wiki pages: {known}\n"
-            f"For each item, return the best matching wiki page name (exact existing name or a new "
-            f"PascalCase name if none fit). Return a JSON array of strings, one per item, same order.\n\n"
+            f"For each item, return the wiki page name it belongs to. Rules:\n"
+            f"1. STRONGLY prefer an EXACT existing page name from the list above — reuse, don't fragment.\n"
+            f"2. Only invent a NEW PascalCase name if NO existing page is even loosely related.\n"
+            f"3. Never create a near-duplicate of an existing page (e.g. if 'AdGuard' exists, never return 'AdGuard-Status' or 'AdGuardDNS').\n"
+            f"Return a JSON array of strings, one per item, same order.\n\n"
             f"Items:\n{json.dumps([i.get('bullet','') for i in items])}"
         )
         raw_classify = await haiku(classify_prompt)
@@ -227,6 +230,61 @@ async def run_all_unprocessed() -> dict:
         return {"processed": processed, "skipped": skipped, "results": results}
     except Exception as e:
         logger.warning(f"wiki_ingest batch error: {e}")
+        return {"error": str(e)}
+
+
+_CLUSTER_TAIL = _re.compile(r"[-_ ]?(?:pass)?\d+[a-z]?$", _re.IGNORECASE)
+
+
+def _fragmentation_report_sync(vault: Path) -> list[str]:
+    """Read-only: group wiki pages by shared prefix; flag clusters of >=5 small files.
+
+    Never merges or deletes — returns human-readable warning lines only.
+    """
+    wiki_dir = vault / "Brain" / "wiki"
+    if not wiki_dir.exists():
+        return []
+    clusters: dict[str, list[str]] = {}
+    for f in wiki_dir.glob("*.md"):
+        if f.parent.name == "processed":
+            continue
+        # cluster key = stem with trailing number/pass token stripped
+        prefix = _CLUSTER_TAIL.sub("", f.stem).rstrip("-_ ")
+        if not prefix:
+            continue
+        # only count small files (stubs) as fragmentation candidates
+        try:
+            if f.stat().st_size <= 4096:
+                clusters.setdefault(prefix, []).append(f.name)
+        except Exception:
+            continue
+    return [
+        f"Possible fragmentation: {prefix}-* ({len(names)} small files) — review for consolidation."
+        for prefix, names in sorted(clusters.items())
+        if len(names) >= 5
+    ]
+
+
+async def weekly_fragmentation_report() -> dict:
+    """Append a fragmentation warning to Inbox.md if any cluster of >=5 stubs exists.
+
+    Read-only audit — never merges/deletes. Called weekly by the scheduler.
+    """
+    try:
+        from backend.config import get_settings
+        vault = Path(get_settings().obsidian_vault_path)
+        lines = await asyncio.to_thread(_fragmentation_report_sync, vault)
+        if not lines:
+            return {"clusters": 0}
+        today = date.today().isoformat()
+        section = f"\n## {today} — Fragmentation report\n" + "\n".join(f"- {ln}" for ln in lines) + "\n"
+        inbox = vault / "Brain" / "wiki" / "Inbox.md"
+        inbox.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(_append_text, inbox, section)
+        logger.info(f"wiki fragmentation report: {len(lines)} clusters flagged to Inbox.md")
+        return {"clusters": len(lines)}
+    except Exception as e:
+        logger.warning(f"fragmentation report error: {e}")
         return {"error": str(e)}
 
 

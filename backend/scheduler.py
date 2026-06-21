@@ -252,6 +252,15 @@ async def _run_wiki_ingest():
         logger.error(f"Wiki ingest job error: {e}")
 
 
+async def _run_fragmentation_report():
+    try:
+        from backend.agents.wiki_ingest import weekly_fragmentation_report
+        result = await weekly_fragmentation_report()
+        logger.info(f"Wiki fragmentation report: {result}")
+    except Exception as e:
+        logger.error(f"Fragmentation report job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -395,4 +404,11 @@ def setup_scheduler(briefing_time: str, timezone: str):
         replace_existing=True,
     )
     logger.info("Wiki ingest batch job registered: runs daily at 01:55 %s", timezone)
+    scheduler.add_job(
+        _run_fragmentation_report,
+        CronTrigger(day_of_week="sun", hour=2, minute=30, timezone=timezone),
+        id="wiki_fragmentation_report",
+        replace_existing=True,
+    )
+    logger.info("Wiki fragmentation report registered: runs Sundays at 02:30 %s", timezone)
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")
