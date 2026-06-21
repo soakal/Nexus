@@ -319,6 +319,14 @@ async def propose_goals_tick() -> dict:
                     )
                     entry["auto_approved"] = False
 
+            # Notify for goals that need human approval (not auto-approved, not duplicates).
+            elif res["status"] == "proposed":
+                from backend import events
+                await events.notify_phone(
+                    f"New goal needs your approval: {title}\nRisk: {risk} — open Goals tab to review.",
+                    kind="goal_proposed",
+                )
+
             results_list.append(entry)
 
         count_proposed = sum(1 for r in results_list if r["status"] == "proposed")
