@@ -1,11 +1,124 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { api } from '../lib/api'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { api, API_BASE } from '../lib/api'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusDot from '../components/StatusDot'
 import ScreenHeader from '../components/ScreenHeader'
 import GhostButton from '../components/GhostButton'
 import TextInput from '../components/TextInput'
+
+// Proxmox VMs/LXCs — hardcoded from NEXUS CLAUDE.md
+const PROXMOX_VMS = [
+  'Win11Pro', 'MintLinux', 'PopOS', 'Win11ProTrudy',
+  'Hermes', 'AdGuard', 'Jellyfin', 'Wyze Bridge', 'Homepage', 'OMV',
+]
+
+function ProxmoxSection() {
+  const [pending, setPending] = useState({})  // { name: 'start'|'stop'|'reboot'|null }
+  const [toast, setToast] = useState(null)    // { msg, ok }
+  const toastTimer = useRef(null)
+
+  const showToast = (msg, ok) => {
+    clearTimeout(toastTimer.current)
+    setToast({ msg, ok })
+    toastTimer.current = setTimeout(() => setToast(null), 3500)
+  }
+
+  const sendCmd = async (name, action) => {
+    setPending((p) => ({ ...p, [name]: action }))
+    try {
+      const key = localStorage.getItem('nexus_api_key') || ''
+      const message = `${action} ${name}`
+      const res = await fetch(`${API_BASE}/api/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+        body: JSON.stringify({ message }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Drain the stream so the command fully executes
+      const reader = res.body.getReader()
+      let reply = ''
+      const dec = new TextDecoder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        reply += dec.decode(value, { stream: true })
+      }
+      showToast(`${action} ${name}: sent`, true)
+    } catch (e) {
+      showToast(`${action} ${name}: ${e.message}`, false)
+    } finally {
+      setPending((p) => { const n = { ...p }; delete n[name]; return n })
+    }
+  }
+
+  const btnStyle = (variant) => ({
+    padding: '4px 10px',
+    borderRadius: '7px',
+    fontSize: '11px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    border: variant === 'start'
+      ? '1px solid rgba(52,211,153,0.3)'
+      : variant === 'stop'
+      ? '1px solid rgba(251,113,133,0.3)'
+      : '1px solid rgba(120,160,220,0.2)',
+    background: variant === 'start'
+      ? 'rgba(52,211,153,0.08)'
+      : variant === 'stop'
+      ? 'rgba(251,113,133,0.08)'
+      : 'rgba(255,255,255,0.04)',
+    color: variant === 'start' ? '#34d399' : variant === 'stop' ? '#fb7185' : '#aab4c7',
+  })
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+        <Eyebrow>Proxmox VMs / LXCs</Eyebrow>
+        {toast && (
+          <span style={{
+            fontSize: '11px', fontWeight: 600, padding: '3px 10px', borderRadius: '6px',
+            background: toast.ok ? 'rgba(52,211,153,0.1)' : 'rgba(251,113,133,0.1)',
+            color: toast.ok ? '#34d399' : '#fb7185',
+            border: toast.ok ? '1px solid rgba(52,211,153,0.25)' : '1px solid rgba(251,113,133,0.25)',
+          }}>
+            {toast.msg}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {PROXMOX_VMS.map((name) => {
+          const busy = !!pending[name]
+          return (
+            <div key={name} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+              padding: '10px 14px', borderRadius: '11px',
+              background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+            }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0' }}>{name}</span>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {['start', 'stop', 'reboot'].map((action) => (
+                  <button
+                    key={action}
+                    disabled={busy}
+                    onClick={() => sendCmd(name, action)}
+                    style={{
+                      ...btnStyle(action),
+                      opacity: busy ? 0.5 : 1,
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {busy && pending[name] === action ? '…' : action}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
 
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean'])
 const ON_STATES = new Set(['on', 'open', 'home', 'playing', 'active', 'unlocked'])
@@ -294,6 +407,8 @@ export default function HomeAssistant() {
           <span style={{ fontSize: '13px', color: '#fb7185' }}>{error}</span>
         </div>
       )}
+
+      <ProxmoxSection />
 
       {loading ? (
         <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
