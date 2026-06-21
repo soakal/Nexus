@@ -121,7 +121,7 @@ async def vault_search(query: str, max_results: int = 10) -> str:
 
 async def create_note(title: str, content: str, folder: str = "NEXUS") -> str:
     safe_title = title.replace("/", "-").replace("\\", "-")
-    filename = f"{safe_title}.md"
+    filename = f"{folder}/{safe_title}.md" if folder else f"{safe_title}.md"
     await _post_raw(content, filename=filename)
     return str(Path(folder) / filename)
 
