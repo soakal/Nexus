@@ -249,14 +249,25 @@ HOME_CONTROL = user wants to change a Home Assistant device or configuration —
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
 CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. The chat can search the web itself, so questions needing live info still go here.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
-NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes"."""
+NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes".
+STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status"."""
+
+    # Fast-path: /status command bypasses haiku classify
+    _msg_stripped = user_message.strip()
+    _is_status_cmd = (
+        _msg_stripped.lower() == "/status"
+        or _msg_stripped.lower().startswith("/status ")
+    )
 
     # Budget-reached degrades gracefully at any point below: the haiku classify
     # and every routing branch can raise BudgetExceeded (router's daily brake).
     # We catch it, reply with a friendly message, and persist normally — no
     # exception escapes to FastAPI.
     try:
-        raw_intent = await haiku(classify_prompt)
+        if _is_status_cmd:
+            raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
+        else:
+            raw_intent = await haiku(classify_prompt)
         intent = "CHAT"
         try:
             start = raw_intent.find("{")
@@ -264,7 +275,7 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
             if start >= 0 and end > start:
                 parsed = json.loads(raw_intent[start:end])
                 intent = parsed.get("intent", "CHAT")
-                if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE"):
+                if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS"):
                     intent = "CHAT"
         except Exception:
             intent = "CHAT"
@@ -555,6 +566,53 @@ If they're saving something from the conversation, use the relevant prior assist
                 reply = f'Saved "{title}" to your vault ({path}).'
             except Exception as e:
                 reply = f"Couldn't save the note: {e}"
+
+        elif intent == "STATUS":
+            from backend.integrations import unifi, unraid, channels_dvr, hermes
+
+            status_results = await asyncio.gather(
+                unifi.fetch(),
+                unraid.fetch(),
+                channels_dvr.fetch(),
+                hermes.get_status(),
+                return_exceptions=True,
+            )
+            unifi_d, unraid_d, channels_d, hermes_d = status_results
+
+            lines = []
+
+            # UniFi
+            if isinstance(unifi_d, Exception):
+                lines.append("UniFi: unavailable")
+            else:
+                lines.append(f"UniFi: {unifi_d.client_count} clients online")
+
+            # Unraid
+            if isinstance(unraid_d, Exception):
+                lines.append("Unraid: unavailable")
+            else:
+                free_gb = unraid_d.storage_total_gb - unraid_d.storage_used_gb
+                lines.append(
+                    f"Unraid: array {unraid_d.array_status}, "
+                    f"{free_gb:.1f} GB free, "
+                    f"{len(unraid_d.docker_containers)} containers"
+                )
+
+            # Channels DVR
+            if isinstance(channels_d, Exception):
+                lines.append("Channels: unavailable")
+            else:
+                rec_now = channels_d.recording_now
+                rec_str = ", ".join(r.get("title", "?") for r in rec_now) if rec_now else "idle"
+                lines.append(f"Channels: recording {rec_str}")
+
+            # Hermes
+            if isinstance(hermes_d, Exception):
+                lines.append("Hermes: unavailable")
+            else:
+                lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
+
+            reply = "\n".join(lines)
 
     except BudgetExceeded:
         # Spending cap reached anywhere above — degrade gracefully. The reply is
