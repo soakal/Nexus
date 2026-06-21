@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
   Tv2, Home, TrendingUp, Activity, Bot, ShieldCheck, Brain,
-  Settings as SettingsIcon, Menu,
+  Settings as SettingsIcon, Menu, MoreHorizontal,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
 import Dashboard from './pages/Dashboard'
@@ -40,11 +40,15 @@ const NAV = [
 export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [mobile, setMobile] = useState(typeof window !== 'undefined' ? window.innerWidth <= 880 : false)
+  const [mobileNav, setMobileNav] = useState(typeof window !== 'undefined' ? window.innerWidth <= 768 : false)
   const [apiOk, setApiOk] = useState(true)
   const [authError, setAuthError] = useState(false)
 
   useEffect(() => {
-    const handleResize = () => setMobile(window.innerWidth <= 880)
+    const handleResize = () => {
+      setMobile(window.innerWidth <= 880)
+      setMobileNav(window.innerWidth <= 768)
+    }
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
@@ -96,6 +100,16 @@ export default function App() {
     const interval = setInterval(checkHealth, 30000)
     return () => clearInterval(interval)
   }, [])
+
+  const [moreOpen, setMoreOpen] = useState(false)
+
+  // Bottom nav items (5 tabs shown on mobile ≤768px)
+  const BOTTOM_NAV = [
+    { to: '/',    icon: LayoutDashboard, label: 'Dashboard' },
+    { to: '/chat', icon: MessageSquare,  label: 'Chat' },
+    { to: '/ha',  icon: Home,            label: 'HA' },
+    { to: '/tasks', icon: ListTodo,      label: 'Tasks' },
+  ]
 
   // Sidebar style — sticky desktop, off-canvas drawer on mobile
   const navBase = {
@@ -289,6 +303,7 @@ export default function App() {
             overflow: 'auto',
             display: 'flex',
             flexDirection: 'column',
+            paddingBottom: mobileNav ? '64px' : 0,
           }}
         >
           {/* Mobile top bar */}
@@ -390,6 +405,89 @@ export default function App() {
           </Routes>
         </main>
       </div>
+
+      {/* Mobile bottom nav — shown at ≤768px */}
+      {mobileNav && (
+        <>
+          {/* More drawer backdrop */}
+          {moreOpen && (
+            <div
+              onClick={() => setMoreOpen(false)}
+              style={{
+                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 70,
+              }}
+            />
+          )}
+
+          {/* More drawer — slides up from bottom */}
+          {moreOpen && (
+            <div style={{
+              position: 'fixed', bottom: '64px', left: 0, right: 0,
+              background: 'rgba(8,13,22,0.97)', borderTop: '1px solid rgba(120,160,220,0.12)',
+              zIndex: 71, padding: '12px',
+              display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px',
+            }}>
+              {NAV.filter(n => !BOTTOM_NAV.some(b => b.to === n.to)).map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === '/'}
+                  onClick={() => setMoreOpen(false)}
+                  style={({ isActive }) => ({
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
+                    padding: '10px 6px', borderRadius: '10px', textDecoration: 'none',
+                    fontSize: '11px', fontWeight: 600,
+                    background: isActive ? 'var(--ac-dim)' : 'rgba(255,255,255,0.03)',
+                    color: isActive ? 'var(--accent)' : '#8a96ad',
+                    border: isActive ? '1px solid var(--ac-line)' : '1px solid rgba(120,160,220,0.08)',
+                  })}
+                >
+                  <item.icon size={18} strokeWidth={1.7} />
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+          )}
+
+          {/* Fixed bottom tab bar */}
+          <nav style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, height: '64px',
+            background: 'rgba(8,13,22,0.97)', backdropFilter: 'blur(12px)',
+            borderTop: '1px solid rgba(120,160,220,0.12)',
+            display: 'flex', alignItems: 'stretch', zIndex: 72,
+          }}>
+            {BOTTOM_NAV.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === '/'}
+                style={({ isActive }) => ({
+                  flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+                  justifyContent: 'center', gap: '3px', textDecoration: 'none',
+                  fontSize: '10px', fontWeight: 600,
+                  color: isActive ? 'var(--accent)' : '#8a96ad',
+                })}
+              >
+                <item.icon size={20} strokeWidth={1.7} />
+                {item.label}
+              </NavLink>
+            ))}
+            {/* More button */}
+            <button
+              onClick={() => setMoreOpen((o) => !o)}
+              style={{
+                flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', gap: '3px', background: 'none', border: 'none',
+                cursor: 'pointer', fontSize: '10px', fontWeight: 600,
+                color: moreOpen ? 'var(--accent)' : '#8a96ad',
+              }}
+            >
+              <MoreHorizontal size={20} strokeWidth={1.7} />
+              More
+            </button>
+          </nav>
+        </>
+      )}
     </BrowserRouter>
   )
 }
