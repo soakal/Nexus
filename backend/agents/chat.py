@@ -1,9 +1,38 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+_BRIEFING_FOLLOWUP_KEYWORDS = frozenset([
+    "briefing", "this morning", "you said", "you mentioned", "earlier you",
+    "the briefing", "in the briefing", "from the briefing",
+])
+
+
+def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
+    """Return the most recent Briefing row if it's within max_age_hours. Sync — call via to_thread."""
+    try:
+        from sqlmodel import Session, select
+        from backend.database import Briefing, engine
+
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        with Session(engine) as session:
+            stmt = (
+                select(Briefing)
+                .where(Briefing.created_at >= cutoff)
+                .order_by(Briefing.created_at.desc())
+                .limit(1)
+            )
+            row = session.exec(stmt).first()
+            if row is None:
+                return None
+            return {"content": row.content, "context_json": row.context_json, "created_at": row.created_at.isoformat()}
+    except Exception as e:
+        logger.debug(f"_db_latest_briefing: error (ignored): {e}")
+        return None
+
 
 _CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation"}
 
@@ -237,6 +266,13 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
     )
     convo_summary = await asyncio.to_thread(_db_get_summary, conversation_id)
 
+    # 2a. Check for briefing follow-up — load recent briefing context if relevant
+    _msg_lower = user_message.lower()
+    _is_briefing_followup = any(kw in _msg_lower for kw in _BRIEFING_FOLLOWUP_KEYWORDS)
+    _recent_briefing: dict | None = None
+    if _is_briefing_followup:
+        _recent_briefing = await asyncio.to_thread(_db_latest_briefing, 12)
+
     # 2. Classify intent with haiku (fast)
     classify_prompt = f"""Classify this user message and return JSON only.
 
@@ -249,14 +285,25 @@ HOME_CONTROL = user wants to change a Home Assistant device or configuration —
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
 CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. The chat can search the web itself, so questions needing live info still go here.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
-NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes"."""
+NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes".
+STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status"."""
+
+    # Fast-path: /status command bypasses haiku classify
+    _msg_stripped = user_message.strip()
+    _is_status_cmd = (
+        _msg_stripped.lower() == "/status"
+        or _msg_stripped.lower().startswith("/status ")
+    )
 
     # Budget-reached degrades gracefully at any point below: the haiku classify
     # and every routing branch can raise BudgetExceeded (router's daily brake).
     # We catch it, reply with a friendly message, and persist normally — no
     # exception escapes to FastAPI.
     try:
-        raw_intent = await haiku(classify_prompt)
+        if _is_status_cmd:
+            raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
+        else:
+            raw_intent = await haiku(classify_prompt)
         intent = "CHAT"
         try:
             start = raw_intent.find("{")
@@ -264,7 +311,7 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
             if start >= 0 and end > start:
                 parsed = json.loads(raw_intent[start:end])
                 intent = parsed.get("intent", "CHAT")
-                if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE"):
+                if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS"):
                     intent = "CHAT"
         except Exception:
             intent = "CHAT"
@@ -313,6 +360,21 @@ NOTE = user wants to save something to their Obsidian notes/vault — "save this
             snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
             memory_block = memory.assemble(vault_str, briefing_str, facts_str)
+
+            # Feature 3: inject full briefing context for follow-up questions
+            if _recent_briefing and _is_briefing_followup:
+                _b_content = _recent_briefing.get("content", "")
+                _b_ctx = _recent_briefing.get("context_json")
+                _b_ts = _recent_briefing.get("created_at", "")
+                _briefing_inject = f"\n\n[TODAY'S BRIEFING ({_b_ts[:16] if _b_ts else 'recent'})]:\n{_b_content}"
+                if _b_ctx:
+                    try:
+                        _ctx_parsed = json.loads(_b_ctx)
+                        _briefing_inject += f"\n\n[BRIEFING RAW CONTEXT]:\n{json.dumps(_ctx_parsed, indent=2)}"
+                    except Exception:
+                        pass
+                memory_block = (memory_block + _briefing_inject) if memory_block else _briefing_inject.lstrip("\n\n")
+
             memory_inject = (memory_block + "\n\n") if memory_block else ""
             system = CHAT_SYSTEM.format(memory=memory_inject, snapshot=snapshot)
             user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
@@ -520,7 +582,8 @@ must use one of the listed values). If nothing matches, return:
             )
 
         elif intent == "NOTE":
-            from backend.integrations.obsidian import create_note
+            import httpx as _httpx
+            from backend.config import get_settings as _get_settings
 
             extract_prompt = f"""The user wants to save a note to their Obsidian vault.
 
@@ -550,11 +613,70 @@ If they're saving something from the conversation, use the relevant prior assist
 
             ts = datetime.now().strftime("%Y-%m-%d %H:%M")
             body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
+            safe_title = title.replace("/", "-").replace("\\", "-")
+            filename = f"{safe_title}.md"
             try:
-                path = await create_note(title=title, content=body, folder="NEXUS/Chat Notes")
-                reply = f'Saved "{title}" to your vault ({path}).'
+                _settings = _get_settings()
+                _mcp_url = _settings.brain_mcp_url.rstrip("/")
+                _token = getattr(_settings, "brain_mcp_token", "")
+                _headers = {"Authorization": f"Bearer {_token}"} if _token else {}
+                async with _httpx.AsyncClient(timeout=10) as _client:
+                    _resp = await _client.post(
+                        f"{_mcp_url}/raw",
+                        json={"content": body, "filename": filename},
+                        headers=_headers,
+                    )
+                    _resp.raise_for_status()
+                reply = f'Saved "{title}" to your vault (Brain/raw/{filename}).'
             except Exception as e:
                 reply = f"Couldn't save the note: {e}"
+
+        elif intent == "STATUS":
+            from backend.integrations import unifi, unraid, channels_dvr, hermes
+
+            status_results = await asyncio.gather(
+                unifi.fetch(),
+                unraid.fetch(),
+                channels_dvr.fetch(),
+                hermes.get_status(),
+                return_exceptions=True,
+            )
+            unifi_d, unraid_d, channels_d, hermes_d = status_results
+
+            lines = []
+
+            # UniFi
+            if isinstance(unifi_d, Exception):
+                lines.append("UniFi: unavailable")
+            else:
+                lines.append(f"UniFi: {unifi_d.client_count} clients online")
+
+            # Unraid
+            if isinstance(unraid_d, Exception):
+                lines.append("Unraid: unavailable")
+            else:
+                free_gb = unraid_d.storage_total_gb - unraid_d.storage_used_gb
+                lines.append(
+                    f"Unraid: array {unraid_d.array_status}, "
+                    f"{free_gb:.1f} GB free, "
+                    f"{len(unraid_d.docker_containers)} containers"
+                )
+
+            # Channels DVR
+            if isinstance(channels_d, Exception):
+                lines.append("Channels: unavailable")
+            else:
+                rec_now = channels_d.recording_now
+                rec_str = ", ".join(r.get("title", "?") for r in rec_now) if rec_now else "idle"
+                lines.append(f"Channels: recording {rec_str}")
+
+            # Hermes
+            if isinstance(hermes_d, Exception):
+                lines.append("Hermes: unavailable")
+            else:
+                lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
+
+            reply = "\n".join(lines)
 
     except BudgetExceeded:
         # Spending cap reached anywhere above — degrade gracefully. The reply is
