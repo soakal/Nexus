@@ -145,6 +145,33 @@ async def ingest_file(file_path: str) -> dict:
         return {"file": str(file_path), "error": str(e)}
 
 
+async def run_all_unprocessed() -> dict:
+    """Batch-ingest every .md in Brain/raw/ not yet in the ledger. Called by scheduler at 01:55."""
+    try:
+        from backend.config import get_settings
+        settings = get_settings()
+        vault = Path(settings.obsidian_vault_path)
+        raw_dir = vault / "Brain" / "raw"
+        if not raw_dir.exists():
+            return {"processed": 0, "skipped": 0, "results": []}
+
+        seen = await asyncio.to_thread(_load_ledger, vault)
+        files = sorted(raw_dir.glob("*.md"))
+        results, processed, skipped = [], 0, 0
+        for f in files:
+            if f.name in seen:
+                skipped += 1
+                continue
+            res = await ingest_file(str(f))
+            results.append(res)
+            processed += 1
+        logger.info(f"wiki_ingest batch done: {processed} processed, {skipped} skipped")
+        return {"processed": processed, "skipped": skipped, "results": results}
+    except Exception as e:
+        logger.warning(f"wiki_ingest batch error: {e}")
+        return {"error": str(e)}
+
+
 def _parse_json_array(raw: str) -> list:
     try:
         start = raw.find("[")

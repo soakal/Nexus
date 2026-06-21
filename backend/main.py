@@ -84,16 +84,6 @@ async def lifespan(app: FastAPI):
                 daemon=True,
             ).start()
 
-            from backend.agents.wiki_ingest import start_wiki_watcher
-            from pathlib import Path as _Path
-            _brain_raw = str(_Path(settings.obsidian_vault_path) / "Brain" / "raw")
-            threading.Thread(
-                target=start_wiki_watcher,
-                args=(_brain_raw, loop),
-                name="wiki-ingest-start",
-                daemon=True,
-            ).start()
-
             # Durable task worker pool — start() re-enqueues any unfinished tasks
             # so execution resumes after a restart instead of being force-failed.
             from backend.agents.worker_pool import get_pool
@@ -139,11 +129,6 @@ async def lifespan(app: FastAPI):
     try:
         from backend.agents.memo_watcher import stop_watcher
         await stop_watcher()
-    except Exception:
-        pass
-    try:
-        from backend.agents.wiki_ingest import stop_wiki_watcher
-        await stop_wiki_watcher()
     except Exception:
         pass
     try:

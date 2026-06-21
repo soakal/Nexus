@@ -243,6 +243,15 @@ async def _run_brain_organizer():
         logger.error(f"Brain Organizer job error: {e}")
 
 
+async def _run_wiki_ingest():
+    try:
+        from backend.agents.wiki_ingest import run_all_unprocessed
+        result = await run_all_unprocessed()
+        logger.info(f"Wiki ingest batch: {result}")
+    except Exception as e:
+        logger.error(f"Wiki ingest job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -379,4 +388,11 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Brain Organizer job registered: runs daily at 02:00 %s", timezone)
+    scheduler.add_job(
+        _run_wiki_ingest,
+        CronTrigger(hour=1, minute=55, timezone=timezone),
+        id="wiki_ingest",
+        replace_existing=True,
+    )
+    logger.info("Wiki ingest batch job registered: runs daily at 01:55 %s", timezone)
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")
