@@ -57,6 +57,7 @@ _NOISE_SUBSTRINGS = (
     "_voice_event",      # Alexa/Fire voice event entities
     "blink_",            # Blink camera metadata (temp, wifi signal)
     "_connectivity",     # Alexa/Fire connectivity binary sensors
+    "_iphone_16_pro_",  # iOS Companion App passive sensors (sleep/Low Power/background refresh)
 )
 
 
