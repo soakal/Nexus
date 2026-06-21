@@ -149,6 +149,14 @@ async def ingest_file(file_path: str) -> dict:
 
         seen.add(key)
         await asyncio.to_thread(_save_ledger, vault, seen)
+
+        # Move processed file to Brain/wiki/processed/ so it's archived, not deleted
+        processed_dir = path.parent / "processed"
+        processed_dir.mkdir(exist_ok=True)
+        dest = processed_dir / path.name
+        await asyncio.to_thread(path.rename, dest)
+        logger.info(f"wiki_ingest: moved {path.name} → processed/")
+
         return {"file": key, "items": len(items), "wikis_touched": wikis_touched}
 
     except Exception as e:
