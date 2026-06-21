@@ -151,8 +151,10 @@ async def ingest_file(file_path: str) -> dict:
         await asyncio.to_thread(_save_ledger, vault, seen)
 
         # Move processed file to Brain/wiki/processed/ so it's archived, not deleted
-        processed_dir = path.parent / "processed"
-        processed_dir.mkdir(exist_ok=True)
+        from backend.config import get_settings as _gs
+        _vault = Path(_gs().obsidian_vault_path)
+        processed_dir = _vault / "Brain" / "wiki" / "processed"
+        processed_dir.mkdir(parents=True, exist_ok=True)
         dest = processed_dir / path.name
         await asyncio.to_thread(path.rename, dest)
         logger.info(f"wiki_ingest: moved {path.name} → processed/")
@@ -164,18 +166,45 @@ async def ingest_file(file_path: str) -> dict:
         return {"file": str(file_path), "error": str(e)}
 
 
+import re as _re
+_DATE_PAT = _re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _is_session_file(f: Path) -> bool:
+    """True if a wiki file looks like a session log rather than a knowledge page."""
+    if _DATE_PAT.match(f.stem):
+        return True
+    try:
+        head = f.read_text(encoding="utf-8", errors="ignore")[:400]
+        return "type: daily-session" in head or "consolidated_sessions" in head
+    except Exception:
+        return False
+
+
 async def run_all_unprocessed() -> dict:
-    """Batch-ingest every .md in Brain/raw/ not yet in the ledger. Called by scheduler at 01:55."""
+    """Batch-ingest unprocessed .md files from Brain/raw/ AND Brain/wiki/ session logs.
+
+    Brain/raw/  — every .md file is a candidate.
+    Brain/wiki/ — only date-named files or files with daily-session frontmatter.
+    Called by scheduler at 01:55.
+    """
     try:
         from backend.config import get_settings
         settings = get_settings()
         vault = Path(settings.obsidian_vault_path)
         raw_dir = vault / "Brain" / "raw"
-        if not raw_dir.exists():
-            return {"processed": 0, "skipped": 0, "results": []}
+        wiki_dir = vault / "Brain" / "wiki"
 
         seen = await asyncio.to_thread(_load_ledger, vault)
-        files = sorted(raw_dir.glob("*.md"))
+
+        # Brain/raw/ — all .md files
+        files = sorted(raw_dir.glob("*.md")) if raw_dir.exists() else []
+
+        # Brain/wiki/ — only session-shaped files (not the processed subfolder)
+        if wiki_dir.exists():
+            for f in sorted(wiki_dir.glob("*.md")):
+                if f.parent.name != "processed" and _is_session_file(f):
+                    files.append(f)
         results, processed, skipped = [], 0, 0
         for f in files:
             if f.name in seen:
