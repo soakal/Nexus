@@ -56,6 +56,12 @@ def _known_wikis(vault: Path) -> list[str]:
     return [f.stem for f in wiki_dir.glob("*.md")]
 
 
+def _append_text(page: Path, section: str) -> None:
+    """Append a section to a wiki page on disk (creates it if absent). UTF-8."""
+    with page.open("a", encoding="utf-8") as f:
+        f.write(section)
+
+
 # ---------------------------------------------------------------------------
 # Core ingestion (async)
 # ---------------------------------------------------------------------------
@@ -69,7 +75,6 @@ async def ingest_file(file_path: str) -> dict:
     try:
         from backend.agents.router import haiku
         from backend.config import get_settings
-        from backend.integrations.obsidian import _post_raw
 
         settings = get_settings()
         vault = Path(settings.obsidian_vault_path)
@@ -138,12 +143,17 @@ async def ingest_file(file_path: str) -> dict:
                 wiki = "Inbox"
             groups.setdefault(wiki, []).append(item.get("bullet", ""))
 
+        # Append directly to the wiki page on disk. Brain MCP /raw IGNORES the
+        # subfolder in the filename and dumps everything into Brain/raw/, so we
+        # write the file ourselves to land in Brain/wiki/.
+        wiki_dir = vault / "Brain" / "wiki"
+        wiki_dir.mkdir(parents=True, exist_ok=True)
         wikis_touched = []
         for wiki_name, bullets in groups.items():
             section = f"\n## {today} — from {path.name}\n"
             section += "\n".join(f"- {b}" for b in bullets) + "\n"
-            filename = f"{_WIKI_DIR}/{wiki_name}.md"
-            await _post_raw(section, filename=filename)
+            page = wiki_dir / f"{wiki_name}.md"
+            await asyncio.to_thread(_append_text, page, section)
             wikis_touched.append(wiki_name)
             logger.info(f"wiki_ingest: appended {len(bullets)} items to {wiki_name}.md")
 
