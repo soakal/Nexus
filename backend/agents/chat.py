@@ -1,9 +1,38 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+_BRIEFING_FOLLOWUP_KEYWORDS = frozenset([
+    "briefing", "this morning", "you said", "you mentioned", "earlier you",
+    "the briefing", "in the briefing", "from the briefing",
+])
+
+
+def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
+    """Return the most recent Briefing row if it's within max_age_hours. Sync — call via to_thread."""
+    try:
+        from sqlmodel import Session, select
+        from backend.database import Briefing, engine
+
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        with Session(engine) as session:
+            stmt = (
+                select(Briefing)
+                .where(Briefing.created_at >= cutoff)
+                .order_by(Briefing.created_at.desc())
+                .limit(1)
+            )
+            row = session.exec(stmt).first()
+            if row is None:
+                return None
+            return {"content": row.content, "context_json": row.context_json, "created_at": row.created_at.isoformat()}
+    except Exception as e:
+        logger.debug(f"_db_latest_briefing: error (ignored): {e}")
+        return None
+
 
 _CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation"}
 
@@ -237,6 +266,13 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
     )
     convo_summary = await asyncio.to_thread(_db_get_summary, conversation_id)
 
+    # 2a. Check for briefing follow-up — load recent briefing context if relevant
+    _msg_lower = user_message.lower()
+    _is_briefing_followup = any(kw in _msg_lower for kw in _BRIEFING_FOLLOWUP_KEYWORDS)
+    _recent_briefing: dict | None = None
+    if _is_briefing_followup:
+        _recent_briefing = await asyncio.to_thread(_db_latest_briefing, 12)
+
     # 2. Classify intent with haiku (fast)
     classify_prompt = f"""Classify this user message and return JSON only.
 
@@ -324,6 +360,21 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
             snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
             memory_block = memory.assemble(vault_str, briefing_str, facts_str)
+
+            # Feature 3: inject full briefing context for follow-up questions
+            if _recent_briefing and _is_briefing_followup:
+                _b_content = _recent_briefing.get("content", "")
+                _b_ctx = _recent_briefing.get("context_json")
+                _b_ts = _recent_briefing.get("created_at", "")
+                _briefing_inject = f"\n\n[TODAY'S BRIEFING ({_b_ts[:16] if _b_ts else 'recent'})]:\n{_b_content}"
+                if _b_ctx:
+                    try:
+                        _ctx_parsed = json.loads(_b_ctx)
+                        _briefing_inject += f"\n\n[BRIEFING RAW CONTEXT]:\n{json.dumps(_ctx_parsed, indent=2)}"
+                    except Exception:
+                        pass
+                memory_block = (memory_block + _briefing_inject) if memory_block else _briefing_inject.lstrip("\n\n")
+
             memory_inject = (memory_block + "\n\n") if memory_block else ""
             system = CHAT_SYSTEM.format(memory=memory_inject, snapshot=snapshot)
             user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
