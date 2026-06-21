@@ -104,8 +104,19 @@ async def ingest_file(file_path: str) -> dict:
             return {"file": key, "items": 0, "wikis_touched": []}
 
         # --- Haiku call 2: classify ---
+        # Derive a filename hint by stripping common noise tokens from the stem
+        _stem = path.stem
+        for _tok in ("session", "Session", str(date.today()), "-", "_"):
+            _stem = _stem.replace(_tok, " ")
+        filename_hint = _stem.strip()
+        _hint_line = (
+            f"The session file is named '{path.name}' — strongly prefer wiki '{filename_hint}' "
+            f"unless an item clearly belongs elsewhere.\n"
+            if filename_hint else ""
+        )
         classify_prompt = (
             f"You have a list of items extracted from a session note and a list of existing wiki pages.\n"
+            f"{_hint_line}"
             f"Existing wiki pages: {known}\n"
             f"For each item, return the best matching wiki page name (exact existing name or a new "
             f"PascalCase name if none fit). Return a JSON array of strings, one per item, same order.\n\n"
