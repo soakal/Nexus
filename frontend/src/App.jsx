@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
 import CommandPalette from './components/CommandPalette'
+import AlertStrip from './components/AlertStrip'
 import Dashboard from './pages/Dashboard'
 import Briefing from './pages/Briefing'
 import Today from './pages/Today'
@@ -401,6 +402,9 @@ export default function App() {
               </NavLink>
             </div>
           )}
+
+          {/* HA alert strip — sticky, polls every 30s */}
+          {!authError && <AlertStrip />}
 
           <Routes>
             <Route path="/" element={<Dashboard />} />
