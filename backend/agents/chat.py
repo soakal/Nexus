@@ -531,7 +531,8 @@ must use one of the listed values). If nothing matches, return:
             )
 
         elif intent == "NOTE":
-            from backend.integrations.obsidian import create_note
+            import httpx as _httpx
+            from backend.config import get_settings as _get_settings
 
             extract_prompt = f"""The user wants to save a note to their Obsidian vault.
 
@@ -561,9 +562,21 @@ If they're saving something from the conversation, use the relevant prior assist
 
             ts = datetime.now().strftime("%Y-%m-%d %H:%M")
             body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
+            safe_title = title.replace("/", "-").replace("\\", "-")
+            filename = f"{safe_title}.md"
             try:
-                path = await create_note(title=title, content=body, folder="NEXUS/Chat Notes")
-                reply = f'Saved "{title}" to your vault ({path}).'
+                _settings = _get_settings()
+                _mcp_url = _settings.brain_mcp_url.rstrip("/")
+                _token = getattr(_settings, "brain_mcp_token", "")
+                _headers = {"Authorization": f"Bearer {_token}"} if _token else {}
+                async with _httpx.AsyncClient(timeout=10) as _client:
+                    _resp = await _client.post(
+                        f"{_mcp_url}/raw",
+                        json={"content": body, "filename": filename},
+                        headers=_headers,
+                    )
+                    _resp.raise_for_status()
+                reply = f'Saved "{title}" to your vault (Brain/raw/{filename}).'
             except Exception as e:
                 reply = f"Couldn't save the note: {e}"
 
