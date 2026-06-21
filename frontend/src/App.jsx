@@ -6,6 +6,7 @@ import {
   Settings as SettingsIcon, Menu, MoreHorizontal,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
+import CommandPalette from './components/CommandPalette'
 import Dashboard from './pages/Dashboard'
 import Briefing from './pages/Briefing'
 import Today from './pages/Today'
@@ -102,6 +103,19 @@ export default function App() {
   }, [])
 
   const [moreOpen, setMoreOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // Cmd/Ctrl+K opens the command palette
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen((o) => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Bottom nav items (5 tabs shown on mobile ≤768px)
   const BOTTOM_NAV = [
@@ -405,6 +419,9 @@ export default function App() {
           </Routes>
         </main>
       </div>
+
+      {/* Command palette — Cmd/Ctrl+K */}
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
 
       {/* Mobile bottom nav — shown at ≤768px */}
       {mobileNav && (
