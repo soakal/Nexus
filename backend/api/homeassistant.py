@@ -35,6 +35,22 @@ async def get_entities(_=Depends(require_api_key)):
     }
 
 
+@router.get("/alerts")
+async def get_alerts(_=Depends(require_api_key)):
+    """Return only the current alert list — used by the frontend alert strip."""
+    from backend.integrations.homeassistant import IntegrationError, fetch
+    try:
+        data = await fetch()
+    except IntegrationError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Home Assistant unreachable: {e}")
+    return {
+        "alerts": data.alerts,
+        "cloud_alerts": data.cloud_alerts,
+    }
+
+
 @router.post("/service")
 async def call_ha_service(body: ServiceCall, _=Depends(require_api_key)):
     """Invoke a Home Assistant service against a single entity (broker-gated)."""
