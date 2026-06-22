@@ -111,6 +111,46 @@ def _db_uptime_anomalies(since: datetime) -> list[dict]:
         return []
 
 
+def _ha_entity_summary(ha) -> str:
+    """Compact state summary for lights, security devices, and room temps.
+
+    Gives Opus enough context to propose 'turn off the Christmas tree plug'
+    or 'garage door has been open for a while' without seeing all N entities.
+    """
+    if not ha or isinstance(ha, Exception):
+        return "(unavailable)"
+    entities = getattr(ha, "entities", []) or []
+    by_id = {e.get("entity_id", ""): e for e in entities}
+
+    WATCH = {
+        "switch.tall_light_lr_christmas_tree_plug": "xmas_tree_plug",
+        "light.left_porch_light": "porch_light_left",
+        "light.right_porch_light": "porch_light_right",
+        "light.left_garage_light": "garage_light_left",
+        "light.right_garage_light": "garage_light_right",
+        "cover.garage_door_garage_door": "garage_door",
+        "lock.dining_room": "back_door_lock",
+    }
+    lines = []
+    for eid, label in WATCH.items():
+        ent = by_id.get(eid)
+        if ent:
+            lines.append(f"- {label}: {ent.get('state', 'unknown')}")
+
+    # Discover room temperature sensors dynamically
+    for e in entities:
+        eid = e.get("entity_id", "")
+        if eid.startswith("sensor.") and "temperature" in eid and e.get("state") not in ("unavailable", "unknown", None):
+            try:
+                temp = float(e["state"])
+                label = eid.replace("sensor.", "").replace("_current_temperature", "").replace("_temperature", "").replace("_", " ")
+                lines.append(f"- temp/{label}: {temp:.0f}°F")
+            except (ValueError, TypeError):
+                pass
+
+    return "\n".join(lines) if lines else "(no watched entities found)"
+
+
 async def propose_goals_tick() -> dict:
     """Review live homelab state and propose new goals via Opus (suggest-only).
 
@@ -147,6 +187,7 @@ async def propose_goals_tick() -> dict:
         )
         ha, unraid_d, channels, ag, wx = results
         snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
+        ha_entity_text = _ha_entity_summary(ha)
 
         # ------------------------------------------------------------------
         # Load already-open goals so Opus avoids duplicates.
@@ -233,11 +274,12 @@ async def propose_goals_tick() -> dict:
             "You are NEXUS's planning daemon. Review the live homelab state and the goals already open.\n"
             "Propose any NEW objectives genuinely worth doing — concrete, actionable, NOT already open,\n"
             "NOT destructive. Be conservative: return an EMPTY array unless something clearly warrants\n"
-            "attention (e.g. storage near full, a device alert, many stale PRs). Never propose anything\n"
-            "that is already listed as open.\n"
+            "attention (e.g. storage near full, a device alert, many stale PRs, a light left on,\n"
+            "the garage door open, or the back door unlocked). Never propose anything already open.\n"
             "Use the RECENT TRENDS to anticipate upcoming issues (e.g. storage rising toward full,\n"
-            "blocked percentage climbing). Do NOT propose anything that appears on the\n"
-            "DO NOT RE-PROPOSE list — those goals were explicitly rejected by Brian; respect his judgment.\n\n"
+            "blocked percentage climbing). Check HA ENTITY STATES for devices that may have been\n"
+            "left on/open/unlocked — the home_control write tool can turn them off (low-risk, reversible).\n"
+            "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n\n"
             f"Return JSON only — an array (max {max_per_tick}) of:\n"
             '[{"title": "...", "description": "concrete goal the executor can pursue", '
             '"risk": "low|medium|high", '
@@ -246,6 +288,7 @@ async def propose_goals_tick() -> dict:
             '"category": "one of: maintenance|storage|network|media|monitoring|knowledge|other"}]\n'
             "Empty array [] if nothing warrants action.\n\n"
             f"LIVE STATE:\n{snapshot}\n\n"
+            f"HA ENTITY STATES (lights, security — check for left-on/open/unlocked):\n{ha_entity_text}\n\n"
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
             f"RECENT TRENDS (7d):\n{trends_text}\n\n"
             f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
