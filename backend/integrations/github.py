@@ -71,7 +71,7 @@ async def health_check() -> bool:
         from backend.config import get_settings
         settings = get_settings()
         headers = {"Authorization": f"token {settings.github_token}"}
-        async with httpx.AsyncClient(timeout=2) as client:
+        async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get("https://api.github.com/user", headers=headers)
             return resp.status_code == 200
     except Exception:
