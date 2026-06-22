@@ -36,8 +36,6 @@ _ALERT_ALLOWLIST = frozenset({
     "lock.dining_room",
     # UniFi integration health
     "switch.unifi_network",
-    "sensor.unifi_identity",
-    "switch.unifi_identity",
     # AdGuard
     "switch.adguard_home_protection",
     "switch.adguard_home_filtering",

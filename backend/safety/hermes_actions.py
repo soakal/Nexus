@@ -108,6 +108,13 @@ ALLOWLIST: dict[str, HermesVerb] = {
         required_args=("name",), enum_args={},
         build=lambda args: f"logs for {args['name'].strip()}",
     ),
+    # Reload a Home Assistant config entry by integration domain (e.g. "unifi").
+    # MEDIUM: temporary integration disruption, auto-recovers on reload completion.
+    "reload_integration": HermesVerb(
+        verb="reload_integration", risk=Risk.MEDIUM, reversibility=Reversibility.REVERSIBLE,
+        required_args=("integration",), enum_args={},
+        build=lambda args: f"reload integration {args['integration'].strip()}",
+    ),
     # Wake-on-LAN a machine. HIGH so an agent/autonomous actor ALWAYS needs a human
     # tap (it powers on hardware); reversible by shutting the machine back down.
     "wol": HermesVerb(
