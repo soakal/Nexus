@@ -9,8 +9,8 @@ import TextInput from '../components/TextInput'
 
 // Proxmox VMs/LXCs — hardcoded from NEXUS CLAUDE.md
 const PROXMOX_VMS = [
-  'Win11Pro', 'MintLinux', 'PopOS', 'Win11ProTrudy',
-  'Hermes', 'AdGuard', 'Jellyfin', 'Wyze Bridge', 'Homepage', 'OMV',
+  'Win11Pro', 'MintLinux', 'Win11ProTrudy',
+  'Hermes', 'AdGuard', 'Jellyfin',
 ]
 
 function ProxmoxSection() {

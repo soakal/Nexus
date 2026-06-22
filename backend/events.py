@@ -31,6 +31,9 @@ async def notify_phone(content: str, *, kind: str = "autonomy_alert") -> bool:
         settings = get_settings()
         if not getattr(settings, "phone_notifications_enabled", False):
             return False
+        suppressed = getattr(settings, "phone_suppressed_kinds", set())
+        if kind in suppressed:
+            return False
         # Append deep-link when a base URL is configured.
         base = str(getattr(settings, "app_base_url", "") or "").strip().rstrip("/")
         parse_mode = None

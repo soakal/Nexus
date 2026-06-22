@@ -21,92 +21,29 @@ class IntegrationError(Exception):
     pass
 
 
-# Domains that are inherently non-persistent: they never hold a stable
-# "available" state, so an "unavailable"/"unknown" reading is expected and
-# should NOT be flagged as a real problem.
-_NON_PERSISTENT_DOMAINS = {
-    "stt",           # speech-to-text: only active while speaking
-    "tts",           # text-to-speech: only active while speaking
-    "input_button",  # stateless helper, fires events
-    "button",        # Matter/HomeKit/Proxmox action buttons — stateless
-    "scene",         # activation-only, no persistent state
-    "script",        # idle scripts report no meaningful state
-    "update",        # up-to-date entities report "off"/"unknown"
-    "notify",        # notification services — no persistent state
-    "event",         # HA event entities — fire-and-forget, always unknown at rest
-    "remote",        # remote control entities — no persistent availability
-    "device_tracker", # network presence — constantly changes as devices roam/sleep
-}
-
-# Domains that genuinely indicate a degraded device when "unavailable".
-_DEGRADABLE_DOMAINS = {
-    "person",
-    "media_player",
-    "binary_sensor",
-    "sensor",
-}
-
-# Entity ID substrings that are always noise regardless of domain.
-_NOISE_SUBSTRINGS = (
-    "battery",
-    "unifi_default_",    # UniFi MAC-address device trackers
-    "_next_alarm",       # Alexa polling sensors
-    "_next_reminder",    # Alexa polling sensors
-    "_next_timer",       # Alexa polling sensors
-    "_do_not_disturb",   # Alexa DND switches
-    "_voice_event",      # Alexa/Fire voice event entities
-    "blink_",            # Blink camera metadata (temp, wifi signal)
-    "_connectivity",     # Alexa/Fire connectivity binary sensors
-    "_iphone_16_pro_",  # iOS Companion App passive sensors (sleep/Low Power/background refresh)
-)
-
-
-def is_noise_entity(entity_id: str, state) -> bool:
-    """Return True when an unavailable/unknown reading is *expected* (noise),
-    rather than a genuine fault worth alerting on.
-
-    Only entities whose state is "unavailable"/"unknown" reach the alert
-    pipeline, so this function decides which of those to suppress.
-    """
-    if not entity_id:
-        return False
-
-    domain = entity_id.split(".", 1)[0]
-    eid_l = entity_id.lower()
-    state_l = (state or "").lower() if isinstance(state, str) else ""
-
-    # Inherently non-persistent domains never have a real "available" state.
-    if domain in _NON_PERSISTENT_DOMAINS:
-        return True
-
-    # Substring-based noise patterns (cross-domain).
-    if any(sub in eid_l for sub in _NOISE_SUBSTRINGS):
-        return True
-
-    # A sensor reporting "unknown" usually just means "not yet read" (e.g.
-    # first boot) — that is not a degradation. "unavailable" still alerts.
-    if state_l == "unknown" and domain in _DEGRADABLE_DOMAINS:
-        return True
-
-    return False
-
-
-def _is_noise(entity: dict) -> bool:
-    """Entity-aware noise check that also inspects friendly_name."""
-    entity_id = entity.get("entity_id", "")
-    state = entity.get("state")
-    friendly = ""
-    attrs = entity.get("attributes")
-    if isinstance(attrs, dict):
-        friendly = str(attrs.get("friendly_name") or "")
-        # HA marks diagnostic/config entities itself — trust that classification.
-        if attrs.get("entity_category") in ("diagnostic", "config"):
-            return True
-
-    if "battery" in friendly.lower():
-        return True
-
-    return is_noise_entity(entity_id, state)
+# ponytail: allowlist replaces the old denylist — only these entities ever appear in alerts
+_ALERT_ALLOWLIST = frozenset({
+    # Lights
+    "light.tall_light_lr_christmas_tree_plug",
+    "switch.tall_light_lr_christmas_tree_plug",
+    "light.left_porch_light",
+    "light.right_porch_light",
+    "light.left_garage_light",
+    "light.right_garage_light",
+    # Garage door
+    "cover.garage_door_garage_door",
+    # August / back door lock
+    "lock.dining_room",
+    # UniFi integration health
+    "switch.unifi_network",
+    "sensor.unifi_identity",
+    "switch.unifi_identity",
+    # AdGuard
+    "switch.adguard_home_protection",
+    "switch.adguard_home_filtering",
+    # Proxmox (PVE integration)
+    "binary_sensor.pve_adguard",
+})
 
 
 @async_ttl_cache(30)
@@ -125,12 +62,12 @@ async def fetch() -> HAData:
         resp.raise_for_status()
         entities = resp.json()
 
-        # Smart alert filter: only flag genuinely degraded entities.
+        # Only alert on the explicit allowlist — everything else is noise.
         alerts = [
             e["entity_id"]
             for e in entities
             if e.get("state") in ("unavailable", "unknown")
-            and not _is_noise(e)
+            and e.get("entity_id") in _ALERT_ALLOWLIST
         ]
 
         # HA Cloud health checks: surface structured cloud alerts.

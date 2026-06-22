@@ -7,6 +7,7 @@ import httpx
 def mock_ha_response():
     return [
         {"entity_id": "light.kitchen", "state": "on"},
+        {"entity_id": "cover.garage_door_garage_door", "state": "unavailable"},
         {"entity_id": "sensor.temp", "state": "unavailable"},
     ]
 
@@ -24,8 +25,10 @@ async def test_homeassistant_fetch(mock_ha_response):
 
         from backend.integrations.homeassistant import fetch
         data = await fetch()
-        assert len(data.entities) == 2
-        assert "sensor.temp" in data.alerts
+        assert len(data.entities) == 3
+        # allowlist: only monitored entities appear in alerts
+        assert "cover.garage_door_garage_door" in data.alerts
+        assert "sensor.temp" not in data.alerts
 
 
 @pytest.mark.asyncio

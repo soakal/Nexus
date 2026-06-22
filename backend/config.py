@@ -1,6 +1,7 @@
 
 import logging
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,16 @@ class Settings(BaseSettings):
     phone_notifications_enabled: bool = True   # gate for all notify_phone calls
     autonomy_digest_enabled: bool = True        # send a daily autonomy summary
     autonomy_digest_time: str = "20:00"         # 24h HH:MM for the daily digest job
+    # Kinds to silence — informational ones already covered by the daily digest.
+    # Override in .env as comma-separated: PHONE_SUPPRESSED_KINDS=auto_approved,throttled
+    phone_suppressed_kinds: set[str] = {"auto_approved", "throttled", "scheduler_stall"}
+
+    @field_validator("phone_suppressed_kinds", mode="before")
+    @classmethod
+    def _parse_suppressed_kinds(cls, v):
+        if isinstance(v, str):
+            return {k.strip() for k in v.split(",") if k.strip()}
+        return v
 
     # Orchestrator model tiers (per role) — .env-overridable so you can trade cost
     # vs quality without code changes. Defaults are the "balanced/cheaper" profile:
