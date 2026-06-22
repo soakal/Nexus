@@ -127,7 +127,7 @@ async def health_check() -> bool:
         from backend.config import get_settings
         settings = get_settings()
         headers = {"Authorization": f"Bearer {settings.hass_token}"}
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=2) as client:
             resp = await client.get(f"{settings.hass_host}/api/", headers=headers)
             return resp.status_code == 200
     except Exception:

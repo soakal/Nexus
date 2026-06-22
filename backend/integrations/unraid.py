@@ -96,7 +96,7 @@ async def health_check() -> bool:
         settings = get_settings()
         api_key = settings.unraid_api_key
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501
+        async with httpx.AsyncClient(timeout=2, verify=False) as client:  # nosec B501
             resp = await client.post(
                 f"https://{settings.unraid_host}/graphql",
                 json={"query": "{ array { state } }"},

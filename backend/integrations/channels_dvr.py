@@ -111,7 +111,7 @@ async def health_check() -> bool:
     try:
         from backend.config import get_settings
         settings = get_settings()
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=2) as client:
             resp = await client.get(f"{settings.channels_host}/dvr")
             return resp.status_code == 200
     except Exception:

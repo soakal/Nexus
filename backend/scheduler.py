@@ -76,21 +76,16 @@ async def _record_uptime():
         async def _check(name, mod):
             t0 = time.monotonic()
             try:
-                # Bypass the shared TTL cache — the frontend polls /api/sources/status
-                # every 30s and may cache a transient False for 3s; if the uptime job
-                # lands in that window it records 0ms "failures" that are cache artifacts,
-                # not real outages. __wrapped__ is the original undecorated function
-                # (set by @wraps in cache.py) so every uptime sample is a fresh probe.
-                probe = getattr(mod.health_check, "__wrapped__", mod.health_check)
-                ok = await probe()
+                ok = await mod.health_check()
             except Exception:
                 ok = False
             ms = int((time.monotonic() - t0) * 1000)
             return name, bool(ok), ms
 
         # Run checks SEQUENTIALLY, not concurrently. Firing all 10 at once thunders
-        # the event loop with cold TLS handshakes and inflates latency with event-loop
-        # queue time rather than real network time. One-at-a-time gives accurate
+        # the event loop with cold TLS handshakes: some false-fail on their 2s
+        # timeout and the survivors report inflated latency that is really
+        # event-loop queue time, not network time. One-at-a-time gives accurate
         # reachability + latency. 10 checks every 2 min is cheap.
         results = []
         for n, m in sources.items():

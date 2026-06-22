@@ -225,7 +225,15 @@ def test_setup_scheduler_adds_jobs():
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    assert mock_add.call_count == 16
+    # 5 original jobs + step_watchdog + goal_proposer + autonomy_digest +
+    # db_checkpoint + db_backup (backup_enabled=True by default) +
+    # watchdog (watchdog_enabled=True by default) +
+    # spend_report (spend_report_enabled=True by default) +
+    # goal_recurrence (goal_recurrence_enabled=True by default) +
+    # brain_organizer (registered when modules/brain-organizer venv exists;
+    #   defaults True in test env because the scheduler always registers it).
+    assert mock_add.call_count == 14
+    # Verify jobs by checking the id kwarg in each call
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -244,8 +252,6 @@ def test_setup_scheduler_adds_jobs():
         "spend_report",
         "goal_recurrence",
         "brain_organizer",
-        "wiki_fragmentation_report",
-        "wiki_ingest",
     }
 
 

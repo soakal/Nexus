@@ -361,12 +361,12 @@ async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
 
     # All three data block headers must be present
     assert "RECENT TRENDS (7d):" in prompt
-    assert "UPTIME ANOMALIES (24h, outage incidents):" in prompt
+    assert "UPTIME ANOMALIES (7d):" in prompt
     assert "DO NOT RE-PROPOSE (recently rejected" in prompt
 
     # Find the data blocks by their full header lines (unique enough)
     trends_idx = prompt.index("RECENT TRENDS (7d):")
-    anoms_idx = prompt.index("UPTIME ANOMALIES (24h, outage incidents):")
+    anoms_idx = prompt.index("UPTIME ANOMALIES (7d):")
     dnr_idx = prompt.index("DO NOT RE-PROPOSE (recently rejected")
 
     # Sections must appear in order

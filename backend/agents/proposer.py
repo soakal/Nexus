@@ -69,44 +69,25 @@ def _db_trend_summary(since: datetime) -> list[dict]:
 
 
 def _db_uptime_anomalies(since: datetime) -> list[dict]:
-    """Return sources with outage incidents since `since`.
-
-    An incident is a consecutive run of ok=False samples. A 30-minute outage
-    counts as 1 incident, not 15 samples — keeps the proposer from generating
-    noise goals for a single nightly router reboot.
-    """
+    """Return sources with at least one down event since `since`, with down count."""
     try:
         import backend.database as _db_mod
-        from sqlmodel import Session, select, asc
+        from sqlmodel import Session, select
         from backend.database import UptimeSample
 
         with Session(_db_mod.engine) as session:
             stmt = (
                 select(UptimeSample)
                 .where(UptimeSample.checked_at >= since)
-                .order_by(asc(UptimeSample.checked_at))
+                .where(UptimeSample.ok == False)  # noqa: E712
             )
             rows = session.exec(stmt).all()
 
-        # Group samples by source, then count consecutive-failure runs (incidents)
-        by_source: dict[str, list] = {}
+        counts: dict[str, int] = {}
         for r in rows:
-            by_source.setdefault(r.source, []).append(r)
+            counts[r.source] = counts.get(r.source, 0) + 1
 
-        result = []
-        for src, samples in by_source.items():
-            incidents = 0
-            in_outage = False
-            for s in samples:
-                if not s.ok and not in_outage:
-                    incidents += 1
-                    in_outage = True
-                elif s.ok:
-                    in_outage = False
-            if incidents > 0:
-                result.append({"source": src, "incidents": incidents})
-
-        return result
+        return [{"source": src, "down": cnt} for src, cnt in counts.items()]
     except Exception:
         return []
 
@@ -206,10 +187,10 @@ async def propose_goals_tick() -> dict:
         else:
             trends_text = "(none)"
 
-        # Format anomaly lines: "- {source}: N outage incident(s)"
+        # Format anomaly lines: "- {source}: {down} down event(s)"
         if anom_rows:
             anoms_text = "\n".join(
-                f"- {a['source']}: {a['incidents']} outage incident(s)" for a in anom_rows
+                f"- {a['source']}: {a['down']} down event(s)" for a in anom_rows
             )
         else:
             anoms_text = "(none)"
@@ -248,7 +229,7 @@ async def propose_goals_tick() -> dict:
             f"LIVE STATE:\n{snapshot}\n\n"
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
             f"RECENT TRENDS (7d):\n{trends_text}\n\n"
-            f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
+            f"UPTIME ANOMALIES (7d):\n{anoms_text}\n\n"
             f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"
         )
 
