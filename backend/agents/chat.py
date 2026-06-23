@@ -34,7 +34,7 @@ def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
         return None
 
 
-_CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation"}
+_CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation", "lock"}
 
 CHAT_SYSTEM = """You are NEXUS, a direct, technical personal-AI assistant for a homelab power user.
 You have live access to homelab data shown in the snapshot below. Use it to answer questions about
@@ -281,7 +281,7 @@ User message: "{user_message}"
 Return exactly:
 {{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE", "reason": "brief reason"}}
 
-HOME_CONTROL = user wants to change a Home Assistant device or configuration — turn on/off/toggle a light/switch/fan/automation, set a thermostat temperature, set a number helper value, or change a select/mode helper.
+HOME_CONTROL = user wants to change a Home Assistant device or configuration — turn on/off/toggle a light/switch/fan/automation, lock or unlock a door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
 CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. The chat can search the web itself, so questions needing live info still go here.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
@@ -431,6 +431,7 @@ Include "value" ONLY for input_number or climate, "option" ONLY for input_select
 
 Services by domain:
 - light / switch / fan / input_boolean / automation: turn_on | turn_off | toggle
+- lock: lock (to lock) | unlock (to unlock)
 - input_number: set_value  (set "value" to the number the user specified)
 - input_select: select_option  (set "option" to the exact option string)
 - climate: set_temperature  (set "value" to the temperature the user specified)
@@ -494,6 +495,8 @@ If no entity matches, return:
                                     "turn_on": f"Turned on {friendly}.",
                                     "turn_off": f"Turned off {friendly}.",
                                     "toggle": f"Toggled {friendly}.",
+                                    "lock": f"Locked {friendly}.",
+                                    "unlock": f"Unlocked {friendly}.",
                                     "set_temperature": f"Set {friendly} to {value}°.",
                                     "set_value": f"Set {friendly} to {value}.",
                                     "select_option": f"Set {friendly} to {option}.",
