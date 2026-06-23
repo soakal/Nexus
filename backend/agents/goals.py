@@ -109,15 +109,16 @@ _AUTO_APPROVE_REVERSIBLE = {"reversible", "reversible_by_inverse"}
 def is_auto_approvable(goal: dict, *, enabled: bool) -> bool:
     """Default-deny policy for narrow auto-approve. True ONLY when ALL hold:
     the feature is enabled, the goal was proposed by the autonomous actor, its risk
-    is 'low', and its reversibility is reversible. Everything else stays proposed for
-    human approval. Irreversible/unknown reversibility and MEDIUM+ risk are NEVER
-    auto-approvable, regardless of the flag."""
+    is 'low', its reversibility is reversible, and its category is NOT 'monitoring'.
+    Monitoring/investigation goals are never auto-approved because their task execution
+    generates cascading sub-notifications. Everything else stays proposed for human approval."""
     if not enabled:
         return False
     return (
         str(goal.get("actor")) == "autonomous"
         and str(goal.get("risk")) == "low"
         and str(goal.get("reversibility")) in _AUTO_APPROVE_REVERSIBLE
+        and normalize_category(goal.get("category")) != "monitoring"
     )
 
 

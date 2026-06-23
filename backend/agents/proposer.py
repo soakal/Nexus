@@ -26,6 +26,11 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# A source is anomalous only when it has been continuously down for this many
+# consecutive 2-min uptime samples (~10 min). Single-sample blips are ignored.
+# ponytail: module constant; make PROPOSER_MIN_OUTAGE_SAMPLES a config setting if Brian wants runtime tuning.
+_MIN_OUTAGE_SAMPLES = 5
+
 
 # ---------------------------------------------------------------------------
 # Sync DB helpers for proposer enrichment context (own Session, best-effort).
@@ -69,11 +74,13 @@ def _db_trend_summary(since: datetime) -> list[dict]:
 
 
 def _db_uptime_anomalies(since: datetime) -> list[dict]:
-    """Return sources with outage incidents since `since`.
+    """Return sources that are CURRENTLY DOWN and have been for >= _MIN_OUTAGE_SAMPLES.
 
-    An incident is a consecutive run of ok=False samples. A 30-minute outage
-    counts as 1 incident, not 15 samples — keeps the proposer from generating
-    noise goals for a single nightly router reboot.
+    Only reports a source when both conditions hold:
+      (a) its most recent sample is ok=False  (still down NOW)
+      (b) the trailing consecutive-failure run is >= _MIN_OUTAGE_SAMPLES (~10 min)
+    A source that recovered (last sample ok=True) is not reported — it self-healed,
+    no investigation needed. Single transient blips are ignored.
     """
     try:
         import backend.database as _db_mod
@@ -88,23 +95,26 @@ def _db_uptime_anomalies(since: datetime) -> list[dict]:
             )
             rows = session.exec(stmt).all()
 
-        # Group samples by source, then count consecutive-failure runs (incidents)
+        # Group samples by source (already ordered ascending)
         by_source: dict[str, list] = {}
         for r in rows:
             by_source.setdefault(r.source, []).append(r)
 
         result = []
         for src, samples in by_source.items():
-            incidents = 0
-            in_outage = False
-            for s in samples:
-                if not s.ok and not in_outage:
-                    incidents += 1
-                    in_outage = True
-                elif s.ok:
-                    in_outage = False
-            if incidents > 0:
-                result.append({"source": src, "incidents": incidents})
+            if not samples:
+                continue
+            # (a) still down NOW?
+            if samples[-1].ok:
+                continue
+            # (b) count trailing consecutive failures
+            trailing = 0
+            for s in reversed(samples):
+                if s.ok:
+                    break
+                trailing += 1
+            if trailing >= _MIN_OUTAGE_SAMPLES:
+                result.append({"source": src, "incidents": 1, "down_samples": trailing})
 
         return result
     except Exception:
@@ -134,8 +144,12 @@ def _ha_entity_summary(ha) -> str:
     lines = []
     for eid, label in WATCH.items():
         ent = by_id.get(eid)
-        if ent:
-            lines.append(f"- {label}: {ent.get('state', 'unknown')}")
+        if not ent:
+            continue
+        state = ent.get("state")
+        if state in ("unavailable", "unknown", None):
+            continue  # stale/offline entity — don't surface, don't trigger investigation
+        lines.append(f"- {label}: {state}")
 
     # Discover room temperature sensors dynamically
     for e in entities:
