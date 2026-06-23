@@ -351,8 +351,13 @@ export default function Safety() {
       await api.safety.confirmAction(id)
       load()
     } catch (err) {
-      const msg = err?.message || 'Failed to confirm action.'
+      const raw = err?.message || ''
+      const msg = raw.startsWith('410') ? 'Approval window expired — re-run the goal to request a new one.'
+                : raw.startsWith('403') ? 'Autonomy is paused. Resume autonomy first, then confirm.'
+                : raw.startsWith('409') ? 'This action is no longer awaiting confirmation.'
+                : raw || 'Failed to confirm action.'
       setConfirmErrors(prev => ({ ...prev, [id]: msg }))
+      load()
     } finally {
       setConfirmingId(null)
     }

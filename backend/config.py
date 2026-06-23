@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     whisper_api: bool = False
     whisper_model: str = "base"
     pr_stale_hours: int = 48
-    action_confirm_ttl_seconds: int = 3600
+    action_confirm_ttl_seconds: int = 86400
     goal_ttl_seconds: int = 86400          # pending-proposal TTL (24 h)
     goal_debounce_seconds: int = 21600     # cooldown before same fingerprint re-proposed (6h)
     goal_backoff_base_seconds: int = 300   # failure backoff base (seconds)
