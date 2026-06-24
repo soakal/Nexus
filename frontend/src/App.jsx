@@ -8,6 +8,7 @@ import {
 import StatusDot from './components/StatusDot'
 import CommandPalette from './components/CommandPalette'
 import AlertStrip from './components/AlertStrip'
+import SetupWizard from './components/SetupWizard'
 import Dashboard from './pages/Dashboard'
 import Briefing from './pages/Briefing'
 import Today from './pages/Today'
@@ -45,6 +46,14 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(typeof window !== 'undefined' ? window.innerWidth <= 768 : false)
   const [apiOk, setApiOk] = useState(true)
   const [authError, setAuthError] = useState(false)
+  const [needsSetup, setNeedsSetup] = useState(null)
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/setup/status`)
+      .then(r => r.json())
+      .then(d => setNeedsSetup(d.needs_setup === true))
+      .catch(() => setNeedsSetup(false))
+  }, [])
 
   useEffect(() => {
     const handleResize = () => {
@@ -117,6 +126,9 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  if (needsSetup === null) return null  // checking setup status
+  if (needsSetup) return <SetupWizard />
 
   // Bottom nav items (5 tabs shown on mobile ≤768px)
   const BOTTOM_NAV = [

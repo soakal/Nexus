@@ -24,13 +24,17 @@ if (-not $acquired) {
 }
 
 if (-not (Test-Path ".vault.key")) {
-    Write-Host "ERROR: .vault.key not found. Run .\setup.ps1 first." -ForegroundColor Red
-    exit 1
+    if (-not (Test-Path "venv\Scripts\python.exe")) {
+        Write-Host "ERROR: venv not found. Run .\setup.ps1 first to install dependencies." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "First run — generating vault key..." -ForegroundColor Cyan
+    & .\venv\Scripts\python.exe -c "from cryptography.fernet import Fernet; open('.vault.key','wb').write(Fernet.generate_key())"
+    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Failed to generate vault key." -ForegroundColor Red; exit 1 }
+    attrib +H ".vault.key" 2>$null
+    Write-Host "Open http://localhost:$port to complete setup." -ForegroundColor Yellow
 }
-if (-not (Test-Path "nexus.vault")) {
-    Write-Host "ERROR: nexus.vault not found. Run .\setup.ps1 first." -ForegroundColor Red
-    exit 1
-}
+# nexus.vault is created by the setup wizard on first secret write
 
 Write-Host "Starting NEXUS..." -ForegroundColor Cyan
 

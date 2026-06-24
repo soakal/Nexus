@@ -188,7 +188,9 @@ from backend.api import (
     voice,
 )
 from backend.api.trigger import router as trigger_router
+from backend.api.setup import router as setup_router
 
+app.include_router(setup_router, prefix="/api/setup", tags=["setup"])
 app.include_router(brain_organizer.router, prefix="/api/brain-organizer", tags=["brain-organizer"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(facts.router, prefix="/api/facts", tags=["facts"])
