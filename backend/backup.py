@@ -109,14 +109,33 @@ def backup_vault() -> dict:
             return {"ok": False, "dest": str(dest), "error": "no vault files found to back up"}
 
         # Latest copy (overwrites previous)
+        copied_paths = []
         for src, name in files:
-            shutil.copy2(src, dest / name)
+            dst = dest / name
+            shutil.copy2(src, dst)
+            copied_paths.append(dst)
 
         # Dated history copy
         hist_dir = history / ts
         hist_dir.mkdir(parents=True, exist_ok=True)
         for src, name in files:
-            shutil.copy2(src, hist_dir / name)
+            dst = hist_dir / name
+            shutil.copy2(src, dst)
+            copied_paths.append(dst)
+
+        # Strip Hidden attribute from backup copies so they're visible in Explorer
+        if os.name == "nt":
+            import stat as _stat
+            for p in copied_paths:
+                try:
+                    p.chmod(p.stat().st_mode | _stat.S_IRUSR | _stat.S_IWUSR)
+                    # Clear Hidden via ctypes FILE_ATTRIBUTE_HIDDEN (0x2)
+                    import ctypes
+                    attrs = ctypes.windll.kernel32.GetFileAttributesW(str(p))
+                    if attrs != -1 and (attrs & 0x2):
+                        ctypes.windll.kernel32.SetFileAttributesW(str(p), attrs & ~0x2)
+                except Exception:
+                    pass
 
         # Prune history to _HISTORY_KEEP most recent entries
         entries = sorted(history.iterdir(), key=lambda p: p.name)
