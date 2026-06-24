@@ -30,6 +30,24 @@ async def set_secret_endpoint(body: SecretUpdate, _=Depends(require_api_key)):
     return {"ok": True}
 
 
+@router.delete("/{key}")
+async def delete_secret_endpoint(key: str, _=Depends(require_api_key)):
+    from fastapi import HTTPException
+    if key == "NEXUS_API_KEY":
+        raise HTTPException(status_code=400, detail="Cannot delete NEXUS_API_KEY — it would lock everyone out")
+    from backend.secrets.vault import delete_secret
+    delete_secret(key)
+    return {"ok": True}
+
+
+@router.post("/backup")
+async def backup_vault_endpoint(_=Depends(require_api_key)):
+    import asyncio
+    from backend.backup import backup_vault
+    result = await asyncio.to_thread(backup_vault)
+    return result
+
+
 @router.post("/test/{key}")
 async def test_secret(key: str, _=Depends(require_api_key)):
     start = time.time()
@@ -75,6 +93,41 @@ async def _run_test(key: str) -> tuple:
         return (bool(result), None)
     except Exception as e:
         return (False, str(e))
+
+
+class CredentialBody(BaseModel):
+    service: str
+    host: str = ""
+    user: str = ""
+    password: str = ""
+    port: str = ""
+
+
+@router.get("/credentials")
+async def list_credentials_endpoint(_=Depends(require_api_key)):
+    from backend.secrets.vault import list_credentials
+    return list_credentials()
+
+
+@router.post("/credentials")
+async def set_credential_endpoint(body: CredentialBody, _=Depends(require_api_key)):
+    from backend.secrets.vault import set_credential
+    if body.host:
+        set_credential(body.service, "host", body.host)
+    if body.user:
+        set_credential(body.service, "user", body.user)
+    if body.password:
+        set_credential(body.service, "password", body.password)
+    if body.port:
+        set_credential(body.service, "port", body.port)
+    return {"ok": True}
+
+
+@router.delete("/credentials/{service}")
+async def delete_credential_endpoint(service: str, _=Depends(require_api_key)):
+    from backend.secrets.vault import delete_credential
+    delete_credential(service)
+    return {"ok": True}
 
 
 async def _test_anthropic() -> bool:

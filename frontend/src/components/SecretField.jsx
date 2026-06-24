@@ -5,7 +5,7 @@ import TextInput from './TextInput'
 import PrimaryButton from './PrimaryButton'
 import GhostButton from './GhostButton'
 
-export default function SecretField({ secretKey, label, lastSet, missing = false }) {
+export default function SecretField({ secretKey, label, lastSet, missing = false, onDelete, onSave }) {
   const [visible, setVisible] = useState(false)
   const [editing, setEditing] = useState(false)
   const [inputVal, setInputVal] = useState('')
@@ -26,6 +26,7 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
     await api.secrets.set(secretKey, inputVal)
     setEditing(false)
     setInputVal('')
+    onSave?.()
   }
 
   const cancel = () => {
@@ -120,6 +121,15 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
           >
             {loading ? '...' : 'Test'}
           </button>
+
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              style={{ fontSize: '12px', color: '#fb7185', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              Remove
+            </button>
+          )}
 
           {testResult && (
             testResult.ok

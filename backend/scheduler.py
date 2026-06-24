@@ -170,6 +170,19 @@ async def _backup():
         logger.error(f"Backup job error: {e}")
 
 
+async def _vault_backup():
+    try:
+        import asyncio
+        from backend.backup import backup_vault
+        result = await asyncio.to_thread(backup_vault)
+        if result["ok"]:
+            logger.info(f"Vault backup ok: {result['dest']}")
+        else:
+            logger.warning(f"Vault backup failed: {result['error']}")
+    except Exception as e:
+        logger.error(f"Vault backup job error: {e}")
+
+
 async def _checkpoint():
     try:
         from backend.agents.backup import run_checkpoint_job
@@ -357,6 +370,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             id="db_backup",
             replace_existing=True,
         )
+        if getattr(s, "unraid_backup_path", "").strip():
+            scheduler.add_job(
+                _vault_backup,
+                CronTrigger(hour=bh, minute=bm + 5 if bm < 55 else 0, timezone=timezone),
+                id="vault_backup",
+                replace_existing=True,
+            )
+            logger.info(f"Vault backup to Unraid enabled: daily at {bh:02d}:{(bm+5) if bm < 55 else 0:02d} {timezone}")
         logger.info(f"Backup enabled: checkpoint hourly, backup daily at {bh:02d}:{bm:02d} {timezone}")
     if getattr(s, "watchdog_enabled", False):
         scheduler.add_job(

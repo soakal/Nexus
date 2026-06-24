@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import SecretField from '../components/SecretField'
+import CredentialCard from '../components/CredentialCard'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import ScreenHeader from '../components/ScreenHeader'
@@ -44,7 +45,6 @@ function BrowserApiKey() {
         Stored in this browser only (localStorage). Required before any other settings will load.
       </p>
 
-      {/* Input row */}
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ position: 'relative', flex: '1 1 280px' }}>
           <TextInput
@@ -79,7 +79,6 @@ function BrowserApiKey() {
         </PrimaryButton>
       </div>
 
-      {/* Copy setup link */}
       {value.trim() && (
         <div style={{ marginTop: '8px' }}>
           <GhostButton onClick={copySetupLink}>
@@ -126,20 +125,63 @@ const SECTIONS = [
   },
   {
     title: 'NEXUS System',
-    secrets: [{ key: 'NEXUS_API_KEY', label: 'NEXUS API Key (rotates all sessions)' }],
+    secrets: [{ key: 'NEXUS_API_KEY', label: 'NEXUS API Key (rotates all sessions)', noDelete: true }],
   },
 ]
 
 export default function Settings() {
   const [meta, setMeta] = useState({})
   const [notifyChannel, setNotifyChannel] = useState(null)
+  const [credentials, setCredentials] = useState({})
+  const [backupStatus, setBackupStatus] = useState(null)
+  const [backingUp, setBackingUp] = useState(false)
+  const [addingCred, setAddingCred] = useState(false)
+  const [newCred, setNewCred] = useState({ service: '', host: '', user: '', password: '', port: '' })
+
+  const loadMeta = () => api.secrets.list().then(r => setMeta(r?.meta || {})).catch(() => {})
+  const loadCreds = () => api.secrets.credentials.list().then(r => setCredentials(r || {})).catch(() => {})
 
   useEffect(() => {
-    api.secrets.list().then(r => setMeta(r?.meta || {})).catch(() => {})
+    loadMeta()
+    loadCreds()
     api.safety.status().then(r => setNotifyChannel(r?.notify_channel || null)).catch(() => {})
   }, [])
 
   const notifyBroken = notifyChannel?.enabled === true && notifyChannel?.secret_present === false
+
+  const handleDelete = async (key) => {
+    if (!window.confirm(`Remove secret "${key}" from the vault?`)) return
+    try {
+      await api.secrets.delete(key)
+      loadMeta()
+    } catch (e) {
+      alert(e?.message || 'Delete failed')
+    }
+  }
+
+  const handleBackup = async () => {
+    setBackingUp(true)
+    setBackupStatus(null)
+    try {
+      const r = await api.secrets.backup()
+      setBackupStatus(r)
+    } catch (e) {
+      setBackupStatus({ ok: false, error: e?.message || 'Request failed' })
+    }
+    setBackingUp(false)
+  }
+
+  const handleAddCred = async () => {
+    if (!newCred.service.trim()) return
+    try {
+      await api.secrets.credentials.set(newCred)
+      setNewCred({ service: '', host: '', user: '', password: '', port: '' })
+      setAddingCred(false)
+      loadCreds()
+    } catch (e) {
+      alert(e?.message || 'Save failed')
+    }
+  }
 
   return (
     <div style={{
@@ -153,7 +195,6 @@ export default function Settings() {
     }}>
       <ScreenHeader section="Settings" title="System Configuration" />
 
-      {/* Notification broken banner */}
       {notifyBroken && (
         <Card style={{
           border: '1px solid rgba(251,113,133,0.3)',
@@ -169,20 +210,102 @@ export default function Settings() {
 
       <BrowserApiKey />
 
-      {SECTIONS.map(section => (
-        <Card key={section.title}>
-          <Eyebrow style={{ marginBottom: '14px', display: 'block' }}>{section.title}</Eyebrow>
-          {section.secrets.map(f => (
-            <SecretField
-              key={f.key}
-              secretKey={f.key}
-              label={f.label}
-              lastSet={meta[f.key]?.last_set}
-              missing={f.key === 'HERMES_WEBHOOK_SECRET' && notifyBroken}
-            />
-          ))}
-        </Card>
-      ))}
+      {/* ── API Keys & Tokens ────────────────────────────────── */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+          <Eyebrow>API Keys &amp; Tokens</Eyebrow>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {backupStatus && (
+              <span style={{ fontSize: '11px', color: backupStatus.ok ? '#5fe0b4' : '#fb7185' }}>
+                {backupStatus.ok ? `Backed up to ${backupStatus.dest}` : `Backup failed: ${backupStatus.error}`}
+              </span>
+            )}
+            <GhostButton onClick={handleBackup} disabled={backingUp} style={{ fontSize: '12px', padding: '6px 12px' }}>
+              {backingUp ? 'Backing up…' : 'Back up vault to Unraid'}
+            </GhostButton>
+          </div>
+        </div>
+
+        {SECTIONS.map(section => (
+          <div key={section.title}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#465069', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '10px 0 2px' }}>
+              {section.title}
+            </div>
+            {section.secrets.map(f => (
+              <SecretField
+                key={f.key}
+                secretKey={f.key}
+                label={f.label}
+                lastSet={meta[f.key]?.last_set}
+                missing={f.key === 'HERMES_WEBHOOK_SECRET' && notifyBroken}
+                onDelete={f.noDelete ? undefined : () => handleDelete(f.key)}
+                onSave={loadMeta}
+              />
+            ))}
+          </div>
+        ))}
+      </Card>
+
+      {/* ── Credentials & Passwords ──────────────────────────── */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+          <Eyebrow>Credentials &amp; Passwords</Eyebrow>
+          {!addingCred && (
+            <GhostButton onClick={() => setAddingCred(true)} style={{ fontSize: '12px', padding: '6px 12px' }}>
+              + Add credential
+            </GhostButton>
+          )}
+        </div>
+
+        <p style={{ fontSize: '12px', color: '#5d6982', margin: '0 0 12px 0' }}>
+          SSH and service passwords for automated deploys. Stored encrypted in the vault — never returned by any API.
+        </p>
+
+        {Object.keys(credentials).length === 0 && !addingCred && (
+          <div style={{ fontSize: '13px', color: '#465069', padding: '8px 0' }}>No credentials stored yet.</div>
+        )}
+
+        {Object.entries(credentials).map(([service, data]) => (
+          <CredentialCard key={service} service={service} data={data} onRefresh={loadCreds} />
+        ))}
+
+        {addingCred && (
+          <div style={{ padding: '13px 0', borderTop: '1px solid rgba(120,160,220,0.07)' }}>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '10px' }}>New Credential</div>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+              {[
+                { key: 'service', label: 'Service name', placeholder: 'e.g. hermes, nas' },
+                { key: 'host', label: 'Host / IP', placeholder: '192.168.1.55' },
+                { key: 'user', label: 'Username', placeholder: 'root' },
+                { key: 'port', label: 'Port (optional)', placeholder: '22' },
+              ].map(({ key, label, placeholder }) => (
+                <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 140px' }}>
+                  <label style={{ fontSize: '11px', color: '#5d6982', fontWeight: 600 }}>{label}</label>
+                  <TextInput
+                    value={newCred[key]}
+                    onChange={e => setNewCred(f => ({ ...f, [key]: e.target.value }))}
+                    placeholder={placeholder}
+                    style={{ fontSize: '13px' }}
+                  />
+                </div>
+              ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 140px' }}>
+                <label style={{ fontSize: '11px', color: '#5d6982', fontWeight: 600 }}>Password</label>
+                <TextInput
+                  type="password"
+                  value={newCred.password}
+                  onChange={e => setNewCred(f => ({ ...f, password: e.target.value }))}
+                  style={{ fontSize: '13px' }}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <PrimaryButton onClick={handleAddCred} disabled={!newCred.service.trim()} style={{ padding: '7px 14px', fontSize: '12px' }}>Save</PrimaryButton>
+              <GhostButton onClick={() => { setAddingCred(false); setNewCred({ service: '', host: '', user: '', password: '', port: '' }) }} style={{ padding: '7px 12px', fontSize: '12px' }}>Cancel</GhostButton>
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   )
 }

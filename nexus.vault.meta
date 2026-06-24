@@ -42,5 +42,33 @@
   "app_base_url": {
     "last_set": "2026-06-20T23:38:19.125114",
     "last_rotated": "2026-06-20T23:38:19.125114"
+  },
+  "hermes_ssh_password": {
+    "last_set": "2026-06-23T23:47:43.969585",
+    "last_rotated": "2026-06-23T23:47:43.969585"
+  },
+  "cred:hermes:host": {
+    "last_set": "2026-06-24T00:25:47.668364",
+    "last_rotated": "2026-06-24T00:25:47.668364"
+  },
+  "cred:hermes:user": {
+    "last_set": "2026-06-24T00:25:48.152950",
+    "last_rotated": "2026-06-24T00:25:48.152950"
+  },
+  "cred:hermes:password": {
+    "last_set": "2026-06-24T00:25:48.178916",
+    "last_rotated": "2026-06-24T00:25:48.178916"
+  },
+  "cred:lxc201:host": {
+    "last_set": "2026-06-24T00:26:32.338299",
+    "last_rotated": "2026-06-24T00:26:32.338299"
+  },
+  "cred:lxc201:user": {
+    "last_set": "2026-06-24T00:26:32.778388",
+    "last_rotated": "2026-06-24T00:26:32.778388"
+  },
+  "cred:lxc201:password": {
+    "last_set": "2026-06-24T00:26:32.809022",
+    "last_rotated": "2026-06-24T00:26:32.809022"
   }
 }

@@ -71,6 +71,13 @@ export const api = {
     list: () => req('GET', '/secrets/list'),
     set: (key, value) => req('POST', '/secrets/set', { key, value }),
     test: (key) => req('POST', `/secrets/test/${key}`),
+    delete: (key) => req('DELETE', `/secrets/${key}`),
+    backup: () => req('POST', '/secrets/backup'),
+    credentials: {
+      list: () => req('GET', '/secrets/credentials'),
+      set: (body) => req('POST', '/secrets/credentials', body),
+      delete: (service) => req('DELETE', `/secrets/credentials/${service}`),
+    },
   },
   unraid: { get: () => req('GET', '/unraid/'), restartDocker: (id) => req('POST', `/unraid/docker/${id}/restart`) },
   ha: {

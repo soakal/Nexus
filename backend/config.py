@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     backup_retention_days: int = 7
     backup_time: str = "03:30"  # 24h HH:MM for the daily backup job
 
+    # Unraid vault backup — encrypted vault + key copied to a UNC share daily and
+    # on every secret save. Leave blank to disable.
+    unraid_backup_path: str = r"\\192.168.1.50\Computer Backup\Nexus_backup"
+    unraid_backup_include_key: bool = True   # back up .vault.key alongside nexus.vault
+    unraid_backup_user: str = ""            # SMB username (leave blank if guest/pre-mapped)
+    unraid_backup_password: str = ""        # SMB password (leave blank if guest/pre-mapped)
+
     # Per-verb throttle + circuit breaker on broker writes (Tier 3 guardrails).
     # Applied ONLY to agent/autonomous ALLOWED dispatches; user actions are never throttled.
     verb_throttle_max: int = 5           # max dispatches per kind in the window

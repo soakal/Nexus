@@ -72,6 +72,11 @@ def set_secret(key: str, value: str) -> None:
     vault[key] = _load_fernet().encrypt(value.encode()).decode()
     VAULT_PATH.write_text(json.dumps(vault, indent=2))
     _stamp_meta(key)
+    try:
+        from backend.backup import backup_vault
+        backup_vault()
+    except Exception:
+        pass  # backup failure must never break a secret save
 
 def delete_secret(key: str) -> None:
     vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}
@@ -81,3 +86,54 @@ def delete_secret(key: str) -> None:
 def list_keys() -> list:
     vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}
     return list(vault.keys())
+
+
+# ── Credential helpers (namespaced cred:<service>:<field> keys) ──────────────
+
+def _cred_prefix(service: str) -> str:
+    return f"cred:{service}:"
+
+
+def list_credentials() -> dict:
+    """Return {service: {host, user, port, has_password}} — never includes password values."""
+    vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}
+    result: dict = {}
+    for raw_key in vault:
+        if not raw_key.startswith("cred:"):
+            continue
+        parts = raw_key.split(":", 2)
+        if len(parts) != 3:
+            continue
+        _, service, field = parts
+        if service not in result:
+            result[service] = {"host": None, "user": None, "port": None, "has_password": False}
+        if field == "password":
+            result[service]["has_password"] = True
+        elif field in ("host", "user", "port"):
+            result[service][field] = _load_fernet().decrypt(vault[raw_key].encode()).decode()
+    return result
+
+
+def set_credential(service: str, field: str, value: str) -> None:
+    set_secret(f"cred:{service}:{field}", value)
+
+
+def get_credential(service: str) -> dict:
+    """Server-side only — returns password in plain text. Never send over API."""
+    keys = {"host", "user", "password", "port"}
+    result = {}
+    for field in keys:
+        try:
+            result[field] = get_secret(f"cred:{service}:{field}")
+        except KeyError:
+            result[field] = None
+    return result
+
+
+def delete_credential(service: str) -> None:
+    vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}
+    prefix = _cred_prefix(service)
+    to_delete = [k for k in vault if k.startswith(prefix)]
+    for k in to_delete:
+        vault.pop(k)
+    VAULT_PATH.write_text(json.dumps(vault, indent=2))
