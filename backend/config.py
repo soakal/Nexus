@@ -108,8 +108,8 @@ class Settings(BaseSettings):
     # on every secret save. Leave blank to disable.
     unraid_backup_path: str = r"\\192.168.1.50\Computer Backup\Nexus_backup"
     unraid_backup_include_key: bool = True   # back up .vault.key alongside nexus.vault
-    unraid_backup_user: str = ""            # SMB username (leave blank if guest/pre-mapped)
-    unraid_backup_password: str = ""        # SMB password (leave blank if guest/pre-mapped)
+    # SMB credentials for the backup share — stored in vault as UNRAID_BACKUP_USER / UNRAID_BACKUP_PASSWORD
+    # (vault-backed @property methods below; leave vault keys absent if guest/pre-mapped)
 
     # Per-verb throttle + circuit breaker on broker writes (Tier 3 guardrails).
     # Applied ONLY to agent/autonomous ALLOWED dispatches; user actions are never throttled.
@@ -201,6 +201,22 @@ class Settings(BaseSettings):
     def nexus_api_key(self) -> str:
         from backend.secrets.manager import get_secret
         return get_secret("NEXUS_API_KEY")
+
+    @property
+    def unraid_backup_user(self) -> str:
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("UNRAID_BACKUP_USER")
+        except KeyError:
+            return ""
+
+    @property
+    def unraid_backup_password(self) -> str:
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("UNRAID_BACKUP_PASSWORD")
+        except KeyError:
+            return ""
 
     def validate(self) -> None:
         """Fail fast on misconfiguration at startup, before the scheduler/agents run.

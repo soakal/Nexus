@@ -26,27 +26,46 @@ _HISTORY_KEEP = 14  # max dated copies retained in history/
 def _mount_unc(unc_path: str, settings) -> None:
     """Best-effort: use 'net use' to authenticate the UNC share before copying.
 
-    Reads unraid_backup_user / unraid_backup_password from settings (vault-backed).
-    Silently skips if credentials aren't configured or net use is unavailable.
+    Credential lookup order:
+      1. Vault keys UNRAID_BACKUP_USER / UNRAID_BACKUP_PASSWORD (explicit override)
+      2. cred:unraid:user / cred:unraid:password (from Credentials & Passwords section)
+    Silently skips if no credentials found or net use is unavailable.
     """
     try:
         user = getattr(settings, "unraid_backup_user", "").strip()
         pw = getattr(settings, "unraid_backup_password", "").strip()
-        if not user and not pw:
-            return
-        # Extract \\server\share from a longer path like \\server\share\subdir
+
+        # Fall back to the general credential store under service "unraid" (case-insensitive)
+        if not user or not pw:
+            try:
+                from backend.secrets.vault import get_credential, list_credentials
+                creds_map = list_credentials()
+                # find service key case-insensitively
+                svc_key = next((k for k in creds_map if k.lower() == "unraid"), None)
+                if svc_key:
+                    cred = get_credential(svc_key)
+                    if not user:
+                        user = (cred.get("user") or "").strip()
+                    if not pw:
+                        pw = (cred.get("password") or "").strip()
+            except Exception:
+                pass
+
+        if not pw:
+            return  # nothing to authenticate with
+
         parts = unc_path.lstrip("\\").split("\\")
         if len(parts) < 2:
             return
         share = f"\\\\{parts[0]}\\{parts[1]}"
         import subprocess
-        cmd = ["net", "use", share]
-        if pw:
-            cmd.append(pw)
+        cmd = ["net", "use", share, pw]
         if user:
-            cmd += ["/user:" + user]
+            cmd += [f"/user:{user}"]
         cmd.append("/persistent:no")
-        subprocess.run(cmd, capture_output=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        if result.returncode != 0:
+            logger.debug("net use returned %d: %s", result.returncode, result.stderr.decode(errors="replace"))
     except Exception as e:
         logger.debug("net use mount attempt: %s", e)
 
