@@ -66,6 +66,34 @@ def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
     alerts = safe(ha, "alerts", [])
     lines.append(f"Home Assistant: {entity_count} entities, {len(alerts)} alert(s)" +
                  (f" [{', '.join(alerts[:3])}]" if alerts else ""))
+    if not isinstance(ha, Exception):
+        _locks, _doors = [], []
+        for _e in safe(ha, "entities", []):
+            if not isinstance(_e, dict):
+                continue
+            _eid = _e.get("entity_id") or ""
+            _raw_attrs = _e.get("attributes")
+            _attrs = _raw_attrs if isinstance(_raw_attrs, dict) else {}
+            _label = (_attrs.get("friendly_name") or _eid or "").strip() or _eid
+            _state = (_e.get("state") or "unknown").strip() or "unknown"
+            if _eid.startswith("lock."):
+                _locks.append(f"{_label}={_state}")
+            elif _eid.startswith("cover.") or (
+                (_eid.startswith("binary_sensor.") or _eid.startswith("sensor."))
+                and any(k in _label.lower() for k in ("door", "window"))
+            ):
+                _doors.append(f"{_label}={_state}")
+        _CAP = 12
+        _n_locks = min(len(_locks), _CAP)
+        _n_doors = min(len(_doors), _CAP - _n_locks)
+        _truncated = len(_locks) > _n_locks or len(_doors) > _n_doors
+        _parts = []
+        if _locks[:_n_locks]:
+            _parts.append("Locks: " + ", ".join(_locks[:_n_locks]))
+        if _doors[:_n_doors]:
+            _parts.append("Doors/covers: " + ", ".join(_doors[:_n_doors]))
+        if _parts:
+            lines.append("Notable HA: " + " | ".join(_parts) + ("…" if _truncated else ""))
 
     # Unraid
     if not isinstance(unraid_d, Exception):
