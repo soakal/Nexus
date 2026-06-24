@@ -281,9 +281,9 @@ User message: "{user_message}"
 Return exactly:
 {{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE", "reason": "brief reason"}}
 
-HOME_CONTROL = user wants to change a Home Assistant device or configuration — turn on/off/toggle a light/switch/fan/automation, lock or unlock a door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper.
+HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
-CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. The chat can search the web itself, so questions needing live info still go here.
+CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: asking about the STATE of a device (e.g. "is the back door locked?", "what is the back door status?", "are any lights on?", "is the garage open?") is CHAT, not HOME_CONTROL — the live snapshot answers these. The chat can search the web itself, so questions needing live info still go here.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
 NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes".
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status"."""
@@ -432,6 +432,8 @@ Include "value" ONLY for input_number or climate, "option" ONLY for input_select
 Services by domain:
 - light / switch / fan / input_boolean / automation: turn_on | turn_off | toggle
 - lock: lock (to lock) | unlock (to unlock)
+
+IMPORTANT: `lock.*` entities are PHYSICAL door locks (deadbolts, August locks, etc.). `input_boolean.*` entities are virtual helper toggles — NOT physical locks. When the user's request involves locking, unlocking, or a door/lock/deadbolt, ALWAYS prefer a `lock.*` entity over any `input_boolean.*` entity, even if the input_boolean has a similar-sounding friendly name. Only pick `input_boolean` if the user is explicitly toggling a virtual helper (not a physical lock).
 - input_number: set_value  (set "value" to the number the user specified)
 - input_select: select_option  (set "option" to the exact option string)
 - climate: set_temperature  (set "value" to the temperature the user specified)
