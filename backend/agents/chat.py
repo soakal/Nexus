@@ -34,7 +34,7 @@ def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
         return None
 
 
-_CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation", "lock"}
+_CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation", "lock", "cover"}
 
 CHAT_SYSTEM = """You are NEXUS, a direct, technical personal-AI assistant for a homelab power user.
 You have live access to homelab data shown in the snapshot below. Use it to answer questions about
@@ -307,13 +307,13 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
 User message: "{user_message}"
 
 Return exactly:
-{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE", "reason": "brief reason"}}
+{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE|STATUS", "reason": "brief reason"}}
 
-HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
+HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, open/close/stop a garage door or cover, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
-CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: asking about the STATE of a device (e.g. "is the back door locked?", "what is the back door status?", "are any lights on?", "is the garage open?") is CHAT, not HOME_CONTROL — the live snapshot answers these. The chat can search the web itself, so questions needing live info still go here.
-HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, the garage door, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
-NOTE = user wants to save something to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes".
+CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) searching or reading your notes/vault ("search my vault for X", "what do my notes say about X", "find X in my brain") is CHAT — vault is searched automatically. The chat can also search the web.
+HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
+NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status"."""
 
     # Fast-path: /status command bypasses haiku classify
@@ -327,6 +327,7 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
     # and every routing branch can raise BudgetExceeded (router's daily brake).
     # We catch it, reply with a friendly message, and persist normally — no
     # exception escapes to FastAPI.
+    intent = "CHAT"  # default; reassigned after Haiku classify (guards BudgetExceeded before classify)
     try:
         if _is_status_cmd:
             raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
@@ -432,7 +433,7 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
 
             try:
                 ha_data = await homeassistant.fetch()
-                controllable = [
+                _all_controllable = [
                     {
                         "entity_id": e["entity_id"],
                         "friendly_name": (e.get("attributes") or {}).get("friendly_name", e["entity_id"]),
@@ -440,7 +441,18 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
                     }
                     for e in ha_data.entities
                     if e.get("entity_id", "").split(".")[0] in _CONTROLLABLE_DOMAINS
-                ][:60]
+                ]
+                # Rank by token overlap with user message so the intended entity
+                # is always in the top-60 even across 1,000+ controllable entities.
+                _msg_tokens = {t.lower() for t in user_message.split() if len(t) > 2}
+                _all_controllable.sort(
+                    key=lambda ent: sum(
+                        1 for t in _msg_tokens
+                        if t in f"{ent['entity_id']} {ent['friendly_name']}".lower()
+                    ),
+                    reverse=True,
+                )
+                controllable = _all_controllable[:60]
 
                 if not controllable:
                     reply = "No controllable devices found in Home Assistant."
@@ -460,6 +472,7 @@ Include "value" ONLY for input_number or climate, "option" ONLY for input_select
 Services by domain:
 - light / switch / fan / input_boolean / automation: turn_on | turn_off | toggle
 - lock: lock (to lock) | unlock (to unlock)
+- cover: open_cover (to open) | close_cover (to close) | stop_cover (to stop)
 
 IMPORTANT: `lock.*` entities are PHYSICAL door locks (deadbolts, August locks, etc.). `input_boolean.*` entities are virtual helper toggles — NOT physical locks. When the user's request involves locking, unlocking, or a door/lock/deadbolt, ALWAYS prefer a `lock.*` entity over any `input_boolean.*` entity, even if the input_boolean has a similar-sounding friendly name. Only pick `input_boolean` if the user is explicitly toggling a virtual helper (not a physical lock).
 - input_number: set_value  (set "value" to the number the user specified)
@@ -527,6 +540,9 @@ If no entity matches, return:
                                     "toggle": f"Toggled {friendly}.",
                                     "lock": f"Locked {friendly}.",
                                     "unlock": f"Unlocked {friendly}.",
+                                    "open_cover": f"Opened {friendly}.",
+                                    "close_cover": f"Closed {friendly}.",
+                                    "stop_cover": f"Stopped {friendly}.",
                                     "set_temperature": f"Set {friendly} to {value}°.",
                                     "set_value": f"Set {friendly} to {value}.",
                                     "select_option": f"Set {friendly} to {option}.",
@@ -647,7 +663,8 @@ If they're saving something from the conversation, use the relevant prior assist
             ts = datetime.now().strftime("%Y-%m-%d %H:%M")
             body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
             safe_title = title.replace("/", "-").replace("\\", "-")
-            filename = f"{safe_title}.md"
+            _file_ts = datetime.now().strftime("%Y%m%d-%H%M")
+            filename = f"{safe_title}-{_file_ts}.md"
             try:
                 _settings = _get_settings()
                 _mcp_url = _settings.brain_mcp_url.rstrip("/")
@@ -724,9 +741,10 @@ If they're saving something from the conversation, use the relevant prior assist
     # 5. Rolling summarization (best-effort; swallows its own errors)
     await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
 
-    # 6. Fact extraction (best-effort; guards itself, never raises; runs for ALL intents)
-    from backend.agents import facts
-    await facts.extract_and_store(user_message, conversation_id)
+    # 6. Fact extraction — only for conversational intents (not imperatives/status)
+    if intent in ("CHAT", "TASK", "NOTE"):
+        from backend.agents import facts
+        await facts.extract_and_store(user_message, conversation_id)
 
     if token_queue is not None:
         await token_queue.put(None)  # sentinel: stream done

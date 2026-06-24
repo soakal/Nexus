@@ -89,26 +89,44 @@ async def vault_search(query: str, max_results: int = 10) -> str:
         return f"Obsidian vault not found at {vault}."
 
     query_lower = query.lower()
-    results = []
+    candidates = []
     try:
         for md_file in vault.rglob("*.md"):
             try:
                 text = md_file.read_text(encoding="utf-8", errors="ignore")
-                if query_lower in text.lower() or query_lower in md_file.name.lower():
-                    ctx_lines = [ln for ln in text.splitlines() if query_lower in ln.lower()][:2]
-                    ctx = " ... ".join(ctx_lines).strip()
-                    rel = str(md_file.relative_to(vault))
-                    results.append(f"**{rel}**\n{ctx}" if ctx else f"**{rel}**")
-                    if len(results) >= max_results:
+                text_lower = text.lower()
+                name_match = query_lower in md_file.name.lower()
+                body_count = text_lower.count(query_lower)
+                if not name_match and body_count == 0:
+                    continue
+                # Score: title match > body frequency > recency
+                score = (10 if name_match else 0) + body_count
+                mtime = md_file.stat().st_mtime
+                # Grab ±2 lines around first match for context
+                lines = text.splitlines()
+                ctx = ""
+                for i, ln in enumerate(lines):
+                    if query_lower in ln.lower():
+                        start = max(0, i - 2)
+                        end = min(len(lines), i + 3)
+                        ctx = " ... ".join(l.strip() for l in lines[start:end] if l.strip())
                         break
+                rel = str(md_file.relative_to(vault))
+                candidates.append((score, mtime, rel, ctx))
             except Exception:
                 continue
     except Exception as e:
         logger.warning(f"Vault search failed: {e}")
         return f"Vault search unavailable: {e}"
 
-    if not results:
+    if not candidates:
         return f"No notes found matching '{query}'."
+
+    # Sort: score desc, then mtime desc (most recent first on ties)
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    results = []
+    for _, _, rel, ctx in candidates[:max_results]:
+        results.append(f"**{rel}**\n{ctx}" if ctx else f"**{rel}**")
     return "\n\n".join(results)
 
 

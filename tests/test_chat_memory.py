@@ -94,12 +94,32 @@ async def test_vault_recall_returns_empty_on_obsidian_token_not_configured():
 
 
 @pytest.mark.asyncio
-async def test_vault_recall_returns_empty_on_obsidian_prefix():
+async def test_vault_recall_returns_empty_on_vault_unavailable():
+    # obsidian.vault_search returns "Vault search unavailable: <err>" on exception
     with patch("backend.integrations.obsidian.vault_search", new_callable=AsyncMock) as mock_vs:
-        mock_vs.return_value = "Obsidian search error: connection refused"
+        mock_vs.return_value = "Vault search unavailable: connection refused"
         from backend.agents.memory import vault_recall
         result = await vault_recall("foo")
         assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_vault_recall_returns_empty_on_vault_not_found():
+    with patch("backend.integrations.obsidian.vault_search", new_callable=AsyncMock) as mock_vs:
+        mock_vs.return_value = "Obsidian vault not found at C:/some/path."
+        from backend.agents.memory import vault_recall
+        result = await vault_recall("foo")
+        assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_vault_recall_keeps_note_with_obsidian_in_path():
+    # A note whose path starts with "Obsidian" must NOT be dropped
+    with patch("backend.integrations.obsidian.vault_search", new_callable=AsyncMock) as mock_vs:
+        mock_vs.return_value = "**Obsidian/setup.md**\nsome content about obsidian"
+        from backend.agents.memory import vault_recall
+        result = await vault_recall("obsidian")
+        assert result != ""
 
 
 @pytest.mark.asyncio

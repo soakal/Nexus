@@ -32,8 +32,8 @@ async def vault_recall(query: str) -> str:
     skip_prefixes = (
         "No notes found",
         "Obsidian token not configured",
-        "vault_search unavailable",
-        "Obsidian",
+        "Obsidian vault not found at",
+        "Vault search unavailable",
     )
     for prefix in skip_prefixes:
         if result.startswith(prefix):
