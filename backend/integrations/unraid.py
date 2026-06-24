@@ -61,7 +61,7 @@ async def fetch() -> UnraidData:
             ]
             parity_disks = [d for d in disks if d.get("type") == "PARITY"]
             if parity_disks:
-                data.parity_status = parity_disks[0].get("status", "unknown").lower()
+                data.parity_status = (parity_disks[0].get("status") or "unknown").lower()
 
             # size/fsUsed are in KB
             data_disks = [d for d in disks if d.get("type") == "DATA"]
