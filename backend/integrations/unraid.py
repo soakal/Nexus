@@ -59,6 +59,10 @@ async def fetch() -> UnraidData:
                 {"name": d["name"], "temp": d.get("temp"), "status": d.get("status", "")}
                 for d in disks
             ]
+            parity_disks = [d for d in disks if d.get("type") == "PARITY"]
+            if parity_disks:
+                data.parity_status = parity_disks[0].get("status", "unknown").lower()
+
             # size/fsUsed are in KB
             data_disks = [d for d in disks if d.get("type") == "DATA"]
             total_kb = sum(d.get("size", 0) for d in data_disks)
