@@ -75,13 +75,6 @@ async def write_daily_note(content: str) -> None:
     await _post_raw(content, filename=f"{today}.md")
 
 
-async def append_to_note(path: str, content: str) -> None:
-    note_path = _vault() / path
-    note_path.parent.mkdir(parents=True, exist_ok=True)
-    with note_path.open("a", encoding="utf-8") as f:
-        f.write(content)
-
-
 async def complete_task(note_path: str, task_text: str) -> None:
     path = _vault() / note_path
     if path.exists():
@@ -123,7 +116,7 @@ async def create_note(title: str, content: str, folder: str = "NEXUS") -> str:
     safe_title = title.replace("/", "-").replace("\\", "-")
     filename = f"{folder}/{safe_title}.md" if folder else f"{safe_title}.md"
     await _post_raw(content, filename=filename)
-    return str(Path(folder) / filename)
+    return filename
 
 
 async def _post_raw(content: str, filename: str) -> None:

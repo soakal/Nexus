@@ -379,7 +379,7 @@ def test_planner_tool_block_lists_all_tools():
 _WRITE_FN_NAMES = {
     "call_service", "restart_docker", "set_filtering", "disable_for_minutes",
     "trigger_recording", "relay", "action", "notify", "execute_action",
-    "create_note", "write_daily_note", "append_to_note",
+    "create_note", "write_daily_note",
 }
 
 

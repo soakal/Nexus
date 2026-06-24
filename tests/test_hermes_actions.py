@@ -22,6 +22,7 @@ _TABLE = {
     "restart_service": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
     "vm_action": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
     "service_logs": (Risk.LOW, Reversibility.REVERSIBLE),
+    "reload_integration": (Risk.MEDIUM, Reversibility.REVERSIBLE),
     "wol": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
 }
 

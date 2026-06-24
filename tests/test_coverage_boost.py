@@ -225,7 +225,7 @@ def test_setup_scheduler_adds_jobs():
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    assert mock_add.call_count == 16
+    assert mock_add.call_count == 17
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -240,6 +240,7 @@ def test_setup_scheduler_adds_jobs():
         "autonomy_digest",
         "db_checkpoint",
         "db_backup",
+        "vault_backup",
         "watchdog",
         "spend_report",
         "goal_recurrence",

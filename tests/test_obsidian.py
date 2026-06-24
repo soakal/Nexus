@@ -144,7 +144,7 @@ async def test_obsidian_create_note(tmp_path, monkeypatch):
     assert path.replace("\\", "/") == "NEXUS/Test/Test Note.md"
     mock_client.__aenter__.return_value.post.assert_called_once()
     call = mock_client.__aenter__.return_value.post.call_args
-    assert call.kwargs["json"]["filename"] == "Test Note.md"
+    assert call.kwargs["json"]["filename"] == "NEXUS/Test/Test Note.md"
     assert call.kwargs["json"]["content"] == "# Test\nContent here"
 
 
@@ -198,28 +198,6 @@ async def test_obsidian_write_daily_note():
     call = mock_client.__aenter__.return_value.post.call_args
     assert call.kwargs["json"]["filename"] == f"{today}.md"
     assert call.kwargs["json"]["content"] == "# Daily Note\nContent"
-
-
-# ---------------------------------------------------------------------------
-# append_to_note() — direct filesystem (pathlib), no httpx
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_obsidian_append_to_note(tmp_path, monkeypatch):
-    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
-
-    (tmp_path / "NEXUS").mkdir()
-    (tmp_path / "NEXUS" / "test.md").write_text("original", encoding="utf-8")
-
-    from backend.integrations.obsidian import append_to_note
-    await append_to_note("NEXUS/test.md", "\nAppended line")
-
-    result = (tmp_path / "NEXUS" / "test.md").read_text(encoding="utf-8")
-    assert result == "original\nAppended line"
-
-    # Also verify parent-dir auto-creation
-    await append_to_note("NEXUS/new/deep.md", "hello")
-    assert (tmp_path / "NEXUS" / "new" / "deep.md").read_text(encoding="utf-8") == "hello"
 
 
 # ---------------------------------------------------------------------------

@@ -275,7 +275,7 @@ async def test_tick_recurring_goals_dispatches_due(eng, monkeypatch):
     with Session(eng) as s:
         task = s.get(Task, dispatched_task_id)
     assert task is not None
-    assert task.prompt == "Send daily digest."
+    assert task.prompt == "Goal: Daily digest\n\nSend daily digest."
 
     # Goal status updated to "running", task_id set, next_eval_at advanced.
     with Session(eng) as s:

@@ -2,8 +2,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-INTENT_CLASSES = ["TASK", "QUERY", "BRIEFING", "HOME_CONTROL", "NOTE"]
-
 
 async def transcribe(audio_path: str) -> str:
     from backend.config import get_settings

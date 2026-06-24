@@ -199,9 +199,12 @@ async def test_check_dead_letters_threshold_and_alert(eng):
 async def test_check_dead_letters_debounced(eng):
     """Second call within cooldown does not re-alert."""
     from backend.agents import watchdog
-    from backend.database import PendingDelivery
+    from backend.database import PendingDelivery, SystemState
 
     with Session(eng) as s:
+        # Seed SystemState row 1 (production seeds it via _ensure_system_state);
+        # the DB-backed debounce reads/writes its last_dead_letter_alert_at field.
+        s.add(SystemState(id=1))
         s.add(PendingDelivery(payload_json='{"x":1}', delivery_type="notify", attempts=7))
         s.commit()
 

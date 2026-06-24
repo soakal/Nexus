@@ -11,7 +11,7 @@ import contextvars
 import hashlib
 import json
 
-from backend.agents.tools import ReadTool, _truncate, tool_specs, dispatcher_map, planner_tool_block
+from backend.agents.tools import ReadTool, tool_specs, dispatcher_map, planner_tool_block
 
 MAX_WRITE_RESULT_CHARS = 600
 
