@@ -70,5 +70,17 @@
   "cred:lxc201:password": {
     "last_set": "2026-06-24T00:26:32.809022",
     "last_rotated": "2026-06-24T00:26:32.809022"
+  },
+  "cred:Unraid:host": {
+    "last_set": "2026-06-24T00:43:06.033782",
+    "last_rotated": "2026-06-24T00:43:06.033782"
+  },
+  "cred:Unraid:password": {
+    "last_set": "2026-06-24T00:43:06.301622",
+    "last_rotated": "2026-06-24T00:43:06.301622"
+  },
+  "cred:Unraid:user": {
+    "last_set": "2026-06-24T00:44:20.443887",
+    "last_rotated": "2026-06-24T00:44:20.443887"
   }
 }
