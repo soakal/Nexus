@@ -193,6 +193,18 @@ Write-EnvLine "UNRAID_HOST" $unraidHost
 $unraidKey = Get-SecureInput "      Unraid API key"
 if ($unraidKey.Length -gt 0) { Set-VaultSecret "UNRAID_API_KEY" $unraidKey }
 
+$unraidBackupPath = Read-Host "      Unraid vault backup share [\\$unraidHost\Computer Backup\Nexus_backup]"
+if (-not $unraidBackupPath) { $unraidBackupPath = "\\$unraidHost\Computer Backup\Nexus_backup" }
+Write-EnvLine "UNRAID_BACKUP_PATH" $unraidBackupPath
+$unraidSMBUser = Read-Host "      Unraid SMB username for backup share [Enter to skip]"
+if ($unraidSMBUser.Length -gt 0) {
+    $unraidSMBPass = Get-SecureInput "      Unraid SMB password"
+    Set-VaultSecret "cred:Unraid:host" $unraidHost
+    Set-VaultSecret "cred:Unraid:user" $unraidSMBUser
+    if ($unraidSMBPass.Length -gt 0) { Set-VaultSecret "cred:Unraid:password" $unraidSMBPass }
+    Write-OK "Unraid backup credentials saved (vault auto-backs up daily + on every secret save)"
+} else { Write-Warn "Skipped Unraid backup credentials (set later in Settings -> Credentials)" }
+
 $adguardHost = Read-Host "      AdGuard host [http://192.168.1.x:3000]"
 if (-not $adguardHost) { $adguardHost = "http://192.168.1.x:3000" }
 Write-EnvLine "ADGUARD_HOST" $adguardHost
@@ -233,11 +245,23 @@ Write-EnvLine "WEATHER_LON" $weatherLon
 
 # ── Agent Bridge ──
 Write-Host "`n      ── Agent Bridge ───────────────────────────────────" -ForegroundColor DarkCyan
-$hermesHost = Read-Host "      Hermes host [http://192.168.1.x:PORT]"
+$hermesHost = Read-Host "      Hermes host [http://192.168.1.x:5000]"
 if ($hermesHost) { Write-EnvLine "HERMES_HOST" $hermesHost }
 
 $hermesSecret = Get-SecureInput "      Hermes webhook secret"
 if ($hermesSecret.Length -gt 0) { Set-VaultSecret "HERMES_WEBHOOK_SECRET" $hermesSecret }
+
+$hermesSSHHost = Read-Host "      Hermes SSH host/IP [192.168.1.55]"
+if (-not $hermesSSHHost) { $hermesSSHHost = "192.168.1.55" }
+$hermesSSHUser = Read-Host "      Hermes SSH user [root]"
+if (-not $hermesSSHUser) { $hermesSSHUser = "root" }
+$hermesSSHPass = Get-SecureInput "      Hermes SSH password [Enter to skip]"
+if ($hermesSSHPass.Length -gt 0) {
+    Set-VaultSecret "cred:hermes:host" $hermesSSHHost
+    Set-VaultSecret "cred:hermes:user" $hermesSSHUser
+    Set-VaultSecret "cred:hermes:password" $hermesSSHPass
+    Write-OK "Hermes SSH credentials saved (used for automated deploys)"
+} else { Write-Warn "Skipped Hermes SSH credentials" }
 
 # ── NEXUS System ──
 Write-Host "`n      ── NEXUS System ───────────────────────────────────" -ForegroundColor DarkCyan
@@ -281,9 +305,11 @@ Write-Host "  NEXUS setup complete!" -ForegroundColor White
 Write-Host ""
 Write-Host "  Secrets stored in vault: $secretCount" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  IMPORTANT: Back up these two files:" -ForegroundColor Yellow
+Write-Host "  Vault auto-backs up to Unraid on every secret save." -ForegroundColor Gray
+Write-Host ""
+Write-Host "  IMPORTANT: Also keep a local copy of:" -ForegroundColor Yellow
 Write-Host "    nexus.vault  <- your encrypted secrets" -ForegroundColor Yellow
-Write-Host "    .vault.key   <- your master key (keep separate!)" -ForegroundColor Yellow
+Write-Host "    .vault.key   <- your master key" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  To start NEXUS: .\start.ps1" -ForegroundColor Green
 Write-Host "======================================================`n" -ForegroundColor Cyan
