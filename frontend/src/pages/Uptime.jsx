@@ -33,7 +33,7 @@ export default function Uptime() {
   }, [load])
 
   // Map speedtest history for AreaChart
-  const downloadChartData = speedtest?.history?.map(h => ({ value: h.download_mbps })) || []
+  const downloadChartData = speedtest?.data?.map(h => ({ value: h.download_mbps })) || []
 
   return (
     <div style={{
