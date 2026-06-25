@@ -306,9 +306,11 @@ async def test_chat_injects_memory_into_system_prompt(monkeypatch):
 
     assert result["reply"] == "assistant reply"
     system = captured_kwargs.get("system", "")
-    assert "RELEVANT MEMORY" in system
-    assert "NOTE_ABOUT_X" in system
-    assert "BRIEF_SEED_Y" in system
+    # system is now a 2-block list; join text to check content regardless of shape
+    system_text = " ".join(b["text"] for b in system) if isinstance(system, list) else system
+    assert "RELEVANT MEMORY" in system_text
+    assert "NOTE_ABOUT_X" in system_text
+    assert "BRIEF_SEED_Y" in system_text
     # Also confirm both memory fns were called with the user message
     mock_vr.assert_called_once_with("hello memory")
     mock_bs.assert_called_once()
@@ -356,9 +358,10 @@ async def test_chat_no_memory_omits_relevant_memory_block(monkeypatch):
 
     assert result["reply"] == "plain reply"
     system = captured_kwargs.get("system", "")
-    assert "RELEVANT MEMORY" not in system
+    system_text = " ".join(b["text"] for b in system) if isinstance(system, list) else system
+    assert "RELEVANT MEMORY" not in system_text
     # The snapshot header must still be present
-    assert "LIVE HOMELAB SNAPSHOT:" in system
+    assert "LIVE HOMELAB SNAPSHOT:" in system_text
 
 
 @pytest.mark.asyncio
@@ -407,5 +410,6 @@ async def test_chat_memory_exception_coerced_to_empty(monkeypatch):
 
     assert result["reply"] == "safe reply"
     system = captured_kwargs.get("system", "")
-    assert "RELEVANT MEMORY" not in system
-    assert "LIVE HOMELAB SNAPSHOT:" in system
+    system_text = " ".join(b["text"] for b in system) if isinstance(system, list) else system
+    assert "RELEVANT MEMORY" not in system_text
+    assert "LIVE HOMELAB SNAPSHOT:" in system_text

@@ -202,6 +202,26 @@ def _extract_text(resp) -> str:
     return "\n".join(parts).strip()
 
 
+def _as_cached_system(system):
+    """Normalize system to a cached content-block list.
+
+    A string becomes a single text block with cache_control so the static prefix
+    caches. A list is passed through unchanged (caller already owns the breakpoints).
+    """
+    if isinstance(system, str):
+        return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    return system
+
+
+def _with_tools_cache(tools: list) -> list:
+    # ponytail: shallow-copies only the last dict — never mutates the shared tool_specs registry
+    if not tools:
+        return tools
+    out = list(tools)
+    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+    return out
+
+
 def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None) -> str:
     """Blocking Anthropic call. Must be run in an executor, never on the loop.
 
@@ -215,7 +235,7 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
         "messages": [{"role": "user", "content": prompt}],
     }
     if system:
-        kwargs["system"] = system
+        kwargs["system"] = _as_cached_system(system)
     if web_search:
         kwargs["tools"] = [_WEB_SEARCH_TOOL]
     resp = client.messages.create(**kwargs)
@@ -331,7 +351,7 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
         "messages": messages,
     }
     if system:
-        kwargs["system"] = system
+        kwargs["system"] = _as_cached_system(system)
     if tools:
         kwargs["tools"] = tools
     resp = client.messages.create(**kwargs)
@@ -378,7 +398,7 @@ async def run_with_tools(
     switch + cancel are not consulted.
     """
     messages: list = [{"role": "user", "content": prompt}]
-    tools = ([_WEB_SEARCH_TOOL] if web_search else []) + list(tool_specs)
+    tools = _with_tools_cache(([_WEB_SEARCH_TOOL] if web_search else []) + list(tool_specs))
 
     # Prefer the explicit task_id param; fall back to the contextvar (set by the
     # orchestrator). Captured on the loop and threaded into each create() call
@@ -441,7 +461,7 @@ def _create_streaming_sync(model: str, max_tokens: int, prompt: str, system: str
         "messages": [{"role": "user", "content": prompt}],
     }
     if system:
-        kwargs["system"] = system
+        kwargs["system"] = _as_cached_system(system)
     if web_search:
         kwargs["tools"] = [_WEB_SEARCH_TOOL]
     try:

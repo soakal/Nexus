@@ -67,7 +67,9 @@ async def test_router_uses_system_prompt():
         from backend.agents import router
         await router.opus("prompt", system="You are an expert")
         call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs.get("system") == "You are an expert"
+        # system is now a cached content-block list; verify the text is preserved
+        sent = call_kwargs.get("system")
+        assert isinstance(sent, list) and sent[0]["text"] == "You are an expert"
 
 
 @pytest.mark.asyncio

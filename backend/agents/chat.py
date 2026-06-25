@@ -36,7 +36,10 @@ def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
 
 _CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean", "climate", "input_number", "input_select", "automation", "lock", "cover"}
 
-CHAT_SYSTEM = """You are NEXUS, a direct, technical personal-AI assistant for a homelab power user.
+# Static instructions block — cache_control candidate. Currently ~300 tokens, below the
+# 4096-token Sonnet/Opus cache minimum, so cache_read_input_tokens will be 0 for now.
+# The split is structurally correct; caching activates automatically if the prefix grows.
+CHAT_SYSTEM_STATIC = """You are NEXUS, a direct, technical personal-AI assistant for a homelab power user.
 You have live access to homelab data shown in the snapshot below. Use it to answer questions about
 home systems, storage, recordings, network/DNS, and weather.
 
@@ -47,10 +50,9 @@ knowledge or code questions, answer directly without searching.
 
 If you genuinely cannot see homelab data that was asked for, say so in one short sentence — do not
 hedge or apologise. Never say "as of my last update" or similar. Be concise; the user is technical
-and time-constrained.
+and time-constrained."""
 
-{memory}LIVE HOMELAB SNAPSHOT:
-{snapshot}"""
+_CHAT_SYSTEM_DYNAMIC = "{memory}LIVE HOMELAB SNAPSHOT:\n{snapshot}"
 
 
 def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
@@ -405,7 +407,10 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
                 memory_block = (memory_block + _briefing_inject) if memory_block else _briefing_inject.lstrip("\n\n")
 
             memory_inject = (memory_block + "\n\n") if memory_block else ""
-            system = CHAT_SYSTEM.format(memory=memory_inject, snapshot=snapshot)
+            system = [
+                {"type": "text", "text": CHAT_SYSTEM_STATIC, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _CHAT_SYSTEM_DYNAMIC.format(memory=memory_inject, snapshot=snapshot)},
+            ]
             user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
                            else f"User: {user_message}")
             try:
