@@ -4,7 +4,7 @@ Pattern: in-memory StaticPool engine monkeypatched onto backend.database.engine,
 matching test_governor.py / test_goals.py.
 
 SAFETY CONTRACT assertions are spread across every test:
-  - router.opus is the ONLY LLM function called.
+  - router.sonnet is the ONLY LLM function called.
   - The proposer MAY call goals.approve(), but ONLY for low-risk reversible autonomous
     goals when auto_approve_low_risk is True. All other goals stay 'proposed'.
   - The proposer NEVER calls execute_action, run_task, or get_pool directly.
@@ -118,7 +118,7 @@ async def test_kill_switch_skips_everything(eng, monkeypatch):
     _mock_integrations(monkeypatch)
 
     opus_mock = AsyncMock(return_value="[]")
-    with patch("backend.agents.router.opus", new=opus_mock):
+    with patch("backend.agents.router.sonnet", new=opus_mock):
         from backend.agents.proposer import propose_goals_tick
         result = await propose_goals_tick()
 
@@ -159,7 +159,7 @@ async def test_happy_path_two_proposals(eng, monkeypatch):
         },
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         # Also patch config so cap doesn't interfere; disable auto-approve so
         # goals stay proposed (auto-approve is tested separately in test 7 and
         # test_auto_approve.py).
@@ -196,7 +196,7 @@ async def test_empty_proposal_creates_no_goals(eng, monkeypatch):
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value="[]")):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value="[]")):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -232,7 +232,7 @@ async def test_cap_limits_proposals(eng, monkeypatch):
         for i in range(5)
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=five_goals)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=five_goals)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -283,7 +283,7 @@ async def test_dedup_second_tick_debounced(eng, monkeypatch):
         s.auto_approve_low_risk = False  # isolate dedup behavior
         return s
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=single_goal)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=single_goal)):
         with patch("backend.config.get_settings", side_effect=_make_settings):
             from backend.agents.proposer import propose_goals_tick
 
@@ -315,7 +315,7 @@ async def test_best_effort_on_opus_error(eng, monkeypatch):
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
-    with patch("backend.agents.router.opus", new=AsyncMock(side_effect=RuntimeError("network error"))):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(side_effect=RuntimeError("network error"))):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -369,7 +369,7 @@ async def test_selective_auto_approve_safety(eng, monkeypatch):
         },
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -437,7 +437,7 @@ async def test_budget_exceeded_skips_gracefully(eng, monkeypatch):
 
     from backend.safety.governor import BudgetExceeded
 
-    with patch("backend.agents.router.opus", new=AsyncMock(side_effect=BudgetExceeded("daily", 30.0, 25.0))):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(side_effect=BudgetExceeded("daily", 30.0, 25.0))):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3

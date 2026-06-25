@@ -253,7 +253,7 @@ async def test_e2e_low_reversible_autonomous_auto_approved(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -295,7 +295,7 @@ async def test_e2e_reversible_by_inverse_also_auto_approved(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -324,7 +324,7 @@ async def test_e2e_high_risk_stays_proposed(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -359,7 +359,7 @@ async def test_e2e_irreversible_stays_proposed(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -393,7 +393,7 @@ async def test_e2e_flag_off_low_reversible_stays_proposed(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         # auto_approve_low_risk = False
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=False)):
             from backend.agents.proposer import propose_goals_tick
@@ -418,7 +418,7 @@ async def test_e2e_kill_switch_off_skips_no_approve(eng, monkeypatch):
     _mock_integrations(monkeypatch)
 
     opus_mock = AsyncMock(return_value="[]")
-    with patch("backend.agents.router.opus", new=opus_mock):
+    with patch("backend.agents.router.sonnet", new=opus_mock):
         from backend.agents.proposer import propose_goals_tick
         result = await propose_goals_tick()
 
@@ -461,7 +461,7 @@ async def test_e2e_mixed_proposals_selective_auto_approve(eng, monkeypatch):
         },
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True, max_per_tick=3)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()

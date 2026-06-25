@@ -25,7 +25,7 @@ async def _process_memo(file_path: str) -> None:
     try:
         from sqlmodel import Session
 
-        from backend.agents.router import opus
+        from backend.agents.router import sonnet
         from backend.agents.voice import transcribe
         from backend.database import MemoLog, engine
         from backend.integrations.obsidian import create_note
@@ -46,7 +46,7 @@ Return JSON only:
   "tags": ["tag1"]
 }}"""
 
-        raw = await opus(cleanup_prompt)
+        raw = await sonnet(cleanup_prompt, label="memo_cleanup")
         start = raw.find("{")
         end = raw.rfind("}") + 1
         data = json.loads(raw[start:end])

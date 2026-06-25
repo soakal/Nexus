@@ -306,7 +306,7 @@ async def test_proposer_injects_enrichment_context(eng, monkeypatch):
         captured_prompts.append(prompt)
         return "[]"
 
-    with patch("backend.agents.router.opus", new=_mock_opus):
+    with patch("backend.agents.router.sonnet", new=_mock_opus):
         with patch("backend.config.get_settings", return_value=_make_settings()):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -349,7 +349,7 @@ async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
         captured_prompts.append(prompt)
         return "[]"
 
-    with patch("backend.agents.router.opus", new=_mock_opus):
+    with patch("backend.agents.router.sonnet", new=_mock_opus):
         with patch("backend.config.get_settings", return_value=_make_settings()):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()

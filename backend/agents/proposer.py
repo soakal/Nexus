@@ -310,7 +310,7 @@ async def propose_goals_tick() -> dict:
         )
 
         try:
-            raw = await router.opus(prompt, label="goal_proposer")
+            raw = await router.sonnet(prompt, label="goal_proposer")
         except BudgetExceeded:
             return {"status": "skipped", "reason": "budget"}
 

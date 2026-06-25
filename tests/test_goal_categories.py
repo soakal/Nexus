@@ -235,7 +235,7 @@ async def test_proposer_tags_maintenance_category(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -272,7 +272,7 @@ async def test_proposer_bogus_category_becomes_other(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -307,7 +307,7 @@ async def test_proposer_missing_category_becomes_other(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.opus", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
