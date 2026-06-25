@@ -457,12 +457,12 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
                     ),
                     reverse=True,
                 )
-                controllable = _all_controllable[:60]
+                controllable = _all_controllable[:12]
 
                 if not controllable:
                     reply = "No controllable devices found in Home Assistant."
                 else:
-                    entity_list = json.dumps(controllable, indent=2)
+                    entity_list = json.dumps(controllable)
                     pick_prompt = f"""The user wants to control or configure a Home Assistant entity.
 
 User request: "{user_message}"
@@ -578,7 +578,7 @@ If no entity matches, return:
             # known verb with valid args goes through the structured `hermes_action`
             # path; anything else falls back to free-text relay (kind="hermes_relay"),
             # which is allowed only because this is a USER action.
-            menu = json.dumps(hermes_actions.allowed_verbs(), indent=2)
+            menu = json.dumps(hermes_actions.allowed_verbs())
             verb_prompt = f"""The user wants the Hermes homelab bot to do something.
 
 User request: "{user_message}"

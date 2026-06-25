@@ -25,7 +25,7 @@ async def transcribe(audio_path: str) -> str:
 
 
 async def route_intent(transcript: str) -> dict:
-    from backend.agents.router import opus
+    from backend.agents.router import haiku
     prompt = f"""Classify this voice command into one of: TASK, QUERY, BRIEFING, HOME_CONTROL, NOTE
 
 Voice transcript: "{transcript}"
@@ -37,7 +37,7 @@ Return JSON only:
   "extracted_action": "what the user wants to do",
   "parameters": {{}}
 }}"""
-    raw = await opus(prompt)
+    raw = await haiku(prompt, label="voice_intent")
     import json
     start = raw.find("{")
     end = raw.rfind("}") + 1

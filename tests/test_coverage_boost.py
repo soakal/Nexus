@@ -513,7 +513,7 @@ async def test_voice_process_audio_task():
 async def test_voice_route_intent_parses_json():
     from backend.agents.voice import route_intent
     raw_response = '{"intent": "QUERY", "confidence": 0.9, "extracted_action": "test", "parameters": {}}'
-    with patch("backend.agents.router.opus", new_callable=AsyncMock, return_value=raw_response):
+    with patch("backend.agents.router.haiku", new_callable=AsyncMock, return_value=raw_response):
         result = await route_intent("test query")
     assert result["intent"] == "QUERY"
     assert result["confidence"] == 0.9
