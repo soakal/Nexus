@@ -105,14 +105,26 @@ def _cadence_seconds(cadence: str | None) -> int | None:
 
 _AUTO_APPROVE_REVERSIBLE = {"reversible", "reversible_by_inverse"}
 
+# Mirrors _HA_HIGH_DOMAINS in safety/broker.py — goals mentioning these words
+# cannot be auto-approved regardless of the LLM's risk label, because the broker
+# will block the underlying HA action anyway (physical security / irreversible).
+# Word-boundary match avoids false positives on "blocked", "discovery", "coverage".
+_NEVER_AUTO_PATTERN = re.compile(
+    r"\b(lock|unlock|alarm|cover|climate)\b", re.IGNORECASE
+)
+
 
 def is_auto_approvable(goal: dict, *, enabled: bool) -> bool:
     """Default-deny policy for narrow auto-approve. True ONLY when ALL hold:
     the feature is enabled, the goal was proposed by the autonomous actor, its risk
-    is 'low', its reversibility is reversible, and its category is NOT 'monitoring'.
+    is 'low', its reversibility is reversible, its category is NOT 'monitoring',
+    and its title/description contain no physical-security/climate domain words.
     Monitoring/investigation goals are never auto-approved because their task execution
     generates cascading sub-notifications. Everything else stays proposed for human approval."""
     if not enabled:
+        return False
+    text = f"{goal.get('title', '')} {goal.get('description', '')}"
+    if _NEVER_AUTO_PATTERN.search(text):
         return False
     return (
         str(goal.get("actor")) == "autonomous"

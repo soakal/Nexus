@@ -292,7 +292,9 @@ async def propose_goals_tick() -> dict:
             "the garage door open, or the back door unlocked). Never propose anything already open.\n"
             "Use the RECENT TRENDS to anticipate upcoming issues (e.g. storage rising toward full,\n"
             "blocked percentage climbing). Check HA ENTITY STATES for devices that may have been\n"
-            "left on/open/unlocked — the home_control write tool can turn them off (low-risk, reversible).\n"
+            "left on/open/unlocked. Lights and plugs can be turned off autonomously (low-risk, reversible).\n"
+            "IMPORTANT: lock, alarm, and cover (garage door) are physical-security domains — classify\n"
+            "these as risk='high', reversibility='irreversible' so a human must approve them.\n"
             "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n\n"
             f"Return JSON only — an array (max {max_per_tick}) of:\n"
             '[{"title": "...", "description": "concrete goal the executor can pursue", '

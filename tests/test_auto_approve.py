@@ -229,6 +229,74 @@ class TestIsAutoApprovable:
         """Empty goal dict → False."""
         assert self._call(goal={}, enabled=True) is False
 
+    # Physical-security / climate keyword guard (mirrors _HA_HIGH_DOMAINS in broker).
+    # Uses word-boundary regex so "blocked", "discovery", "coverage" are NOT matched.
+
+    def test_lock_keyword_in_title_blocked(self):
+        """'lock' as a word in title → False (exact failing goal title)."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Lock the back door"},
+            enabled=True,
+        ) is False
+
+    def test_unlock_keyword_in_description_blocked(self):
+        """'unlock' as a word in description → False."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Secure entry", "description": "unlock the front door"},
+            enabled=True,
+        ) is False
+
+    def test_alarm_keyword_blocked(self):
+        """'alarm' as a word in title → False."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Arm the alarm system"},
+            enabled=True,
+        ) is False
+
+    def test_cover_keyword_blocked(self):
+        """'cover' as a word (garage door HA domain) → False."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Close the garage door",
+                  "description": "cover.close on cover.garage_door_garage_door"},
+            enabled=True,
+        ) is False
+
+    def test_climate_keyword_blocked(self):
+        """'climate' as a word (thermostat HA domain) → False."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Set the climate to 70F"},
+            enabled=True,
+        ) is False
+
+    def test_blocked_dns_not_false_positive(self):
+        """'blocked' contains 'lock' as substring but NOT as a word — must NOT be blocked."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Investigate rising blocked DNS percentage"},
+            enabled=True,
+        ) is True
+
+    def test_discovery_not_false_positive(self):
+        """'discovery' contains 'cover' as substring but NOT as a word → not blocked."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Run service discovery on LAN"},
+            enabled=True,
+        ) is True
+
+    def test_light_title_not_blocked(self):
+        """Non-security goal (turn off light) is still auto-approvable."""
+        assert self._call(
+            goal={"actor": "autonomous", "risk": "low", "reversibility": "reversible",
+                  "title": "Turn off porch light"},
+            enabled=True,
+        ) is True
+
 
 # ---------------------------------------------------------------------------
 # Part 2 — End-to-end proposer tick tests

@@ -202,10 +202,11 @@ def decide(
 async def _dispatch_ha_service(target: str, payload: dict) -> dict:
     from backend.integrations import homeassistant
 
-    if "service_data" in payload and payload["service_data"] is not None:
-        service_data = payload["service_data"]
-    else:
-        service_data = {"entity_id": target}
+    # If service_data is absent, None, or empty (e.g. chat.py's non-parameterised
+    # branch passes {}), fall back to targeting the entity. Non-empty dicts (e.g.
+    # reload_config_entry with {"entry_id": "cloud"}) already have what they need.
+    raw = payload.get("service_data")
+    service_data = raw if raw else {"entity_id": target}
     result = await homeassistant.call_service(payload["domain"], payload["service"], service_data)
     return result
 

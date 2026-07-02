@@ -121,7 +121,15 @@ function ProxmoxSection() {
 }
 
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean'])
+const COVER_DOMAINS = new Set(['cover'])
+const LOCK_DOMAINS  = new Set(['lock'])
 const ON_STATES = new Set(['on', 'open', 'home', 'playing', 'active', 'unlocked'])
+
+const ACTION_BTN = {
+  padding: '5px 10px', borderRadius: '7px', fontSize: '12px', fontWeight: 600,
+  border: '1px solid rgba(120,160,220,0.2)', background: 'rgba(255,255,255,0.04)',
+  color: '#aab4c7', cursor: 'pointer',
+}
 
 function domainOf(entityId) {
   return entityId.split('.')[0]
@@ -141,7 +149,7 @@ function entityDotColor(state) {
   return '#7c8aa3'
 }
 
-function EntityRow({ entity, onToggle, busy }) {
+function EntityRow({ entity, onAction, busy }) {
   const domain = domainOf(entity.entity_id)
   const name = friendlyName(entity)
   const state = entity.state
@@ -204,7 +212,7 @@ function EntityRow({ entity, onToggle, busy }) {
         </div>
         <button
           disabled={busy || unavailable}
-          onClick={() => onToggle(entity, on)}
+          onClick={() => onAction(entity, on ? 'turn_off' : 'turn_on', on ? 'off' : 'on')}
           style={{
             flexShrink: 0,
             padding: '5px 12px',
@@ -226,6 +234,63 @@ function EntityRow({ entity, onToggle, busy }) {
         >
           {unavailable ? 'N/A' : on ? 'On' : 'Off'}
         </button>
+      </div>
+    )
+  }
+
+  if (COVER_DOMAINS.has(domain)) {
+    const isMoving = state === 'opening' || state === 'closing'
+    const coverBtns = [
+      { label: 'Open',  svc: 'open_cover',  off: state === 'open'   || state === 'opening'  || unavailable },
+      { label: 'Close', svc: 'close_cover', off: state === 'closed' || state === 'closing'  || unavailable },
+      { label: 'Stop',  svc: 'stop_cover',  off: !isMoving || unavailable },
+    ]
+    return (
+      <div style={rowStyle}>
+        <div style={leftStyle}>
+          <StatusDot color={dotColor} size={8} glow={false} />
+          <div style={{ minWidth: 0 }}>
+            <div style={nameStyle}>{name}</div>
+            <div style={idStyle}>{entity.entity_id}</div>
+          </div>
+        </div>
+        <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <span style={{ ...labelStyle, marginRight: '4px' }}>{state}</span>
+          {coverBtns.map(({ label, svc, off }) => (
+            <button key={svc} disabled={busy || off}
+              onClick={() => onAction(entity, svc, null)}
+              style={{ ...ACTION_BTN, opacity: busy || off ? 0.35 : 1, cursor: busy || off ? 'not-allowed' : 'pointer' }}
+            >{label}</button>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  if (LOCK_DOMAINS.has(domain)) {
+    const isLocked = state === 'locked'
+    const lockBtns = [
+      { label: 'Lock',   svc: 'lock',   opt: 'locked',   off: isLocked  || unavailable },
+      { label: 'Unlock', svc: 'unlock', opt: 'unlocked', off: !isLocked || unavailable },
+    ]
+    return (
+      <div style={rowStyle}>
+        <div style={leftStyle}>
+          <StatusDot color={dotColor} size={8} glow={false} />
+          <div style={{ minWidth: 0 }}>
+            <div style={nameStyle}>{name}</div>
+            <div style={idStyle}>{entity.entity_id}</div>
+          </div>
+        </div>
+        <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <span style={{ ...labelStyle, marginRight: '4px' }}>{state}</span>
+          {lockBtns.map(({ label, svc, opt, off }) => (
+            <button key={svc} disabled={busy || off}
+              onClick={() => onAction(entity, svc, opt)}
+              style={{ ...ACTION_BTN, opacity: busy || off ? 0.35 : 1, cursor: busy || off ? 'not-allowed' : 'pointer' }}
+            >{label}</button>
+          ))}
+        </div>
       </div>
     )
   }
@@ -290,28 +355,24 @@ export default function HomeAssistant() {
     }
   }, [load])
 
-  const toggle = useCallback(async (entity, currentlyOn) => {
+  const callService = useCallback(async (entity, service, optimisticState) => {
     const domain = domainOf(entity.entity_id)
-    const service = currentlyOn ? 'turn_off' : 'turn_on'
     setBusyIds((b) => ({ ...b, [entity.entity_id]: true }))
-    // Optimistic update
-    setEntities((list) =>
-      list.map((e) =>
-        e.entity_id === entity.entity_id ? { ...e, state: currentlyOn ? 'off' : 'on' } : e
+    if (optimisticState != null) {
+      setEntities((list) =>
+        list.map((e) =>
+          e.entity_id === entity.entity_id ? { ...e, state: optimisticState } : e
+        )
       )
-    )
+    }
     try {
       await api.ha.service(domain, service, entity.entity_id)
       await load()
     } catch (e) {
       setError(String(e.message || e))
-      await load() // resync truth on failure
+      await load()
     } finally {
-      setBusyIds((b) => {
-        const next = { ...b }
-        delete next[entity.entity_id]
-        return next
-      })
+      setBusyIds((b) => { const next = { ...b }; delete next[entity.entity_id]; return next })
     }
   }, [load])
 
@@ -426,7 +487,7 @@ export default function HomeAssistant() {
                 <EntityRow
                   key={e.entity_id}
                   entity={e}
-                  onToggle={toggle}
+                  onAction={callService}
                   busy={!!busyIds[e.entity_id]}
                 />
               ))}

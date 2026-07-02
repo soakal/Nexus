@@ -542,3 +542,78 @@ async def test_voice_transcribe_whisper_api():
          patch("builtins.open", return_value=mock_file):
         result = await transcribe("/fake/audio.wav")
     assert result == "transcribed text"
+
+
+# ---------------------------------------------------------------------------
+# backend/agents/wiki_ingest.py — anti-fragmentation helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stem,expected", [
+    ("nexus-session-2026-06-25b-ha-cover-lock-fix", "nexus ha cover lock fix"),
+    ("NEXUS-save-2026-06-24", "NEXUS"),
+    ("2026-06-28", ""),                       # daily file → empty topic
+    ("nexus-session-20260625b-fix", "nexus fix"),  # compact date form
+    ("CWI-AI-2026-06-25-redesign", "CWI AI redesign"),
+])
+def test_wiki_filename_hint_strips_dates_and_noise(stem, expected):
+    from backend.agents.wiki_ingest import _filename_hint
+    assert _filename_hint(stem) == expected
+
+
+def test_wiki_match_existing_page_basic():
+    from backend.agents.wiki_ingest import _match_existing_page
+    known = ["NEXUS", "Hermes", "AdGuard"]
+    assert _match_existing_page("nexus ha cover lock fix", known) == "NEXUS"
+    assert _match_existing_page("NEXUS", known) == "NEXUS"
+
+
+def test_wiki_match_existing_page_hyphenated_stem():
+    # Regression: a hyphenated page stem (CWI-AI) must still match a hint
+    # built from a hyphenated filename ("CWI AI redesign").
+    from backend.agents.wiki_ingest import _match_existing_page
+    known = ["NEXUS", "CWI-AI"]
+    assert _match_existing_page("CWI AI redesign", known) == "CWI-AI"
+
+
+def test_wiki_match_existing_page_no_match():
+    from backend.agents.wiki_ingest import _match_existing_page
+    known = ["NEXUS", "Hermes"]
+    assert _match_existing_page("brand new topic", known) is None
+    assert _match_existing_page("", known) is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("NEXUS.md", "NEXUS"),       # no double .md
+    ("wiki/Foo", "Foo"),          # path segments stripped
+    ("..\\..\\evil", "evil"),    # no traversal
+    ("  ", "Inbox"),
+    (None, "Inbox"),
+    ("none", "Inbox"),
+    ("null", "Inbox"),
+    ("NEXUS", "NEXUS"),
+])
+def test_wiki_clean_page_name(raw, expected):
+    from backend.agents.wiki_ingest import _clean_page_name
+    assert _clean_page_name(raw) == expected
+
+
+def test_wiki_looks_like_reference_doc():
+    from backend.agents.wiki_ingest import _looks_like_reference_doc
+    ref = "\n".join(f"# Section {i}" for i in range(10))
+    assert _looks_like_reference_doc(ref) is True
+    note = "Fixed the HA cover lock.\n- did x\n- did y\n# One header"
+    assert _looks_like_reference_doc(note) is False
+
+
+def test_wiki_is_session_file_by_name():
+    from backend.agents.wiki_ingest import _is_session_file
+
+    class _F:
+        def __init__(self, stem):
+            self.stem = stem
+        def read_text(self, **kw):
+            return ""
+
+    assert _is_session_file(_F("2026-06-28")) is True
+    assert _is_session_file(_F("nexus-session-2026-06-25b")) is True
+    assert _is_session_file(_F("NEXUS")) is False
