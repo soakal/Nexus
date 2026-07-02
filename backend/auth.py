@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -15,7 +17,8 @@ async def require_api_key(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Vault not configured",
         )
-    if credentials is None or credentials.credentials != expected_key:
+    if (credentials is None or not expected_key
+            or not hmac.compare_digest(credentials.credentials, expected_key)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",

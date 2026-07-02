@@ -42,3 +42,25 @@ def test_no_token_returns_401(client, method, path):
 def test_wrong_token_returns_401(client, method, path):
     resp = client.request(method, path, headers={"Authorization": "Bearer wrong-key"})
     assert resp.status_code == 401
+
+
+def test_correct_token_returns_non_401(client):
+    # Proves the constant-time compare accepts the real key.
+    fake = MagicMock()
+    fake.nexus_api_key = "test-key-123"
+    with patch("backend.config.get_settings", return_value=fake):
+        resp = client.get(
+            "/api/secrets/list", headers={"Authorization": "Bearer test-key-123"}
+        )
+    assert resp.status_code != 401
+
+
+def test_empty_expected_key_returns_401(client):
+    # An unset/empty configured key must reject every bearer, never crash.
+    fake = MagicMock()
+    fake.nexus_api_key = ""
+    with patch("backend.config.get_settings", return_value=fake):
+        resp = client.get(
+            "/api/secrets/list", headers={"Authorization": "Bearer anything"}
+        )
+    assert resp.status_code == 401
