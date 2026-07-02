@@ -89,7 +89,7 @@ async def _record_uptime():
         from backend.database import UptimeSample, engine
         from backend.integrations import (
             adguard, channels_dvr, github, hermes, homeassistant,
-            obsidian, openrouter, unifi, unraid, weather,
+            obsidian, openrouter, proxmox, unifi, unraid, weather,
         )
         import time
 
@@ -97,7 +97,7 @@ async def _record_uptime():
             "homeassistant": homeassistant, "unifi": unifi, "unraid": unraid,
             "obsidian": obsidian, "github": github, "openrouter": openrouter,
             "weather": weather, "channels_dvr": channels_dvr, "adguard": adguard,
-            "hermes": hermes,
+            "hermes": hermes, "proxmox": proxmox,
         }
 
         async def _check(name, mod):
@@ -173,6 +173,15 @@ async def _retry_pending_deliveries():
         await deliver_pending()
     except Exception as e:
         logger.error(f"Retry delivery error: {e}")
+
+
+async def _ingest_brain_spend():
+    try:
+        import asyncio
+        from backend.agents.brain_spend import ingest_brain_spend
+        await asyncio.to_thread(ingest_brain_spend)
+    except Exception as e:
+        logger.error(f"Brain spend ingest error: {e}")
 
 
 async def _step_watchdog():
@@ -353,6 +362,12 @@ def setup_scheduler(briefing_time: str, timezone: str):
         _record_uptime,
         IntervalTrigger(minutes=2),
         id="record_uptime",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _ingest_brain_spend,
+        IntervalTrigger(seconds=300),
+        id="brain_spend_ingest",
         replace_existing=True,
     )
     scheduler.add_job(

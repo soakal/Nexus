@@ -4,12 +4,20 @@ const _host = import.meta.env.VITE_API_BASE
 
 export const API_HOST = _host
 
+// Runtime branch (C6): over HTTPS we're behind `tailscale serve`, which mounts
+// /api and /ws on the SAME origin — use same-origin so the browser never makes
+// a mixed-content http://:8000 call. Over plain HTTP (LAN) keep hitting :8000
+// directly. VITE_API_BASE stays the highest-priority override.
 const _base = import.meta.env.VITE_API_BASE
   ? import.meta.env.VITE_API_BASE.replace(/\/$/, '')
-  : `${window.location.protocol}//${API_HOST}:8000`
+  : window.location.protocol === 'https:'
+    ? ''
+    : `${window.location.protocol}//${API_HOST}:8000`
 
 export const API_BASE = _base
-export const WS_BASE = _base.replace(/^http/, 'ws')
+export const WS_BASE = _base
+  ? _base.replace(/^http/, 'ws')
+  : `wss://${window.location.host}`
 
 // The live-feed WS URL (no key in the URL — see wsLogsProtocols).
 export function wsLogsUrl() {

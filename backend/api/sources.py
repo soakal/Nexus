@@ -18,6 +18,7 @@ async def sources_status(_=Depends(require_api_key)):
         homeassistant,
         obsidian,
         openrouter,
+        proxmox,
         unifi,
         unraid,
         weather,
@@ -34,6 +35,7 @@ async def sources_status(_=Depends(require_api_key)):
         "channels_dvr": channels_dvr,
         "adguard": adguard,
         "hermes": hermes,
+        "proxmox": proxmox,
     }
 
     results = await asyncio.gather(

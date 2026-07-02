@@ -122,6 +122,35 @@ ALLOWLIST: dict[str, HermesVerb] = {
         required_args=("host",), enum_args={},
         build=lambda args: f"wake {args['host'].strip()}",
     ),
+    # --- Tier C batch 2 verbs (council mandated HIGH/needs_confirm for ALL) ---
+    # Resync the Proxmox apt package index. Intrinsically low risk (an index
+    # refresh only — the PVE REST API CANNOT apply/upgrade packages, so this was
+    # descoped from apply-updates), but the council mandated HIGH/needs_confirm
+    # for every Tier C verb. REVERSIBLE: re-runnable and non-mutating.
+    "pve_refresh_updates": HermesVerb(
+        verb="pve_refresh_updates", risk=Risk.HIGH, reversibility=Reversibility.REVERSIBLE,
+        required_args=(), enum_args={}, build=_no_arg("refresh updates"),
+    ),
+    # Prune dangling docker images on Unraid (images only — never containers/
+    # volumes/networks). REVERSIBLE_BY_INVERSE: a removed image is recovered by a
+    # re-pull. HIGH per the Tier C mandate.
+    "docker_prune": HermesVerb(
+        verb="docker_prune", risk=Risk.HIGH, reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+        required_args=(), enum_args={}, build=_no_arg("docker prune"),
+    ),
+    # Block / unblock a Unifi client by hostname or hyphenated MAC. The arg
+    # charset bans colons, so a MAC must travel hyphenated (aa-bb-cc-dd-ee-ff) or
+    # as a hostname; Hermes normalizes it. REVERSIBLE_BY_INVERSE (block<->unblock).
+    "unifi_block_client": HermesVerb(
+        verb="unifi_block_client", risk=Risk.HIGH, reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+        required_args=("client",), enum_args={},
+        build=lambda args: f"block {args['client'].strip()}",
+    ),
+    "unifi_unblock_client": HermesVerb(
+        verb="unifi_unblock_client", risk=Risk.HIGH, reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+        required_args=("client",), enum_args={},
+        build=lambda args: f"unblock {args['client'].strip()}",
+    ),
 }
 
 

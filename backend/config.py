@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     unifi_host: str = "https://192.168.1.1"
     unifi_username: str = ""
     unraid_host: str = "192.168.1.1"
+    proxmox_host: str = "https://192.168.1.60:8006"
     obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
     brain_mcp_url: str = "http://localhost:8765"
     brain_mcp_token: str = ""  # set in .env if mcp_write_token is configured
@@ -187,6 +188,16 @@ class Settings(BaseSettings):
     def unraid_api_key(self) -> str:
         from backend.secrets.manager import get_secret
         return get_secret("UNRAID_API_KEY")
+
+    @property
+    def proxmox_token(self) -> str:
+        # Full PVE header string: "PVEAPIToken=user@realm!tokenid=uuid".
+        # Sent verbatim as the Authorization header value.
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("PROXMOX_TOKEN")
+        except KeyError:
+            return ""
 
     @property
     def github_token(self) -> str:

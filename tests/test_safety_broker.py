@@ -431,6 +431,11 @@ def test_classify_hermes_action_per_verb():  # AC2.1
     assert classify("hermes_action", {"verb": "adguard_control"}) == (Risk.MEDIUM, Reversibility.REVERSIBLE_BY_INVERSE)
     assert classify("hermes_action", {"verb": "restart_service"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
     assert classify("hermes_action", {"verb": "vm_action"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+    # Tier C batch 2 verbs (all HIGH so agent -> needs_confirm; none IRREVERSIBLE)
+    assert classify("hermes_action", {"verb": "pve_refresh_updates"}) == (Risk.HIGH, Reversibility.REVERSIBLE)
+    assert classify("hermes_action", {"verb": "docker_prune"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+    assert classify("hermes_action", {"verb": "unifi_block_client"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+    assert classify("hermes_action", {"verb": "unifi_unblock_client"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
     # unknown / missing verb -> unclassifiable
     assert classify("hermes_action", {"verb": "bogus"}) == (Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN)
     assert classify("hermes_action", {}) == (Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN)

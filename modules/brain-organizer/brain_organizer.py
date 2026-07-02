@@ -421,6 +421,31 @@ def find_similar_page(
 # Core API call — Anthropic with retry + OpenRouter fallback
 # ---------------------------------------------------------------------------
 
+_USAGE_LOG = Path(__file__).parent / "logs" / "usage.jsonl"
+
+
+def _record_usage(model: str, provider: str, input_tokens: int, output_tokens: int) -> None:
+    """Append one JSON line of token usage for the NEXUS spend governor to ingest.
+
+    Best-effort and stdlib-only: metering must NEVER break note processing, so the
+    whole body is wrapped in try/except: pass. Open-append-close per write so a
+    concurrent NEXUS os.replace() claim can't corrupt a held handle.
+    """
+    try:
+        _USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({
+            "ts": datetime.now(UTC).isoformat(),
+            "model": model,
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "provider": provider,
+        })
+        with open(_USAGE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
+
+
 class _APIUsageCapped(RuntimeError):
     """Raised when ALL providers are hard-capped (not transient) — caller should abort the run."""
 
@@ -455,6 +480,12 @@ def _call_api(
             block = next((b for b in msg.content if isinstance(b, TextBlock)), None)
             if block is None:
                 raise ValueError("Anthropic response contained no text block")
+            usage = getattr(msg, "usage", None)
+            _record_usage(
+                model, "anthropic",
+                getattr(usage, "input_tokens", 0) or 0,
+                getattr(usage, "output_tokens", 0) or 0,
+            )
             return block.text.strip(), (msg.stop_reason or "")
         except _RETRYABLE_ERRORS as exc:
             last_exc = exc
@@ -515,6 +546,12 @@ def _call_api(
         data = resp.json()
         text = (data["choices"][0]["message"]["content"] or "").strip()
         finish_reason = data["choices"][0].get("finish_reason", "")
+        or_usage = data.get("usage") or {}
+        _record_usage(
+            or_model, "openrouter",
+            or_usage.get("prompt_tokens", 0) or 0,
+            or_usage.get("completion_tokens", 0) or 0,
+        )
         logger.info("OpenRouter fallback succeeded (finish_reason=%s)", finish_reason)
         return text, finish_reason
     except _APIUsageCapped:

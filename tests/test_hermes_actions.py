@@ -24,6 +24,11 @@ _TABLE = {
     "service_logs": (Risk.LOW, Reversibility.REVERSIBLE),
     "reload_integration": (Risk.MEDIUM, Reversibility.REVERSIBLE),
     "wol": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
+    # Tier C batch 2
+    "pve_refresh_updates": (Risk.HIGH, Reversibility.REVERSIBLE),
+    "docker_prune": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
+    "unifi_block_client": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
+    "unifi_unblock_client": (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE),
 }
 
 
@@ -106,6 +111,35 @@ def test_build_vm_action():
 def test_build_adguard_control():
     assert ha.build_command("adguard_control", {"action": "disable"}) == "disable adguard"
     assert ha.build_command("adguard_control", {"action": "enable"}) == "enable adguard"
+
+
+# --- Tier C batch 2 build ACs ---
+
+def test_build_pve_refresh_updates():
+    assert ha.build_command("pve_refresh_updates", {}) == "refresh updates"
+    assert ha.build_command("pve_refresh_updates") == "refresh updates"
+
+
+def test_build_docker_prune():
+    assert ha.build_command("docker_prune", {}) == "docker prune"
+
+
+def test_build_unifi_block_unblock():
+    assert ha.build_command("unifi_block_client", {"client": "kids-ipad"}) == "block kids-ipad"
+    assert ha.build_command("unifi_unblock_client", {"client": "kids-ipad"}) == "unblock kids-ipad"
+    # A hyphenated MAC is a valid arg (charset allows hyphens, bans colons).
+    assert ha.build_command("unifi_block_client", {"client": "aa-bb-cc-dd-ee-ff"}) == "block aa-bb-cc-dd-ee-ff"
+    assert ha.build_command("unifi_unblock_client", {"client": "  kids-ipad  "}) == "unblock kids-ipad"
+
+
+def test_unifi_client_colon_mac_rejected():
+    # A colon MAC is REJECTED by the arg charset — this locks the wire contract
+    # (MACs must travel hyphenated or as a hostname; Hermes normalizes).
+    assert ha.validate_args("unifi_block_client", {"client": "aa:bb:cc:dd:ee:ff"}) is not None
+    with pytest.raises(ValueError):
+        ha.build_command("unifi_block_client", {"client": "aa:bb:cc:dd:ee:ff"})
+    with pytest.raises(ValueError):
+        ha.build_command("unifi_unblock_client", {"client": "aa:bb:cc:dd:ee:ff"})
 
 
 def test_build_case_insensitive_verb():

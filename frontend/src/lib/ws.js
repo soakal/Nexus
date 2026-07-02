@@ -9,6 +9,11 @@ function deriveWsUrl() {
     const proto = u.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${proto}//${u.host}/ws/logs`
   }
+  // HTTPS page = behind tailscale serve (same-origin /ws mount) — use wss on
+  // the page host; plain HTTP (LAN) keeps the direct :8000 socket.
+  if (window.location.protocol === 'https:') {
+    return `wss://${window.location.host}/ws/logs`
+  }
   return `ws://${API_HOST}:8000/ws/logs`
 }
 

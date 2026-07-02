@@ -14,28 +14,11 @@ function BrowserApiKey() {
   const [value, setValue] = useState(localStorage.getItem('nexus_api_key') || '')
   const [visible, setVisible] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [linkCopied, setLinkCopied] = useState(false)
 
   const save = () => {
     localStorage.setItem('nexus_api_key', value.trim())
     setSaved(true)
     setTimeout(() => window.location.reload(), 600)
-  }
-
-  const copySetupLink = async () => {
-    const link = `${window.location.origin}/?key=${encodeURIComponent(value.trim())}`
-    try {
-      await navigator.clipboard.writeText(link)
-    } catch {
-      const ta = document.createElement('textarea')
-      ta.value = link
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    }
-    setLinkCopied(true)
-    setTimeout(() => setLinkCopied(false), 2500)
   }
 
   return (
@@ -79,13 +62,6 @@ function BrowserApiKey() {
         </PrimaryButton>
       </div>
 
-      {value.trim() && (
-        <div style={{ marginTop: '8px' }}>
-          <GhostButton onClick={copySetupLink}>
-            {linkCopied ? 'Link copied' : 'Copy device setup link'}
-          </GhostButton>
-        </div>
-      )}
     </Card>
   )
 }
