@@ -638,6 +638,47 @@ async def set_disabled(goal_id: int, disabled: bool) -> dict:
     return {"status": "updated", "goal": updated}
 
 
+def _summarize_outcome(title: str, raw_result: str | None) -> str:
+    """One-line, no-LLM outcome summary from a Task result_json.
+
+    Pulls the first non-empty string under a summary-ish key; falls back to
+    the goal title. Never raises.
+    """
+    try:
+        if raw_result:
+            import json as _json
+            data = _json.loads(raw_result)
+            if isinstance(data, dict):
+                for key in ("summary", "result", "answer", "output", "text"):
+                    v = data.get(key)
+                    if isinstance(v, str) and v.strip():
+                        return " ".join(v.split())[:300]
+    except Exception:
+        pass
+    return f"completed: {title}"[:300]
+
+
+async def _distill_completed_goal(g: dict, raw_result: str | None) -> None:
+    """Optional Haiku fact-extraction from a completed goal's outcome.
+
+    Gated by goal_outcome_distill_llm (default OFF = zero LLM calls).
+    Best-effort — never raises, never blocks reconcile.
+    """
+    try:
+        from backend.config import get_settings
+        if not getattr(get_settings(), "goal_outcome_distill_llm", False):
+            return
+        from backend.agents import facts
+        summary = _summarize_outcome(g.get("title", ""), raw_result)
+        await facts.extract_and_store(
+            f"Autonomous goal completed: {g.get('title')}. Outcome: {summary}",
+            conversation_id=None,
+            source="task",
+        )
+    except Exception:
+        logger.debug("goal outcome distill failed (non-fatal)", exc_info=True)
+
+
 async def reconcile_running(
     *,
     backoff_base_seconds: int,
@@ -669,8 +710,10 @@ async def reconcile_running(
                         await asyncio.to_thread(
                             _db_update_goal, g["id"],
                             status="completed",
+                            outcome_summary=_summarize_outcome(g.get("title", ""), output),
                             updated_at=now,
                         )
+                        await _distill_completed_goal(g, output)
                     else:
                         # Criterion NOT met — treat as a failure so it retries on cadence/backoff.
                         new_attempts = g["attempts"] + 1
@@ -684,11 +727,17 @@ async def reconcile_running(
                             updated_at=now,
                         )
                 else:
+                    try:
+                        raw_out = await asyncio.to_thread(_db_get_task_result, g["task_id"])
+                    except Exception:
+                        raw_out = None
                     await asyncio.to_thread(
                         _db_update_goal, g["id"],
                         status="completed",
+                        outcome_summary=_summarize_outcome(g.get("title", ""), raw_out),
                         updated_at=now,
                     )
+                    await _distill_completed_goal(g, raw_out)
             elif task_status in ("failed", "stopped"):
                 new_attempts = g["attempts"] + 1
                 backoff_seconds = backoff_base_seconds * (2 ** min(new_attempts, 6))

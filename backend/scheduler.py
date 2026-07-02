@@ -56,6 +56,33 @@ async def _snapshot_trends():
         logger.error(f"Trend snapshot error: {e}")
 
 
+def _parse_uptime_targets() -> list[tuple[str, str, int]]:
+    """Parse settings.uptime_http_targets ("name|url|expect,..." — expect
+    optional, default 200) into (name, url, expect) tuples. Malformed entries
+    are skipped, never raise."""
+    try:
+        from backend.config import get_settings
+        raw = getattr(get_settings(), "uptime_http_targets", "") or ""
+        targets = []
+        for entry in raw.replace("\n", ",").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            parts = entry.split("|")
+            if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+                logger.debug(f"skipping malformed uptime target: {entry!r}")
+                continue
+            try:
+                expect = int(parts[2]) if len(parts) > 2 and parts[2].strip() else 200
+            except ValueError:
+                expect = 200
+            targets.append((parts[0].strip(), parts[1].strip(), expect))
+        return targets
+    except Exception as e:
+        logger.warning(f"_parse_uptime_targets failed: {e}")
+        return []
+
+
 async def _record_uptime():
     try:
         from sqlmodel import Session
@@ -95,6 +122,19 @@ async def _record_uptime():
         results = []
         for n, m in sources.items():
             results.append(await _check(n, m))
+
+        # Extra plain-HTTP targets from config (GLP app, Open WebUI, etc.) —
+        # sequential for the same reason as above.
+        for name, url, expect in _parse_uptime_targets():
+            t0 = time.monotonic()
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=5, verify=False) as client:
+                    resp = await client.get(url)
+                ok = resp.status_code == expect
+            except Exception:
+                ok = False
+            results.append((name, ok, int((time.monotonic() - t0) * 1000)))
 
         with Session(engine) as session:
             for name, ok, ms in results:

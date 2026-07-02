@@ -194,7 +194,7 @@ async def run_briefing() -> str:
         inbox_block=mail_str,
     )
 
-    briefing_text = await sonnet(prompt)
+    briefing_text = await sonnet(prompt, label="briefing")
     logger.info("Briefing generated")
 
     # Extract durable facts from briefing content (best-effort, never raises)

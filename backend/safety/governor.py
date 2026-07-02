@@ -250,7 +250,26 @@ def spend_report(days: int = 7) -> dict:
             model_map[m]["output_tokens"] += int(row.output_tokens or 0)
             model_map[m]["cost_usd"] += float(row.cost_usd or 0.0)
 
+        # Parallel grouping by label — turns the weekly report into a tuning
+        # tool ("which call site costs the most"). "" -> "(unlabeled)".
+        label_map: dict[str, dict] = {}
+        for row in rows:
+            lb = row.label or "(unlabeled)"
+            if lb not in label_map:
+                label_map[lb] = {
+                    "label": lb,
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": 0.0,
+                }
+            label_map[lb]["calls"] += 1
+            label_map[lb]["input_tokens"] += int(row.input_tokens or 0)
+            label_map[lb]["output_tokens"] += int(row.output_tokens or 0)
+            label_map[lb]["cost_usd"] += float(row.cost_usd or 0.0)
+
         by_model = sorted(model_map.values(), key=lambda x: x["cost_usd"], reverse=True)
+        by_label = sorted(label_map.values(), key=lambda x: x["cost_usd"], reverse=True)
         total_usd = sum(e["cost_usd"] for e in by_model)
         total_calls = sum(e["calls"] for e in by_model)
 
@@ -258,6 +277,7 @@ def spend_report(days: int = 7) -> dict:
             "days": days,
             "since": cutoff.isoformat(),
             "by_model": by_model,
+            "by_label": by_label,
             "total_usd": total_usd,
             "total_calls": total_calls,
             "prices_verified": prices_verified_flag,
@@ -268,6 +288,7 @@ def spend_report(days: int = 7) -> dict:
         return {
             "days": days,
             "by_model": [],
+            "by_label": [],
             "total_usd": 0.0,
             "total_calls": 0,
             "prices_verified": prices_verified_flag,

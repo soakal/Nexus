@@ -266,6 +266,9 @@ class Goal(SQLModel, table=True):
     approved_at: datetime | None = None
     expires_at: datetime | None = None
     rejection_reason: str | None = None
+    # One-line distillation of the completed goal's Task result — read by the
+    # daily digest so completed work stops vanishing into result_json.
+    outcome_summary: str | None = None
     # Recurring-goal fields (cadence + category + success_criteria + next_eval_at).
     # cadence=None means one-shot; "daily"|"weekly"|"monthly" enables recurrence.
     cadence: str | None = None
@@ -352,6 +355,7 @@ def _ensure_goal_columns():
     """
     _safe_add_column("goal", "rejection_reason", "TEXT")
     _safe_add_column("goal", "disabled", "BOOLEAN DEFAULT 0")
+    _safe_add_column("goal", "outcome_summary", "TEXT")
 
 
 def _ensure_goal_recurrence_columns():

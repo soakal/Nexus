@@ -263,7 +263,7 @@ async def _maybe_summarize(conversation_id: int, history_limit: int) -> None:
             "Return an UPDATED running summary (<=180 words) capturing durable facts, decisions, preferences, and open threads. Summary text only — no preamble."
         )
 
-        new_summary = (await haiku(prompt)).strip()
+        new_summary = (await haiku(prompt, label="chat_summary")).strip()
         if not new_summary:
             return
 
@@ -334,7 +334,7 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
         if _is_status_cmd:
             raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
         else:
-            raw_intent = await haiku(classify_prompt)
+            raw_intent = await haiku(classify_prompt, label="chat_classify")
         intent = "CHAT"
         try:
             start = raw_intent.find("{")
@@ -420,7 +420,7 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
                         reply += token
                         await token_queue.put(token)
                 else:
-                    reply = await sonnet(user_prompt, system=system, web_search=True)
+                    reply = await sonnet(user_prompt, system=system, web_search=True, label="chat_reply_websearch")
             except BudgetExceeded:
                 raise
             except Exception as e:
@@ -431,7 +431,7 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
                         reply += token
                         await token_queue.put(token)
                 else:
-                    reply = await sonnet(user_prompt, system=system)
+                    reply = await sonnet(user_prompt, system=system, label="chat_reply")
 
         elif intent == "HOME_CONTROL":
             from backend.integrations import homeassistant
@@ -487,7 +487,7 @@ IMPORTANT: `lock.*` entities are PHYSICAL door locks (deadbolts, August locks, e
 If no entity matches, return:
 {{"entity_id": null, "service": null, "value": null, "option": null}}"""
 
-                    raw_pick = await haiku(pick_prompt)
+                    raw_pick = await haiku(pick_prompt, label="chat_lane_pick")
                     entity_id = None
                     service = None
                     value = None
@@ -597,7 +597,7 @@ must use one of the listed values). If nothing matches, return:
             verb = "unknown"
             args: dict = {}
             try:
-                raw_verb = await haiku(verb_prompt)
+                raw_verb = await haiku(verb_prompt, label="chat_hermes_verb")
                 vs = raw_verb.find("{")
                 ve = raw_verb.rfind("}") + 1
                 if vs >= 0 and ve > vs:
@@ -653,7 +653,7 @@ If they're saving something from the conversation, use the relevant prior assist
 
             title, content = "Chat Note", user_message
             try:
-                raw_note = await haiku(extract_prompt)
+                raw_note = await haiku(extract_prompt, label="chat_note_extract")
                 ns = raw_note.find("{")
                 ne = raw_note.rfind("}") + 1
                 if ns >= 0 and ne > ns:

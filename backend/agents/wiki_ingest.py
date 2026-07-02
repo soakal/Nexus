@@ -328,7 +328,7 @@ async def ingest_file(file_path: str) -> dict:
             "Only stable, durable information — not transient status or ephemeral tasks. "
             f"Return [] if nothing durable.\n\nSession note:\n{content[:6000]}"
         )
-        raw_extract = await haiku(extract_prompt)
+        raw_extract = await haiku(extract_prompt, label="wiki_extract")
         items = _parse_json_array(raw_extract)
         if not items:
             seen.add(key)
@@ -365,7 +365,7 @@ async def ingest_file(file_path: str) -> dict:
                 f"Return a JSON array of strings, one per item, same order.\n\n"
                 f"Items:\n{json.dumps([i.get('bullet','') for i in items])}"
             )
-            raw_classify = await haiku(classify_prompt)
+            raw_classify = await haiku(classify_prompt, label="wiki_classify")
             targets = _parse_json_array(raw_classify)
 
         # Pad/trim targets to match items length

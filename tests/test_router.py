@@ -267,3 +267,65 @@ def test_web_search_metering_never_raises(spend_eng):
     assert len(rows) == 1
     token_only = router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0)
     assert rows[0].cost_usd == pytest.approx(token_only)
+
+
+# ---------------------------------------------------------------------------
+# Tier B3 + B9 — tool-loop caching breakpoint + injection sentinels
+# ---------------------------------------------------------------------------
+
+def _tool_use_resp(tid="tu_1", name="fake_tool"):
+    block = SimpleNamespace(type="tool_use", id=tid, name=name, input={})
+    return SimpleNamespace(content=[block], stop_reason="tool_use", usage=None)
+
+
+def _final_resp(text="final answer"):
+    block = SimpleNamespace(type="text", text=text)
+    return SimpleNamespace(content=[block], stop_reason="end_turn", usage=None)
+
+
+@pytest.mark.asyncio
+async def test_tool_result_wrapped_and_cached(spend_eng):
+    """The appended tool_result turn must sentinel-wrap content (B9) and put a
+    cache breakpoint on the newest block (B3)."""
+    from backend.agents import router
+
+    captured_messages = []
+
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+        captured_messages.append([dict(m) if isinstance(m, dict) else m for m in messages])
+        return _tool_use_resp() if len(captured_messages) == 1 else _final_resp()
+
+    async def _dispatch(_input):
+        return "tool says hello"
+
+    with patch.object(router, "_create_sync_raw", _fake_create):
+        out = await router.run_with_tools(
+            "m", 100, "prompt", "sys", [{"name": "fake_tool"}],
+            {"fake_tool": _dispatch},
+        )
+
+    assert out == "final answer"
+    # Second round's messages include the tool_result user turn
+    tool_turn = captured_messages[1][-1]
+    blocks = tool_turn["content"]
+    assert blocks[-1]["content"] == "<tool_output>\ntool says hello\n</tool_output>"
+    assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_gets_injection_rule(spend_eng):
+    from backend.agents import router
+
+    captured_systems = []
+
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+        captured_systems.append(system)
+        return _final_resp()
+
+    with patch.object(router, "_create_sync_raw", _fake_create):
+        await router.run_with_tools("m", 100, "p", "my system", [], {})
+        await router.run_with_tools("m", 100, "p", "", [], {})
+
+    assert captured_systems[0].startswith("my system")
+    assert router.TOOL_OUTPUT_RULE in captured_systems[0]
+    assert captured_systems[1] == router.TOOL_OUTPUT_RULE

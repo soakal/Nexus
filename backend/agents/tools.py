@@ -227,6 +227,17 @@ async def _proxmox_updates(_input: dict) -> str:
         return _truncate(f"proxmox_updates unavailable: {e}")
 
 
+async def _proxmox_backups(_input: dict) -> str:
+    try:
+        from backend.integrations import hermes
+        # Read-only: relays "backup status" to Hermes, which queries the PVE
+        # tasks API for the latest vzdump job outcome.
+        result = await hermes.relay("backup status")
+        return _truncate(result if isinstance(result, str) else str(result))
+    except Exception as e:
+        return _truncate(f"proxmox_backups unavailable: {e}")
+
+
 async def _vault_search(input: dict) -> str:
     query = (input or {}).get("query")
     if not query or not str(query).strip():
@@ -305,6 +316,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Read pending Proxmox (PVE) system updates: how many apt packages are upgradable on the node, via Hermes. READ ONLY — does not install anything.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_proxmox_updates,
+    ),
+    ReadTool(
+        name="proxmox_backups",
+        description="Read the status of the latest Proxmox vzdump VM backup job via Hermes. READ ONLY.",
+        input_schema=_NO_ARGS_SCHEMA,
+        dispatch=_proxmox_backups,
     ),
     ReadTool(
         name="vault_search",

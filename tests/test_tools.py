@@ -342,7 +342,7 @@ def test_dispatcher_map_keys_match_registry():
     expected = {
         "homeassistant_status", "unraid_status", "unifi_status", "adguard_status",
         "channels_status", "weather", "github_status", "hermes_status",
-        "proxmox_updates", "vault_search", "ddg_search",
+        "proxmox_updates", "proxmox_backups", "vault_search", "ddg_search",
     }
     assert set(dmap.keys()) == expected
     # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the
@@ -456,7 +456,7 @@ async def test_run_with_tools_tool_use_then_text():
         for c in m["content"] if isinstance(c, dict)
     ]
     tool_results = [c for c in flat if c.get("type") == "tool_result"]
-    assert tool_results and tool_results[0]["content"] == "Weather: Clear, 70F"
+    assert tool_results and tool_results[0]["content"] == "<tool_output>\nWeather: Clear, 70F\n</tool_output>"
     assert tool_results[0]["tool_use_id"] == "tid1"
 
 
@@ -484,7 +484,7 @@ async def test_run_with_tools_unknown_tool_continues():
         for c in m["content"] if isinstance(c, dict)
     ]
     tr = [c for c in flat if c.get("type") == "tool_result"]
-    assert tr and tr[0]["content"] == "unknown tool: nope"
+    assert tr and tr[0]["content"] == "<tool_output>\nunknown tool: nope\n</tool_output>"
 
 
 @pytest.mark.asyncio

@@ -258,6 +258,15 @@ async def metering_health(_=Depends(require_api_key)):
     return await asyncio.to_thread(governor.metering_health)
 
 
+@router.get("/spend-report")
+async def spend_report(days: int = 7, _=Depends(require_api_key)):
+    """Per-model + per-label spend breakdown over the last ?days= (default 7)."""
+    from backend.safety import governor
+
+    days = max(1, min(days, 90))
+    return await asyncio.to_thread(governor.spend_report, days)
+
+
 
 @router.post("/budget")
 async def set_budget(

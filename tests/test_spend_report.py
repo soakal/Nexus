@@ -414,3 +414,66 @@ def test_scheduler_spend_report_invalid_time_falls_back():
     assert "spend_report" in ids_added, (
         f"'spend_report' should still be registered after fallback; got: {ids_added}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tier B4 — by-label grouping
+# ---------------------------------------------------------------------------
+
+def test_spend_report_groups_by_label(eng):
+    from backend.database import SpendLog
+    from backend.safety import governor
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        s.add(SpendLog(model="m1", cost_usd=0.30, label="chat_reply",
+                       input_tokens=10, output_tokens=5, created_at=now))
+        s.add(SpendLog(model="m1", cost_usd=0.20, label="chat_reply",
+                       input_tokens=10, output_tokens=5, created_at=now))
+        s.add(SpendLog(model="m2", cost_usd=0.10, label="",
+                       input_tokens=1, output_tokens=1, created_at=now))
+        s.commit()
+
+    report = governor.spend_report(days=7)
+    by_label = {e["label"]: e for e in report["by_label"]}
+    assert by_label["chat_reply"]["calls"] == 2
+    assert by_label["chat_reply"]["cost_usd"] == pytest.approx(0.50)
+    assert "(unlabeled)" in by_label
+    # sorted by cost desc
+    assert report["by_label"][0]["label"] == "chat_reply"
+
+
+def test_by_label_and_by_model_totals_match(eng):
+    from backend.database import SpendLog
+    from backend.safety import governor
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        for lb, cost in (("a", 0.1), ("b", 0.2), ("", 0.3)):
+            s.add(SpendLog(model="m", cost_usd=cost, label=lb,
+                           input_tokens=1, output_tokens=1, created_at=now))
+        s.commit()
+
+    report = governor.spend_report(days=7)
+    assert sum(e["cost_usd"] for e in report["by_label"]) == pytest.approx(report["total_usd"])
+    assert sum(e["cost_usd"] for e in report["by_model"]) == pytest.approx(report["total_usd"])
+
+
+def test_no_unlabeled_llm_calls_in_agents():
+    """Regression guard: every haiku/sonnet/opus call in backend/agents must
+    carry a label= (multiline calls included via paren-scan)."""
+    import pathlib, re
+    root = pathlib.Path("backend/agents")
+    offenders = []
+    for f in root.glob("*.py"):
+        src = f.read_text(encoding="utf-8")
+        for m in re.finditer(r"await (?:router\.)?(haiku|sonnet|opus)\(", src):
+            # scan to the matching close paren
+            depth, i = 1, m.end()
+            while i < len(src) and depth:
+                if src[i] == "(":
+                    depth += 1
+                elif src[i] == ")":
+                    depth -= 1
+                i += 1
+            if "label=" not in src[m.start():i]:
+                offenders.append(f"{f.name}: {src[m.start():m.start()+60]!r}")
+    assert not offenders, f"unlabeled LLM calls: {offenders}"

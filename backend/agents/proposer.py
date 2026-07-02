@@ -423,9 +423,14 @@ async def propose_goals_tick() -> dict:
             # Notify for goals that need human approval (not auto-approved, not duplicates).
             elif res["status"] == "proposed":
                 from backend import events
+                goal_id = res["goal"]["id"]
                 await events.notify_phone(
-                    f"New goal needs your approval: {title}\nRisk: {risk} — open Goals tab to review.",
+                    f"New goal needs your approval: {title}\nRisk: {risk}",
                     kind="goal_proposed",
+                    buttons=[
+                        {"text": "✓ Approve", "callback_data": f"goal:approve:{goal_id}"},
+                        {"text": "✗ Reject", "callback_data": f"goal:reject:{goal_id}"},
+                    ],
                 )
 
             results_list.append(entry)

@@ -18,11 +18,17 @@ async def publish(event_type: str, payload: dict) -> None:
         logger.debug(f"events.publish failed (ignored): {e}")
 
 
-async def notify_phone(content: str, *, kind: str = "autonomy_alert") -> bool:
+async def notify_phone(
+    content: str, *, kind: str = "autonomy_alert", buttons: list | None = None
+) -> bool:
     """Best-effort phone push via Hermes->Telegram. Gated by phone_notifications_enabled.
 
     Appends a deep-link to the Safety page when app_base_url is configured so
     Brian can tap straight through to Safety from any alert.
+
+    `buttons` (optional): [{"text": ..., "callback_data": ...}] — forwarded to
+    Hermes verbatim so it can render Telegram inline buttons. Older Hermes
+    versions ignore the extra key (backward compatible).
 
     NEVER raises (a notify failure must not affect the caller). Returns delivered bool.
     """
@@ -48,6 +54,8 @@ async def notify_phone(content: str, *, kind: str = "autonomy_alert") -> bool:
         payload: dict = {"type": kind, "content": content, "timestamp": datetime.utcnow().isoformat()}
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if buttons:
+            payload["buttons"] = buttons
         return await hermes.notify(payload)
     except Exception as e:
         logger.debug(f"events.notify_phone failed (ignored): {e}")

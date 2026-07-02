@@ -60,7 +60,7 @@ async def process_audio(audio_path: str) -> dict:
 
     elif intent == "QUERY":
         from backend.agents.router import sonnet
-        resp = await sonnet(f"Answer this question concisely: {intent_data.get('extracted_action', transcript)}")
+        resp = await sonnet(f"Answer this question concisely: {intent_data.get('extracted_action', transcript)}", label="voice_answer")
         result["response"] = resp
 
     elif intent == "HOME_CONTROL":

@@ -329,7 +329,7 @@ async def extract_and_store(user_message: str, conversation_id: int | None, sour
             f"User message: \"{user_message}\""
         )
 
-        raw = await haiku(extract_prompt)
+        raw = await haiku(extract_prompt, label="facts_extract")
 
         # Defensive JSON parse: find first '[' / last ']'
         start = raw.find("[")

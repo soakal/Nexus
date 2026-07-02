@@ -210,6 +210,39 @@ def prune_old_backups() -> int:
         return 0
 
 
+def restore_from(backup_path: str) -> dict:
+    """Restore nexus.db from a backup directory (a backups/<ts> dir or the
+    Unraid share root). STOP NEXUS FIRST — restoring under a live engine
+    reads/writes a clobbered file.
+
+    Refuses a missing or integrity-failing backup BEFORE touching the live db.
+    Deletes stale -wal/-shm sidecars after the copy (they belong to the old
+    db and would make SQLite read torn state).
+
+    Returns {"ok": bool, "restored": str | None, "error": str | None}.
+    Never raises.
+    """
+    try:
+        live = _db_path()
+        src = os.path.join(backup_path, os.path.basename(live))
+        if not os.path.isfile(src):
+            return {"ok": False, "restored": None, "error": f"no {os.path.basename(live)} in {backup_path!r}"}
+        integrity = integrity_check_file(src)
+        if integrity != "ok":
+            return {"ok": False, "restored": None, "error": f"backup failed integrity check: {integrity}"}
+
+        shutil.copy2(src, live)
+        for sidecar in (f"{live}-wal", f"{live}-shm"):
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+
+        logger.info(f"Restored {live!r} from {src!r}")
+        return {"ok": True, "restored": src, "error": None}
+    except Exception as e:
+        logger.error(f"restore_from failed: {e}")
+        return {"ok": False, "restored": None, "error": str(e)}
+
+
 async def run_backup_job() -> dict:
     """Best-effort daily backup job.  NEVER raises.
 

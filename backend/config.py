@@ -104,6 +104,17 @@ class Settings(BaseSettings):
     backup_retention_days: int = 7
     backup_time: str = "03:30"  # 24h HH:MM for the daily backup job
 
+    # When True, a completed goal's outcome also runs Haiku fact-extraction
+    # (source='task'). Default OFF — the no-LLM path (outcome_summary + digest
+    # line) is free and usually enough.
+    goal_outcome_distill_llm: bool = False
+
+    # Extra HTTP uptime targets — non-integration services watched by the
+    # 2-min uptime job. Comma- or newline-separated "name|url|expect_status"
+    # entries (expect_status optional, default 200), e.g.
+    # UPTIME_HTTP_TARGETS="glp|http://192.168.1.50:8765|200,openwebui|http://192.168.1.56:3000"
+    uptime_http_targets: str = ""
+
     # Unraid vault backup — encrypted vault + key copied to a UNC share daily and
     # on every secret save. Leave blank to disable.
     unraid_backup_path: str = r"\\192.168.1.50\Computer Backup\Nexus_backup"

@@ -40,6 +40,29 @@ def _db_recent_autonomous_goals(since: datetime) -> list[dict]:
         return []
 
 
+def _db_recent_completed_goals(since: datetime) -> list[dict]:
+    """Goals completed in the last 24 h, with their outcome summaries."""
+    from sqlmodel import Session, select
+    from backend.database import Goal, engine
+
+    try:
+        with Session(engine) as session:
+            rows = session.exec(
+                select(Goal)
+                .where(Goal.status == "completed")
+                .where(Goal.updated_at >= since)
+                .order_by(Goal.updated_at.desc())
+                .limit(10)
+            ).all()
+            return [
+                {"title": r.title, "outcome_summary": r.outcome_summary}
+                for r in rows
+            ]
+    except Exception as e:
+        logger.debug(f"digest._db_recent_completed_goals failed: {e}")
+        return []
+
+
 def _db_pending_confirm_count() -> int:
     """Count of ActionLog rows with decision == 'needs_confirm'."""
     from sqlmodel import Session, func, select
@@ -96,6 +119,7 @@ async def build_autonomy_digest() -> str:
         auto_goals_task = asyncio.to_thread(_db_recent_autonomous_goals, since)
         pending_count_task = asyncio.to_thread(_db_pending_confirm_count)
         proposed_goals_task = asyncio.to_thread(_db_proposed_goals)
+        completed_goals_task = asyncio.to_thread(_db_recent_completed_goals, since)
         spend_task = asyncio.to_thread(governor.today_spend_usd)
         state_task = asyncio.to_thread(governor.get_system_state)
 
@@ -103,6 +127,7 @@ async def build_autonomy_digest() -> str:
             auto_goals_task,
             pending_count_task,
             proposed_goals_task,
+            completed_goals_task,
             spend_task,
             state_task,
             return_exceptions=True,
@@ -111,8 +136,9 @@ async def build_autonomy_digest() -> str:
         auto_goals = results[0] if not isinstance(results[0], Exception) else []
         pending_count = results[1] if not isinstance(results[1], Exception) else 0
         proposed_goals = results[2] if not isinstance(results[2], Exception) else []
-        spend = results[3] if not isinstance(results[3], Exception) else 0.0
-        state = results[4] if not isinstance(results[4], Exception) else {}
+        completed_goals = results[3] if not isinstance(results[3], Exception) else []
+        spend = results[4] if not isinstance(results[4], Exception) else 0.0
+        state = results[5] if not isinstance(results[5], Exception) else {}
 
         autonomy_label = "ENABLED" if state.get("autonomy_enabled", True) else "PAUSED"
         daily_cap = state.get("daily_budget_usd", 25.0)
@@ -134,10 +160,22 @@ async def build_autonomy_digest() -> str:
         else:
             proposed_titles = "\n    (none)"
 
+        # Completed goals with their distilled outcomes — the "what actually
+        # got done" line that used to vanish into result_json.
+        if completed_goals:
+            completed_parts = "\n    - " + "\n    - ".join(
+                f"{g['title']}: {g['outcome_summary'] or 'done'}"
+                for g in completed_goals[:5]
+            )
+            completed_line = f"Completed (24h): {len(completed_goals)}{completed_parts}"
+        else:
+            completed_line = "Completed (24h): none"
+
         lines = [
             f"NEXUS autonomy digest — {date_str}",
             f"Autonomy: {autonomy_label}",
             f"Auto-ran (24h): {auto_ran_line}",
+            completed_line,
             f"Awaiting your approval: {pending_count} action(s) + {len(proposed_goals)} proposed goal(s)",
             f"  proposed:{proposed_titles}",
             f"Spend today: ${spend:.2f} / ${daily_cap:.2f}",
