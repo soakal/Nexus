@@ -5,7 +5,7 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
 ## Run / build / test
-- **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`
+- **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`  ·  **Restore db:** `.\restore.ps1 [-From <dir>]` (validates the backup BEFORE stopping NEXUS; logic lives in `backend/agents/backup.py::restore_from` — tested by `tests/test_restore_drill.py`)
 - Backend: FastAPI + uvicorn on **:8000**, venv at `.\venv` (`.\venv\Scripts\python.exe`). `start.ps1` launches it via **`run.py`** (NOT `-m uvicorn`) — run.py pins the Windows **SelectorEventLoop** before uvicorn builds its loop (must be set there: uvicorn creates the loop before importing the app, so a policy in `main.py` is too late). The default ProactorEventLoop throws `WinError 64` under concurrent integration fetches → "app not loading data". See Non-obvious rules.
 - Frontend: React + Vite + Tailwind on **:3000**. Build with `cd frontend && npm run build`; `start.ps1` serves the build via `npx vite preview --host 0.0.0.0`.
 - **After any frontend change you must `npm run build`** — preview serves `dist/`, not live source.
@@ -70,6 +70,14 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 ## Secrets — never commit
 `config.py`, `nexus.vault`, `.vault.key`, `.env` are gitignored and MUST stay that way. Secrets live encrypted in `nexus.vault` (Fernet, key in `.vault.key`); non-secret config in `.env`. `backend/secrets/vault.py` reads them; `Settings` (`backend/config.py`) exposes secret properties lazily. `nexus.vault.meta` (names + timestamps only, no values) is safe to track.
+
+## Tier B layer (council round 3, 2026-07-02 — all live)
+- **Tool loop hardening (`router.py`):** every client-side tool_result is wrapped in `<tool_output>…</tool_output>` sentinels and `run_with_tools` auto-appends `TOOL_OUTPUT_RULE` (data-not-instructions) to EVERY caller's system prompt — don't add per-caller copies. A moving `cache_control` breakpoint sits on the newest tool_result each round (system+tools blocks were already cached). Tests assert the wrapped shape.
+- **Spend labels:** every `haiku/sonnet/opus` call in `backend/agents/` MUST pass `label=` — `tests/test_spend_report.py::test_no_unlabeled_llm_calls_in_agents` is a paren-scanning regression guard that fails the suite otherwise. `governor.spend_report` groups `by_label`; `GET /api/safety/spend-report?days=` (auth) serves it.
+- **Goal outcomes:** completing a goal writes `Goal.outcome_summary` (no-LLM distill from Task.result_json, `goals._summarize_outcome`); the daily digest has a "Completed (24h)" block. Optional Haiku facts extraction behind `goal_outcome_distill_llm` (default OFF).
+- **Goal Approve/Reject from Telegram:** proposer's `goal_proposed` notify passes `buttons` (`goal:approve:{id}`) through `events.notify_phone(buttons=)` → Hermes renders inline buttons → Hermes calls `POST /api/goals/{id}/approve|reject`. Single-use is enforced BOTH sides (Hermes edits the message; NEXUS 409s a re-approve, 410s expiry).
+- **Uptime HTTP targets:** `UPTIME_HTTP_TARGETS="name|url|expect,..."` in .env adds plain-HTTP services (GLP app, Open WebUI…) to the 2-min uptime job as first-class sources.
+- **PWA:** `frontend/public/manifest.webmanifest` + `icon.svg` (NO service worker, no new deps). Served from dist/ after `npm run build`.
 
 ## Non-obvious rules (hard-won)
 - **Never block the asyncio event loop.** Windows ProactorEventLoop + a blocked loop = `WinError 64`, dropped connections, "everything offline". All sync DB work inside `async` funcs goes through `asyncio.to_thread`. The memo watcher starts on a daemon `threading.Thread`, not the loop. **The backend now runs on the SelectorEventLoop (forced in `run.py`)** — ProactorEventLoop also throws `WinError 64` purely from CONCURRENT outbound httpx (e.g. `/api/health` fanning out to ~10 integrations) and on the accept path, independent of loop-blocking. Selector handles it; NEXUS spawns no in-loop subprocesses so Selector's limits don't apply. Don't revert to Proactor.
