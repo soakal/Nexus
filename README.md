@@ -25,13 +25,38 @@ A production-grade personal AI operating system for Windows 11. FastAPI backend 
 
 ```
 NEXUS
-├── Frontend (React + Tailwind) → http://localhost:3000
+├── Frontend (React + Tailwind) → http://localhost:3000 (PWA-installable over HTTPS)
 ├── Backend (FastAPI)           → http://localhost:8000
-│   ├── Agents (Opus plan / Sonnet execute / Haiku validate)
-│   ├── Integrations (HA, UniFi, Unraid, Obsidian, GitHub, Channels, AdGuard, Weather, Hermes)
-│   └── Scheduler (briefing cron, 15-min trend snapshots, delivery retry)
+│   ├── Agents (durable task orchestrator, read/write tool loop, goal proposer, learning loop)
+│   ├── Safety (action broker + audit log, cost governor + kill switch, Hermes verb allowlist)
+│   ├── Integrations (HA, UniFi, Unraid, Proxmox, Obsidian, GitHub, Channels, AdGuard, Weather, Speedtest, Hermes)
+│   └── Scheduler (briefing, trends, uptime, backups + integrity, watchdogs, spend ingest, goal ticks)
 └── Secrets Vault (AES-256 Fernet, nexus.vault + .vault.key)
 ```
+
+## Autonomy & Safety
+
+NEXUS runs a closed loop: it senses homelab state, proposes goals, auto-approves only
+low-risk reversible ones, executes through durable resumable tasks, verifies outcomes,
+and reports what it did in a daily digest. Everything side-effecting passes through a
+single policy broker (`allow / needs_confirm / forbid` + immutable audit log). HIGH-risk
+actions always wait for a human — approve or reject straight from Telegram buttons.
+A kill switch (`POST /api/safety/pause`) halts all autonomy; daily + per-task USD caps
+brake every LLM call, and every call is labeled in the spend report
+(`GET /api/safety/spend-report`).
+
+## Backups & Restore
+
+Hourly WAL checkpoint, daily local backup (integrity-checked against the **copy**),
+daily off-VM bundle (vault + nexus.db) to the Unraid share, phone alert on failure.
+Restore: `.estore.ps1 [-From <dir>]` — validates the backup before stopping anything.
+
+## Remote Access
+
+`tailscale serve` fronts the app at `https://win11-vm-proxmox.tailfa52c.ts.net` (one
+HTTPS origin: `/` frontend, `/api` + `/ws` backend). LAN clients keep using plain HTTP
+from the same build. Install it as a PWA from the browser menu. Device onboarding:
+open Settings and paste the API key — key-in-URL links are retired.
 
 ## Secrets Management
 
@@ -66,7 +91,8 @@ python tools/audit_secrets.py
 
 | Integration | Purpose |
 |-------------|---------|
-| Home Assistant | Smart home entity states, alerts |
+| Home Assistant | Smart home entity states, alerts, broker-gated control |
+| Proxmox | Node CPU/mem, VM/LXC inventory, storage (direct PVE API) |
 | UniFi | Network clients, bandwidth, new device detection |
 | Unraid | Array status, disk health, docker containers |
 | Obsidian | Daily notes, task sync, briefing storage |
@@ -99,9 +125,12 @@ The `NEXUS_API_KEY` is stored in the vault and generated during setup.
 
 | Task | Model |
 |------|-------|
-| Architecture, planning, briefing, debug | Claude Opus |
-| Code generation, execution, responses | Claude Sonnet |
-| Validation, schema checks | Claude Haiku |
+| Chat replies, briefing | Claude Sonnet |
+| Intent classify, goal proposer, facts/wiki extraction, summaries | Claude Haiku |
+| Orchestrator plan / execute / verify | Configurable per role (`.env`), defaults Sonnet/Sonnet/Haiku |
+
+Every call is metered into `SpendLog` with a label; daily + per-task USD caps are
+enforced before each billed call. Hosted web-search requests bill at $10/1k.
 
 ## Development
 
