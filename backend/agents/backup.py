@@ -70,15 +70,55 @@ def integrity_check() -> str:
         return str(e)
 
 
+def integrity_check_file(db_file: str) -> str:
+    """PRAGMA integrity_check against a standalone db FILE (not the live engine).
+
+    This is what makes the backup signal honest: the live db can be healthy
+    while the copied file is torn — always check the file you'd restore from.
+    Returns "ok" on a healthy file, the error/exception string otherwise.
+    """
+    import sqlite3
+    try:
+        con = sqlite3.connect(db_file)
+        try:
+            row = con.execute("PRAGMA integrity_check").fetchone()
+            return row[0] if row else "no result"
+        finally:
+            con.close()
+    except Exception as e:
+        return str(e)
+
+
+def snapshot_db_to(dest_file: str) -> None:
+    """Write a consistent snapshot of the live db to dest_file.
+
+    Uses VACUUM INTO (single consistent read transaction). Falls back to
+    checkpoint + shutil.copy2 on SQLite < 3.27. Raises on failure — callers
+    decide how failure affects their 'ok'.
+
+    VACUUM INTO errors if the target exists — remove any leftover first.
+    """
+    if os.path.exists(dest_file):
+        os.remove(dest_file)
+    from backend.database import engine
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("VACUUM INTO ?", (dest_file,))
+    except Exception as e:
+        logger.warning(f"VACUUM INTO failed ({e}); falling back to file copy")
+        checkpoint_db()
+        shutil.copy2(_db_path(), dest_file)
+
+
 def make_backup() -> dict:
-    """Checkpoint, copy db + secrets to a timestamped dir, run integrity check.
+    """Snapshot db + copy secrets to a timestamped dir, integrity-check the COPY.
 
     Returns a dict:
       {"dir": str, "files": [str, ...], "integrity": str, "ok": bool}
     On exception:
       {"ok": False, "error": str}
 
-    'ok' is True only when integrity == "ok" AND nexus.db was copied.
+    'ok' is True only when the COPIED db passes integrity_check AND was written.
     """
     try:
         from backend.config import get_settings
@@ -93,23 +133,30 @@ def make_backup() -> dict:
         dest = os.path.join(backup_dir, ts)
         os.makedirs(dest, exist_ok=True)
 
-        # Files to back up — skip any that don't exist
-        sources = [
-            _db_path(),
-            ".vault.key",
-            "nexus.vault",
-            "nexus.vault.meta",
-        ]
         copied = []
-        for src in sources:
+
+        # Consistent db snapshot straight into the backup dir
+        db_name = os.path.basename(_db_path())
+        dest_db = os.path.join(dest, db_name)
+        try:
+            snapshot_db_to(dest_db)
+            copied.append(db_name)
+        except Exception as e:
+            logger.error(f"make_backup: db snapshot failed: {e}")
+
+        # Secret files — plain copies (not SQLite), skip any that don't exist
+        for src in (".vault.key", "nexus.vault", "nexus.vault.meta"):
             if os.path.exists(src):
                 shutil.copy2(src, dest)
                 copied.append(os.path.basename(src))
             else:
                 logger.debug(f"make_backup: {src!r} not found, skipping")
 
-        integrity = integrity_check()
-        ok = integrity == "ok" and "nexus.db" in copied
+        # Check the COPY — the file a restore would actually use
+        integrity = (
+            integrity_check_file(dest_db) if db_name in copied else "db not copied"
+        )
+        ok = integrity == "ok" and db_name in copied
 
         logger.info(
             f"Backup to {dest!r}: files={copied}, integrity={integrity!r}, ok={ok}"

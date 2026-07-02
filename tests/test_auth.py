@@ -55,6 +55,24 @@ def test_correct_token_returns_non_401(client):
     assert resp.status_code != 401
 
 
+@pytest.mark.asyncio
+async def test_non_ascii_token_returns_401_not_500():
+    # compare_digest on str raises TypeError for non-ASCII — must be a clean
+    # 401, never an unhandled 500. Call the dependency directly (the HTTP test
+    # client refuses to even send a non-ASCII header).
+    from fastapi import HTTPException
+    from fastapi.security import HTTPAuthorizationCredentials
+    from backend.auth import require_api_key
+
+    fake = MagicMock()
+    fake.nexus_api_key = "test-key-123"
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="tokené")
+    with patch("backend.config.get_settings", return_value=fake):
+        with pytest.raises(HTTPException) as exc:
+            await require_api_key(creds)
+    assert exc.value.status_code == 401
+
+
 def test_empty_expected_key_returns_401(client):
     # An unset/empty configured key must reject every bearer, never crash.
     fake = MagicMock()

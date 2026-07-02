@@ -1,6 +1,6 @@
 """Autonomous goal proposer with narrow auto-approve (Tier 3).
 
-A scheduled tick reviews live homelab state + already-open goals and asks Opus to
+A scheduled tick reviews live homelab state + already-open goals and asks Haiku to
 PROPOSE new objectives. Goals are created in status 'proposed' (actor='autonomous').
 When auto_approve_low_risk is True, goals that pass goals.is_auto_approvable() —
 i.e. low risk + reversible + autonomous actor — are immediately approved via
@@ -15,7 +15,7 @@ SAFETY CONTRACT (hard, enforced at code level):
     (low risk + reversible + autonomous actor + flag on). All other goals stay
     'proposed'. NEVER approves MEDIUM/HIGH/irreversible/human goals.
   - NEVER calls execute_action, run_task, or get_pool directly.
-  - Gated by governor.get_system_state()["autonomy_enabled"] before any Opus call.
+  - Gated by governor.get_system_state()["autonomy_enabled"] before any LLM call.
   - Even auto-approved goals' tasks are still broker-gated per-action (actor="agent"),
     so a HIGH/irreversible action mid-task is still blocked/needs-confirm.
 """
@@ -244,6 +244,11 @@ async def propose_goals_tick() -> dict:
         except Exception:
             abandoned_rows = []
 
+        try:
+            completed_rows = await asyncio.to_thread(goals._db_recent_completed, 12)
+        except Exception:
+            completed_rows = []
+
         # Format trend lines: "- {source} {metric}: {first:.0f} -> {last:.0f} (rising|falling|flat)"
         if trend_rows:
             trend_lines = []
@@ -269,6 +274,12 @@ async def propose_goals_tick() -> dict:
         else:
             anoms_text = "(none)"
 
+        # Format completed lines: "- {title}"
+        if completed_rows:
+            completed_text = "\n".join(f"- {c['title']}" for c in completed_rows)
+        else:
+            completed_text = "(none)"
+
         # Format abandoned lines: "- {title} — {reason}" (reason omitted if None)
         if abandoned_rows:
             abandoned_lines = []
@@ -282,7 +293,7 @@ async def propose_goals_tick() -> dict:
             abandoned_text = "(none)"
 
         # ------------------------------------------------------------------
-        # Ask Opus to propose new goals.
+        # Ask Haiku to propose new goals.
         # ------------------------------------------------------------------
         prompt = (
             "You are NEXUS's planning daemon. Review the live homelab state and the goals already open.\n"
@@ -295,24 +306,29 @@ async def propose_goals_tick() -> dict:
             "left on/open/unlocked. Lights and plugs can be turned off autonomously (low-risk, reversible).\n"
             "IMPORTANT: lock, alarm, and cover (garage door) are physical-security domains — classify\n"
             "these as risk='high', reversibility='irreversible' so a human must approve them.\n"
-            "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n\n"
-            f"Return JSON only — an array (max {max_per_tick}) of:\n"
+            "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n"
+            "Do NOT re-propose anything on the RECENTLY COMPLETED list unless live state shows\n"
+            "the condition has clearly recurred.\n\n"
+            f"Return JSON only, no prose — an array (max {max_per_tick}) of:\n"
             '[{"title": "...", "description": "concrete goal the executor can pursue", '
+            '"success_criteria": "a concrete, checkable statement of what DONE looks like", '
             '"risk": "low|medium|high", '
             '"reversibility": "reversible|reversible_by_inverse|irreversible|unknown", '
             '"confidence": 0.0-1.0, '
             '"category": "one of: maintenance|storage|network|media|monitoring|knowledge|other"}]\n'
+            "Every goal MUST include a non-empty success_criteria.\n"
             "Empty array [] if nothing warrants action.\n\n"
             f"LIVE STATE:\n{snapshot}\n\n"
             f"HA ENTITY STATES (lights, security — check for left-on/open/unlocked):\n{ha_entity_text}\n\n"
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
+            f"RECENTLY COMPLETED (already ran successfully — do NOT re-propose unless recurred):\n{completed_text}\n\n"
             f"RECENT TRENDS (7d):\n{trends_text}\n\n"
             f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
             f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"
         )
 
         try:
-            raw = await router.sonnet(prompt, label="goal_proposer")
+            raw = await router.haiku(prompt, label="goal_proposer")
         except BudgetExceeded:
             return {"status": "skipped", "reason": "budget"}
 
@@ -340,7 +356,13 @@ async def propose_goals_tick() -> dict:
         for item in proposals:
             title = str(item.get("title") or "").strip()
             description = str(item.get("description") or "").strip()
-            if not title or not description:
+            success_criteria = str(item.get("success_criteria") or "").strip()
+            if not title or not description or not success_criteria:
+                # A goal without a checkable done-condition can never be
+                # honestly completed — drop it (conservative).
+                logger.debug(
+                    "proposer: dropped goal without success_criteria: %r", title
+                )
                 continue
 
             risk = str(item.get("risk") or "medium")
@@ -360,6 +382,7 @@ async def propose_goals_tick() -> dict:
                 ttl_seconds=s.goal_ttl_seconds,
                 debounce_seconds=s.goal_debounce_seconds,
                 category=goals.normalize_category(item.get("category")),
+                success_criteria=success_criteria,
             )
             entry = {
                 "title": title,

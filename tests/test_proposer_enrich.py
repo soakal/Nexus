@@ -306,7 +306,7 @@ async def test_proposer_injects_enrichment_context(eng, monkeypatch):
         captured_prompts.append(prompt)
         return "[]"
 
-    with patch("backend.agents.router.sonnet", new=_mock_opus):
+    with patch("backend.agents.router.haiku", new=_mock_opus):
         with patch("backend.config.get_settings", return_value=_make_settings()):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -349,7 +349,7 @@ async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
         captured_prompts.append(prompt)
         return "[]"
 
-    with patch("backend.agents.router.sonnet", new=_mock_opus):
+    with patch("backend.agents.router.haiku", new=_mock_opus):
         with patch("backend.config.get_settings", return_value=_make_settings()):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -380,3 +380,76 @@ async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
     assert "(none)" in trends_section, "Trends section must show (none) when empty"
     assert "(none)" in anoms_section, "Anomalies section must show (none) when empty"
     assert "(none)" in dnr_section, "Do-not-re-propose section must show (none) when empty"
+
+
+# ---------------------------------------------------------------------------
+# Tier A2.1 — proposer injects RECENTLY COMPLETED history
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proposer_injects_completed_history(eng, monkeypatch):
+    """Seed two completed goals; the proposer prompt must contain a RECENTLY
+    COMPLETED block listing both titles."""
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    from backend.database import Goal
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        s.add(Goal(
+            title="Turn off the porch light",
+            description="Left on overnight.",
+            status="completed",
+            fingerprint="fp_done_01",
+            updated_at=now - timedelta(hours=5),
+        ))
+        s.add(Goal(
+            title="Investigate WiFi dropouts",
+            description="Recurring disconnects on the office AP.",
+            status="completed",
+            fingerprint="fp_done_02",
+            updated_at=now - timedelta(hours=2),
+        ))
+        s.commit()
+
+    captured: list[str] = []
+
+    async def _mock_llm(prompt, *, label=""):
+        captured.append(prompt)
+        return "[]"
+
+    with patch("backend.agents.router.haiku", new=_mock_llm):
+        with patch("backend.config.get_settings", return_value=_make_settings()):
+            from backend.agents.proposer import propose_goals_tick
+            result = await propose_goals_tick()
+
+    assert result["status"] == "ok", f"tick failed: {result}"
+    prompt = captured[0]
+    assert "RECENTLY COMPLETED" in prompt
+    assert "Turn off the porch light" in prompt
+    assert "Investigate WiFi dropouts" in prompt
+    # Must not break the asserted ordering of the other three blocks.
+    assert prompt.index("RECENTLY COMPLETED") < prompt.index("RECENT TRENDS (7d):")
+
+
+def test_db_recent_completed(eng):
+    """Only completed goals returned, newest-updated first, honoring limit."""
+    from backend.database import Goal
+    from backend.agents.goals import _db_recent_completed
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        s.add(Goal(title="old done", description="d", status="completed",
+                   fingerprint="fp_c1", updated_at=now - timedelta(days=2)))
+        s.add(Goal(title="new done", description="d", status="completed",
+                   fingerprint="fp_c2", updated_at=now - timedelta(hours=1)))
+        s.add(Goal(title="not done", description="d", status="proposed",
+                   fingerprint="fp_c3", updated_at=now))
+        s.add(Goal(title="was abandoned", description="d", status="abandoned",
+                   fingerprint="fp_c4", updated_at=now))
+        s.commit()
+
+    rows = _db_recent_completed(limit=10)
+    assert [r["title"] for r in rows] == ["new done", "old done"]
+
+    rows_limited = _db_recent_completed(limit=1)
+    assert [r["title"] for r in rows_limited] == ["new done"]

@@ -266,6 +266,23 @@ def _db_recent_abandoned(limit: int = 8) -> list[dict]:
         return [{"title": g.title, "rejection_reason": g.rejection_reason} for g in goals]
 
 
+def _db_recent_completed(limit: int = 12) -> list[dict]:
+    """Return recently completed goals as [{title, category}], newest-updated first.
+
+    Called exclusively via asyncio.to_thread. Feeds the proposer's
+    RECENTLY COMPLETED do-not-re-propose block.
+    """
+    with Session(_db_mod.engine) as session:
+        stmt = (
+            select(Goal)
+            .where(Goal.status == "completed")
+            .order_by(Goal.updated_at.desc())  # type: ignore[attr-defined]
+            .limit(limit)
+        )
+        goals = session.exec(stmt).all()
+        return [{"title": g.title, "category": g.category} for g in goals]
+
+
 def _db_find_running_with_task() -> list[dict]:
     """All goals in 'running' status that have a task_id set."""
     with Session(_db_mod.engine) as session:

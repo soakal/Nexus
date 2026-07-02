@@ -243,13 +243,14 @@ async def test_proposer_auto_approve_fires_phone_alert(eng, monkeypatch):
         {
             "title": "Archive old recordings",
             "description": "Move Channels DVR recordings older than 90 days to cold storage.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.9,
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)), \
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)), \
          patch("backend.config.get_settings") as mock_settings, \
          patch("backend.events.notify_phone", notify_phone_mock):
         s = MagicMock()

@@ -1,14 +1,15 @@
 """Vault backup to Unraid SMB share.
 
-Copies nexus.vault + nexus.vault.meta (+ .vault.key if configured) to the
-UNC path in settings.unraid_backup_path. Keeps a dated history/ subfolder
-capped at 14 copies. Never raises — backup failures must never block a
-secret save or crash the scheduler.
+Copies nexus.vault + nexus.vault.meta (+ .vault.key if configured) plus a
+consistent nexus.db snapshot to the UNC path in settings.unraid_backup_path.
+Keeps a dated history/ subfolder capped at 14 copies. Never raises — backup
+failures must never block a secret save or crash the scheduler.
 
 Restore path (manual):
   1. Stop NEXUS (stop.ps1)
-  2. Copy nexus.vault (and .vault.key if backed up) from the share to the
-     project root, overwriting the current files.
+  2. Copy nexus.vault (and .vault.key if backed up) AND nexus.db from the
+     share to the project root, overwriting the current files. Delete any
+     stale nexus.db-wal / nexus.db-shm sidecars.
   3. Start NEXUS (start.ps1)
   To restore a specific point-in-time: copy from history/<timestamp>/ instead.
 """
@@ -123,6 +124,30 @@ def backup_vault() -> dict:
             shutil.copy2(src, dst)
             copied_paths.append(dst)
 
+        # Also ship a consistent nexus.db snapshot so the off-VM bundle is a
+        # RESTORABLE set, not just secrets. Snapshot to a local temp first
+        # (VACUUM INTO straight onto SMB risks a half-written db on a network
+        # hiccup), then copy. Best-effort: a db failure never breaks the
+        # vault half of the backup.
+        try:
+            import tempfile
+            from backend.agents.backup import snapshot_db_to, integrity_check_file, _db_path
+            db_name = os.path.basename(_db_path())
+            tmp_db = os.path.join(tempfile.gettempdir(), f"nexus-db-snapshot-{ts}.db")
+            try:
+                snapshot_db_to(tmp_db)
+                if integrity_check_file(tmp_db) == "ok":
+                    for target in (dest / db_name, hist_dir / db_name):
+                        shutil.copy2(tmp_db, target)
+                        copied_paths.append(target)
+                else:
+                    logger.warning("db snapshot failed integrity check; not shipped to Unraid")
+            finally:
+                if os.path.exists(tmp_db):
+                    os.remove(tmp_db)
+        except Exception as e:
+            logger.warning("db snapshot for Unraid backup failed (non-fatal): %s", e)
+
         # Strip Hidden attribute from backup copies so they're visible in Explorer
         if os.name == "nt":
             import stat as _stat
@@ -173,11 +198,14 @@ def restore_vault(timestamp: str | None = None) -> dict:
         dest = pathlib.Path(dest_root)
         src_dir = dest / "history" / timestamp if timestamp else dest
 
+        from backend.agents.backup import _db_path
+        db_name = os.path.basename(_db_path())
         copied = []
         for name, local in [
             (VAULT_PATH.name, VAULT_PATH),
             (META_PATH.name, META_PATH),
             (KEY_PATH.name, KEY_PATH),
+            (db_name, pathlib.Path(_db_path())),
         ]:
             src_file = src_dir / name
             if src_file.exists():

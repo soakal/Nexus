@@ -173,3 +173,97 @@ def test_get_client_uses_api_key(monkeypatch):
         client = get_client()
         call_kwargs = mock_anthropic.call_args[1]
         assert call_kwargs.get("api_key") == "sk-ant-test-key"
+
+
+# ---------------------------------------------------------------------------
+# Tier A5 — hosted web_search billed into SpendLog
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture
+def spend_eng(monkeypatch):
+    eng = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr("backend.database.engine", eng)
+    return eng
+
+
+def _spend_rows(eng):
+    from backend.database import SpendLog
+    with Session(eng) as s:
+        return s.exec(select(SpendLog)).all()
+
+
+def _resp_with_usage(**usage_fields):
+    usage = SimpleNamespace(
+        input_tokens=1000,
+        output_tokens=500,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+        **usage_fields,
+    )
+    return SimpleNamespace(usage=usage)
+
+
+def test_web_search_cost_metered(spend_eng):
+    from backend.agents import router
+    resp = _resp_with_usage(
+        server_tool_use=SimpleNamespace(web_search_requests=3)
+    )
+    router._record_spend(router.SONNET_MODEL, resp, "test_ws")
+
+    rows = _spend_rows(spend_eng)
+    assert len(rows) == 1
+    token_only = router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0)
+    assert rows[0].cost_usd == pytest.approx(token_only + 3 * 0.01)
+
+
+def test_no_web_search_no_extra_cost(spend_eng):
+    from backend.agents import router
+    resp = _resp_with_usage()  # no server_tool_use at all
+    router._record_spend(router.SONNET_MODEL, resp, "test_no_ws")
+
+    rows = _spend_rows(spend_eng)
+    assert len(rows) == 1
+    token_only = router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0)
+    assert rows[0].cost_usd == pytest.approx(token_only)
+
+
+def test_web_search_count_magicmock_ignored(spend_eng):
+    """A MagicMock web_search_requests must not leak a bogus cost."""
+    from backend.agents import router
+    resp = _resp_with_usage(
+        server_tool_use=SimpleNamespace(web_search_requests=MagicMock())
+    )
+    router._record_spend(router.SONNET_MODEL, resp, "test_mock_ws")
+
+    rows = _spend_rows(spend_eng)
+    assert len(rows) == 1
+    token_only = router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0)
+    assert rows[0].cost_usd == pytest.approx(token_only)
+
+
+def test_web_search_metering_never_raises(spend_eng):
+    """server_tool_use whose attribute access explodes -> token-only row."""
+    from backend.agents import router
+
+    class _Explodes:
+        def __getattr__(self, name):
+            raise RuntimeError("boom")
+
+    resp = _resp_with_usage(server_tool_use=_Explodes())
+    router._record_spend(router.SONNET_MODEL, resp, "test_boom_ws")
+
+    rows = _spend_rows(spend_eng)
+    assert len(rows) == 1
+    token_only = router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0)
+    assert rows[0].cost_usd == pytest.approx(token_only)

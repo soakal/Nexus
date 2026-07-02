@@ -248,3 +248,64 @@ def test_gitignore_contains_backups_entry():
     # Must have backups/ as a standalone entry (not buried inside another word)
     lines = [line.strip() for line in content.splitlines()]
     assert "backups/" in lines, f"backups/ not found in .gitignore lines: {lines}"
+
+
+# ---------------------------------------------------------------------------
+# Tier A3.1 — the integrity signal must be about the COPY, not the live db
+# ---------------------------------------------------------------------------
+
+def test_integrity_check_file_detects_bad_copy(tmp_path):
+    from backend.agents.backup import integrity_check_file
+    bad = tmp_path / "corrupt.db"
+    bad.write_bytes(b"this is not a sqlite database at all" * 100)
+    result = integrity_check_file(str(bad))
+    assert result != "ok"
+
+
+def test_make_backup_snapshot_is_consistent(tmp_path, monkeypatch):
+    """The snapshot in the backup dir must contain the live rows and pass
+    integrity_check when opened standalone."""
+    import sqlite3
+    db_file = tmp_path / "nexus.db"
+    tmp_engine = _make_tmp_engine(db_file)
+    with tmp_engine.connect() as conn:
+        conn.execute(text("INSERT INTO _test (id) VALUES (1), (2), (3)"))
+        conn.commit()
+    monkeypatch.setattr("backend.database.engine", tmp_engine)
+    monkeypatch.chdir(tmp_path)
+    fake_s = _fake_settings(str(tmp_path / "backups"))
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+    monkeypatch.setattr("backend.agents.backup._db_path", lambda: str(db_file))
+
+    from backend.agents.backup import make_backup
+    result = make_backup()
+    assert result["ok"] is True
+
+    snap = os.path.join(result["dir"], "nexus.db")
+    con = sqlite3.connect(snap)
+    try:
+        rows = con.execute("SELECT id FROM _test ORDER BY id").fetchall()
+        assert rows == [(1,), (2,), (3,)]
+        assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        con.close()
+
+
+def test_make_backup_ok_false_when_copy_corrupt(tmp_path, monkeypatch):
+    """If the copied file fails its integrity check, ok must be False so
+    run_backup_job alerts."""
+    db_file = tmp_path / "nexus.db"
+    tmp_engine = _make_tmp_engine(db_file)
+    monkeypatch.setattr("backend.database.engine", tmp_engine)
+    monkeypatch.chdir(tmp_path)
+    fake_s = _fake_settings(str(tmp_path / "backups"))
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+    monkeypatch.setattr("backend.agents.backup._db_path", lambda: str(db_file))
+    monkeypatch.setattr(
+        "backend.agents.backup.integrity_check_file", lambda _f: "corrupt"
+    )
+
+    from backend.agents.backup import make_backup
+    result = make_backup()
+    assert result["ok"] is False
+    assert result["integrity"] == "corrupt"

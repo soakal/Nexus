@@ -65,12 +65,17 @@ def metering_counters() -> dict:
 # (platform.claude.com/docs/.../about-claude/pricing): Opus 4.8 $5/$25,
 # Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 per MTok. The cache multipliers in
 # _compute_cost (5m write 1.25x input, read 0.1x input) also match the official
-# rates. NOTE: the hosted web_search server tool ($10/1k searches) is NOT metered.
+# rates.
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 3.0, "output": 15.0},
     HAIKU_MODEL: {"input": 1.0, "output": 5.0},
 }
+
+# Hosted web-search server tool: $10 per 1,000 searches (Anthropic pricing,
+# verified 2026-06). Read from usage.server_tool_use.web_search_requests and
+# folded into the same SpendLog row as the call's token cost.
+_WEB_SEARCH_USD_PER_SEARCH = 10.0 / 1000.0
 
 
 def _compute_cost(
@@ -153,6 +158,19 @@ def _record_spend(model: str, resp, label: str, task_id=None) -> None:
             return
 
         cost = _compute_cost(model, input_tokens, output_tokens, cache_creation, cache_read)
+
+        # Hosted web-search searches bill per REQUEST, independent of tokens.
+        # Same philosophy as _coerce: only trust genuine numerics (a MagicMock
+        # attribute must not leak a bogus cost), and never let this block
+        # break the row.
+        try:
+            stu = getattr(usage, "server_tool_use", None)
+            if stu is not None:
+                raw_ws = getattr(stu, "web_search_requests", 0)
+                if isinstance(raw_ws, (int, float, str)):
+                    cost += int(raw_ws or 0) * _WEB_SEARCH_USD_PER_SEARCH
+        except Exception:
+            pass  # search metering is best-effort on top of best-effort
 
         from sqlmodel import Session
 

@@ -179,6 +179,16 @@ async def _vault_backup():
             logger.info(f"Vault backup ok: {result['dest']}")
         else:
             logger.warning(f"Vault backup failed: {result['error']}")
+            # The off-VM copy is the disaster-recovery path — a silent
+            # failure here means no usable backup exists off VM 101.
+            try:
+                from backend import events
+                await events.notify_phone(
+                    f"NEXUS OFF-VM BACKUP FAILED: {result.get('error') or 'unknown error'}",
+                    kind="backup_failed",
+                )
+            except Exception as ne:
+                logger.error(f"notify_phone for vault backup failure failed: {ne}")
     except Exception as e:
         logger.error(f"Vault backup job error: {e}")
 

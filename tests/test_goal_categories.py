@@ -228,6 +228,7 @@ async def test_proposer_tags_maintenance_category(eng, monkeypatch):
         {
             "title": "Check system health",
             "description": "Run a full system diagnostics pass on all nodes.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.8,
@@ -235,7 +236,7 @@ async def test_proposer_tags_maintenance_category(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -265,6 +266,7 @@ async def test_proposer_bogus_category_becomes_other(eng, monkeypatch):
         {
             "title": "Random task",
             "description": "Do some unclassified thing on the homelab.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.7,
@@ -272,7 +274,7 @@ async def test_proposer_bogus_category_becomes_other(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -300,6 +302,7 @@ async def test_proposer_missing_category_becomes_other(eng, monkeypatch):
         {
             "title": "Orphan task",
             "description": "Task with no category field at all.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.65,
@@ -307,7 +310,7 @@ async def test_proposer_missing_category_becomes_other(eng, monkeypatch):
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -474,6 +477,7 @@ def test_api_propose_with_category_normalizes(goals_client, auth_headers, monkey
         json={
             "title": "Review UniFi config",
             "description": "Audit the UniFi network controller settings.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "category": "NETWORK ",
         },
     )
@@ -493,6 +497,7 @@ def test_api_propose_bogus_category_normalizes_to_other(goals_client, auth_heade
         json={
             "title": "Misc task",
             "description": "An unclassifiable task.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "category": "infrastructure",
         },
     )

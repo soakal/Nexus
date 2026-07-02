@@ -315,13 +315,14 @@ async def test_e2e_low_reversible_autonomous_auto_approved(eng, monkeypatch):
         {
             "title": "Prune stale Docker images",
             "description": "Run docker image prune to free disk on Unraid.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.9,
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -357,13 +358,14 @@ async def test_e2e_reversible_by_inverse_also_auto_approved(eng, monkeypatch):
         {
             "title": "Toggle AdGuard filtering",
             "description": "Disable then re-enable AdGuard filtering to clear stale cache.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible_by_inverse",
             "confidence": 0.8,
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -386,13 +388,14 @@ async def test_e2e_high_risk_stays_proposed(eng, monkeypatch):
         {
             "title": "Wipe Unraid cache drive",
             "description": "Format the Unraid cache drive to reclaim space.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "high",
             "reversibility": "irreversible",
             "confidence": 0.7,
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -421,13 +424,14 @@ async def test_e2e_irreversible_stays_proposed(eng, monkeypatch):
         {
             "title": "Delete old log files",
             "description": "Permanently delete log files older than 1 year.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "irreversible",
             "confidence": 0.85,
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
@@ -455,13 +459,14 @@ async def test_e2e_flag_off_low_reversible_stays_proposed(eng, monkeypatch):
         {
             "title": "Restart Plex container",
             "description": "Restart the Plex Docker container to apply a settings change.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.88,
         }
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         # auto_approve_low_risk = False
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=False)):
             from backend.agents.proposer import propose_goals_tick
@@ -486,7 +491,7 @@ async def test_e2e_kill_switch_off_skips_no_approve(eng, monkeypatch):
     _mock_integrations(monkeypatch)
 
     opus_mock = AsyncMock(return_value="[]")
-    with patch("backend.agents.router.sonnet", new=opus_mock):
+    with patch("backend.agents.router.haiku", new=opus_mock):
         from backend.agents.proposer import propose_goals_tick
         result = await propose_goals_tick()
 
@@ -509,6 +514,7 @@ async def test_e2e_mixed_proposals_selective_auto_approve(eng, monkeypatch):
         {
             "title": "Refresh DNS cache",
             "description": "Flush the AdGuard DNS cache to pick up new rules.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.9,
@@ -516,6 +522,7 @@ async def test_e2e_mixed_proposals_selective_auto_approve(eng, monkeypatch):
         {
             "title": "Restart Unraid array",
             "description": "Stop and restart the Unraid storage array.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "medium",
             "reversibility": "reversible",
             "confidence": 0.7,
@@ -523,13 +530,14 @@ async def test_e2e_mixed_proposals_selective_auto_approve(eng, monkeypatch):
         {
             "title": "Purge old backups",
             "description": "Delete Unraid backups older than 6 months.",
+            "success_criteria": "The stated condition is verifiably resolved.",
             "risk": "low",
             "reversibility": "irreversible",
             "confidence": 0.75,
         },
     ])
 
-    with patch("backend.agents.router.sonnet", new=AsyncMock(return_value=opus_response)):
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)):
         with patch("backend.config.get_settings", return_value=_make_settings(auto_approve=True, max_per_tick=3)):
             from backend.agents.proposer import propose_goals_tick
             result = await propose_goals_tick()
