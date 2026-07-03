@@ -291,7 +291,7 @@ function EntityRow({ entity, onAction, busy }) {
     )
   }
 
-  // Thermostat: Ecobee-style panel — big setpoint, up/down, mode pills
+  // Thermostat: Nest-style dial — colored disc, tick ring, inside-temp marker
   if (domain === 'climate') {
     const attrs = entity.attributes || {}
     const modes = attrs.hvac_modes || ['off', 'heat', 'cool']
@@ -299,7 +299,9 @@ function EntityRow({ entity, onAction, busy }) {
     const current = attrs.current_temperature
     const humidity = attrs.current_humidity
     const hvacAction = attrs.hvac_action
-    const mc = unavailable ? '#f4d27a' : MODE_COLOR[state] || '#7c8aa3'
+    const isOff = state === 'off'
+    const DIAL_COLOR = { heat: '#e8722c', cool: '#3b82f6', heat_cool: '#8b5cf6' }
+    const disc = unavailable || isOff ? '#3a4150' : DIAL_COLOR[state] || '#3a4150'
     // ponytail: single-setpoint only — heat_cool (Auto) needs high/low targets, ± disabled there
     const canSetTemp = !unavailable && !busy && target != null && state !== 'off' && state !== 'heat_cool'
     const setTemp = (t) => onAction(
@@ -307,36 +309,86 @@ function EntityRow({ entity, onAction, busy }) {
       { temperature: t - ECOBEE_SET_OFFSET },
       { attrs: { temperature: t } },
     )
-    const chev = (disabled) => ({
-      width: '52px', height: '38px', borderRadius: '10px', fontSize: '15px', fontWeight: 700,
-      border: '1px solid rgba(120,160,220,0.2)', background: 'rgba(255,255,255,0.05)',
+
+    // Dial geometry: 0° = straight up, clockwise; ticks sweep -130°..+130°
+    const MIN_T = 60, MAX_T = 85
+    const C = 120, TICKS = 61
+    const pt = (deg, r) => {
+      const rad = ((deg - 90) * Math.PI) / 180
+      return [C + r * Math.cos(rad), C + r * Math.sin(rad)]
+    }
+    const tempDeg = (t) => -130 + ((Math.min(Math.max(t, MIN_T), MAX_T) - MIN_T) / (MAX_T - MIN_T)) * 260
+    const ticks = Array.from({ length: TICKS }, (_, i) => -130 + (i * 260) / (TICKS - 1))
+    const markDeg = current != null ? tempDeg(current) : null
+    const [lx, ly] = markDeg != null ? pt(markDeg, 82) : [0, 0]
+
+    const roundBtn = (disabled) => ({
+      width: '46px', height: '46px', borderRadius: '50%', fontSize: '20px', fontWeight: 700,
+      border: '1px solid rgba(120,160,220,0.25)', background: 'rgba(255,255,255,0.05)',
       color: '#dbe3f0', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.35 : 1,
+      flexShrink: 0,
     })
+
     return (
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px',
         padding: '22px 14px', borderRadius: '14px',
-        background: 'rgba(255,255,255,0.022)', border: `1px solid ${mc}55`,
+        background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '22px' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '58px', fontWeight: 700, lineHeight: 1, color: mc }}>
-              {unavailable ? '--' : (state === 'off' ? (current ?? '--') : (target ?? current ?? '--'))}°
+        <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+          <button disabled={!canSetTemp} onClick={() => setTemp(target - 1)} style={roundBtn(!canSetTemp)}>−</button>
+
+          <div style={{ position: 'relative', width: '240px', height: '240px' }}>
+            <svg viewBox="0 0 240 240" style={{ position: 'absolute', inset: 0, display: 'block' }}>
+              <circle cx={C} cy={C} r="118" fill={disc} style={{ transition: 'fill 0.3s' }} />
+              {ticks.map((d, i) => {
+                const isMark = markDeg != null && Math.abs(d - markDeg) < 260 / (TICKS - 1) / 2
+                const [x1, y1] = pt(d, isMark ? 92 : 100)
+                const [x2, y2] = pt(d, 112)
+                return (
+                  <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+                    stroke="#fff" strokeWidth={isMark ? 3 : 1.5}
+                    strokeOpacity={isMark ? 1 : 0.45} strokeLinecap="round" />
+                )
+              })}
+              {markDeg != null && (
+                <text x={lx} y={ly} fill="#fff" fillOpacity="0.95" fontSize="13" fontWeight="700"
+                  textAnchor="middle" dominantBaseline="middle">{Math.round(current)}</text>
+              )}
+            </svg>
+            <div style={{
+              position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+            }}>
+              <div style={{ fontSize: '64px', fontWeight: 700, lineHeight: 1, color: '#fff' }}>
+                {unavailable ? '--' : isOff ? (current ?? '--') : (target ?? current ?? '--')}
+              </div>
+              <div style={{ fontSize: '10px', letterSpacing: '2px', color: 'rgba(255,255,255,0.75)', marginTop: '4px', textTransform: 'uppercase' }}>
+                {unavailable ? 'Unavailable' : isOff ? 'Off · Inside' : 'Set To'}
+              </div>
             </div>
-            <div style={{ fontSize: '11px', letterSpacing: '2px', color: '#8a96ad', marginTop: '8px', textTransform: 'uppercase' }}>
-              {unavailable ? 'Unavailable' : state === 'off' ? 'System Off' : 'Set To'}
-            </div>
+            <button
+              disabled={busy || unavailable}
+              onClick={() => onAction(entity, 'set_hvac_mode', { hvac_mode: isOff ? 'cool' : 'off' }, { state: isOff ? 'cool' : 'off' })}
+              title={isOff ? 'Turn on (cool)' : 'Turn off'}
+              style={{
+                position: 'absolute', bottom: '14px', left: '50%', transform: 'translateX(-50%)',
+                width: '36px', height: '36px', borderRadius: '50%', border: 'none',
+                background: 'rgba(0,0,0,0.18)', color: 'rgba(255,255,255,0.9)',
+                fontSize: '17px', cursor: busy || unavailable ? 'not-allowed' : 'pointer',
+              }}
+            >⏻</button>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <button disabled={!canSetTemp} onClick={() => setTemp(target + 1)} style={chev(!canSetTemp)}>▲</button>
-            <button disabled={!canSetTemp} onClick={() => setTemp(target - 1)} style={chev(!canSetTemp)}>▼</button>
-          </div>
+
+          <button disabled={!canSetTemp} onClick={() => setTemp(target + 1)} style={roundBtn(!canSetTemp)}>+</button>
         </div>
+
         <div style={{ fontSize: '13px', color: '#9aa6bd' }}>
           Inside <strong style={{ color: '#dbe3f0' }}>{current ?? '--'}°</strong>
           {humidity != null && <> · Humidity <strong style={{ color: '#dbe3f0' }}>{Math.round(humidity)}%</strong></>}
           {hvacAction && <> · {hvacAction}</>}
         </div>
+
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
           {modes.map((m) => {
             const active = state === m
