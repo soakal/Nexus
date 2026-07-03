@@ -142,15 +142,15 @@ const CONTROL_META = new Map(CONTROLS.map((c, i) => [c.id, { ...c, order: i }]))
 const GROUP_ORDER = [...new Set(CONTROLS.map((c) => c.group))]
 
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean'])
-const COVER_DOMAINS = new Set(['cover'])
-const LOCK_DOMAINS  = new Set(['lock'])
 const ON_STATES = new Set(['on', 'open', 'home', 'playing', 'active', 'unlocked'])
 
-const ACTION_BTN = {
-  padding: '5px 10px', borderRadius: '7px', fontSize: '12px', fontWeight: 600,
-  border: '1px solid rgba(120,160,220,0.2)', background: 'rgba(255,255,255,0.04)',
-  color: '#aab4c7', cursor: 'pointer',
-}
+// The Ecobee (HomeKit-bridged) lands every setpoint write 3°F ABOVE the value
+// sent — verified live (send 69 -> thermostat holds 72). Compensate on write.
+// ponytail: calibration constant — if set temps land off by N, adjust here.
+const ECOBEE_SET_OFFSET = 3
+
+const MODE_LABEL = { off: 'Off', heat: 'Heat', cool: 'Cool', heat_cool: 'Auto' }
+const MODE_COLOR = { off: '#7c8aa3', heat: '#f97316', cool: '#38bdf8', heat_cool: '#a78bfa' }
 
 function domainOf(entityId) {
   return entityId.split('.')[0]
@@ -164,11 +164,45 @@ function isOn(state) {
   return ON_STATES.has((state || '').toLowerCase())
 }
 
-function entityDotColor(state) {
-  if (state === 'unavailable' || state === 'unknown') return '#fbbf24'
-  if (isOn(state) || state === 'armed') return '#34d399'
-  return '#7c8aa3'
+function Toggle({ on, disabled, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={on}
+      style={{
+        width: '46px', height: '26px', borderRadius: '13px', padding: '2px', flexShrink: 0,
+        border: on ? '1px solid rgba(52,211,153,0.5)' : '1px solid rgba(120,160,220,0.2)',
+        background: on ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.06)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.4 : 1,
+        transition: 'background 0.15s',
+      }}
+    >
+      <div style={{
+        width: '20px', height: '20px', borderRadius: '50%',
+        background: on ? '#34d399' : '#8a96ad',
+        transform: on ? 'translateX(20px)' : 'translateX(0)',
+        transition: 'transform 0.15s',
+      }} />
+    </button>
+  )
 }
+
+const ROW = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+  padding: '12px 14px', borderRadius: '11px',
+  background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+}
+const NAME = {
+  fontSize: '14px', fontWeight: 600, color: '#dbe3f0',
+  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+}
+const BIG_BTN = (disabled) => ({
+  padding: '8px 22px', borderRadius: '9px', fontSize: '13px', fontWeight: 700,
+  border: '1px solid rgba(120,160,220,0.22)', background: 'rgba(255,255,255,0.05)',
+  color: '#dbe3f0', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.4 : 1,
+})
 
 function EntityRow({ entity, onAction, busy }) {
   const domain = domainOf(entity.entity_id)
@@ -176,185 +210,152 @@ function EntityRow({ entity, onAction, busy }) {
   const state = entity.state
   const on = isOn(state)
   const unavailable = state === 'unavailable' || state === 'unknown'
-  const dotColor = entityDotColor(state)
 
-  const rowStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '12px',
-    padding: '12px 14px',
-    borderRadius: '11px',
-    background: 'rgba(255,255,255,0.022)',
-    border: '1px solid rgba(120,160,220,0.08)',
-  }
-
-  const nameStyle = {
-    fontSize: '14px',
-    fontWeight: 600,
-    color: '#dbe3f0',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  }
-
-  const idStyle = {
-    fontSize: '11px',
-    fontFamily: "'JetBrains Mono', monospace",
-    color: '#5d6982',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  }
-
-  const leftStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    minWidth: 0,
-    flex: 1,
-  }
-
-  const labelStyle = {
-    fontSize: '12px',
-    fontWeight: 600,
-    color: unavailable ? '#f4d27a' : on ? '#5fe0b4' : '#9aa6bd',
-  }
-
+  // Lights, fan, plugs: a switch you flip
   if (TOGGLE_DOMAINS.has(domain)) {
     return (
-      <div style={rowStyle}>
-        <div style={leftStyle}>
-          <StatusDot color={dotColor} size={8} glow={false} />
-          <div style={{ minWidth: 0 }}>
-            <div style={nameStyle}>{name}</div>
-          </div>
+      <div style={ROW}>
+        <div style={{ ...NAME, minWidth: 0, flex: 1 }}>{name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+          <span style={{
+            fontSize: '12px', fontWeight: 600,
+            color: unavailable ? '#f4d27a' : on ? '#5fe0b4' : '#7c8aa3',
+          }}>
+            {unavailable ? 'N/A' : on ? 'On' : 'Off'}
+          </span>
+          <Toggle
+            on={on}
+            disabled={busy || unavailable}
+            onClick={() => onAction(entity, on ? 'turn_off' : 'turn_on', null, { state: on ? 'off' : 'on' })}
+          />
         </div>
-        <button
-          disabled={busy || unavailable}
-          onClick={() => onAction(entity, on ? 'turn_off' : 'turn_on', on ? 'off' : 'on')}
-          style={{
-            flexShrink: 0,
-            padding: '5px 12px',
-            borderRadius: '7px',
-            border: unavailable
-              ? '1px solid rgba(120,160,220,0.12)'
-              : on
-              ? '1px solid rgba(95,224,180,0.3)'
-              : '1px solid rgba(120,160,220,0.16)',
-            background: unavailable
-              ? 'rgba(255,255,255,0.03)'
-              : on
-              ? 'rgba(95,224,180,0.08)'
-              : 'rgba(255,255,255,0.03)',
-            cursor: busy || unavailable ? 'not-allowed' : 'pointer',
-            opacity: busy ? 0.5 : 1,
-            ...labelStyle,
-          }}
-        >
-          {unavailable ? 'N/A' : on ? 'On' : 'Off'}
-        </button>
       </div>
     )
   }
 
-  if (COVER_DOMAINS.has(domain)) {
-    const isMoving = state === 'opening' || state === 'closing'
-    const coverBtns = [
-      { label: 'Open',  svc: 'open_cover',  off: state === 'open'   || state === 'opening'  || unavailable },
-      { label: 'Close', svc: 'close_cover', off: state === 'closed' || state === 'closing'  || unavailable },
-      { label: 'Stop',  svc: 'stop_cover',  off: !isMoving || unavailable },
-    ]
+  // Garage door: big OPEN/CLOSED status + one action button
+  if (domain === 'cover') {
+    const moving = state === 'opening' || state === 'closing'
+    const isOpen = state === 'open'
+    const statusColor = unavailable ? '#f4d27a' : moving ? '#fbbf24' : isOpen ? '#fb7185' : '#34d399'
+    const action = moving
+      ? { label: 'Stop', svc: 'stop_cover', opt: null }
+      : isOpen
+        ? { label: 'Close', svc: 'close_cover', opt: { state: 'closing' } }
+        : { label: 'Open', svc: 'open_cover', opt: { state: 'opening' } }
     return (
-      <div style={rowStyle}>
-        <div style={leftStyle}>
-          <StatusDot color={dotColor} size={8} glow={false} />
-          <div style={{ minWidth: 0 }}>
-            <div style={nameStyle}>{name}</div>
-          </div>
-        </div>
-        <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
-          <span style={{ ...labelStyle, marginRight: '4px' }}>{state}</span>
-          {coverBtns.map(({ label, svc, off }) => (
-            <button key={svc} disabled={busy || off}
-              onClick={() => onAction(entity, svc, null)}
-              style={{ ...ACTION_BTN, opacity: busy || off ? 0.35 : 1, cursor: busy || off ? 'not-allowed' : 'pointer' }}
-            >{label}</button>
-          ))}
+      <div style={ROW}>
+        <div style={{ ...NAME, minWidth: 0, flex: 1 }}>{name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexShrink: 0 }}>
+          <span style={{ fontSize: '13px', fontWeight: 700, letterSpacing: '1px', color: statusColor }}>
+            {unavailable ? 'N/A' : state.toUpperCase()}
+          </span>
+          <button
+            disabled={busy || unavailable}
+            onClick={() => onAction(entity, action.svc, null, action.opt)}
+            style={BIG_BTN(busy || unavailable)}
+          >
+            {action.label}
+          </button>
         </div>
       </div>
     )
   }
 
-  if (LOCK_DOMAINS.has(domain)) {
+  // Back door lock: LOCKED/UNLOCKED status + one action button
+  if (domain === 'lock') {
     const isLocked = state === 'locked'
-    const lockBtns = [
-      { label: 'Lock',   svc: 'lock',   opt: 'locked',   off: isLocked  || unavailable },
-      { label: 'Unlock', svc: 'unlock', opt: 'unlocked', off: !isLocked || unavailable },
-    ]
+    const statusColor = unavailable ? '#f4d27a' : isLocked ? '#34d399' : '#fb7185'
     return (
-      <div style={rowStyle}>
-        <div style={leftStyle}>
-          <StatusDot color={dotColor} size={8} glow={false} />
-          <div style={{ minWidth: 0 }}>
-            <div style={nameStyle}>{name}</div>
-          </div>
-        </div>
-        <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
-          <span style={{ ...labelStyle, marginRight: '4px' }}>{state}</span>
-          {lockBtns.map(({ label, svc, opt, off }) => (
-            <button key={svc} disabled={busy || off}
-              onClick={() => onAction(entity, svc, opt)}
-              style={{ ...ACTION_BTN, opacity: busy || off ? 0.35 : 1, cursor: busy || off ? 'not-allowed' : 'pointer' }}
-            >{label}</button>
-          ))}
+      <div style={ROW}>
+        <div style={{ ...NAME, minWidth: 0, flex: 1 }}>{name}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexShrink: 0 }}>
+          <span style={{ fontSize: '13px', fontWeight: 700, letterSpacing: '1px', color: statusColor }}>
+            {unavailable ? 'N/A' : isLocked ? 'LOCKED' : 'UNLOCKED'}
+          </span>
+          <button
+            disabled={busy || unavailable}
+            onClick={() => onAction(
+              entity,
+              isLocked ? 'unlock' : 'lock',
+              null,
+              { state: isLocked ? 'unlocked' : 'locked' },
+            )}
+            style={BIG_BTN(busy || unavailable)}
+          >
+            {isLocked ? 'Unlock' : 'Lock'}
+          </button>
         </div>
       </div>
     )
   }
 
+  // Thermostat: Ecobee-style panel — big setpoint, up/down, mode pills
   if (domain === 'climate') {
     const attrs = entity.attributes || {}
     const modes = attrs.hvac_modes || ['off', 'heat', 'cool']
     const target = attrs.temperature
     const current = attrs.current_temperature
-    // ponytail: single-target only — heat_cool needs target_temp_high/low, so ± is disabled there
-    const canSetTemp = !unavailable && target != null && state !== 'off' && state !== 'heat_cool'
+    const humidity = attrs.current_humidity
+    const hvacAction = attrs.hvac_action
+    const mc = unavailable ? '#f4d27a' : MODE_COLOR[state] || '#7c8aa3'
+    // ponytail: single-setpoint only — heat_cool (Auto) needs high/low targets, ± disabled there
+    const canSetTemp = !unavailable && !busy && target != null && state !== 'off' && state !== 'heat_cool'
+    const setTemp = (t) => onAction(
+      entity, 'set_temperature',
+      { temperature: t - ECOBEE_SET_OFFSET },
+      { attrs: { temperature: t } },
+    )
+    const chev = (disabled) => ({
+      width: '52px', height: '38px', borderRadius: '10px', fontSize: '15px', fontWeight: 700,
+      border: '1px solid rgba(120,160,220,0.2)', background: 'rgba(255,255,255,0.05)',
+      color: '#dbe3f0', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.35 : 1,
+    })
     return (
-      <div style={rowStyle}>
-        <div style={leftStyle}>
-          <StatusDot color={unavailable ? '#fbbf24' : state === 'off' ? '#7c8aa3' : '#34d399'} size={8} glow={false} />
-          <div style={{ minWidth: 0 }}>
-            <div style={nameStyle}>{name}</div>
-            <div style={idStyle}>
-              {current != null ? `${current}° now` : entity.entity_id}
-              {attrs.hvac_action ? ` · ${attrs.hvac_action}` : ''}
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px',
+        padding: '22px 14px', borderRadius: '14px',
+        background: 'rgba(255,255,255,0.022)', border: `1px solid ${mc}55`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '22px' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '58px', fontWeight: 700, lineHeight: 1, color: mc }}>
+              {unavailable ? '--' : (state === 'off' ? (current ?? '--') : (target ?? current ?? '--'))}°
+            </div>
+            <div style={{ fontSize: '11px', letterSpacing: '2px', color: '#8a96ad', marginTop: '8px', textTransform: 'uppercase' }}>
+              {unavailable ? 'Unavailable' : state === 'off' ? 'System Off' : 'Set To'}
             </div>
           </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <button disabled={!canSetTemp} onClick={() => setTemp(target + 1)} style={chev(!canSetTemp)}>▲</button>
+            <button disabled={!canSetTemp} onClick={() => setTemp(target - 1)} style={chev(!canSetTemp)}>▼</button>
+          </div>
         </div>
-        <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <button disabled={busy || !canSetTemp}
-            onClick={() => onAction(entity, 'set_temperature', null, { temperature: target - 1 })}
-            style={{ ...ACTION_BTN, opacity: busy || !canSetTemp ? 0.35 : 1, cursor: busy || !canSetTemp ? 'not-allowed' : 'pointer' }}
-          >−</button>
-          <span style={labelStyle}>{target != null ? `${target}°` : '—'}</span>
-          <button disabled={busy || !canSetTemp}
-            onClick={() => onAction(entity, 'set_temperature', null, { temperature: target + 1 })}
-            style={{ ...ACTION_BTN, opacity: busy || !canSetTemp ? 0.35 : 1, cursor: busy || !canSetTemp ? 'not-allowed' : 'pointer' }}
-          >+</button>
+        <div style={{ fontSize: '13px', color: '#9aa6bd' }}>
+          Inside <strong style={{ color: '#dbe3f0' }}>{current ?? '--'}°</strong>
+          {humidity != null && <> · Humidity <strong style={{ color: '#dbe3f0' }}>{Math.round(humidity)}%</strong></>}
+          {hvacAction && <> · {hvacAction}</>}
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
           {modes.map((m) => {
             const active = state === m
-            const off = busy || unavailable || active
+            const col = MODE_COLOR[m] || '#7c8aa3'
             return (
-              <button key={m} disabled={off}
-                onClick={() => onAction(entity, 'set_hvac_mode', m, { hvac_mode: m })}
+              <button
+                key={m}
+                disabled={busy || unavailable || active}
+                onClick={() => onAction(entity, 'set_hvac_mode', { hvac_mode: m }, { state: m })}
                 style={{
-                  ...ACTION_BTN,
-                  opacity: busy || unavailable ? 0.35 : 1,
-                  cursor: off ? 'not-allowed' : 'pointer',
-                  ...(active ? { border: '1px solid rgba(95,224,180,0.3)', background: 'rgba(95,224,180,0.08)', color: '#5fe0b4' } : {}),
+                  padding: '7px 18px', borderRadius: '999px', fontSize: '13px', fontWeight: 700,
+                  border: active ? `1px solid ${col}` : '1px solid rgba(120,160,220,0.2)',
+                  background: active ? `${col}22` : 'rgba(255,255,255,0.04)',
+                  color: active ? col : '#9aa6bd',
+                  cursor: busy || unavailable || active ? 'default' : 'pointer',
+                  opacity: busy || unavailable ? 0.4 : 1,
                 }}
-              >{m.replace('_', '/')}</button>
+              >
+                {MODE_LABEL[m] || m}
+              </button>
             )
           })}
         </div>
@@ -362,17 +363,12 @@ function EntityRow({ entity, onAction, busy }) {
     )
   }
 
-  // Sensors and everything else: read-only state display
+  // Anything else: read-only state display
   const unit = entity.attributes?.unit_of_measurement || ''
   return (
-    <div style={rowStyle}>
-      <div style={leftStyle}>
-        <StatusDot color={dotColor} size={8} glow={false} />
-        <div style={{ minWidth: 0 }}>
-          <div style={nameStyle}>{name}</div>
-        </div>
-      </div>
-      <div style={{ flexShrink: 0, ...labelStyle }}>
+    <div style={ROW}>
+      <div style={{ ...NAME, minWidth: 0, flex: 1 }}>{name}</div>
+      <div style={{ flexShrink: 0, fontSize: '12px', fontWeight: 600, color: '#9aa6bd' }}>
         {state}{unit ? ` ${unit}` : ''}
       </div>
     </div>
@@ -421,19 +417,17 @@ export default function HomeAssistant() {
     }
   }, [load])
 
-  const callService = useCallback(async (entity, service, optimisticState, serviceData) => {
+  const callService = useCallback(async (entity, service, serviceData, optimistic) => {
     const domain = domainOf(entity.entity_id)
     setBusyIds((b) => ({ ...b, [entity.entity_id]: true }))
-    if (optimisticState != null || serviceData?.temperature != null) {
+    if (optimistic && (optimistic.state != null || optimistic.attrs)) {
       setEntities((list) =>
         list.map((e) =>
           e.entity_id === entity.entity_id
             ? {
                 ...e,
-                ...(optimisticState != null ? { state: optimisticState } : {}),
-                ...(serviceData?.temperature != null
-                  ? { attributes: { ...e.attributes, temperature: serviceData.temperature } }
-                  : {}),
+                ...(optimistic.state != null ? { state: optimistic.state } : {}),
+                ...(optimistic.attrs ? { attributes: { ...e.attributes, ...optimistic.attrs } } : {}),
               }
             : e
         )
@@ -444,8 +438,12 @@ export default function HomeAssistant() {
       // HA's state machine lags the service call for polled devices (TP-Link,
       // ESPHome) — reloading instantly reverts the optimistic state and the
       // button visibly snaps back, which reads as "the control didn't work".
-      await new Promise((r) => setTimeout(r, 1800))
-      await load()
+      // Setpoint writes lag even longer (Ecobee cloud applies its +3 after a
+      // few seconds), so skip the reload there and let the 10s poll confirm.
+      if (service !== 'set_temperature') {
+        await new Promise((r) => setTimeout(r, 1800))
+        await load()
+      }
     } catch (e) {
       setError(String(e.message || e))
       await load()

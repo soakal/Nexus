@@ -55,7 +55,9 @@ async def fetch() -> HAData:
         raise IntegrationError("HASS_TOKEN not configured")
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=5) as client:
+    # 10s not 5: /api/states returns ~1200 entities and intermittently exceeds
+    # 5s, which surfaced as spurious "Home Assistant unreachable" 502s in the UI.
+    async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(f"{host}/api/states", headers=headers)
         resp.raise_for_status()
         entities = resp.json()
@@ -137,7 +139,9 @@ async def call_service(domain: str, service: str, data: dict | None = None) -> d
     settings = get_settings()
     headers = {"Authorization": f"Bearer {settings.hass_token}", "Content-Type": "application/json"}
     url = f"{settings.hass_host}/api/services/{domain}/{service}"
-    async with httpx.AsyncClient(timeout=5) as client:
+    # 15s not 5: HomeKit-bridged devices (Ecobee) and the Konnected garage door
+    # can take >5s to ack a service call — 5s made mode changes 502 spuriously.
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(url, json=data or {}, headers=headers)
         resp.raise_for_status()
         result = resp.json()
