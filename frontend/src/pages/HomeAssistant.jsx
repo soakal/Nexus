@@ -144,10 +144,11 @@ const GROUP_ORDER = [...new Set(CONTROLS.map((c) => c.group))]
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean'])
 const ON_STATES = new Set(['on', 'open', 'home', 'playing', 'active', 'unlocked'])
 
-// The Ecobee (HomeKit-bridged) lands every setpoint write 3°F ABOVE the value
-// sent — verified live (send 69 -> thermostat holds 72). Compensate on write.
-// ponytail: calibration constant — if set temps land off by N, adjust here.
-const ECOBEE_SET_OFFSET = 3
+// Do NOT compensate for the Ecobee's +3°F during 3-7pm: that's Brian's
+// electric-utility peak-savings program raising the cool setpoint on purpose.
+// Sending lower values to cancel it would forfeit the peak-rate savings.
+// ponytail: knob kept at 0 — only change if a genuine device offset appears.
+const ECOBEE_SET_OFFSET = 0
 
 const MODE_LABEL = { off: 'Off', heat: 'Heat', cool: 'Cool', heat_cool: 'Auto' }
 const MODE_COLOR = { off: '#7c8aa3', heat: '#f97316', cool: '#38bdf8', heat_cool: '#a78bfa' }
