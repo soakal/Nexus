@@ -36,6 +36,23 @@ _DATE_TOKEN = re.compile(r"\b\d{4}[-_]?\d{2}[-_]?\d{2}[a-z]?\b")
 # Noise words/separators stripped from a filename stem to leave a topic hint.
 _NOISE_TOKENS = ("session", "save", "note", "notes", "log", "draft")
 
+# A raw filename that IS a bare date (e.g. "2026-07-01", optional trailing
+# letter like session files use), or names itself a briefing/daily log.
+_DAILY_NOTE_STEM_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}[a-z]?$", re.IGNORECASE)
+_DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
+
+
+def _is_daily_note(stem: str) -> bool:
+    """True for a morning-briefing/daily-log filename.
+
+    These are heavy with '##' headers (Weather, System Health, Priority
+    Actions...) and so trip _looks_like_reference_doc — without this guard
+    they get imported VERBATIM as a new wiki page named after the date,
+    fragmenting the wiki with one page per day instead of being distilled
+    into the relevant topic pages like any other session note.
+    """
+    return bool(_DAILY_NOTE_STEM_PAT.match(stem) or _DAILY_NOTE_NAME_PAT.search(stem))
+
 
 def _norm(s: str) -> str:
     """Lowercase and strip everything but [a-z0-9] — for comparing page names.
@@ -281,12 +298,14 @@ async def ingest_file(file_path: str) -> dict:
         if key in seen:
             return {"file": key, "skipped": True, "reason": "already_processed"}
 
+        daily_note = _is_daily_note(path.stem)
+
         # --- size guard: skip reference docs, build guides, etc. ---
         try:
             file_bytes = path.stat().st_size
         except Exception:
             file_bytes = 0
-        if file_bytes > MAX_RAW_FILE_BYTES:
+        if file_bytes > MAX_RAW_FILE_BYTES and not daily_note:
             # Too large to be a session note. Don't summarize/strip it — import
             # the full text (and any embedded base64 images) verbatim to the wiki.
             content = await asyncio.to_thread(
@@ -311,7 +330,7 @@ async def ingest_file(file_path: str) -> dict:
         # --- content guard: structured reference docs under the size cap ---
         # A 40 KB manual passes the byte limit but is still not a session note.
         # Import it verbatim (full text + extracted images) instead of summarizing.
-        if _looks_like_reference_doc(content):
+        if not daily_note and _looks_like_reference_doc(content):
             result = await _import_reference_doc(vault, path, content)
             seen.add(key)
             await asyncio.to_thread(_save_ledger, vault, seen)

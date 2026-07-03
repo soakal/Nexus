@@ -143,6 +143,41 @@ async def test_duplicate_alt_text_dedupes_filenames(vault):
 
 
 @pytest.mark.asyncio
+async def test_daily_note_bypasses_verbatim_import(vault, monkeypatch):
+    """Regression: a bare-date briefing (>=8 headers) must NOT become a
+    standalone wiki/{date}.md page — it goes through extract+classify like
+    any other session note, landing in the matched topic page instead."""
+    headers = "".join(f"## Section {i}\nbody {i}\n\n" for i in range(10))
+    content = "# Morning Briefing — 2026-07-01\n\n" + headers
+    src = _raw(vault, "2026-07-01.md", content)
+
+    (vault / "Brain" / "wiki" / "AdGuard.md").write_text(
+        "# AdGuard\n\n## Existing\nprior content\n", encoding="utf-8"
+    )
+
+    extract_json = json.dumps([{"topic_hint": "adguard", "bullet": "AdGuard blocked 500 queries."}])
+    monkeypatch.setattr(
+        "backend.agents.router.haiku",
+        AsyncMock(side_effect=[extract_json, json.dumps(["AdGuard"])]),
+    )
+
+    result = await wiki_ingest.ingest_file(str(src))
+
+    assert result["items"] == 1
+    assert result["wikis_touched"] == ["AdGuard"]
+
+    wiki = vault / "Brain" / "wiki"
+    # No verbatim date-named page was created.
+    assert not (wiki / "2026-07-01.md").exists()
+    # The extracted bullet landed in the existing topic page instead.
+    adguard = (wiki / "AdGuard.md").read_text(encoding="utf-8")
+    assert "AdGuard blocked 500 queries." in adguard
+    assert "prior content" in adguard  # never rewrites existing content
+
+    assert (wiki / "processed" / "2026-07-01.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_blank_alt_uses_counter_filename(vault):
     body = "# Guide\n\n" + ("filler line here\n" * 3000)
     content = body + f"\n![](data:image/png;base64,{_PNG_B64})\n"

@@ -606,6 +606,19 @@ def test_wiki_looks_like_reference_doc():
     assert _looks_like_reference_doc(note) is False
 
 
+@pytest.mark.parametrize("stem,expected", [
+    ("2026-07-01", True),                # bare date — the observed bug
+    ("2026-06-25b", True),                # date + session-style letter suffix
+    ("Morning-Briefing-2026-06-28", True),  # explicit "briefing" in the name
+    ("daily-ops-log", True),              # explicit "daily" in the name
+    ("the-manual", False),                # genuine reference doc, unaffected
+    ("2026-07-01-quarterly-report", False),  # date PLUS real content — not a bare daily note
+])
+def test_wiki_is_daily_note(stem, expected):
+    from backend.agents.wiki_ingest import _is_daily_note
+    assert _is_daily_note(stem) is expected
+
+
 def test_wiki_is_session_file_by_name():
     from backend.agents.wiki_ingest import _is_session_file
 
