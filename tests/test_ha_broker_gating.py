@@ -117,6 +117,39 @@ def test_ha_service_routes_through_broker(ha_client, auth_headers):
     assert logs[0].decision == "executed"
 
 
+def test_ha_service_with_service_data_merges_entity_id(ha_client, auth_headers):
+    """POST /service with service_data (e.g. climate set_temperature) merges the
+    entity_id into service_data server-side before hitting the broker."""
+    client, eng = ha_client
+    _seed_state(eng, autonomy=True)
+
+    with patch(
+        "backend.integrations.homeassistant.call_service",
+        new_callable=AsyncMock,
+        return_value={"ok": True},
+    ) as cs:
+        resp = client.post(
+            "/api/ha/service",
+            json={
+                "domain": "climate",
+                "service": "set_temperature",
+                "entity_id": "climate.dining_room",
+                "service_data": {"temperature": 72},
+            },
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 200
+    cs.assert_awaited_once_with(
+        "climate", "set_temperature",
+        {"entity_id": "climate.dining_room", "temperature": 72},
+    )
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].decision == "executed"
+
+
 def test_ha_service_requires_auth(ha_client):
     """No auth header -> 401."""
     client, _ = ha_client

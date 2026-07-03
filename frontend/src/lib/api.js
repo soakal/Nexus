@@ -90,7 +90,8 @@ export const api = {
   unraid: { get: () => req('GET', '/unraid/'), restartDocker: (id) => req('POST', `/unraid/docker/${id}/restart`) },
   ha: {
     entities: () => req('GET', '/ha/entities'),
-    service: (domain, service, entity_id) => req('POST', '/ha/service', { domain, service, entity_id }),
+    service: (domain, service, entity_id, service_data) =>
+      req('POST', '/ha/service', { domain, service, entity_id, ...(service_data ? { service_data } : {}) }),
   },
   voice: {
     upload: async (file) => {

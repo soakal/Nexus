@@ -120,6 +120,31 @@ function ProxmoxSection() {
   )
 }
 
+// Curated controls — the ONLY entities this tab shows. Everything else in HA
+// is still controllable by name via Chat; add an entity_id here to surface it.
+const CONTROL_ENTITIES = new Set([
+  'light.left_porch_light',
+  'light.right_porch_light',
+  'light.left_garage_light',
+  'light.right_garage_light',
+  'light.tall_light_lr_christmas_tree_plug',  // Tall Living Room Light
+  'light.table_light_lr',                     // Table Light LR
+  'switch.basement_lights',
+  'light.trudy_bedroom_light',
+  'switch.tp_link_power_strip_3c86_mb_fan',   // Master Bedroom Fan
+  'lock.dining_room',                         // Back Door Lock (August)
+  'cover.garage_door_garage_door',            // Garage Door
+  'climate.dining_room',                      // Ecobee
+])
+
+// Cleaner display names where the HA friendly_name is noisy
+const NAME_OVERRIDES = {
+  'switch.tp_link_power_strip_3c86_mb_fan': 'Master Bedroom Fan',
+  'cover.garage_door_garage_door': 'Garage Door',
+  'lock.dining_room': 'Back Door Lock',
+  'climate.dining_room': 'Ecobee Thermostat',
+}
+
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean'])
 const COVER_DOMAINS = new Set(['cover'])
 const LOCK_DOMAINS  = new Set(['lock'])
@@ -136,7 +161,7 @@ function domainOf(entityId) {
 }
 
 function friendlyName(entity) {
-  return entity.attributes?.friendly_name || entity.entity_id
+  return NAME_OVERRIDES[entity.entity_id] || entity.attributes?.friendly_name || entity.entity_id
 }
 
 function isOn(state) {
@@ -295,6 +320,55 @@ function EntityRow({ entity, onAction, busy }) {
     )
   }
 
+  if (domain === 'climate') {
+    const attrs = entity.attributes || {}
+    const modes = attrs.hvac_modes || ['off', 'heat', 'cool']
+    const target = attrs.temperature
+    const current = attrs.current_temperature
+    // ponytail: single-target only — heat_cool needs target_temp_high/low, so ± is disabled there
+    const canSetTemp = !unavailable && target != null && state !== 'off' && state !== 'heat_cool'
+    return (
+      <div style={rowStyle}>
+        <div style={leftStyle}>
+          <StatusDot color={unavailable ? '#fbbf24' : state === 'off' ? '#7c8aa3' : '#34d399'} size={8} glow={false} />
+          <div style={{ minWidth: 0 }}>
+            <div style={nameStyle}>{name}</div>
+            <div style={idStyle}>
+              {current != null ? `${current}° now` : entity.entity_id}
+              {attrs.hvac_action ? ` · ${attrs.hvac_action}` : ''}
+            </div>
+          </div>
+        </div>
+        <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button disabled={busy || !canSetTemp}
+            onClick={() => onAction(entity, 'set_temperature', null, { temperature: target - 1 })}
+            style={{ ...ACTION_BTN, opacity: busy || !canSetTemp ? 0.35 : 1, cursor: busy || !canSetTemp ? 'not-allowed' : 'pointer' }}
+          >−</button>
+          <span style={labelStyle}>{target != null ? `${target}°` : '—'}</span>
+          <button disabled={busy || !canSetTemp}
+            onClick={() => onAction(entity, 'set_temperature', null, { temperature: target + 1 })}
+            style={{ ...ACTION_BTN, opacity: busy || !canSetTemp ? 0.35 : 1, cursor: busy || !canSetTemp ? 'not-allowed' : 'pointer' }}
+          >+</button>
+          {modes.map((m) => {
+            const active = state === m
+            const off = busy || unavailable || active
+            return (
+              <button key={m} disabled={off}
+                onClick={() => onAction(entity, 'set_hvac_mode', m, { hvac_mode: m })}
+                style={{
+                  ...ACTION_BTN,
+                  opacity: busy || unavailable ? 0.35 : 1,
+                  cursor: off ? 'not-allowed' : 'pointer',
+                  ...(active ? { border: '1px solid rgba(95,224,180,0.3)', background: 'rgba(95,224,180,0.08)', color: '#5fe0b4' } : {}),
+                }}
+              >{m.replace('_', '/')}</button>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   // Sensors and everything else: read-only state display
   const unit = entity.attributes?.unit_of_measurement || ''
   return (
@@ -326,7 +400,7 @@ export default function HomeAssistant() {
   const load = useCallback(async () => {
     try {
       const data = await api.ha.entities()
-      setEntities(data.entities || [])
+      setEntities((data.entities || []).filter((e) => CONTROL_ENTITIES.has(e.entity_id)))
       setAlerts(data.alerts || [])
       setCloudAlerts(data.cloud_alerts || [])
       setError(null)
@@ -355,18 +429,26 @@ export default function HomeAssistant() {
     }
   }, [load])
 
-  const callService = useCallback(async (entity, service, optimisticState) => {
+  const callService = useCallback(async (entity, service, optimisticState, serviceData) => {
     const domain = domainOf(entity.entity_id)
     setBusyIds((b) => ({ ...b, [entity.entity_id]: true }))
-    if (optimisticState != null) {
+    if (optimisticState != null || serviceData?.temperature != null) {
       setEntities((list) =>
         list.map((e) =>
-          e.entity_id === entity.entity_id ? { ...e, state: optimisticState } : e
+          e.entity_id === entity.entity_id
+            ? {
+                ...e,
+                ...(optimisticState != null ? { state: optimisticState } : {}),
+                ...(serviceData?.temperature != null
+                  ? { attributes: { ...e.attributes, temperature: serviceData.temperature } }
+                  : {}),
+              }
+            : e
         )
       )
     }
     try {
-      await api.ha.service(domain, service, entity.entity_id)
+      await api.ha.service(domain, service, entity.entity_id, serviceData)
       await load()
     } catch (e) {
       setError(String(e.message || e))

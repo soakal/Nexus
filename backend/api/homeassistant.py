@@ -14,6 +14,9 @@ class ServiceCall(BaseModel):
     domain: str
     service: str
     entity_id: str
+    # Extra service fields (e.g. {"temperature": 72}); entity_id is merged in
+    # server-side so the broker's empty-service_data fallback stays untouched.
+    service_data: dict | None = None
 
 
 @router.get("/entities")
@@ -55,11 +58,14 @@ async def get_alerts(_=Depends(require_api_key)):
 async def call_ha_service(body: ServiceCall, _=Depends(require_api_key)):
     """Invoke a Home Assistant service against a single entity (broker-gated)."""
     from backend.safety.broker import Decision, execute_action
+    payload = {"domain": body.domain, "service": body.service}
+    if body.service_data:
+        payload["service_data"] = {"entity_id": body.entity_id, **body.service_data}
     res = await execute_action(
         actor="user",
         kind="ha_service",
         target=body.entity_id,
-        payload={"domain": body.domain, "service": body.service},
+        payload=payload,
     )
     if res.decision == Decision.EXECUTED:
         return {"ok": True, "result": res.result}
