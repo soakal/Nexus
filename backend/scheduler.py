@@ -372,7 +372,9 @@ def setup_scheduler(briefing_time: str, timezone: str):
     )
     scheduler.add_job(
         _record_speedtest,
-        IntervalTrigger(minutes=30),
+        # 3h, not 30m: each test saturates the link (~1.5-5.5s ping) and was
+        # tripping Hermes's 5s-timeout liveness watcher into false NEXUS-down alerts.
+        IntervalTrigger(hours=3),
         id="record_speedtest",
         replace_existing=True,
     )
