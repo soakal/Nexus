@@ -120,30 +120,26 @@ function ProxmoxSection() {
   )
 }
 
-// Curated controls — the ONLY entities this tab shows. Everything else in HA
-// is still controllable by name via Chat; add an entity_id here to surface it.
-const CONTROL_ENTITIES = new Set([
-  'light.left_porch_light',
-  'light.right_porch_light',
-  'light.left_garage_light',
-  'light.right_garage_light',
-  'light.tall_light_lr_christmas_tree_plug',  // Tall Living Room Light
-  'light.table_light_lr',                     // Table Light LR
-  'switch.basement_lights',
-  'light.trudy_bedroom_light',
-  'switch.tp_link_power_strip_3c86_mb_fan',   // Master Bedroom Fan
-  'lock.dining_room',                         // Back Door Lock (August)
-  'cover.garage_door_garage_door',            // Garage Door
-  'climate.dining_room',                      // Ecobee
-])
+// Curated controls — the ONLY entities this tab shows, in this order, grouped
+// under human category names. Everything else in HA is still controllable by
+// name via Chat; add a row here to surface a device.
+const CONTROLS = [
+  { id: 'light.left_porch_light',                  group: 'Lights', name: 'Left Porch Light' },
+  { id: 'light.right_porch_light',                 group: 'Lights', name: 'Right Porch Light' },
+  { id: 'light.left_garage_light',                 group: 'Lights', name: 'Left Garage Light' },
+  { id: 'light.right_garage_light',                group: 'Lights', name: 'Right Garage Light' },
+  { id: 'light.tall_light_lr_christmas_tree_plug', group: 'Lights', name: 'Living Room Tall Light' },
+  { id: 'light.table_light_lr',                    group: 'Lights', name: 'Living Room Table Light' },
+  { id: 'switch.basement_lights',                  group: 'Lights', name: 'Basement Lights' },
+  { id: 'light.trudy_bedroom_light',               group: 'Lights', name: 'Trudy Bedroom Light' },
+  { id: 'cover.garage_door_garage_door',           group: 'Doors & Garage', name: 'Garage Door' },
+  { id: 'lock.dining_room',                        group: 'Doors & Garage', name: 'Back Door Lock' },
+  { id: 'climate.dining_room',                     group: 'Thermostat', name: 'Ecobee' },
+  { id: 'switch.tp_link_power_strip_3c86_mb_fan',  group: 'Fans', name: 'Master Bedroom Fan' },
+]
 
-// Cleaner display names where the HA friendly_name is noisy
-const NAME_OVERRIDES = {
-  'switch.tp_link_power_strip_3c86_mb_fan': 'Master Bedroom Fan',
-  'cover.garage_door_garage_door': 'Garage Door',
-  'lock.dining_room': 'Back Door Lock',
-  'climate.dining_room': 'Ecobee Thermostat',
-}
+const CONTROL_META = new Map(CONTROLS.map((c, i) => [c.id, { ...c, order: i }]))
+const GROUP_ORDER = [...new Set(CONTROLS.map((c) => c.group))]
 
 const TOGGLE_DOMAINS = new Set(['light', 'switch', 'fan', 'input_boolean'])
 const COVER_DOMAINS = new Set(['cover'])
@@ -161,7 +157,7 @@ function domainOf(entityId) {
 }
 
 function friendlyName(entity) {
-  return NAME_OVERRIDES[entity.entity_id] || entity.attributes?.friendly_name || entity.entity_id
+  return CONTROL_META.get(entity.entity_id)?.name || entity.attributes?.friendly_name || entity.entity_id
 }
 
 function isOn(state) {
@@ -232,7 +228,6 @@ function EntityRow({ entity, onAction, busy }) {
           <StatusDot color={dotColor} size={8} glow={false} />
           <div style={{ minWidth: 0 }}>
             <div style={nameStyle}>{name}</div>
-            <div style={idStyle}>{entity.entity_id}</div>
           </div>
         </div>
         <button
@@ -276,7 +271,6 @@ function EntityRow({ entity, onAction, busy }) {
           <StatusDot color={dotColor} size={8} glow={false} />
           <div style={{ minWidth: 0 }}>
             <div style={nameStyle}>{name}</div>
-            <div style={idStyle}>{entity.entity_id}</div>
           </div>
         </div>
         <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -304,7 +298,6 @@ function EntityRow({ entity, onAction, busy }) {
           <StatusDot color={dotColor} size={8} glow={false} />
           <div style={{ minWidth: 0 }}>
             <div style={nameStyle}>{name}</div>
-            <div style={idStyle}>{entity.entity_id}</div>
           </div>
         </div>
         <div style={{ flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -377,7 +370,6 @@ function EntityRow({ entity, onAction, busy }) {
         <StatusDot color={dotColor} size={8} glow={false} />
         <div style={{ minWidth: 0 }}>
           <div style={nameStyle}>{name}</div>
-          <div style={idStyle}>{entity.entity_id}</div>
         </div>
       </div>
       <div style={{ flexShrink: 0, ...labelStyle }}>
@@ -400,7 +392,7 @@ export default function HomeAssistant() {
   const load = useCallback(async () => {
     try {
       const data = await api.ha.entities()
-      setEntities((data.entities || []).filter((e) => CONTROL_ENTITIES.has(e.entity_id)))
+      setEntities((data.entities || []).filter((e) => CONTROL_META.has(e.entity_id)))
       setAlerts(data.alerts || [])
       setCloudAlerts(data.cloud_alerts || [])
       setError(null)
@@ -449,6 +441,10 @@ export default function HomeAssistant() {
     }
     try {
       await api.ha.service(domain, service, entity.entity_id, serviceData)
+      // HA's state machine lags the service call for polled devices (TP-Link,
+      // ESPHome) — reloading instantly reverts the optimistic state and the
+      // button visibly snaps back, which reads as "the control didn't work".
+      await new Promise((r) => setTimeout(r, 1800))
       await load()
     } catch (e) {
       setError(String(e.message || e))
@@ -466,17 +462,20 @@ export default function HomeAssistant() {
         const hay = `${e.entity_id} ${friendlyName(e)}`.toLowerCase()
         if (!hay.includes(q)) continue
       }
-      const d = domainOf(e.entity_id)
-      if (!groups[d]) groups[d] = []
-      groups[d].push(e)
+      const g = CONTROL_META.get(e.entity_id)?.group || 'Other'
+      if (!groups[g]) groups[g] = []
+      groups[g].push(e)
     }
-    for (const d of Object.keys(groups)) {
-      groups[d].sort((a, b) => friendlyName(a).localeCompare(friendlyName(b)))
+    for (const g of Object.keys(groups)) {
+      groups[g].sort((a, b) =>
+        (CONTROL_META.get(a.entity_id)?.order ?? 999) - (CONTROL_META.get(b.entity_id)?.order ?? 999))
     }
     return groups
   }, [entities, filter])
 
-  const domains = useMemo(() => Object.keys(grouped).sort(), [grouped])
+  const domains = useMemo(
+    () => GROUP_ORDER.filter((g) => grouped[g]).concat(grouped.Other ? ['Other'] : []),
+    [grouped])
 
   return (
     <div style={{
