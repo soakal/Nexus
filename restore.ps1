@@ -1,4 +1,4 @@
-# NEXUS database restore — thin orchestrator around backend.agents.backup.restore_from.
+# NEXUS database restore - thin orchestrator around backend.agents.backup.restore_from.
 # Usage:
 #   .\restore.ps1                          # restore from the newest local backups\<ts>\
 #   .\restore.ps1 -From "backups\20260702-033000"
@@ -17,7 +17,7 @@ if (-not $From) {
         Where-Object { $_.Name -match '^\d{8}-\d{6}$' } |
         Sort-Object Name -Descending | Select-Object -First 1
     if (-not $latest) {
-        Write-Host "No local backups found under backups\ — pass -From explicitly." -ForegroundColor Red
+        Write-Host "No local backups found under backups\ - pass -From explicitly." -ForegroundColor Red
         exit 1
     }
     $From = $latest.FullName
@@ -28,7 +28,7 @@ Write-Host "Restore source: $From"
 # Validate the backup BEFORE stopping NEXUS (fail fast, don't leave it down).
 $check = & .\venv\Scripts\python.exe -c "import sys; sys.path.insert(0, '.'); from backend.agents.backup import integrity_check_file; import os; p = os.path.join(r'$From', 'nexus.db'); print('ok' if os.path.isfile(p) and integrity_check_file(p) == 'ok' else 'bad')"
 if ($check -ne "ok") {
-    Write-Host "Backup at $From is missing or fails integrity check — aborting before stopping NEXUS." -ForegroundColor Red
+    Write-Host "Backup at $From is missing or fails integrity check - aborting before stopping NEXUS." -ForegroundColor Red
     exit 1
 }
 
@@ -43,7 +43,7 @@ if ($confirm -ne "RESTORE") {
 $result = & .\venv\Scripts\python.exe -c "import sys, json; sys.path.insert(0, '.'); from backend.agents.backup import restore_from; print(json.dumps(restore_from(r'$From')))"
 Write-Host "Restore result: $result"
 if ($result -notmatch '"ok": true') {
-    Write-Host "Restore FAILED — NEXUS left stopped. Investigate before restarting." -ForegroundColor Red
+    Write-Host "Restore FAILED - NEXUS left stopped. Investigate before restarting." -ForegroundColor Red
     exit 1
 }
 

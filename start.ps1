@@ -1,4 +1,4 @@
-# NEXUS Agentic OS — Start
+# NEXUS Agentic OS - Start
 # Usage: .\start.ps1 [-dev] [-port 3000]
 param([switch]$dev, [int]$port = 3000)
 
@@ -15,7 +15,7 @@ $acquired = $false
 try {
     $acquired = $startMutex.WaitOne([TimeSpan]::FromSeconds(2))
 } catch [System.Threading.AbandonedMutexException] {
-    # A previous start died holding the lock — we now own it. Proceed.
+    # A previous start died holding the lock - we now own it. Proceed.
     $acquired = $true
 }
 if (-not $acquired) {
@@ -28,7 +28,7 @@ if (-not (Test-Path ".vault.key")) {
         Write-Host "ERROR: venv not found. Run .\setup.ps1 first to install dependencies." -ForegroundColor Red
         exit 1
     }
-    Write-Host "First run — generating vault key..." -ForegroundColor Cyan
+    Write-Host "First run - generating vault key..." -ForegroundColor Cyan
     & .\venv\Scripts\python.exe -c "from cryptography.fernet import Fernet; open('.vault.key','wb').write(Fernet.generate_key())"
     if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Failed to generate vault key." -ForegroundColor Red; exit 1 }
     attrib +H ".vault.key" 2>$null
@@ -56,7 +56,7 @@ if (Test-Path ".nexus.pids") {
         }
     } catch {}
 }
-# Wait until both ports are actually FREE before starting — otherwise we'd launch
+# Wait until both ports are actually FREE before starting - otherwise we'd launch
 # the new backend while the old one is still releasing the socket (the race that
 # left :8000 down). Bounded to ~5s per port.
 foreach ($p in @(8000, $port)) {
@@ -73,7 +73,7 @@ $backendLog = ".\logs\backend.log"
 $backendErr = ".\logs\backend.err.log"
 New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
 # Launch via run.py (NOT `-m uvicorn`): run.py pins the Selector event loop on
-# Windows BEFORE uvicorn builds its loop — the only place early enough to avoid
+# Windows BEFORE uvicorn builds its loop - the only place early enough to avoid
 # the ProactorEventLoop WinError 64 that kills concurrent connections.
 $backendArgs = "run.py"
 if ($dev) { $backendArgs += " --reload" }

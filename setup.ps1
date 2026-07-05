@@ -1,4 +1,4 @@
-# NEXUS Agentic OS — First-Time Setup Wizard
+# NEXUS Agentic OS - First-Time Setup Wizard
 # Run once: .\setup.ps1
 
 [CmdletBinding()]
@@ -75,12 +75,12 @@ function Write-EnvLine($key, $value) {
     Set-Content ".env" $content.Trim()
 }
 
-# ── Header ──────────────────────────────────────────────────────────────────
+# -- Header ------------------------------------------------------------------
 Write-Host "`n======================================================" -ForegroundColor Cyan
-Write-Host "  NEXUS Agentic OS — Setup Wizard" -ForegroundColor White
+Write-Host "  NEXUS Agentic OS - Setup Wizard" -ForegroundColor White
 Write-Host "======================================================`n" -ForegroundColor Cyan
 
-# ── [1/7] Prerequisites ──────────────────────────────────────────────────────
+# -- [1/7] Prerequisites ------------------------------------------------------
 Write-Step 1 7 "Checking prerequisites"
 
 $python = $null
@@ -90,36 +90,36 @@ foreach ($cmd in @("python3.11", "python3", "python")) {
         if ($ver -match "3\.(1[1-9]|[2-9]\d)") { $python = $cmd; break }
     } catch {}
 }
-if (-not $python) { Write-Fail "Python 3.11+ not found — install from python.org"; exit 1 }
+if (-not $python) { Write-Fail "Python 3.11+ not found - install from python.org"; exit 1 }
 Write-OK "$($ver)"
 
 $node = $null
 try { $nodeVer = node --version; if ($nodeVer -match "v(1[8-9]|[2-9]\d)") { $node = "node"; Write-OK "Node $nodeVer" } }
 catch {}
-if (-not $node) { Write-Fail "Node 18+ not found — install from nodejs.org"; exit 1 }
+if (-not $node) { Write-Fail "Node 18+ not found - install from nodejs.org"; exit 1 }
 
 try { $npm = npm --version; Write-OK "npm $npm" } catch { Write-Fail "npm not found"; exit 1 }
 
-# ── [2/7] Python venv ────────────────────────────────────────────────────────
+# -- [2/7] Python venv --------------------------------------------------------
 Write-Step 2 7 "Creating Python virtual environment"
 if (-not (Test-Path "venv")) {
     & $python -m venv venv
 }
 Write-OK "venv ready at .\venv"
 
-# ── [3/7] Python dependencies ────────────────────────────────────────────────
+# -- [3/7] Python dependencies ------------------------------------------------
 Write-Step 3 7 "Installing Python dependencies"
 & .\venv\Scripts\pip.exe install -r requirements.txt --quiet
 Write-OK "Python packages installed"
 
-# ── [4/7] Frontend dependencies ──────────────────────────────────────────────
+# -- [4/7] Frontend dependencies ----------------------------------------------
 Write-Step 4 7 "Installing frontend dependencies"
 Push-Location frontend
 npm install --silent
 Pop-Location
 Write-OK "node_modules ready"
 
-# ── [5/7] Vault key ──────────────────────────────────────────────────────────
+# -- [5/7] Vault key ----------------------------------------------------------
 Write-Step 5 7 "Generating master vault key"
 if (-not (Test-Path ".vault.key")) {
     & .\venv\Scripts\python.exe -c @"
@@ -130,10 +130,10 @@ generate_vault_key()
     attrib +H ".vault.key" 2>$null
     Write-OK ".vault.key created (hidden file)"
 } else {
-    Write-OK ".vault.key already exists — skipping"
+    Write-OK ".vault.key already exists - skipping"
 }
 
-# ── [6/7] Configure integrations ─────────────────────────────────────────────
+# -- [6/7] Configure integrations ---------------------------------------------
 Write-Step 6 7 "Configuring your integrations"
 
 # Copy example .env if missing
@@ -145,8 +145,8 @@ if (-not (Test-Path ".env")) {
     }
 }
 
-# ── AI Models ──
-Write-Host "`n      ── AI Models ──────────────────────────────────────" -ForegroundColor DarkCyan
+# -- AI Models --
+Write-Host "`n      -- AI Models --------------------------------------" -ForegroundColor DarkCyan
 
 $anthropicKey = ""
 while ($anthropicKey.Length -lt 10) {
@@ -162,8 +162,8 @@ if ($openrouterKey.Length -gt 5) {
     Write-OK "OpenRouter key saved"
 } else { Write-Warn "Skipped OpenRouter" }
 
-# ── Home & Network ──
-Write-Host "`n      ── Home & Network ─────────────────────────────────" -ForegroundColor DarkCyan
+# -- Home & Network --
+Write-Host "`n      -- Home & Network ---------------------------------" -ForegroundColor DarkCyan
 
 $hassHost = Read-Host "      Home Assistant host [http://192.168.1.x:8123]"
 if (-not $hassHost) { $hassHost = "http://192.168.1.x:8123" }
@@ -216,22 +216,22 @@ Write-EnvLine "ADGUARD_USER" $adguardUser
 $adguardPass = Get-SecureInput "      AdGuard password"
 if ($adguardPass.Length -gt 0) { Set-VaultSecret "ADGUARD_PASS" $adguardPass }
 
-# ── Media ──
-Write-Host "`n      ── Media ──────────────────────────────────────────" -ForegroundColor DarkCyan
+# -- Media --
+Write-Host "`n      -- Media ------------------------------------------" -ForegroundColor DarkCyan
 $channelsHost = Read-Host "      Channels DVR host [http://192.168.1.x:8089]"
 if (-not $channelsHost) { $channelsHost = "http://192.168.1.x:8089" }
 Write-EnvLine "CHANNELS_HOST" $channelsHost
 
-# ── Developer ──
-Write-Host "`n      ── Developer ──────────────────────────────────────" -ForegroundColor DarkCyan
+# -- Developer --
+Write-Host "`n      -- Developer --------------------------------------" -ForegroundColor DarkCyan
 $githubToken = Get-SecureInput "      GitHub token (ghp_...)"
 if ($githubToken.Length -gt 5) { Set-VaultSecret "GITHUB_TOKEN" $githubToken }
 
 $githubUser = Read-Host "      GitHub username"
 if ($githubUser) { Write-EnvLine "GITHUB_USERNAME" $githubUser }
 
-# ── Weather ──
-Write-Host "`n      ── Weather ────────────────────────────────────────" -ForegroundColor DarkCyan
+# -- Weather --
+Write-Host "`n      -- Weather ----------------------------------------" -ForegroundColor DarkCyan
 $weatherKey = Get-SecureInput "      OpenWeatherMap API key"
 if ($weatherKey.Length -gt 0) { Set-VaultSecret "OPENWEATHER_API_KEY" $weatherKey }
 
@@ -243,8 +243,8 @@ $weatherLon = Read-Host "      Your longitude [-83.04]"
 if (-not $weatherLon) { $weatherLon = "-83.04" }
 Write-EnvLine "WEATHER_LON" $weatherLon
 
-# ── Agent Bridge ──
-Write-Host "`n      ── Agent Bridge ───────────────────────────────────" -ForegroundColor DarkCyan
+# -- Agent Bridge --
+Write-Host "`n      -- Agent Bridge -----------------------------------" -ForegroundColor DarkCyan
 $hermesHost = Read-Host "      Hermes host [http://192.168.1.x:5000]"
 if ($hermesHost) { Write-EnvLine "HERMES_HOST" $hermesHost }
 
@@ -263,8 +263,8 @@ if ($hermesSSHPass.Length -gt 0) {
     Write-OK "Hermes SSH credentials saved (used for automated deploys)"
 } else { Write-Warn "Skipped Hermes SSH credentials" }
 
-# ── NEXUS System ──
-Write-Host "`n      ── NEXUS System ───────────────────────────────────" -ForegroundColor DarkCyan
+# -- NEXUS System --
+Write-Host "`n      -- NEXUS System -----------------------------------" -ForegroundColor DarkCyan
 $briefingTime = Read-Host "      Briefing time (24h) [07:00]"
 if (-not $briefingTime) { $briefingTime = "07:00" }
 Write-EnvLine "BRIEFING_TIME" $briefingTime
@@ -286,14 +286,14 @@ $nexusKey = & .\venv\Scripts\python.exe -c "import secrets; print(secrets.token_
 Set-VaultSecret "NEXUS_API_KEY" $nexusKey
 Write-Host " (stored in vault)" -ForegroundColor Green
 
-# ── [7/7] Build frontend ─────────────────────────────────────────────────────
+# -- [7/7] Build frontend -----------------------------------------------------
 Write-Step 7 7 "Building frontend"
 Push-Location frontend
 npm run build --silent
 Pop-Location
 Write-OK "Production build complete"
 
-# ── Summary ──────────────────────────────────────────────────────────────────
+# -- Summary ------------------------------------------------------------------
 $secretCount = & .\venv\Scripts\python.exe -c @"
 import sys; sys.path.insert(0, '.')
 from backend.secrets.vault import list_keys
