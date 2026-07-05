@@ -570,3 +570,138 @@ async def test_uses_haiku_not_sonnet(eng, monkeypatch):
     assert result["status"] == "ok"
     haiku_mock.assert_awaited_once()
     sonnet_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — Nighttime backstop: a goal targeting an exempt exterior light is
+# dropped even if Haiku proposes it (Brian leaves porch/garage lights on
+# overnight on purpose; the filter must not depend on Haiku honoring the
+# prompt instruction alone).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_night_exempt_light_goal_dropped(eng, monkeypatch):
+    import datetime as dt_module
+    from backend.agents import proposer
+
+    class FakeDatetime(dt_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt_module.datetime(2026, 7, 5, 2, 0, tzinfo=tz)
+
+        @classmethod
+        def utcnow(cls):
+            return dt_module.datetime(2026, 7, 5, 2, 0)
+
+    monkeypatch.setattr(proposer, "datetime", FakeDatetime)
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_response = json.dumps([
+        {
+            "title": "Turn off garage lights left and right",
+            "description": "garage_light_left (light.left_garage_light) and "
+                            "garage_light_right (light.right_garage_light) are on overnight.",
+            "success_criteria": "Both garage lights report state=off.",
+            "risk": "low",
+            "reversibility": "reversible",
+            "confidence": 0.8,
+        },
+        {
+            "title": "Clean up old Docker images",
+            "description": "Run docker system prune to free disk space on Unraid.",
+            "success_criteria": "docker system df shows reclaimable space under 1 GB.",
+            "risk": "low",
+            "reversibility": "reversible",
+            "confidence": 0.85,
+        },
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=haiku_response)):
+        with patch("backend.config.get_settings") as mock_settings:
+            s = MagicMock()
+            s.proposer_max_per_tick = 3
+            s.goal_ttl_seconds = 86400
+            s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = False
+            s.briefing_timezone = "UTC"
+            mock_settings.return_value = s
+
+            result = await proposer.propose_goals_tick()
+
+    assert result["status"] == "ok"
+    assert result["count_proposed"] == 1
+
+    goals_rows = _all_goals(eng)
+    assert len(goals_rows) == 1
+    assert "Docker" in goals_rows[0].title
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — Night exemption tracks the live sun.sun entity (actual dawn), not
+# a fixed clock hour. A winter-dawn scenario (still below_horizon at 8am,
+# past the NIGHT_END_HOUR=7 fallback) must still exempt the garage lights.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_night_exempt_uses_live_sun_entity_not_fixed_hour(eng, monkeypatch):
+    import datetime as dt_module
+    from backend.agents import proposer
+
+    class FakeDatetime(dt_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt_module.datetime(2026, 1, 5, 8, 0, tzinfo=tz)  # 8am, past NIGHT_END_HOUR
+
+        @classmethod
+        def utcnow(cls):
+            return dt_module.datetime(2026, 1, 5, 8, 0)
+
+    monkeypatch.setattr(proposer, "datetime", FakeDatetime)
+
+    _seed_state(eng, autonomy=True)
+
+    fake = _fake_fetch()
+    fake.entities = [{"entity_id": "sun.sun", "state": "below_horizon"}]
+
+    async def _ha_fetch(*a, **k):
+        return fake
+
+    monkeypatch.setattr("backend.integrations.homeassistant.fetch", _ha_fetch)
+    for mod_path in (
+        "backend.integrations.unraid.fetch",
+        "backend.integrations.channels_dvr.fetch",
+        "backend.integrations.adguard.fetch",
+        "backend.integrations.weather.fetch",
+    ):
+        async def _fetch(*a, **k):
+            return _fake_fetch()
+        monkeypatch.setattr(mod_path, _fetch)
+
+    haiku_response = json.dumps([
+        {
+            "title": "Turn off garage lights left and right",
+            "description": "light.left_garage_light and light.right_garage_light are on.",
+            "success_criteria": "Both garage lights report state=off.",
+            "risk": "low",
+            "reversibility": "reversible",
+            "confidence": 0.8,
+        },
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=haiku_response)):
+        with patch("backend.config.get_settings") as mock_settings:
+            s = MagicMock()
+            s.proposer_max_per_tick = 3
+            s.goal_ttl_seconds = 86400
+            s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = False
+            s.briefing_timezone = "UTC"
+            mock_settings.return_value = s
+
+            result = await proposer.propose_goals_tick()
+
+    assert result["status"] == "ok"
+    assert result["count_proposed"] == 0
+    assert _all_goals(eng) == []

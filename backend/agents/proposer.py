@@ -121,6 +121,45 @@ def _db_uptime_anomalies(since: datetime) -> list[dict]:
         return []
 
 
+# Module-level so the night-exemption filter in propose_goals_tick can share
+# the exact entity_id<->label mapping used to build the LLM's context.
+WATCH = {
+    "switch.tall_light_lr_christmas_tree_plug": "xmas_tree_plug",
+    "light.left_porch_light": "porch_light_left",
+    "light.right_porch_light": "porch_light_right",
+    "light.left_garage_light": "garage_light_left",
+    "light.right_garage_light": "garage_light_right",
+    "cover.garage_door_garage_door": "garage_door",
+    "lock.dining_room": "back_door_lock",
+}
+
+# Brian leaves these exterior lights on overnight on purpose (security lighting) —
+# never auto-off them at night, regardless of what the LLM proposes.
+NIGHT_EXEMPT_LABELS = {"porch_light_left", "porch_light_right", "garage_light_left", "garage_light_right"}
+NIGHT_EXEMPT_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in NIGHT_EXEMPT_LABELS}
+# Fallback only — used when the sun.sun entity is missing/unavailable. A fixed
+# clock hour is a poor stand-in for dawn (Detroit sunrise ranges ~6am midsummer
+# to ~8am midwinter), so the live sun.sun entity (below_horizon/above_horizon)
+# is the primary source; see _is_night().
+NIGHT_START_HOUR = 20  # 8pm
+NIGHT_END_HOUR = 7     # 7am
+
+
+def _is_night(ha) -> bool | None:
+    """True/False from HA's live sun.sun entity (below_horizon = night, tracks
+    actual dawn/dusk for the configured lat/long). None if unavailable —
+    caller falls back to the fixed-hour heuristic."""
+    if not ha or isinstance(ha, Exception):
+        return None
+    for e in getattr(ha, "entities", []) or []:
+        if e.get("entity_id") == "sun.sun":
+            state = e.get("state")
+            if state in ("above_horizon", "below_horizon"):
+                return state == "below_horizon"
+            return None
+    return None
+
+
 def _ha_entity_summary(ha) -> str:
     """Compact state summary for lights, security devices, and room temps.
 
@@ -132,15 +171,6 @@ def _ha_entity_summary(ha) -> str:
     entities = getattr(ha, "entities", []) or []
     by_id = {e.get("entity_id", ""): e for e in entities}
 
-    WATCH = {
-        "switch.tall_light_lr_christmas_tree_plug": "xmas_tree_plug",
-        "light.left_porch_light": "porch_light_left",
-        "light.right_porch_light": "porch_light_right",
-        "light.left_garage_light": "garage_light_left",
-        "light.right_garage_light": "garage_light_right",
-        "cover.garage_door_garage_door": "garage_door",
-        "lock.dining_room": "back_door_lock",
-    }
     lines = []
     for eid, label in WATCH.items():
         ent = by_id.get(eid)
@@ -149,7 +179,10 @@ def _ha_entity_summary(ha) -> str:
         state = ent.get("state")
         if state in ("unavailable", "unknown", None):
             continue  # stale/offline entity — don't surface, don't trigger investigation
-        lines.append(f"- {label}: {state}")
+        # Real entity_id included so the executor (which only sees this goal's
+        # description text, no live HA lookup) can act on it verbatim instead
+        # of guessing an entity_id back from the friendly label.
+        lines.append(f"- {label} (entity_id: {eid}): {state}")
 
     # Discover room temperature sensors dynamically
     for e in entities:
@@ -217,6 +250,24 @@ async def propose_goals_tick() -> dict:
         s = get_settings()
         max_per_tick = s.proposer_max_per_tick
         auto_approve_enabled = s.auto_approve_low_risk
+
+        sun_night = _is_night(ha)
+        if sun_night is not None:
+            is_night = sun_night  # tracks actual dawn/dusk, not a guessed clock hour
+            local_now = datetime.utcnow()
+        else:
+            # sun.sun entity unavailable — fall back to a fixed clock window.
+            # If even that can't be computed (bad/mocked timezone setting),
+            # default to daytime: a missed exemption is safer than an
+            # incorrectly-forced one (worst case is a redundant notification,
+            # not lights being cut on Brian while he's relying on them).
+            try:
+                from zoneinfo import ZoneInfo
+                local_now = datetime.now(ZoneInfo(s.briefing_timezone))
+                is_night = local_now.hour >= NIGHT_START_HOUR or local_now.hour < NIGHT_END_HOUR
+            except Exception:
+                local_now = datetime.utcnow()
+                is_night = False
 
         # ------------------------------------------------------------------
         # Gather enrichment context: trends, uptime anomalies, rejection memory.
@@ -308,8 +359,21 @@ async def propose_goals_tick() -> dict:
             "these as risk='high', reversibility='irreversible' so a human must approve them.\n"
             "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n"
             "Do NOT re-propose anything on the RECENTLY COMPLETED list unless live state shows\n"
-            "the condition has clearly recurred.\n\n"
-            f"Return JSON only, no prose — an array (max {max_per_tick}) of:\n"
+            "the condition has clearly recurred.\n"
+            "The executor only ever sees this goal's title+description text, not live HA state —\n"
+            "so for any goal that turns a device on/off, the description MUST include the exact\n"
+            "entity_id(s) from HA ENTITY STATES verbatim (e.g. 'light.left_garage_light'), not just\n"
+            "the friendly label.\n"
+            + (
+                "It is currently NIGHTTIME (local time {:%H:%M}). Brian leaves the porch and garage\n"
+                "lights on overnight ON PURPOSE as security lighting — do NOT propose turning off\n"
+                "porch_light_left, porch_light_right, garage_light_left, or garage_light_right while\n"
+                "nighttime holds, even though HA ENTITY STATES shows them on. Only propose turning them\n"
+                "off if they are still on well after sunrise (daytime).\n\n".format(local_now)
+                if is_night else
+                "(daytime — normal left-on-light rules apply to porch/garage lights)\n\n"
+            )
+            + f"Return JSON only, no prose — an array (max {max_per_tick}) of:\n"
             '[{"title": "...", "description": "concrete goal the executor can pursue", '
             '"success_criteria": "a concrete, checkable statement of what DONE looks like", '
             '"risk": "low|medium|high", '
@@ -364,6 +428,17 @@ async def propose_goals_tick() -> dict:
                     "proposer: dropped goal without success_criteria: %r", title
                 )
                 continue
+
+            # Deterministic backstop — never rely on the LLM alone to honor the
+            # nighttime-lighting instruction above. If it's night and the goal
+            # text references an exempt porch/garage light, drop it outright.
+            if is_night:
+                haystack = f"{title} {description}".lower()
+                if any(tok in haystack for tok in NIGHT_EXEMPT_ENTITY_IDS | NIGHT_EXEMPT_LABELS):
+                    logger.info(
+                        "proposer: dropped night-exempt light goal: %r", title
+                    )
+                    continue
 
             risk = str(item.get("risk") or "medium")
             reversibility = str(item.get("reversibility") or "unknown")

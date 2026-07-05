@@ -137,6 +137,20 @@ async def health_check() -> bool:
 async def call_service(domain: str, service: str, data: dict | None = None) -> dict:
     from backend.config import get_settings
     settings = get_settings()
+
+    # HA returns 200 with an empty changed-entities list for BOTH a nonexistent
+    # entity_id AND a valid entity already in the target state — the response
+    # alone can't tell those apart. Validate existence up front (via the cached
+    # entity list) so a typo'd/hallucinated entity_id raises loudly instead of
+    # the caller reading empty-success as "done".
+    raw_target = (data or {}).get("entity_id")
+    if raw_target:
+        targets = [raw_target] if isinstance(raw_target, str) else list(raw_target)
+        known = {e.get("entity_id") for e in (await fetch()).entities}
+        unknown = [t for t in targets if t not in known]
+        if unknown:
+            raise IntegrationError(f"unknown entity_id(s), not found in HA: {unknown}")
+
     headers = {"Authorization": f"Bearer {settings.hass_token}", "Content-Type": "application/json"}
     url = f"{settings.hass_host}/api/services/{domain}/{service}"
     # 15s not 5: HomeKit-bridged devices (Ecobee) and the Konnected garage door
