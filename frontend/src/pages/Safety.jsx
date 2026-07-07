@@ -890,9 +890,13 @@ export default function Safety() {
             const t = new Date(g.updated_at.endsWith('Z') ? g.updated_at : g.updated_at + 'Z').getTime()
             return !Number.isNaN(t) && (Date.now() - t) < weekMs
           })
-          const distinctFps = new Set(failedThisWeek.map(g => g.fingerprint)).size
+          // A blank fingerprint ("" is the Goal model default) must never count as
+          // a shared identity — otherwise unrelated goals that happen to both lack
+          // a fingerprint would falsely collapse into "1 recurring goal failing".
+          const fps = new Set(failedThisWeek.map(g => g.fingerprint))
+          const distinctFps = fps.size
           const healthy = failedThisWeek.length === 0
-          const looping = distinctFps === 1 && failedThisWeek.length > 1
+          const looping = distinctFps === 1 && failedThisWeek.length > 1 && !fps.has('')
           const t = healthy
             ? { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
             : { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
@@ -903,7 +907,10 @@ export default function Safety() {
                 {healthy
                   ? 'No goals failing this week'
                   : looping
-                    ? `1 recurring goal failing (${failedThisWeek[0].attempts ?? failedThisWeek.length} attempts)`
+                    // failedThisWeek.length, not a single row's .attempts — .attempts is
+                    // that ROW's own retry counter, not how many times this fingerprint
+                    // has been (re-)proposed, which is what "recurring" is describing here.
+                    ? `1 recurring goal failing (seen ${failedThisWeek.length} times)`
                     : `${distinctFps} goal${distinctFps === 1 ? '' : 's'} failing this week`}
               </span>
             </div>
