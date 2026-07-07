@@ -184,6 +184,24 @@ async def test_channels_fetch_connection_error_raises():
 
 
 @pytest.mark.asyncio
+async def test_channels_fetch_jobs_non200_raises():
+    """A failed /api/v1/jobs read must RAISE, consistent with the disk-stats block
+    above it — otherwise a failed recording looks identical to 'nothing recording'."""
+    dvr_data = {"disk": {"total": 1024**3 * 100, "free": 1024**3 * 50, "used": 1024**3 * 50}}
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_dvr = MagicMock(status_code=200)
+        mock_dvr.json.return_value = dvr_data
+        mock_jobs = MagicMock(status_code=503)
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[mock_dvr, mock_jobs])
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.channels_dvr import fetch
+        with pytest.raises(Exception):
+            await fetch()
+
+
+@pytest.mark.asyncio
 async def test_hermes_health_alive():
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_resp = MagicMock(status_code=200)
