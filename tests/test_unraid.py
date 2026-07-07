@@ -155,7 +155,7 @@ async def test_unraid_health_check_fail():
 @pytest.mark.asyncio
 async def test_unraid_restart_docker_success():
     with patch("httpx.AsyncClient") as mock_cls:
-        mock_cls.return_value = _post_client(MagicMock(status_code=200))
+        mock_cls.return_value = _post_client(_gql_response({"restartContainer": {"success": True}}))
         from backend.integrations.unraid import restart_docker
         assert await restart_docker("abc123") is True
 
@@ -164,11 +164,33 @@ async def test_unraid_restart_docker_success():
 async def test_unraid_restart_docker_invalidates_cache():
     """A successful restart busts the fetch cache so the next poll shows new state."""
     with patch("httpx.AsyncClient") as mock_cls:
-        mock_cls.return_value = _post_client(MagicMock(status_code=200))
+        mock_cls.return_value = _post_client(_gql_response({"restartContainer": {"success": True}}))
         from backend.integrations import unraid
         with patch.object(unraid.fetch, "invalidate") as mock_inv:
             assert await unraid.restart_docker("abc123") is True
             mock_inv.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unraid_restart_docker_gql_errors_returns_false():
+    """HTTP 200 with a GraphQL 'errors' array is a failed mutation, not a success."""
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = {"errors": [{"message": "no such container"}]}
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(resp)
+        from backend.integrations import unraid
+        with patch.object(unraid.fetch, "invalidate") as mock_inv:
+            assert await unraid.restart_docker("abc123") is False
+            mock_inv.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unraid_restart_docker_gql_success_false_returns_false():
+    """HTTP 200 with restartContainer.success=false is a failed mutation."""
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response({"restartContainer": {"success": False}}))
+        from backend.integrations.unraid import restart_docker
+        assert await restart_docker("abc123") is False
 
 
 @pytest.mark.asyncio

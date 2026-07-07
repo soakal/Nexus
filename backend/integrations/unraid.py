@@ -124,9 +124,26 @@ async def restart_docker(container_id: str) -> bool:
                 json={"query": mutation},
                 headers=headers,
             )
+            if resp.status_code != 200:
+                return False
+            # GraphQL returns HTTP 200 even on a mutation failure (an "errors"
+            # array, or data.restartContainer.success=false) — status_code alone
+            # can't tell a real restart from a rejected one.
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+            if isinstance(body, dict):
+                if body.get("errors"):
+                    return False
+                data = body.get("data") or {}
+                container = data.get("restartContainer") if isinstance(data, dict) else None
+                if isinstance(container, dict) and "success" in container:
+                    if not container["success"]:
+                        return False
             # Force the next dashboard poll to show the container's new state
             # instead of the cached pre-restart snapshot.
             fetch.invalidate()
-            return resp.status_code == 200
+            return True
     except Exception:
         return False
