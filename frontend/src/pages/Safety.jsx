@@ -62,6 +62,48 @@ const toneStatus = (s) => {
   return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
 }
 
+// Days between now and an ISO timestamp. NEXUS stamps these as naive UTC
+// (datetime.utcnow().isoformat(), no trailing 'Z') — parse with the same
+// '+Z' convention already used for ActionLog timestamps above, or a bare
+// new Date(iso) would be read as local time and skew the age by the UTC offset.
+function daysSince(iso) {
+  if (!iso) return null
+  const t = new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()
+  if (Number.isNaN(t)) return null
+  return Math.floor((Date.now() - t) / 86400000)
+}
+
+const toneStaleness = (days) => {
+  if (days === null) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (days < 90) return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
+  if (days <= 180) return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+  return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
+}
+
+// Collapse `keys` + `meta` (from GET /secrets/list) into one row per secret,
+// grouping cred:<service>:<field> entries (each field stamped separately by
+// set_credential) into a single row per service dated by its newest field.
+// A key with no meta entry (never actually set_secret'd) is its own "unknown"
+// state — never fabricated as "0 days", and excluded from the stalest ranking.
+function buildSecretRows(keys, meta) {
+  const top = []
+  const credGroups = {}
+  for (const key of keys || []) {
+    const m = (meta || {})[key]
+    if (key.startsWith('cred:')) {
+      const parts = key.split(':')
+      const service = parts[1] || key
+      const days = m ? daysSince(m.last_rotated || m.last_set) : null
+      const g = credGroups[service] || { name: service, days: null }
+      if (days !== null && (g.days === null || days < g.days)) g.days = days
+      credGroups[service] = g
+    } else {
+      top.push({ name: key, days: m ? daysSince(m.last_rotated || m.last_set) : null })
+    }
+  }
+  return [...top, ...Object.values(credGroups)]
+}
+
 const Badge = ({ label, t }) => (
   <span style={{
     display: 'inline-flex', alignItems: 'center', gap: '5px',
@@ -179,6 +221,8 @@ export default function Safety() {
   const [editingGoalId, setEditingGoalId] = useState(null)
   const [editFields, setEditFields]       = useState({ title: '', description: '', risk: 'medium', category: 'other' })
   const [metering, setMetering]           = useState(null)
+  const [secretsMeta, setSecretsMeta]     = useState(null)
+  const [showAllSecrets, setShowAllSecrets] = useState(false)
 
   // Goal propose form state
   const [proposeTitle, setProposeTitle]       = useState('')
@@ -221,6 +265,12 @@ export default function Safety() {
     api.goals.categories().then(data => {
       if (data?.categories?.length) setCategories(data.categories)
     }).catch(() => {})
+  }, [])
+
+  // Secret rotation staleness — fetched once on mount, not on the 10s poll:
+  // rotation dates don't change mid-session, so there's nothing to keep polling.
+  useEffect(() => {
+    api.secrets.list().then(setSecretsMeta).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -653,6 +703,60 @@ export default function Safety() {
                   </button>
                 )}
               </div>
+            </>
+          )
+        })()}
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* 2b. Secret Rotation                                                   */}
+      {/* ------------------------------------------------------------------ */}
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Secret Rotation</Eyebrow>
+        {secretsMeta === null ? (
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+        ) : (() => {
+          const rows = buildSecretRows(secretsMeta.keys, secretsMeta.meta)
+          const known = rows.filter(r => r.days !== null)
+          const unknownCount = rows.length - known.length
+          const stalest = known.length
+            ? known.reduce((a, b) => (b.days > a.days ? b : a))
+            : null
+          const t = stalest ? toneStaleness(stalest.days) : toneStaleness(null)
+          return (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: unknownCount ? '6px' : '0' }}>
+                <StatusDot color={t.c} size={7} glow />
+                <span style={{ fontSize: '13px', fontWeight: 600, color: t.c }}>
+                  {stalest
+                    ? `Stalest secret: ${stalest.name}, rotated ${stalest.days}d ago`
+                    : 'No rotation history yet'}
+                </span>
+              </div>
+              {unknownCount > 0 && (
+                <div style={{ fontSize: '11px', color: '#5d6982', marginBottom: '6px' }}>
+                  {unknownCount} secret{unknownCount === 1 ? '' : 's'} never stamped
+                </div>
+              )}
+              <button
+                onClick={() => setShowAllSecrets(v => !v)}
+                style={{
+                  fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none',
+                  border: 'none', cursor: 'pointer', padding: 0, marginTop: '4px',
+                }}
+              >
+                {showAllSecrets ? 'Hide' : `Show all ${rows.length}`}
+              </button>
+              {showAllSecrets && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' }}>
+                  {rows.map(r => (
+                    <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                      <span style={{ color: '#8a96ad' }}>{r.name}</span>
+                      <Badge label={r.days === null ? 'unknown' : `${r.days}d ago`} t={toneStaleness(r.days)} />
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )
         })()}
