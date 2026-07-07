@@ -250,6 +250,21 @@ async def _checkpoint():
         logger.error(f"Checkpoint job error: {e}")
 
 
+async def _prune_retention():
+    """Best-effort nightly prune of high-frequency sample tables. NEVER raises,
+    NEVER notifies — pure background hygiene, no user-facing signal either way."""
+    try:
+        import asyncio
+        from backend.agents.backup import prune_old_uptime_samples, prune_old_trend_snapshots
+        uptime_deleted = await asyncio.to_thread(prune_old_uptime_samples)
+        trend_deleted = await asyncio.to_thread(prune_old_trend_snapshots)
+        logger.info(
+            f"Retention prune: {uptime_deleted} uptime sample(s), {trend_deleted} trend snapshot(s)"
+        )
+    except Exception as e:
+        logger.error(f"Retention prune job error: {e}")
+
+
 async def _watchdog():
     try:
         from backend.agents.watchdog import run_watchdog
@@ -344,6 +359,12 @@ def setup_scheduler(briefing_time: str, timezone: str):
         _run_briefing,
         CronTrigger(hour=int(hour), minute=int(minute), timezone=timezone),
         id="morning_briefing",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _prune_retention,
+        CronTrigger(hour=3, minute=45, timezone=timezone),
+        id="retention_prune",
         replace_existing=True,
     )
     scheduler.add_job(

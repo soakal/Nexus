@@ -8,11 +8,11 @@ import os
 import time
 import pathlib
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import text
-from sqlmodel import create_engine
+from sqlmodel import create_engine, select
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +144,127 @@ def test_prune_old_backups_precision(tmp_path, monkeypatch):
     assert fresh_dir.exists(), "Fresh backup should NOT be pruned"
     assert not old_dir.exists(), "Old backup SHOULD be pruned"
     assert keepme.exists(), "Non-matching dir must NEVER be touched"
+
+
+# ---------------------------------------------------------------------------
+# 4b. prune_old_uptime_samples / prune_old_trend_snapshots — retention pruning
+# ---------------------------------------------------------------------------
+
+def _make_sample_engine(db_path: pathlib.Path):
+    from sqlmodel import SQLModel
+    from backend.database import UptimeSample, TrendSnapshot  # noqa: F401 — registers tables
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+def test_prune_old_uptime_samples_precision(tmp_path, monkeypatch):
+    from sqlmodel import Session
+    from backend.database import UptimeSample
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    now = datetime.utcnow()
+    with Session(engine) as s:
+        s.add(UptimeSample(source="unraid", ok=True, checked_at=now))  # fresh — keep
+        s.add(UptimeSample(source="unraid", ok=True, checked_at=now - timedelta(days=40)))  # old — prune
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.uptime_retention_days = 35
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_uptime_samples
+    count = prune_old_uptime_samples()
+
+    assert count == 1
+    with Session(engine) as s:
+        remaining = s.exec(select(UptimeSample)).all()
+    assert len(remaining) == 1
+    assert remaining[0].checked_at == now
+
+
+def test_prune_old_trend_snapshots_precision(tmp_path, monkeypatch):
+    from sqlmodel import Session
+    from backend.database import TrendSnapshot
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    now = datetime.utcnow()
+    with Session(engine) as s:
+        s.add(TrendSnapshot(source="unraid", metric="storage_used_gb", value=1.0, captured_at=now))
+        s.add(TrendSnapshot(
+            source="unraid", metric="storage_used_gb", value=1.0,
+            captured_at=now - timedelta(days=110),
+        ))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.trend_retention_days = 100
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_trend_snapshots
+    count = prune_old_trend_snapshots()
+
+    assert count == 1
+    with Session(engine) as s:
+        remaining = s.exec(select(TrendSnapshot)).all()
+    assert len(remaining) == 1
+
+
+def test_prune_retention_days_zero_is_noop(tmp_path, monkeypatch):
+    from sqlmodel import Session
+    from backend.database import UptimeSample
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    old = datetime.utcnow() - timedelta(days=9999)
+    with Session(engine) as s:
+        s.add(UptimeSample(source="unraid", ok=True, checked_at=old))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.uptime_retention_days = 0
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_uptime_samples
+    count = prune_old_uptime_samples()
+
+    assert count == 0
+    with Session(engine) as s:
+        remaining = s.exec(select(UptimeSample)).all()
+    assert len(remaining) == 1, "retention_days=0 must be a no-op, nothing pruned"
+
+
+def test_prune_batches_across_multiple_chunks(tmp_path, monkeypatch):
+    """Insert more rows than one batch (_PRUNE_BATCH_SIZE=5000) to prove the
+    loop drains fully instead of stopping after the first batch."""
+    from sqlmodel import Session
+    from backend.database import UptimeSample
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    old = datetime.utcnow() - timedelta(days=40)
+    with Session(engine) as s:
+        for _ in range(12000):
+            s.add(UptimeSample(source="unraid", ok=True, checked_at=old))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.uptime_retention_days = 35
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_uptime_samples
+    count = prune_old_uptime_samples()
+
+    assert count == 12000
+    with Session(engine) as s:
+        remaining = s.exec(select(UptimeSample)).all()
+    assert len(remaining) == 0
 
 
 # ---------------------------------------------------------------------------

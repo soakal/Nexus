@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import text
 
@@ -208,6 +208,59 @@ def prune_old_backups() -> int:
     except Exception as e:
         logger.warning(f"prune_old_backups failed: {e}")
         return 0
+
+
+_PRUNE_BATCH_SIZE = 5000
+
+
+def _prune_table_by_cutoff(table: str, ts_column: str, cutoff: datetime) -> int:
+    """Batched DELETE of rows older than cutoff from a high-frequency sample table.
+
+    Batches in chunks of _PRUNE_BATCH_SIZE, committing each batch, so the SQLite
+    writer lock is released between batches instead of held for one giant DELETE
+    across (potentially) hundreds of thousands of rows. Never raises — best-effort,
+    like every other function in this module. Callers run this via asyncio.to_thread.
+    """
+    try:
+        from backend.database import engine
+        deleted = 0
+        while True:
+            with engine.begin() as conn:
+                result = conn.execute(
+                    text(
+                        f"DELETE FROM {table} WHERE id IN "
+                        f"(SELECT id FROM {table} WHERE {ts_column} < :cutoff LIMIT :batch)"
+                    ),
+                    {"cutoff": cutoff, "batch": _PRUNE_BATCH_SIZE},
+                )
+                batch_deleted = result.rowcount or 0
+            deleted += batch_deleted
+            if batch_deleted < _PRUNE_BATCH_SIZE:
+                break
+        return deleted
+    except Exception as e:
+        logger.warning(f"_prune_table_by_cutoff({table}) failed: {e}")
+        return 0
+
+
+def prune_old_uptime_samples() -> int:
+    """Delete UptimeSample rows older than uptime_retention_days. 0 disables pruning."""
+    from backend.config import get_settings
+    retention_days = int(getattr(get_settings(), "uptime_retention_days", 35))
+    if retention_days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    return _prune_table_by_cutoff("uptimesample", "checked_at", cutoff)
+
+
+def prune_old_trend_snapshots() -> int:
+    """Delete TrendSnapshot rows older than trend_retention_days. 0 disables pruning."""
+    from backend.config import get_settings
+    retention_days = int(getattr(get_settings(), "trend_retention_days", 100))
+    if retention_days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    return _prune_table_by_cutoff("trendsnapshot", "captured_at", cutoff)
 
 
 def restore_from(backup_path: str) -> dict:

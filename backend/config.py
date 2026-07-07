@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     backup_retention_days: int = 7
     backup_time: str = "03:30"  # 24h HH:MM for the daily backup job
 
+    # Retention for high-frequency sample tables (uptime every 2m, trends every 15m) —
+    # neither ever gets pruned otherwise. Windows must stay comfortably above the widest
+    # UI query (Trends page offers a 90D view) or a glance would silently see a shorter
+    # history than expected. Set to 0 to disable pruning for that table.
+    uptime_retention_days: int = 35
+    trend_retention_days: int = 100
+
     # When True, a completed goal's outcome also runs Haiku fact-extraction
     # (source='task'). Default OFF — the no-LLM path (outcome_summary + digest
     # line) is free and usually enough.
