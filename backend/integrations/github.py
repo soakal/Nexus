@@ -17,6 +17,7 @@ class GitHubData:
     stale_prs: list = field(default_factory=list)
 
 
+@async_ttl_cache(30)
 async def fetch() -> GitHubData:
     from backend.config import get_settings
     settings = get_settings()
@@ -43,6 +44,8 @@ async def fetch() -> GitHubData:
                 open_prs.append(pr_data)
                 if updated < stale_cutoff:
                     stale_prs.append(pr_data)
+        else:
+            logger.warning(f"GitHub open-PRs search returned {resp.status_code}")
 
         # Assigned issues
         resp2 = await client.get("https://api.github.com/issues", headers=headers,
@@ -52,6 +55,8 @@ async def fetch() -> GitHubData:
             for issue in resp2.json():
                 if "pull_request" not in issue:
                     assigned_issues.append({"title": issue["title"], "url": issue["html_url"]})
+        else:
+            logger.warning(f"GitHub assigned-issues fetch returned {resp2.status_code}")
 
         # Recent commits
         resp3 = await client.get(f"https://api.github.com/users/{username}/events", headers=headers, params={"per_page": 10})
@@ -61,6 +66,8 @@ async def fetch() -> GitHubData:
                 if event.get("type") == "PushEvent":
                     for commit in event.get("payload", {}).get("commits", [])[:3]:
                         recent_commits.append({"message": commit.get("message", ""), "repo": event.get("repo", {}).get("name", "")})
+        else:
+            logger.warning(f"GitHub events fetch returned {resp3.status_code}")
 
     return GitHubData(open_prs=open_prs, assigned_issues=assigned_issues, recent_commits=recent_commits, stale_prs=stale_prs)
 
