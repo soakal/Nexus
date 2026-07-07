@@ -42,21 +42,21 @@ async def fetch() -> UniFiData:
         if login_resp.status_code not in (200, 201):
             raise Exception(f"UniFi login failed: {login_resp.status_code}")
 
-        # Get clients
+        # Get clients — raise on failure rather than defaulting to 0 clients
+        # (the "Unraid lesson": a zero-default here looks like a dead AP, not
+        # an unreachable one).
         sites_resp = await client.get(f"{settings.unifi_host}/proxy/network/api/s/default/stat/sta", headers=headers)
-        clients = []
-        if sites_resp.status_code == 200:
-            data = sites_resp.json()
-            clients = data.get("data", [])
+        if sites_resp.status_code != 200:
+            raise Exception(f"UniFi clients fetch failed: {sites_resp.status_code}")
+        clients = sites_resp.json().get("data", [])
 
-        # Uplink
+        # Uplink — same lesson: a failed health call must not silently read as "ok".
         uplink_resp = await client.get(f"{settings.unifi_host}/proxy/network/api/s/default/stat/health", headers=headers)
-        uplink_status = "ok"
-        if uplink_resp.status_code == 200:
-            health = uplink_resp.json().get("data", [])
-            wan = next((h for h in health if h.get("subsystem") == "wan"), None)
-            if wan:
-                uplink_status = "ok" if wan.get("status") == "ok" else "degraded"
+        if uplink_resp.status_code != 200:
+            raise Exception(f"UniFi health fetch failed: {uplink_resp.status_code}")
+        health = uplink_resp.json().get("data", [])
+        wan = next((h for h in health if h.get("subsystem") == "wan"), None)
+        uplink_status = ("ok" if wan.get("status") == "ok" else "degraded") if wan else "unknown"
 
     # Check for new devices
     new_devices = []
@@ -85,11 +85,20 @@ async def fetch() -> UniFiData:
 
 @async_ttl_cache(30)
 async def health_check() -> bool:
+    """Exercises the same login path fetch() depends on — an unauthenticated root
+    ping would report "healthy" even with a wrong/expired UNIFI_PASSWORD, which
+    fetch() would then fail on."""
     try:
         from backend.config import get_settings
         settings = get_settings()
+        password = settings.unifi_password
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501
-            resp = await client.get(f"{settings.unifi_host}/", follow_redirects=True)
-            return resp.status_code < 500
+            resp = await client.post(
+                f"{settings.unifi_host}/api/auth/login",
+                json={"username": settings.unifi_username, "password": password},
+                headers=headers,
+            )
+            return resp.status_code in (200, 201)
     except Exception:
         return False

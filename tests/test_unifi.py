@@ -4,34 +4,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 @pytest.mark.asyncio
 async def test_unifi_health_check_ok():
+    """health_check now exercises the same login POST fetch() depends on."""
     with patch("httpx.AsyncClient") as mock_cls:
         mock_resp = MagicMock(status_code=200)
         mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
         mock_cls.return_value = mock_client
         from backend.integrations.unifi import health_check
         assert await health_check() is True
 
 
 @pytest.mark.asyncio
-async def test_unifi_health_check_redirect_ok():
-    """A 302 redirect (< 500) is treated as healthy."""
+async def test_unifi_health_check_bad_credentials():
+    """A failed login (e.g. wrong/expired UNIFI_PASSWORD) must NOT report healthy —
+    this is the bug fix: the old root-ping check couldn't detect this at all."""
     with patch("httpx.AsyncClient") as mock_cls:
-        mock_resp = MagicMock(status_code=302)
+        mock_resp = MagicMock(status_code=401)
         mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.get = AsyncMock(return_value=mock_resp)
-        mock_cls.return_value = mock_client
-        from backend.integrations.unifi import health_check
-        assert await health_check() is True
-
-
-@pytest.mark.asyncio
-async def test_unifi_health_check_server_error():
-    """A 500 response counts as unhealthy."""
-    with patch("httpx.AsyncClient") as mock_cls:
-        mock_resp = MagicMock(status_code=500)
-        mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
         mock_cls.return_value = mock_client
         from backend.integrations.unifi import health_check
         assert await health_check() is False
@@ -41,7 +31,7 @@ async def test_unifi_health_check_server_error():
 async def test_unifi_health_check_fail():
     with patch("httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=Exception("connection refused"))
+        mock_client.__aenter__.return_value.post = AsyncMock(side_effect=Exception("connection refused"))
         mock_cls.return_value = mock_client
         from backend.integrations.unifi import health_check
         assert await health_check() is False
@@ -137,6 +127,43 @@ async def test_unifi_fetch_login_failure_raises():
 
         from backend.integrations.unifi import fetch
         with pytest.raises(Exception, match="UniFi login failed"):
+            await fetch()
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_clients_non200_raises():
+    """A failed clients fetch must raise, not silently report 0 clients (the
+    'Unraid lesson' — a zero-default here looks like a dead AP)."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=500)
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(return_value=clients_resp)
+        mock_cls.return_value = mock_client
+
+        from backend.integrations.unifi import fetch
+        with pytest.raises(Exception, match="UniFi clients fetch failed"):
+            await fetch()
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_health_non200_raises():
+    """A failed health fetch must raise, not silently report uplink_status='ok'."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=500)
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp])
+        mock_cls.return_value = mock_client
+
+        from backend.integrations.unifi import fetch
+        with pytest.raises(Exception, match="UniFi health fetch failed"):
             await fetch()
 
 
