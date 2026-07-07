@@ -300,6 +300,11 @@ async def propose_goals_tick() -> dict:
         except Exception:
             completed_rows = []
 
+        try:
+            failed_rows = await asyncio.to_thread(goals._db_recent_failed, 8)
+        except Exception:
+            failed_rows = []
+
         # Format trend lines: "- {source} {metric}: {first:.0f} -> {last:.0f} (rising|falling|flat)"
         if trend_rows:
             trend_lines = []
@@ -331,6 +336,18 @@ async def propose_goals_tick() -> dict:
         else:
             completed_text = "(none)"
 
+        # Format failed lines: "- {title} — {reason}" (reason omitted if None)
+        if failed_rows:
+            failed_lines = []
+            for fr in failed_rows:
+                line = f"- {fr['title']}"
+                if fr.get("rejection_reason"):
+                    line += f" — {fr['rejection_reason']}"
+                failed_lines.append(line)
+            failed_text = "\n".join(failed_lines)
+        else:
+            failed_text = "(none)"
+
         # Format abandoned lines: "- {title} — {reason}" (reason omitted if None)
         if abandoned_rows:
             abandoned_lines = []
@@ -357,9 +374,16 @@ async def propose_goals_tick() -> dict:
             "left on/open/unlocked. Lights and plugs can be turned off autonomously (low-risk, reversible).\n"
             "IMPORTANT: lock, alarm, and cover (garage door) are physical-security domains — classify\n"
             "these as risk='high', reversibility='irreversible' so a human must approve them.\n"
+            "Temperature sensors on network/PoE gear (switches, APs, routers) normally run 40-60°C\n"
+            "(104-140°F) under load — that is expected, not an anomaly. Only flag a device temperature\n"
+            "if it is clearly excessive for that kind of hardware (60-70°C+/150°F+) or rising sharply on\n"
+            "the RECENT TRENDS, not just because the raw number sounds high for a room.\n"
             "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n"
             "Do NOT re-propose anything on the RECENTLY COMPLETED list unless live state shows\n"
             "the condition has clearly recurred.\n"
+            "Do NOT re-propose anything on the RECENTLY FAILED list under a different wording —\n"
+            "if the reason shows the executor lacks a capability (e.g. no per-device metrics, no\n"
+            "way to configure an alert/policy), rewording the same idea will fail again identically.\n"
             "The executor only ever sees this goal's title+description text, not live HA state —\n"
             "so for any goal that turns a device on/off, the description MUST include the exact\n"
             "entity_id(s) from HA ENTITY STATES verbatim (e.g. 'light.left_garage_light'), not just\n"
@@ -386,6 +410,7 @@ async def propose_goals_tick() -> dict:
             f"HA ENTITY STATES (lights, security — check for left-on/open/unlocked):\n{ha_entity_text}\n\n"
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
             f"RECENTLY COMPLETED (already ran successfully — do NOT re-propose unless recurred):\n{completed_text}\n\n"
+            f"RECENTLY FAILED (do NOT reword and re-propose — see reason):\n{failed_text}\n\n"
             f"RECENT TRENDS (7d):\n{trends_text}\n\n"
             f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
             f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"

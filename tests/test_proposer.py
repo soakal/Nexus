@@ -573,6 +573,63 @@ async def test_uses_haiku_not_sonnet(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 11b — A failed goal must appear in the prompt's RECENTLY FAILED block
+# with its rejection_reason, so the proposer stops reinventing goals whose
+# success_criteria the read-only executor can never satisfy (the
+# storage-monitoring / garage-WiFi spam loop this test guards against).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_recently_failed_goal_included_in_prompt(eng, monkeypatch):
+    from backend.database import Goal
+
+    with Session(eng) as s:
+        s.add(Goal(
+            title="Monitor Unraid and Channels storage trajectory toward full",
+            description="Track storage growth and configure alerts.",
+            status="failed",
+            rejection_reason="verify_rejected: no tool to configure Unraid alerts",
+        ))
+        s.commit()
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "RECENTLY FAILED" in prompt
+    assert "Monitor Unraid and Channels storage trajectory toward full" in prompt
+    assert "no tool to configure Unraid alerts" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Test 11c — Normal PoE-switch warmth guidance must reach the prompt, so the
+# proposer stops treating an expected-for-the-hardware temperature reading
+# (e.g. a 24-port PoE switch at 45°C/113°F) as an anomaly worth investigating.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_prompt_includes_poe_temperature_guidance(eng, monkeypatch):
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "40-60°C" in prompt
+    assert "network/PoE gear" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Test 12 — Nighttime backstop: a goal targeting an exempt exterior light is
 # dropped even if Haiku proposes it (Brian leaves porch/garage lights on
 # overnight on purpose; the filter must not depend on Haiku honoring the

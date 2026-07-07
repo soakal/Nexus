@@ -283,6 +283,28 @@ def _db_recent_completed(limit: int = 12) -> list[dict]:
         return [{"title": g.title, "category": g.category} for g in goals]
 
 
+def _db_recent_failed(limit: int = 8) -> list[dict]:
+    """Return recently failed goals as [{title, rejection_reason}], newest-updated first.
+
+    Called exclusively via asyncio.to_thread. Feeds the proposer's RECENTLY FAILED
+    do-not-re-propose block — without this, a goal whose success_criteria the
+    read-only executor can structurally never satisfy (e.g. "configure an alert")
+    gets reworded and re-proposed every tick forever, since fingerprint dedup is
+    an exact text hash and the LLM's phrasing varies each time. reconcile_running()
+    writes the failure reason onto `rejection_reason` (NOT outcome_summary, which
+    only completed goals get).
+    """
+    with Session(_db_mod.engine) as session:
+        stmt = (
+            select(Goal)
+            .where(Goal.status == "failed")
+            .order_by(Goal.updated_at.desc())  # type: ignore[attr-defined]
+            .limit(limit)
+        )
+        goals = session.exec(stmt).all()
+        return [{"title": g.title, "rejection_reason": g.rejection_reason} for g in goals]
+
+
 def _db_find_running_with_task() -> list[dict]:
     """All goals in 'running' status that have a task_id set."""
     with Session(_db_mod.engine) as session:
