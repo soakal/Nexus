@@ -4,9 +4,9 @@ Covers:
   1. Goal.rejection_reason field: created and read back via SQLModel.
   2. goals.reject(reason=...) persists rejection_reason.
   3. _db_recent_abandoned returns abandoned goals with rejection_reason, newest first.
-  4. propose_goals_tick injects RECENT TRENDS, UPTIME ANOMALIES, DO NOT RE-PROPOSE
+  4. propose_goals_tick injects UPTIME ANOMALIES, DO NOT RE-PROPOSE
      into the Opus prompt when seed data is present.
-  5. Empty case: no trends/anomalies/abandoned → prompt sections show "(none)" but
+  5. Empty case: no anomalies/abandoned → prompt sections show "(none)" but
      the tick still completes ok.
 
 Pattern: in-memory StaticPool engine monkeypatched onto backend.database.engine,
@@ -258,29 +258,16 @@ def test_db_recent_abandoned_limit(eng):
 
 @pytest.mark.asyncio
 async def test_proposer_injects_enrichment_context(eng, monkeypatch):
-    """Seed TrendSnapshots (storage rising), UptimeSample (down event), and an
-    abandoned goal. Run the proposer tick and capture the Opus prompt. Assert
-    all three enrichment blocks are present with correct content."""
+    """Seed UptimeSample (down event) and an abandoned goal. Run the proposer
+    tick and capture the Opus prompt. Assert both enrichment blocks are present
+    with correct content."""
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
     now = datetime.utcnow()
-    from backend.database import TrendSnapshot, UptimeSample, Goal
+    from backend.database import UptimeSample, Goal
 
-    # Seed: unraid storage_used_gb rising 800 -> 900 over 7 days
     with Session(eng) as s:
-        s.add(TrendSnapshot(
-            source="unraid",
-            metric="storage_used_gb",
-            value=800.0,
-            captured_at=now - timedelta(days=6),
-        ))
-        s.add(TrendSnapshot(
-            source="unraid",
-            metric="storage_used_gb",
-            value=900.0,
-            captured_at=now - timedelta(days=1),
-        ))
         # Seed: a down event for "plex"
         s.add(UptimeSample(
             source="plex",
@@ -316,11 +303,6 @@ async def test_proposer_injects_enrichment_context(eng, monkeypatch):
 
     prompt = captured_prompts[0]
 
-    # Trends block
-    assert "RECENT TRENDS" in prompt, "Prompt must contain RECENT TRENDS block"
-    assert "storage_used_gb" in prompt, "Prompt must mention the storage_used_gb metric"
-    assert "rising" in prompt, "Prompt must indicate rising trend direction"
-
     # Uptime anomalies block
     assert "UPTIME ANOMALIES" in prompt, "Prompt must contain UPTIME ANOMALIES block"
     assert "plex" in prompt, "Prompt must mention plex as a down source"
@@ -336,8 +318,8 @@ async def test_proposer_injects_enrichment_context(eng, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
-    """With no TrendSnapshots, UptimeSamples, or abandoned goals, all three
-    enrichment sections show '(none)' and the tick completes with status='ok'."""
+    """With no UptimeSamples or abandoned goals, both enrichment sections show
+    '(none)' and the tick completes with status='ok'."""
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
@@ -359,25 +341,21 @@ async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
 
     prompt = captured_prompts[0]
 
-    # All three data block headers must be present
-    assert "RECENT TRENDS (7d):" in prompt
+    # Both data block headers must be present
     assert "UPTIME ANOMALIES (24h, outage incidents):" in prompt
     assert "DO NOT RE-PROPOSE (recently rejected" in prompt
 
     # Find the data blocks by their full header lines (unique enough)
-    trends_idx = prompt.index("RECENT TRENDS (7d):")
     anoms_idx = prompt.index("UPTIME ANOMALIES (24h, outage incidents):")
     dnr_idx = prompt.index("DO NOT RE-PROPOSE (recently rejected")
 
     # Sections must appear in order
-    assert trends_idx < anoms_idx < dnr_idx, "Sections must appear in expected order"
+    assert anoms_idx < dnr_idx, "Sections must appear in expected order"
 
     # Extract the text for each section (up to the next block or end)
-    trends_section = prompt[trends_idx:anoms_idx]
     anoms_section = prompt[anoms_idx:dnr_idx]
     dnr_section = prompt[dnr_idx:]
 
-    assert "(none)" in trends_section, "Trends section must show (none) when empty"
     assert "(none)" in anoms_section, "Anomalies section must show (none) when empty"
     assert "(none)" in dnr_section, "Do-not-re-propose section must show (none) when empty"
 
@@ -428,8 +406,8 @@ async def test_proposer_injects_completed_history(eng, monkeypatch):
     assert "RECENTLY COMPLETED" in prompt
     assert "Turn off the porch light" in prompt
     assert "Investigate WiFi dropouts" in prompt
-    # Must not break the asserted ordering of the other three blocks.
-    assert prompt.index("RECENTLY COMPLETED") < prompt.index("RECENT TRENDS (7d):")
+    # Must not break the asserted ordering of the other blocks.
+    assert prompt.index("RECENTLY COMPLETED") < prompt.index("UPTIME ANOMALIES (24h, outage incidents):")
 
 
 def test_db_recent_completed(eng):

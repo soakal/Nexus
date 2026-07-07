@@ -104,6 +104,11 @@ class Briefing(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Retained: no longer written (Trends feature removed 2026-07-07 — Grafana/UptimeKuma
+# cover this externally). Historical rows drain to empty via prune_old_trend_snapshots'
+# existing retention window, then this table simply stays empty. Not dropped: SQLModel
+# create_all() never removes tables, so deleting this class would do nothing on the
+# live prod db while adding fresh-DB/test divergence risk for zero benefit.
 class TrendSnapshot(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     source: str   # unraid | channels | adguard

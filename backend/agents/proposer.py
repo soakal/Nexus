@@ -38,41 +38,6 @@ _MIN_OUTAGE_SAMPLES = 5
 # failing sub-query degrades that prompt section to "(none)", never aborts tick.
 # ---------------------------------------------------------------------------
 
-def _db_trend_summary(since: datetime) -> list[dict]:
-    """Group TrendSnapshots since `since` by (source, metric); return first/last/n per group."""
-    try:
-        import backend.database as _db_mod
-        from sqlmodel import Session, select
-        from backend.database import TrendSnapshot
-
-        with Session(_db_mod.engine) as session:
-            stmt = (
-                select(TrendSnapshot)
-                .where(TrendSnapshot.captured_at >= since)
-                .order_by(TrendSnapshot.captured_at.asc())  # type: ignore[attr-defined]
-            )
-            rows = session.exec(stmt).all()
-
-        # Group by (source, metric)
-        groups: dict[tuple, list] = {}
-        for r in rows:
-            key = (r.source, r.metric)
-            groups.setdefault(key, []).append(r.value)
-
-        result = []
-        for (source, metric), values in groups.items():
-            result.append({
-                "source": source,
-                "metric": metric,
-                "first": values[0],
-                "last": values[-1],
-                "n": len(values),
-            })
-        return result
-    except Exception:
-        return []
-
-
 def _db_uptime_anomalies(since: datetime) -> list[dict]:
     """Return sources that are CURRENTLY DOWN and have been for >= _MIN_OUTAGE_SAMPLES.
 
@@ -270,20 +235,14 @@ async def propose_goals_tick() -> dict:
                 is_night = False
 
         # ------------------------------------------------------------------
-        # Gather enrichment context: trends, uptime anomalies, rejection memory.
+        # Gather enrichment context: uptime anomalies, rejection memory.
         # Each gather is best-effort: a failure degrades that section to "(none)"
         # and NEVER aborts the tick.
         # ------------------------------------------------------------------
         now = datetime.utcnow()
-        since = now - timedelta(days=7)
         # Anomalies use a 24h window so stale samples (e.g. from a since-fixed
         # infrastructure bug) don't keep triggering the same investigation goal.
         since_anomalies = now - timedelta(hours=24)
-
-        try:
-            trend_rows = await asyncio.to_thread(_db_trend_summary, since)
-        except Exception:
-            trend_rows = []
 
         try:
             anom_rows = await asyncio.to_thread(_db_uptime_anomalies, since_anomalies)
@@ -304,23 +263,6 @@ async def propose_goals_tick() -> dict:
             failed_rows = await asyncio.to_thread(goals._db_recent_failed, 8)
         except Exception:
             failed_rows = []
-
-        # Format trend lines: "- {source} {metric}: {first:.0f} -> {last:.0f} (rising|falling|flat)"
-        if trend_rows:
-            trend_lines = []
-            for t in trend_rows:
-                if t["last"] > t["first"]:
-                    direction = "rising"
-                elif t["last"] < t["first"]:
-                    direction = "falling"
-                else:
-                    direction = "flat"
-                trend_lines.append(
-                    f"- {t['source']} {t['metric']}: {t['first']:.0f} -> {t['last']:.0f} ({direction})"
-                )
-            trends_text = "\n".join(trend_lines)
-        else:
-            trends_text = "(none)"
 
         # Format anomaly lines: "- {source}: N outage incident(s)"
         if anom_rows:
@@ -411,7 +353,6 @@ async def propose_goals_tick() -> dict:
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
             f"RECENTLY COMPLETED (already ran successfully — do NOT re-propose unless recurred):\n{completed_text}\n\n"
             f"RECENTLY FAILED (do NOT reword and re-propose — see reason):\n{failed_text}\n\n"
-            f"RECENT TRENDS (7d):\n{trends_text}\n\n"
             f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
             f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"
         )

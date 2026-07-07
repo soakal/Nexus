@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
-  Tv2, Home, TrendingUp, Activity, Bot, ShieldCheck, Brain,
+  Tv2, Home, Activity, Bot, ShieldCheck, Brain,
   Settings as SettingsIcon, Menu, MoreHorizontal,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
@@ -16,7 +16,6 @@ import Tasks from './pages/Tasks'
 import Chat from './pages/Chat'
 import Agents from './pages/Agents'
 import Media from './pages/Media'
-import Trends from './pages/Trends'
 import Uptime from './pages/Uptime'
 import HomeAssistant from './pages/HomeAssistant'
 import Settings from './pages/Settings'
@@ -32,7 +31,6 @@ const NAV = [
   { to: '/chat',     icon: MessageSquare,    label: 'Chat',           group: 'OVERVIEW' },
   { to: '/media',    icon: Tv2,              label: 'Media',          group: 'OVERVIEW' },
   { to: '/ha',       icon: Home,             label: 'Home Assistant', group: 'SYSTEMS'  },
-  { to: '/trends',   icon: TrendingUp,       label: 'Trends',         group: 'SYSTEMS'  },
   { to: '/uptime',   icon: Activity,         label: 'Uptime',         group: 'SYSTEMS'  },
   { to: '/agents',   icon: Bot,              label: 'Agents',         group: 'SYSTEMS'  },
   { to: '/safety',   icon: ShieldCheck,      label: 'Safety',         group: 'SYSTEMS'  },
@@ -426,7 +424,6 @@ export default function App() {
             <Route path="/chat" element={<Chat />} />
             <Route path="/media" element={<Media />} />
             <Route path="/ha" element={<HomeAssistant />} />
-            <Route path="/trends" element={<Trends />} />
             <Route path="/uptime" element={<Uptime />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/safety" element={<Safety />} />

@@ -70,7 +70,6 @@ export const api = {
     toggle: (enabled) => req('POST', '/adguard/filter', { enabled }),
     timedDisable: (minutes) => req('POST', '/adguard/disable-timed', { minutes }),
   },
-  trends: { get: (source, metric, days) => req('GET', `/trends/${source}/${metric}?days=${days || 7}`) },
   uptime: {
     summary: (days) => req('GET', `/uptime/summary?days=${days || 7}`),
     speedtest: (days) => req('GET', `/uptime/speedtest?days=${days || 7}`),

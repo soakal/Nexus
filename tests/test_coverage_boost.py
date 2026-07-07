@@ -225,14 +225,13 @@ def test_setup_scheduler_adds_jobs():
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    assert mock_add.call_count == 19
+    assert mock_add.call_count == 18
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
     assert ids_set == {
         "morning_briefing",
         "retention_prune",
-        "trend_snapshots",
         "retry_deliveries",
         "record_uptime",
         "brain_spend_ingest",
@@ -250,49 +249,6 @@ def test_setup_scheduler_adds_jobs():
         "wiki_fragmentation_report",
         "wiki_ingest",
     }
-
-
-@pytest.mark.asyncio
-async def test_snapshot_trends_all_succeed():
-    from backend.scheduler import _snapshot_trends
-    from backend.integrations.unraid import UnraidData
-    from backend.integrations.channels_dvr import ChannelsData
-    from backend.integrations.adguard import AdGuardData
-
-    unraid = UnraidData(storage_used_gb=2000.0)
-    channels = ChannelsData(storage_used_gb=500.0)
-    adguard = AdGuardData(blocked_pct=25.0)
-
-    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=unraid), \
-         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=channels), \
-         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=adguard), \
-         patch("backend.database.engine") as mock_engine:
-        mock_sess = MagicMock()
-        mock_sess.__enter__ = MagicMock(return_value=mock_sess)
-        mock_sess.__exit__ = MagicMock(return_value=False)
-        with patch("sqlmodel.Session", return_value=mock_sess):
-            await _snapshot_trends()
-        mock_sess.commit.assert_called()
-
-
-@pytest.mark.asyncio
-async def test_snapshot_trends_integration_exception_skipped():
-    from backend.scheduler import _snapshot_trends
-    from backend.integrations.channels_dvr import ChannelsData
-    from backend.integrations.adguard import AdGuardData
-
-    channels = ChannelsData(storage_used_gb=500.0)
-    adguard = AdGuardData(blocked_pct=25.0)
-
-    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=Exception("unraid down")), \
-         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=channels), \
-         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=adguard), \
-         patch("backend.database.engine"):
-        mock_sess = MagicMock()
-        mock_sess.__enter__ = MagicMock(return_value=mock_sess)
-        mock_sess.__exit__ = MagicMock(return_value=False)
-        with patch("sqlmodel.Session", return_value=mock_sess):
-            await _snapshot_trends()  # Should not raise
 
 
 # ---------------------------------------------------------------------------

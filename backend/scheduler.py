@@ -22,40 +22,6 @@ async def _run_briefing():
         logger.error(f"Briefing job error: {e}")
 
 
-async def _snapshot_trends():
-    try:
-        import asyncio
-
-        from sqlmodel import Session
-
-        from backend.database import TrendSnapshot, engine
-        from backend.integrations.adguard import fetch as fetch_adguard
-        from backend.integrations.channels_dvr import fetch as fetch_channels
-        from backend.integrations.unraid import fetch as fetch_unraid
-
-        results = await asyncio.gather(
-            fetch_unraid(), fetch_channels(), fetch_adguard(),
-            return_exceptions=True
-        )
-        unraid_data, channels_data, adguard_data = results
-
-        snapshots = []
-        if not isinstance(unraid_data, Exception):
-            snapshots.append(TrendSnapshot(source="unraid", metric="storage_used_gb", value=unraid_data.storage_used_gb))
-        if not isinstance(channels_data, Exception):
-            snapshots.append(TrendSnapshot(source="channels", metric="storage_used_gb", value=channels_data.storage_used_gb))
-        if not isinstance(adguard_data, Exception):
-            snapshots.append(TrendSnapshot(source="adguard", metric="blocked_pct", value=adguard_data.blocked_pct))
-
-        with Session(engine) as session:
-            for s in snapshots:
-                session.add(s)
-            session.commit()
-        logger.info(f"Trend snapshot: {len(snapshots)} rows written")
-    except Exception as e:
-        logger.error(f"Trend snapshot error: {e}")
-
-
 def _parse_uptime_targets() -> list[tuple[str, str, int]]:
     """Parse settings.uptime_http_targets ("name|url|expect,..." — expect
     optional, default 200) into (name, url, expect) tuples. Malformed entries
@@ -365,12 +331,6 @@ def setup_scheduler(briefing_time: str, timezone: str):
         _prune_retention,
         CronTrigger(hour=3, minute=45, timezone=timezone),
         id="retention_prune",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        _snapshot_trends,
-        IntervalTrigger(minutes=15),
-        id="trend_snapshots",
         replace_existing=True,
     )
     scheduler.add_job(

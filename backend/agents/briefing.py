@@ -12,9 +12,6 @@ Never say "as of my last update" or similar hedges — this is live data.
 DATA SNAPSHOT as of {timestamp}:
 {json_context}
 
-TREND DATA (7-day):
-{trend_summary}
-
 Produce a morning brief with these exact sections:
 
 ## Priority Actions (max 3)
@@ -27,7 +24,6 @@ Items requiring action TODAY, ranked by urgency. If nothing urgent, say so.
 ## System Health
 One line per system: Unraid, UniFi, Home Assistant, AdGuard.
 Flag parity check if running. Flag mover if active. Flag new unknown devices on network.
-If Unraid storage trend projects full within 30 days, call it out with projected date.
 
 ## Network Security
 Queries today: {blocked_today} blocked ({blocked_pct}%). Flag any spike vs 7-day average.
@@ -39,7 +35,6 @@ PRs/issues needing attention. Call out any stale PRs explicitly.
 ## Media
 {recording_now}. Notable upcoming in next 24h.
 DVR storage: {dvr_used}/{dvr_total} GB.
-[If DVR trend projects full within 14 days, flag with projected date]
 
 ## Calendar
 {calendar_block}
@@ -52,38 +47,6 @@ Relevant open tasks from Obsidian. Surface anything tagged #today or #urgent.
 
 ## Today's Focus
 Single paragraph. What should this person focus on and why, given everything above."""
-
-
-async def _get_trend_summary() -> str:
-    from datetime import timedelta
-
-    from sqlmodel import Session, select
-
-    from backend.database import TrendSnapshot, engine
-
-    cutoff = datetime.utcnow() - timedelta(days=7)
-    with Session(engine) as session:
-        snapshots = session.exec(
-            select(TrendSnapshot).where(TrendSnapshot.captured_at >= cutoff)
-        ).all()
-
-    lines = []
-    sources = {}
-    for s in snapshots:
-        key = f"{s.source}:{s.metric}"
-        if key not in sources:
-            sources[key] = []
-        sources[key].append(s.value)
-
-    for key, values in sources.items():
-        if len(values) >= 2:
-            trend = "stable"
-            delta = values[-1] - values[0]
-            if abs(delta) > 1:
-                trend = f"increasing by {abs(delta):.1f}" if delta > 0 else f"decreasing by {abs(delta):.1f}"
-            lines.append(f"  {key}: {values[-1]:.1f} ({trend} over 7d)")
-
-    return "\n".join(lines) if lines else "  No trend data yet"
 
 
 async def run_briefing() -> str:
@@ -128,8 +91,6 @@ async def run_briefing() -> str:
         if isinstance(obj, Exception):
             return default
         return getattr(obj, attr, default)
-
-    trend_summary = await _get_trend_summary()
 
     context = {
         "home_assistant": {
@@ -182,7 +143,6 @@ async def run_briefing() -> str:
     prompt = BRIEFING_PROMPT.format(
         timestamp=datetime.utcnow().isoformat(),
         json_context=json.dumps(context, indent=2),
-        trend_summary=trend_summary,
         weather_summary=weather_summary,
         blocked_today=safe(ag, "blocked_today", 0),
         blocked_pct=safe(ag, "blocked_pct", 0),

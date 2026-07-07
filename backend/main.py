@@ -182,7 +182,6 @@ from backend.api import (
     sources,
     tasks,
     today,
-    trends,
     unraid_api,
     uptime,
     voice,
@@ -202,7 +201,6 @@ app.include_router(sources.router, prefix="/api/sources", tags=["sources"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(channels.router, prefix="/api/channels", tags=["channels"])
 app.include_router(adguard.router, prefix="/api/adguard", tags=["adguard"])
-app.include_router(trends.router, prefix="/api/trends", tags=["trends"])
 app.include_router(uptime.router, prefix="/api/uptime", tags=["uptime"])
 app.include_router(secrets.router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(unraid_api.router, prefix="/api/unraid", tags=["unraid"])

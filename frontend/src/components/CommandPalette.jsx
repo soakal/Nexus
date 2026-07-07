@@ -11,7 +11,6 @@ const PAGE_CMDS = [
   { id: 'nav-chat',       label: 'Go to Chat',            to: '/chat' },
   { id: 'nav-media',      label: 'Go to Media',           to: '/media' },
   { id: 'nav-ha',         label: 'Go to Home Assistant',  to: '/ha' },
-  { id: 'nav-trends',     label: 'Go to Trends',          to: '/trends' },
   { id: 'nav-uptime',     label: 'Go to Uptime',          to: '/uptime' },
   { id: 'nav-agents',     label: 'Go to Agents',          to: '/agents' },
   { id: 'nav-safety',     label: 'Go to Safety',          to: '/safety' },
