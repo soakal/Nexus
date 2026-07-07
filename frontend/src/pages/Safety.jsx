@@ -878,6 +878,38 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Goals</Eyebrow>
 
+        {/* Health tile — surfaces a re-proposal/spam loop (like the one just fixed)
+            at a glance next time, instead of by Brian noticing repeated messages.
+            Scoped to updated_at within 7d: a one-shot goal that fails has no path
+            back to completed/abandoned (only cadence-recurring goals re-eligibilize),
+            so an unscoped count would only ever grow, never reflect current health. */}
+        {(() => {
+          const weekMs = 7 * 86400000
+          const failedThisWeek = goals.filter(g => {
+            if (g.status !== 'failed' || !g.updated_at) return false
+            const t = new Date(g.updated_at.endsWith('Z') ? g.updated_at : g.updated_at + 'Z').getTime()
+            return !Number.isNaN(t) && (Date.now() - t) < weekMs
+          })
+          const distinctFps = new Set(failedThisWeek.map(g => g.fingerprint)).size
+          const healthy = failedThisWeek.length === 0
+          const looping = distinctFps === 1 && failedThisWeek.length > 1
+          const t = healthy
+            ? { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
+            : { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+              <StatusDot color={t.c} size={7} glow />
+              <span style={{ fontSize: '13px', fontWeight: 600, color: t.c }}>
+                {healthy
+                  ? 'No goals failing this week'
+                  : looping
+                    ? `1 recurring goal failing (${failedThisWeek[0].attempts ?? failedThisWeek.length} attempts)`
+                    : `${distinctFps} goal${distinctFps === 1 ? '' : 's'} failing this week`}
+              </span>
+            </div>
+          )
+        })()}
+
         {/* Propose form */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '4px' }}>
           <div>
