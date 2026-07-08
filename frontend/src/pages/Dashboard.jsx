@@ -347,12 +347,12 @@ export default function Dashboard() {
               </div>
               <div style={{ fontSize: '13px', color: '#8a96ad' }}>containers running</div>
             </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {(unraid.docker_containers || []).slice(0, 2).map(c => (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: dockerOpen ? '160px' : 'none', overflowY: dockerOpen ? 'auto' : 'visible' }}>
+              {(unraid.docker_containers || []).slice(0, dockerOpen ? undefined : 2).map(c => (
                 <div
                   key={c.id}
                   onClick={() => restartDocker(c.id)}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer' }}
+                  style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer' }}
                 >
                   <StatusDot color="#34d399" size={7} glow={false} />
                   <span style={{ fontSize: '12px', color: '#cdd6e6', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -374,6 +374,14 @@ export default function Dashboard() {
                 </>
               )}
             </div>
+            {(unraid.docker_containers?.length || 0) > 2 && (
+              <button
+                onClick={() => setDockerOpen(v => !v)}
+                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
+              >
+                {dockerOpen ? 'Show less' : `+${unraid.docker_containers.length - 2} more`}
+              </button>
+            )}
           </Card>
         )}
       </section>
