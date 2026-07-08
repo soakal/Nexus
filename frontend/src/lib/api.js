@@ -124,6 +124,7 @@ export const api = {
     }).then(res => { if (!res.ok) throw new Error(res.status); return res }),
     conversations: () => req('GET', '/chat/conversations'),
     get: (id) => req('GET', `/chat/${id}`),
+    delete: (id) => req('DELETE', `/chat/${id}`),
   },
   today: {
     get: () => req('GET', '/today/'),

@@ -157,6 +157,18 @@ export default function Chat() {
     inputRef.current?.focus()
   }
 
+  const deleteCurrentConversation = async () => {
+    if (!conversationId) return
+    if (!window.confirm('Delete this conversation? This cannot be undone.')) return
+    try {
+      await api.chat.delete(conversationId)
+      startNewChat()
+      await refreshConversations()
+    } catch {
+      // non-fatal -- picker just won't reflect the deletion
+    }
+  }
+
   const loadConversation = async (id) => {
     if (!id) return
     setLoadingConv(true)
@@ -361,6 +373,11 @@ export default function Chat() {
                   </option>
                 ))}
               </select>
+            )}
+            {conversationId && (
+              <GhostButton onClick={deleteCurrentConversation} disabled={sending}>
+                Delete
+              </GhostButton>
             )}
           </div>
         }
