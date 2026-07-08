@@ -35,16 +35,36 @@ function ProxmoxSection() {
         body: JSON.stringify({ message }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      // Drain the stream so the command fully executes
+      // Parse the SSE stream (same shape Chat.jsx reads) instead of just
+      // draining it -- a misrouted/failed command still gets HTTP 200, so
+      // the reply text is the only signal that anything actually happened.
       const reader = res.body.getReader()
-      let reply = ''
+      let buf = ''
+      let tokenText = ''
+      let doneReply = null
       const dec = new TextDecoder()
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        reply += dec.decode(value, { stream: true })
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6)
+          if (raw === '[DONE]') continue
+          let event
+          try { event = JSON.parse(raw) } catch { continue }
+          if (event.type === 'token') tokenText += event.text
+          else if (event.type === 'done' && event.reply) doneReply = event.reply
+        }
       }
-      showToast(`${action} ${name}: sent`, true)
+      const reply = (doneReply || tokenText).trim()
+      // No hard ok/error contract at this endpoint (unlike Hermes's REST API) --
+      // same best-effort heuristic Hermes itself uses: a leading "error"/"sorry"/
+      // "couldn't" reads as a failure that must not show a green "sent" toast.
+      const looksFailed = /^(error|sorry|i couldn'?t|i can'?t|i wasn'?t able)/i.test(reply)
+      showToast(reply ? `${action} ${name}: ${reply}` : `${action} ${name}: sent`, !looksFailed)
     } catch (e) {
       showToast(`${action} ${name}: ${e.message}`, false)
     } finally {
