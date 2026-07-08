@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 # ponytail: module constant; make PROPOSER_MIN_OUTAGE_SAMPLES a config setting if Brian wants runtime tuning.
 _MIN_OUTAGE_SAMPLES = 5
 
+# Structural capability gaps — things NEXUS's read-only executor cannot do no
+# matter how a goal is worded. Fed into the prompt so the proposer stops
+# re-learning this goal-by-goal via repeated RECENTLY FAILED entries (each
+# failure still costs a proposal + a failure notification even with that fix).
+# Update this list whenever a new structural gap is discovered via a failed goal.
+NEXUS_CANNOT = [
+    "configure Unraid storage alerts/notifications",
+    "get per-device UniFi client metrics (only aggregate client count/uplink status)",
+    "apply/upgrade Proxmox packages (can only refresh the apt index, not install)",
+    "configure Home Assistant automations or scenes",
+    "modify router/firewall rules",
+]
+
 
 # ---------------------------------------------------------------------------
 # Sync DB helpers for proposer enrichment context (own Session, best-effort).
@@ -163,6 +176,45 @@ def _ha_entity_summary(ha) -> str:
     return "\n".join(lines) if lines else "(no watched entities found)"
 
 
+def _db_actionable_facts(limit: int = 12) -> list[dict]:
+    """Active, non-dismissed facts NOT sourced from a completed goal's own outcome.
+
+    Excluding source=="task" is the loop-break: goal_outcome_distill_llm (default
+    True) writes completed-goal outcomes as source="task" facts -- surfacing
+    those back to the proposer would let a completed goal spawn a near-identical
+    new proposal. Called via asyncio.to_thread; best-effort, returns [] on error.
+    """
+    try:
+        import backend.database as _db_mod
+        from sqlmodel import Session, select
+        from backend.database import Fact
+        from backend.agents.facts import effective_confidence, EFFECTIVE_FLOOR
+
+        now = datetime.utcnow()
+        with Session(_db_mod.engine) as session:
+            stmt = (
+                select(Fact)
+                .where(Fact.superseded_by == None)  # noqa: E711
+                .where(Fact.dismissed_at == None)  # noqa: E711
+                .where(Fact.source != "task")
+                .order_by(Fact.updated_at.desc())  # type: ignore[attr-defined]
+                .limit(limit * 2)  # over-fetch: some may be below the confidence floor
+            )
+            rows = session.exec(stmt).all()
+
+        result = []
+        for r in rows:
+            age_days = (now - r.updated_at).total_seconds() / 86400
+            if effective_confidence(r.confidence, age_days) < EFFECTIVE_FLOOR:
+                continue
+            result.append({"subject": r.subject, "predicate": r.predicate, "value": r.value})
+            if len(result) >= limit:
+                break
+        return result
+    except Exception:
+        return []
+
+
 async def propose_goals_tick() -> dict:
     """Review live homelab state and propose new goals via Opus (suggest-only).
 
@@ -264,6 +316,11 @@ async def propose_goals_tick() -> dict:
         except Exception:
             failed_rows = []
 
+        try:
+            fact_rows = await asyncio.to_thread(_db_actionable_facts, 12)
+        except Exception:
+            fact_rows = []
+
         # Format anomaly lines: "- {source}: N outage incident(s)"
         if anom_rows:
             anoms_text = "\n".join(
@@ -302,6 +359,12 @@ async def propose_goals_tick() -> dict:
         else:
             abandoned_text = "(none)"
 
+        # Format fact lines: "- {subject} {predicate}: {value}"
+        if fact_rows:
+            facts_text = "\n".join(f"- {f['subject']} {f['predicate']}: {f['value']}" for f in fact_rows)
+        else:
+            facts_text = "(none)"
+
         # ------------------------------------------------------------------
         # Ask Haiku to propose new goals.
         # ------------------------------------------------------------------
@@ -311,25 +374,29 @@ async def propose_goals_tick() -> dict:
             "NOT destructive. Be conservative: return an EMPTY array unless something clearly warrants\n"
             "attention (e.g. storage near full, a device alert, many stale PRs, a light left on,\n"
             "the garage door open, or the back door unlocked). Never propose anything already open.\n"
-            "Use the RECENT TRENDS to anticipate upcoming issues (e.g. storage rising toward full,\n"
-            "blocked percentage climbing). Check HA ENTITY STATES for devices that may have been\n"
+            "Check HA ENTITY STATES for devices that may have been\n"
             "left on/open/unlocked. Lights and plugs can be turned off autonomously (low-risk, reversible).\n"
             "IMPORTANT: lock, alarm, and cover (garage door) are physical-security domains — classify\n"
             "these as risk='high', reversibility='irreversible' so a human must approve them.\n"
             "Temperature sensors on network/PoE gear (switches, APs, routers) normally run 40-60°C\n"
             "(104-140°F) under load — that is expected, not an anomaly. Only flag a device temperature\n"
-            "if it is clearly excessive for that kind of hardware (60-70°C+/150°F+) or rising sharply on\n"
-            "the RECENT TRENDS, not just because the raw number sounds high for a room.\n"
+            "if it is clearly excessive for that kind of hardware (60-70°C+/150°F+), not just because\n"
+            "the raw number sounds high for a room.\n"
             "Do NOT propose anything on the DO NOT RE-PROPOSE list — Brian explicitly rejected those.\n"
             "Do NOT re-propose anything on the RECENTLY COMPLETED list unless live state shows\n"
             "the condition has clearly recurred.\n"
             "Do NOT re-propose anything on the RECENTLY FAILED list under a different wording —\n"
             "if the reason shows the executor lacks a capability (e.g. no per-device metrics, no\n"
             "way to configure an alert/policy), rewording the same idea will fail again identically.\n"
+            "Do NOT propose a goal that requires anything on the NEXUS CURRENTLY CANNOT list below —\n"
+            "it will fail identically to past attempts, regardless of wording.\n"
             "The executor only ever sees this goal's title+description text, not live HA state —\n"
             "so for any goal that turns a device on/off, the description MUST include the exact\n"
             "entity_id(s) from HA ENTITY STATES verbatim (e.g. 'light.left_garage_light'), not just\n"
             "the friendly label.\n"
+            "KNOWN FACTS may imply a low-risk maintenance goal (e.g. 'back door lock needs battery'\n"
+            "-> propose replacing it) — only propose from a fact when it clearly needs action; most\n"
+            "facts are just background context, not a todo.\n"
             + (
                 "It is currently NIGHTTIME (local time {:%H:%M}). Brian leaves the porch and garage\n"
                 "lights on overnight ON PURPOSE as security lighting — do NOT propose turning off\n"
@@ -353,6 +420,8 @@ async def propose_goals_tick() -> dict:
             f"ALREADY-OPEN GOALS (do NOT duplicate):\n{open_goals_text}\n\n"
             f"RECENTLY COMPLETED (already ran successfully — do NOT re-propose unless recurred):\n{completed_text}\n\n"
             f"RECENTLY FAILED (do NOT reword and re-propose — see reason):\n{failed_text}\n\n"
+            "NEXUS CURRENTLY CANNOT (do not propose goals that require these):\n"
+            + "\n".join(f"- {c}" for c in NEXUS_CANNOT) + "\n\n"
             f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
             f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"
         )

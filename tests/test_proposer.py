@@ -630,6 +630,27 @@ async def test_prompt_includes_poe_temperature_guidance(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 11d — Capability-gap list must reach the prompt, so the proposer stops
+# re-learning structural limits goal-by-goal (Roadmap Build #3, 2026-07-07).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proposer_prompt_includes_capability_gaps(eng, monkeypatch):
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "NEXUS CURRENTLY CANNOT" in prompt
+    assert "configure Unraid storage alerts" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Test 12 — Nighttime backstop: a goal targeting an exempt exterior light is
 # dropped even if Haiku proposes it (Brian leaves porch/garage lights on
 # overnight on purpose; the filter must not depend on Haiku honoring the
