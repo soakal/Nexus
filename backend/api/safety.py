@@ -104,6 +104,15 @@ async def list_outcomes(
 
 
 
+@router.get("/hermes-actions")
+async def hermes_actions_list(_=Depends(require_api_key)):
+    """Pure read of the Hermes structured-verb allowlist -- no DB, no I/O.
+    Lets the frontend show what NEXUS can command Hermes to do instead of
+    guess-and-fail against unrecognized phrasing."""
+    from backend.safety import hermes_actions
+    return {"verbs": hermes_actions.allowed_verbs()}
+
+
 @router.post("/actions/{action_id}/confirm")
 async def confirm_action(
     action_id: int,

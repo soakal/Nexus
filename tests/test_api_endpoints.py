@@ -369,3 +369,20 @@ def test_hermes_trigger_requires_auth(app_client):
     """/api/trigger is now Bearer-required (Tier 1.6) — no key -> 401."""
     resp = app_client.post("/api/trigger", json={"task_name": "briefing", "parameters": {}})
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Safety: Hermes capabilities (pure read of the structured-verb allowlist)
+# ---------------------------------------------------------------------------
+
+def test_hermes_actions_endpoint_requires_auth(app_client):
+    resp = app_client.get("/api/safety/hermes-actions")
+    assert resp.status_code == 401
+
+
+def test_hermes_actions_endpoint_lists_verbs(app_client, auth_headers):
+    resp = app_client.get("/api/safety/hermes-actions", headers=auth_headers)
+    assert resp.status_code == 200
+    verbs = resp.json()["verbs"]
+    assert len(verbs) > 0
+    assert any(v["verb"] == "restart_service" for v in verbs)

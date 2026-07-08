@@ -223,6 +223,7 @@ export default function Safety() {
   const [metering, setMetering]           = useState(null)
   const [secretsMeta, setSecretsMeta]     = useState(null)
   const [showAllSecrets, setShowAllSecrets] = useState(false)
+  const [hermesVerbs, setHermesVerbs]     = useState(null)
 
   // Goal propose form state
   const [proposeTitle, setProposeTitle]       = useState('')
@@ -271,6 +272,11 @@ export default function Safety() {
   // rotation dates don't change mid-session, so there's nothing to keep polling.
   useEffect(() => {
     api.secrets.list().then(setSecretsMeta).catch(() => {})
+  }, [])
+
+  // Hermes capabilities — the allowlist doesn't change mid-session either.
+  useEffect(() => {
+    api.safety.hermesActions().then(setHermesVerbs).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -760,6 +766,35 @@ export default function Safety() {
             </>
           )
         })()}
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* 2c. Hermes Capabilities                                               */}
+      {/* ------------------------------------------------------------------ */}
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Hermes Capabilities</Eyebrow>
+        {hermesVerbs === null ? (
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+        ) : hermesVerbs.verbs.length === 0 ? (
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>No verbs configured</span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {hermesVerbs.verbs.map(v => (
+              <div key={v.verb} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: '13px', color: '#e9eef8', fontFamily: "'JetBrains Mono', monospace" }}>{v.verb}</span>
+                  {(v.required_args.length > 0 || Object.keys(v.enum_args).length > 0) && (
+                    <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                      {v.required_args.join(', ')}
+                      {Object.entries(v.enum_args).map(([k, vals]) => ` ${k}: ${vals.join('|')}`).join(', ')}
+                    </span>
+                  )}
+                </div>
+                <Badge label={v.risk} t={toneRisk(v.risk)} />
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
 
       {/* ------------------------------------------------------------------ */}

@@ -141,6 +141,7 @@ export const api = {
     confirmAction: (id) => req('POST', `/safety/actions/${id}/confirm`),
     pendingActions: (limit) => req('GET', `/safety/actions?decision=needs_confirm&limit=${limit || 20}`),
     clearDeadLetters: () => req('DELETE', '/safety/deliveries/dead'),
+    hermesActions: () => req('GET', '/safety/hermes-actions'),
   },
   goals: {
     list: (category) => req('GET', `/goals/${category ? `?category=${encodeURIComponent(category)}` : ''}`),
