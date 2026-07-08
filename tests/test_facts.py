@@ -195,6 +195,64 @@ def test_db_upsert_fact_supersede_case_insensitive_match(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 4b. Canonical-key dedup fallback — near-duplicate (subject, predicate)
+# wording that the exact-match fast path misses (Roadmap Build #1, 2026-07-07)
+# ---------------------------------------------------------------------------
+
+def test_db_upsert_fact_canonical_merge_reinforce(monkeypatch):
+    """Different wording, same canonical key, same value -> REINFORCE (1 row)."""
+    from backend.agents.facts import _db_upsert_fact
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    _db_upsert_fact("unraid", "storage used", "5TB", 0.7, "chat", None)
+    _db_upsert_fact("Unraid", "Storage_Used", "5TB", 0.7, "chat", None)
+
+    facts = _all_facts(eng)
+    assert len(facts) == 1, "wording-variant reinforce must not create a second row"
+    assert facts[0].superseded_by is None
+
+
+def test_db_upsert_fact_canonical_merge_supersede(monkeypatch):
+    """Different wording, same canonical key, different value -> SUPERSEDE (2 rows).
+
+    Uses "storage used" vs "current storage used" (only "current" differs, a
+    filler word) rather than vs "current storage" -- dropping "used" itself
+    would be the exact over-eager merge the non-merge guard test below exists
+    to prevent ("storage used" must stay distinct from "storage total")."""
+    from backend.agents.facts import _db_upsert_fact
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    _db_upsert_fact("unraid", "storage used", "5TB", 0.7, "chat", None)
+    _db_upsert_fact("unraid", "current storage used", "6TB", 0.8, "chat", None)
+
+    all_rows = _all_facts(eng)
+    assert len(all_rows) == 2, "wording-variant supersede must produce exactly two rows"
+    active = [f for f in all_rows if f.superseded_by is None]
+    assert len(active) == 1
+    assert active[0].value == "6TB"
+
+
+def test_db_upsert_fact_distinct_predicates_not_merged(monkeypatch):
+    """Non-merge guard: canonical-key dedup must NEVER collapse genuinely distinct
+    facts -- "storage used" and "storage total" share the word "storage" but are
+    different content words, not filler, so they must stay separate active rows."""
+    from backend.agents.facts import _db_upsert_fact
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    _db_upsert_fact("unraid", "storage used", "5TB", 0.7, "chat", None)
+    _db_upsert_fact("unraid", "storage total", "10TB", 0.7, "chat", None)
+
+    active = [f for f in _all_facts(eng) if f.superseded_by is None]
+    assert len(active) == 2, "distinct predicates must never be merged by canonical-key dedup"
+
+
+# ---------------------------------------------------------------------------
 # 5. facts_recall — floor filtering, keyword ranking, empty result
 # ---------------------------------------------------------------------------
 

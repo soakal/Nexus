@@ -147,6 +147,32 @@ def _db_dismiss_fact(fact_id: int) -> bool:
         return True
 
 
+# Filler words dropped when computing a fact's canonical dedup key. Deliberately
+# small and conservative -- content/quantity words (used, total, status, ...) are
+# NEVER dropped, since doing so would wrongly merge distinct facts like
+# "storage used" and "storage total". This catches wording variants (case,
+# separators, "is"/"current"/"now") without any semantic/fuzzy matching --
+# see facts dedup design note above _db_upsert_fact.
+_CANONICAL_STOPWORDS = frozenset({
+    "is", "are", "the", "a", "an", "of", "for", "to", "currently", "current", "now", "this", "that",
+})
+
+
+def _canonical_key(subject: str, predicate: str) -> str:
+    """Deterministic key for near-duplicate (subject, predicate) matching.
+
+    Lowercases, splits on whitespace/underscore/hyphen, drops filler words, sorts
+    the remaining tokens. Collapses wording variants like "Unraid"/"storage used"
+    vs "unraid"/"current storage" onto the same key, WITHOUT dropping content
+    words -- so "storage used" and "storage total" still key differently.
+    """
+    import re
+    combined = f"{subject} {predicate}".lower()
+    tokens = re.split(r"[\s_-]+", combined)
+    kept = sorted(t for t in tokens if t and t not in _CANONICAL_STOPWORDS)
+    return " ".join(kept)
+
+
 def _db_upsert_fact(
     subject: str,
     predicate: str,
@@ -188,6 +214,15 @@ def _db_upsert_fact(
             ),
             None,
         )
+        if existing is None:
+            # Fast path missed -- fall back to a canonical-key match so wording
+            # variants ("Unraid"/"storage used" vs "unraid"/"current storage")
+            # still dedup instead of accumulating as near-duplicate rows.
+            key = _canonical_key(subject, predicate)
+            existing = next(
+                (f for f in candidates if _canonical_key(f.subject, f.predicate) == key),
+                None,
+            )
 
         now = datetime.utcnow()
 
