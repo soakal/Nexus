@@ -76,7 +76,14 @@ async def write_daily_note(content: str) -> None:
 
 
 async def complete_task(note_path: str, task_text: str) -> None:
-    path = _vault() / note_path
+    vault = _vault().resolve()
+    path = (vault / note_path).resolve()
+    if not path.is_relative_to(vault):
+        # note_path is an LLM tool-call arg (write_tools.py) -- an absolute path
+        # or a "../" sequence would otherwise let Path's own "/" operator escape
+        # the vault entirely (an absolute right-hand side replaces the left side).
+        logger.warning(f"complete_task: rejected note_path outside vault: {note_path!r}")
+        return
     if path.exists():
         content = path.read_text(encoding="utf-8")
         updated = content.replace(f"- [ ] {task_text}", f"- [x] {task_text}")

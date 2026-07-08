@@ -232,6 +232,24 @@ async def test_obsidian_complete_task_note_not_found(tmp_path, monkeypatch):
     assert not (tmp_path / "NEXUS" / "missing.md").exists()
 
 
+@pytest.mark.asyncio
+async def test_obsidian_complete_task_rejects_path_traversal(tmp_path, monkeypatch):
+    """note_path is an LLM tool-call arg -- '../' (or an absolute path, which
+    Path's own '/' operator lets replace the vault root entirely) must never
+    let a write happen outside the vault."""
+    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
+
+    outside = tmp_path.parent / "outside.md"
+    outside.write_text("- [ ] Buy milk\n", encoding="utf-8")
+
+    from backend.integrations.obsidian import complete_task
+    await complete_task("../outside.md", "Buy milk")
+
+    assert outside.read_text(encoding="utf-8") == "- [ ] Buy milk\n", (
+        "a file outside the vault must never be modified"
+    )
+
+
 # ---------------------------------------------------------------------------
 # vault_search() — filesystem (pathlib rglob), no httpx
 # ---------------------------------------------------------------------------
