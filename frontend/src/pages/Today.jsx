@@ -54,9 +54,11 @@ export default function Today() {
   const [data, setData] = useState(null)
   const [briefing, setBriefing] = useState(null)
   const [done, setDone] = useState([])
+  const [homeState, setHomeState] = useState(null)
 
   const load = useCallback(() => {
     api.today.get().then(setData).catch(() => {})
+    api.today.homeState().then(setHomeState).catch(() => {})
     api.briefing.latest()
       .then((b) => {
         setBriefing(b)
@@ -159,6 +161,22 @@ export default function Today() {
                   {priority.note}
                 </div>
               )}
+            </Card>
+          )}
+
+          {/* Home State card — passive glance at notable locks/doors + alerts,
+              same data chat's live snapshot already computes (extract_home_state),
+              just surfaced here without having to ask. */}
+          {homeState?.available && (homeState.locks.length > 0 || homeState.doors.length > 0 || homeState.alert_count > 0) && (
+            <Card flex="1 1 280px">
+              <Eyebrow style={{ display: 'block', marginBottom: '16px' }}>Home State</Eyebrow>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: '#dbe3f0' }}>
+                {homeState.alert_count > 0 && (
+                  <div style={{ color: '#f4d27a' }}>{homeState.alert_count} HA alert{homeState.alert_count === 1 ? '' : 's'}</div>
+                )}
+                {homeState.locks.map((l) => <div key={l}>{l}</div>)}
+                {homeState.doors.map((d) => <div key={d}>{d}</div>)}
+              </div>
             </Card>
           )}
 

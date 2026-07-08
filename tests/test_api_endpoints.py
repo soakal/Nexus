@@ -309,6 +309,46 @@ def test_hermes_trigger_briefing(app_client, auth_headers):
         assert resp.json()["ok"] is True
 
 
+# ---------------------------------------------------------------------------
+# Today: home-state (passive glance card)
+# ---------------------------------------------------------------------------
+
+def test_today_home_state_requires_auth(app_client):
+    resp = app_client.get("/api/today/home-state")
+    assert resp.status_code == 401
+
+
+def test_today_home_state_shape(app_client, auth_headers):
+    from types import SimpleNamespace
+    ha = SimpleNamespace(
+        alerts=["porch light on"],
+        entities=[
+            {"entity_id": "lock.back_door", "state": "locked", "attributes": {"friendly_name": "Back Door"}},
+            {"entity_id": "cover.garage_door", "state": "open", "attributes": {"friendly_name": "Garage"}},
+        ],
+    )
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=ha):
+        resp = app_client.get("/api/today/home-state", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is True
+    assert body["alert_count"] == 1
+    assert body["locks"] == ["Back Door=locked"]
+    assert body["doors"] == ["Garage=open"]
+
+
+def test_today_home_state_degrades_quietly_on_ha_failure(app_client, auth_headers):
+    """A broken HA integration must never 5xx the card -- it just reports unavailable."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, side_effect=Exception("down")):
+        resp = app_client.get("/api/today/home-state", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["available"] is False
+    assert body["locks"] == []
+    assert body["doors"] == []
+    assert body["alert_count"] == 0
+
+
 def test_hermes_trigger_status(app_client, auth_headers):
     with patch("backend.integrations.homeassistant.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.unraid.health_check", new_callable=AsyncMock, return_value=True):

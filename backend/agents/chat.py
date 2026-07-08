@@ -55,6 +55,49 @@ and time-constrained."""
 _CHAT_SYSTEM_DYNAMIC = "{memory}LIVE HOMELAB SNAPSHOT:\n{snapshot}"
 
 
+def extract_home_state(ha) -> dict:
+    """Pull notable locks/doors + alert count out of an HA fetch() result.
+
+    Shared by _build_snapshot (chat's live-state block) and the Today page's
+    passive home-state card (backend/api/today.py) so both read the exact same
+    entities the same way. Returns {"available", "locks", "doors", "alert_count"} --
+    locks/doors are capped strings like "Front Door=locked", newest-first from
+    the HA entity list, same 12-item cap _build_snapshot always used.
+    """
+    if isinstance(ha, Exception):
+        return {"available": False, "locks": [], "doors": [], "alert_count": 0, "truncated": False}
+
+    alerts = getattr(ha, "alerts", []) or []
+    locks, doors = [], []
+    for e in getattr(ha, "entities", []) or []:
+        if not isinstance(e, dict):
+            continue
+        eid = e.get("entity_id") or ""
+        raw_attrs = e.get("attributes")
+        attrs = raw_attrs if isinstance(raw_attrs, dict) else {}
+        label = (attrs.get("friendly_name") or eid or "").strip() or eid
+        state = (e.get("state") or "unknown").strip() or "unknown"
+        if eid.startswith("lock."):
+            locks.append(f"{label}={state}")
+        elif eid.startswith("cover.") or (
+            (eid.startswith("binary_sensor.") or eid.startswith("sensor."))
+            and any(k in label.lower() for k in ("door", "window"))
+        ):
+            doors.append(f"{label}={state}")
+
+    cap = 12
+    n_locks = min(len(locks), cap)
+    n_doors = min(len(doors), cap - n_locks)
+    truncated = len(locks) > n_locks or len(doors) > n_doors
+    return {
+        "available": True,
+        "locks": locks[:n_locks],
+        "doors": doors[:n_doors],
+        "alert_count": len(alerts),
+        "truncated": truncated,
+    }
+
+
 def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
     def safe(obj, attr, default="N/A"):
         if isinstance(obj, Exception):
@@ -68,32 +111,14 @@ def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
     alerts = safe(ha, "alerts", [])
     lines.append(f"Home Assistant: {entity_count} entities, {len(alerts)} alert(s)" +
                  (f" [{', '.join(alerts[:3])}]" if alerts else ""))
-    if not isinstance(ha, Exception):
-        _locks, _doors = [], []
-        for _e in safe(ha, "entities", []):
-            if not isinstance(_e, dict):
-                continue
-            _eid = _e.get("entity_id") or ""
-            _raw_attrs = _e.get("attributes")
-            _attrs = _raw_attrs if isinstance(_raw_attrs, dict) else {}
-            _label = (_attrs.get("friendly_name") or _eid or "").strip() or _eid
-            _state = (_e.get("state") or "unknown").strip() or "unknown"
-            if _eid.startswith("lock."):
-                _locks.append(f"{_label}={_state}")
-            elif _eid.startswith("cover.") or (
-                (_eid.startswith("binary_sensor.") or _eid.startswith("sensor."))
-                and any(k in _label.lower() for k in ("door", "window"))
-            ):
-                _doors.append(f"{_label}={_state}")
-        _CAP = 12
-        _n_locks = min(len(_locks), _CAP)
-        _n_doors = min(len(_doors), _CAP - _n_locks)
-        _truncated = len(_locks) > _n_locks or len(_doors) > _n_doors
+    home_state = extract_home_state(ha)
+    if home_state["available"]:
+        _locks, _doors, _truncated = home_state["locks"], home_state["doors"], home_state["truncated"]
         _parts = []
-        if _locks[:_n_locks]:
-            _parts.append("Locks: " + ", ".join(_locks[:_n_locks]))
-        if _doors[:_n_doors]:
-            _parts.append("Doors/covers: " + ", ".join(_doors[:_n_doors]))
+        if _locks:
+            _parts.append("Locks: " + ", ".join(_locks))
+        if _doors:
+            _parts.append("Doors/covers: " + ", ".join(_doors))
         if _parts:
             lines.append("Notable HA: " + " | ".join(_parts) + ("…" if _truncated else ""))
 

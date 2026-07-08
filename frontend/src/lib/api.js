@@ -125,7 +125,10 @@ export const api = {
     conversations: () => req('GET', '/chat/conversations'),
     get: (id) => req('GET', `/chat/${id}`),
   },
-  today: { get: () => req('GET', '/today/') },
+  today: {
+    get: () => req('GET', '/today/'),
+    homeState: () => req('GET', '/today/home-state'),
+  },
   safety: {
     status: () => req('GET', '/safety/status'),
     pause: () => req('POST', '/safety/pause'),
