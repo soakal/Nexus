@@ -423,6 +423,7 @@ async def propose_goals_tick() -> dict:
             "NEXUS CURRENTLY CANNOT (do not propose goals that require these):\n"
             + "\n".join(f"- {c}" for c in NEXUS_CANNOT) + "\n\n"
             f"UPTIME ANOMALIES (24h, outage incidents):\n{anoms_text}\n\n"
+            f"KNOWN FACTS (may imply a low-risk maintenance goal):\n{facts_text}\n\n"
             f"DO NOT RE-PROPOSE (recently rejected/abandoned by Brian — respect his judgment):\n{abandoned_text}"
         )
 

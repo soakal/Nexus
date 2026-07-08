@@ -651,6 +651,70 @@ async def test_proposer_prompt_includes_capability_gaps(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 11e — Facts as a goal-trigger source (Roadmap Build #2, 2026-07-07).
+# An actionable fact must reach the prompt so the proposer can turn it into a
+# low-risk goal via the EXISTING propose()/broker pipeline (no new pipeline).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proposer_surfaces_actionable_facts(eng, monkeypatch):
+    from backend.database import Fact
+
+    with Session(eng) as s:
+        s.add(Fact(
+            subject="back door lock", predicate="needs", value="battery",
+            source="chat",
+        ))
+        s.commit()
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "KNOWN FACTS" in prompt
+    assert "back door lock" in prompt
+    assert "battery" in prompt
+
+
+@pytest.mark.asyncio
+async def test_proposer_excludes_task_source_facts(eng, monkeypatch):
+    """A fact written from a completed goal's own outcome (source='task') must
+    NOT be surfaced back to the proposer -- that's the loop-break preventing a
+    completed goal from spawning a near-identical new proposal."""
+    from backend.database import Fact
+
+    with Session(eng) as s:
+        s.add(Fact(
+            subject="unraid", predicate="storage used", value="6TB",
+            source="task",
+        ))
+        s.commit()
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    # The KNOWN FACTS block must be present but empty ("(none)"), not containing
+    # this task-sourced fact.
+    facts_idx = prompt.index("KNOWN FACTS")
+    dnr_idx = prompt.index("DO NOT RE-PROPOSE")
+    facts_section = prompt[facts_idx:dnr_idx]
+    assert "unraid" not in facts_section
+
+
+# ---------------------------------------------------------------------------
 # Test 12 — Nighttime backstop: a goal targeting an exempt exterior light is
 # dropped even if Haiku proposes it (Brian leaves porch/garage lights on
 # overnight on purpose; the filter must not depend on Haiku honoring the
