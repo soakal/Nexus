@@ -467,7 +467,10 @@ async def test_tick_reconciles_then_redispatches(eng, monkeypatch):
         s.refresh(g)
         goal_id = g.id
 
-    result = await goals.tick_recurring_goals()
+    # goal_outcome_distill_llm defaults True (2026-07-07) -- mock the Haiku
+    # fact-extraction call the reconcile-to-completed path now triggers.
+    with patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock):
+        result = await goals.tick_recurring_goals()
 
     assert result.get("redispatched", 0) == 1       # reconciled -> completed -> re-run
     assert pool.enqueue.await_count == 1

@@ -113,9 +113,11 @@ class Settings(BaseSettings):
     trend_retention_days: int = 100
 
     # When True, a completed goal's outcome also runs Haiku fact-extraction
-    # (source='task'). Default OFF — the no-LLM path (outcome_summary + digest
-    # line) is free and usually enough.
-    goal_outcome_distill_llm: bool = False
+    # (source='task'). Default ON (2026-07-07): best-effort, never blocks
+    # completion (test_goal_outcomes.py::test_distill_never_blocks_completion),
+    # and turns completed-goal outcomes into searchable facts feeding the
+    # proposer's fact-triggered goals. Set False to disable.
+    goal_outcome_distill_llm: bool = True
 
     # Extra HTTP uptime targets — non-integration services watched by the
     # 2-min uptime job. Comma- or newline-separated "name|url|expect_status"

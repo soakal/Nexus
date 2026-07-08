@@ -160,8 +160,12 @@ async def test_no_criteria_goal_completed_without_haiku(eng):
         fingerprint="testfp0000000003",
     )
 
+    # goal_outcome_distill_llm defaults True (2026-07-07): mock the completion-side
+    # fact-extraction call so it can't reach router.haiku either -- this test is
+    # specifically about the success-criteria-eval path never calling haiku.
     haiku_mock = AsyncMock()
-    with patch("backend.agents.router.haiku", haiku_mock):
+    with patch("backend.agents.router.haiku", haiku_mock), \
+         patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock):
         await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
 
     haiku_mock.assert_not_awaited()
@@ -227,7 +231,10 @@ async def test_eval_disabled_goal_completed_without_haiku(eng):
     try:
         object.__setattr__(s, "success_criteria_eval_enabled", False)
         haiku_mock = AsyncMock()
-        with patch("backend.agents.router.haiku", haiku_mock):
+        # goal_outcome_distill_llm defaults True (2026-07-07): mock the
+        # completion-side fact-extraction call so it can't reach router.haiku.
+        with patch("backend.agents.router.haiku", haiku_mock), \
+             patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock):
             await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
     finally:
         object.__setattr__(s, "success_criteria_eval_enabled", original)

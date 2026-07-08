@@ -491,7 +491,10 @@ async def test_reconcile_running(eng):
         g_success_id = g_success.id
         g_failed_id = g_failed.id
 
-    await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
+    # goal_outcome_distill_llm defaults True (2026-07-07) -- mock the Haiku
+    # fact-extraction call so this reconcile test stays hermetic/offline.
+    with patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock):
+        await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
 
     with Session(eng) as s:
         gs = s.get(Goal, g_success_id)
