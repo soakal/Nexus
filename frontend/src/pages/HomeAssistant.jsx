@@ -428,6 +428,26 @@ function EntityRow({ entity, onAction, busy }) {
   )
 }
 
+const QUICK_ACTIONS_KEY = 'nexus_ha_quickactions'
+
+function loadPinned() {
+  try {
+    const raw = localStorage.getItem(QUICK_ACTIONS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []  // disabled/unavailable storage -> in-memory only, no crash
+  }
+}
+
+function savePinned(ids) {
+  try {
+    localStorage.setItem(QUICK_ACTIONS_KEY, JSON.stringify(ids))
+  } catch {
+    // storage disabled -- pins just won't survive reload, no crash
+  }
+}
+
 export default function HomeAssistant() {
   const [entities, setEntities] = useState([])
   const [alerts, setAlerts] = useState([])
@@ -437,6 +457,8 @@ export default function HomeAssistant() {
   const [reloading, setReloading] = useState(false)
   const [filter, setFilter] = useState('')
   const [busyIds, setBusyIds] = useState({})
+  const [pinnedIds, setPinnedIds] = useState(loadPinned)
+  const [addingPin, setAddingPin] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -505,6 +527,26 @@ export default function HomeAssistant() {
     }
   }, [load])
 
+  const addPin = (id) => {
+    if (!id || pinnedIds.includes(id)) return
+    const next = [...pinnedIds, id]
+    setPinnedIds(next)
+    savePinned(next)
+    setAddingPin('')
+  }
+
+  const removePin = (id) => {
+    const next = pinnedIds.filter((p) => p !== id)
+    setPinnedIds(next)
+    savePinned(next)
+  }
+
+  // Only toggle-domain controls (lights/switches/fans) are pinnable -- locks,
+  // covers, and the thermostat need more than a single one-tap action.
+  const pinnableControls = CONTROLS.filter(
+    (c) => TOGGLE_DOMAINS.has(domainOf(c.id)) && !pinnedIds.includes(c.id)
+  )
+
   const grouped = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const groups = {}
@@ -553,6 +595,59 @@ export default function HomeAssistant() {
           </div>
         }
       />
+
+      {/* Quick Actions — pinned one-tap toggles, localStorage-persisted, reuse
+          the existing callService/api.ha.service path (no new endpoint). */}
+      {(pinnedIds.length > 0 || pinnableControls.length > 0) && (
+        <Card>
+          <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Quick Actions</Eyebrow>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: pinnableControls.length ? '14px' : 0 }}>
+            {pinnedIds.map((id) => {
+              const meta = CONTROL_META.get(id)
+              const entity = entities.find((e) => e.entity_id === id)
+              if (!meta) return null
+              const on = entity ? isOn(entity.state) : false
+              const unavailable = !entity || entity.state === 'unavailable' || entity.state === 'unknown'
+              const busy = !!busyIds[id]
+              return (
+                <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    onClick={() => entity && callService(entity, on ? 'turn_off' : 'turn_on', null, { state: on ? 'off' : 'on' })}
+                    disabled={busy || unavailable}
+                    style={{
+                      ...BIG_BTN(busy || unavailable),
+                      background: on ? 'rgba(52,211,153,0.12)' : BIG_BTN().background,
+                      borderColor: on ? 'rgba(52,211,153,0.35)' : BIG_BTN().border,
+                      color: on ? '#5fe0b4' : BIG_BTN().color,
+                    }}
+                  >
+                    {meta.name}
+                  </button>
+                  <button
+                    onClick={() => removePin(id)}
+                    title="Unpin"
+                    style={{ background: 'none', border: 'none', color: '#5d6982', cursor: 'pointer', fontSize: '14px', padding: '4px' }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          {pinnableControls.length > 0 && (
+            <select
+              value={addingPin}
+              onChange={(e) => addPin(e.target.value)}
+              style={{ ...BIG_BTN(false), cursor: 'pointer' }}
+            >
+              <option value="">+ Pin a control…</option>
+              {pinnableControls.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          )}
+        </Card>
+      )}
 
       <TextInput
         style={{ width: '100%' }}
