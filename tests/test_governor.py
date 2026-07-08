@@ -316,6 +316,25 @@ async def test_chat_degrades_on_budget(eng):
         assert any(m.role == "assistant" and m.content == chat_mod._BUDGET_REACHED_REPLY for m in msgs)
 
 
+@pytest.mark.asyncio
+async def test_chat_skips_summarize_when_budget_exceeded(eng):
+    """Once the daily cap is hit this turn, _maybe_summarize must be skipped --
+    calling it anyway would just trip router._run's own budget brake again on
+    every message for the rest of the day (a wasted DB round-trip + guaranteed-
+    to-fail LLM attempt, not a crash, but pointless every single time)."""
+    from backend.agents import chat as chat_mod
+    from backend.safety.governor import BudgetExceeded
+
+    async def boom_haiku(*a, **k):
+        raise BudgetExceeded("daily", 99.0, 25.0)
+
+    with patch("backend.agents.router.haiku", new=boom_haiku), \
+         patch("backend.agents.chat._maybe_summarize", new_callable=AsyncMock) as mock_summarize:
+        await chat_mod.chat(None, "hello there")
+
+    mock_summarize.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Broker kill switch
 # ---------------------------------------------------------------------------

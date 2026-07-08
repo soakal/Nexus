@@ -758,18 +758,24 @@ If they're saving something from the conversation, use the relevant prior assist
 
             reply = "\n".join(lines)
 
+        budget_exceeded = False
     except BudgetExceeded:
         # Spending cap reached anywhere above — degrade gracefully. The reply is
         # persisted below like any other; no exception escapes to FastAPI.
         logger.info("Chat hit budget cap; returning friendly budget-reached reply")
         reply = _BUDGET_REACHED_REPLY
+        budget_exceeded = True
 
     # 4. Persist reply and update conversation timestamp
     await asyncio.to_thread(_db_add_message, conversation_id, "assistant", reply)
     await asyncio.to_thread(_db_touch_conversation, conversation_id)
 
-    # 5. Rolling summarization (best-effort; swallows its own errors)
-    await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
+    # 5. Rolling summarization (best-effort; swallows its own errors). Skipped
+    # once the daily cap is already hit this turn — router._run's universal
+    # budget brake would just reject this call too, so it's a guaranteed-wasted
+    # DB round-trip + LLM attempt on every message for the rest of the day.
+    if not budget_exceeded:
+        await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
 
     # 6. Fact extraction — only for conversational intents (not imperatives/status)
     if intent in ("CHAT", "TASK", "NOTE"):
