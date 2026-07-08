@@ -203,6 +203,17 @@ async def test_unraid_restart_docker_server_error():
 
 
 @pytest.mark.asyncio
+async def test_unraid_restart_docker_rejects_unsafe_container_id():
+    """container_id is spliced into a GraphQL mutation via an f-string (no query
+    variables) -- a quote must never reach the HTTP call at all, regardless of
+    what the server would do with it."""
+    with patch("httpx.AsyncClient") as mock_cls:
+        from backend.integrations.unraid import restart_docker
+        assert await restart_docker('abc" }) mutation evil { restartContainer(id: "x') is False
+        mock_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_unraid_restart_docker_fail():
     with patch("httpx.AsyncClient") as mock_cls:
         client = AsyncMock()

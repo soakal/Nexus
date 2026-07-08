@@ -1,4 +1,5 @@
 import logging
+import re
 from dataclasses import dataclass, field
 
 import httpx
@@ -6,6 +7,14 @@ import httpx
 from backend.cache import async_ttl_cache
 
 logger = logging.getLogger(__name__)
+
+# Docker container ids/names are alphanumeric + `_.-` (Docker's own naming rule).
+# restart_docker() splices container_id into a GraphQL query string via an
+# f-string (no query variables) -- anything outside this set could break out
+# of the string literal. Callers include an LLM tool-call arg (write_tools.py)
+# with no charset check of its own, so this must be enforced at the sink, not
+# just at one call site.
+_SAFE_CONTAINER_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 _GQL_QUERY = """
 {
@@ -113,6 +122,9 @@ async def health_check() -> bool:
 
 async def restart_docker(container_id: str) -> bool:
     try:
+        if not _SAFE_CONTAINER_ID.match(container_id or ""):
+            logger.warning(f"restart_docker: rejected unsafe container_id {container_id!r}")
+            return False
         from backend.config import get_settings
         settings = get_settings()
         api_key = settings.unraid_api_key
