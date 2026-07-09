@@ -361,6 +361,27 @@ def _ensure_goal_columns():
     _safe_add_column("goal", "rejection_reason", "TEXT")
     _safe_add_column("goal", "disabled", "BOOLEAN DEFAULT 0")
     _safe_add_column("goal", "outcome_summary", "TEXT")
+    try:
+        with engine.connect() as conn:
+            # Hard backstop against the TOCTOU race in goals.propose(): its
+            # debounce check (SELECT for an active duplicate) and the insert are
+            # separate round-trips, so two concurrent propose() calls with the
+            # same fingerprint could both pass the "no duplicate" check before
+            # either inserts. This partial unique index makes the DB itself
+            # reject the second insert; propose() catches the IntegrityError and
+            # returns the same "debounced" result the pre-check already gives.
+            # fingerprint != '' excludes blank-fingerprint rows (some direct
+            # Goal(...) construction in tests never sets one) from the
+            # constraint -- only propose()'s real, always-computed fingerprints
+            # are covered.
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_goal_fingerprint_active "
+                "ON goal(fingerprint) WHERE status IN ('proposed','approved','running') "
+                "AND fingerprint != ''"
+            ))
+            conn.commit()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"_ensure_goal_columns index create failed: {e}")
 
 
 def _ensure_goal_recurrence_columns():

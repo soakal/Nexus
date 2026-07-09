@@ -105,6 +105,58 @@ async def test_debounce_duplicate_active(eng):
 
 
 # ---------------------------------------------------------------------------
+# 2b. debounce — TOCTOU race closed by ux_goal_fingerprint_active (2026-07-09)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_debounce_survives_concurrent_propose_race(eng, monkeypatch):
+    """propose()'s pre-check (SELECT for an active duplicate) and the insert are
+    separate round-trips -- two concurrent calls with the same fingerprint could
+    both pass "no duplicate" before either commits. Simulate that race directly
+    (patch the pre-check to always say "no duplicate found", bypassing DEBOUNCE
+    #1 entirely) and confirm the DB-level unique index is the backstop: exactly
+    one row lands, and the loser gets the same debounced/duplicate_active
+    response DEBOUNCE #1 would normally give."""
+    from backend.agents import goals
+    from backend.database import Goal
+    from sqlalchemy import text
+
+    # The shared `eng` fixture only runs SQLModel.metadata.create_all(), not
+    # create_db_and_tables() -- so the partial unique index (added via
+    # _ensure_goal_columns(), a create_db_and_tables()-only shim) doesn't exist
+    # yet on this engine. Create it explicitly, matching what happens at real
+    # NEXUS startup.
+    with Session(eng) as s:
+        s.exec(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_goal_fingerprint_active "
+            "ON goal(fingerprint) WHERE status IN ('proposed','approved','running') "
+            "AND fingerprint != ''"
+        ))
+        s.commit()
+
+    title = "Restart server"
+    desc = "Reboot the Unraid NAS."
+
+    # Force DEBOUNCE #1's pre-check to always report "no active duplicate" --
+    # this is what "both calls race past the check before either inserts"
+    # looks like from propose()'s perspective.
+    monkeypatch.setattr(goals, "_db_active_by_fingerprint", lambda fp: None)
+
+    r1 = await goals.propose(title, desc)
+    r2 = await goals.propose(title, desc)
+
+    statuses = {r1["status"], r2["status"]}
+    assert statuses == {"proposed", "debounced"}, f"expected one proposed + one debounced, got {r1['status']!r}/{r2['status']!r}"
+    loser = r1 if r1["status"] == "debounced" else r2
+    assert loser["reason"] == "duplicate_active"
+
+    # The DB-level constraint must have kept this to exactly ONE row, not two.
+    with Session(eng) as s:
+        rows = s.exec(select(Goal).where(Goal.title == title)).all()
+    assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
 # 3. debounce — cooldown (same fingerprint, terminal goal, proposed recently)
 # ---------------------------------------------------------------------------
 

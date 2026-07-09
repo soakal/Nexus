@@ -158,7 +158,11 @@ def _db_insert_goal(
     cadence: str | None = None,
     category: str | None = None,
     success_criteria: str | None = None,
-) -> dict:
+) -> dict | None:
+    """Returns None only when ux_goal_fingerprint_active lost a concurrent
+    insert race -- see the IntegrityError handling below."""
+    from sqlalchemy.exc import IntegrityError
+
     with Session(_db_mod.engine) as session:
         g = Goal(
             actor=actor,
@@ -176,7 +180,15 @@ def _db_insert_goal(
             success_criteria=success_criteria,
         )
         session.add(g)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            # ux_goal_fingerprint_active lost the race -- a concurrent propose()
+            # call with the same fingerprint committed first. Not an error: the
+            # caller (propose()) treats None as "someone else just inserted the
+            # active duplicate" and re-fetches it for the debounced response.
+            session.rollback()
+            return None
         session.refresh(g)
         return _goal_to_dict(g)
 
@@ -486,6 +498,12 @@ async def propose(
         category=category,
         success_criteria=success_criteria,
     )
+    if inserted is None:
+        # Lost the ux_goal_fingerprint_active race to a concurrent propose()
+        # call with the same fingerprint -- same debounced response DEBOUNCE #1
+        # would have given if its own pre-check had run a moment later.
+        winner = await asyncio.to_thread(_db_active_by_fingerprint, fp)
+        return {"status": "debounced", "reason": "duplicate_active", "goal": winner}
     return {"status": "proposed", "goal": inserted}
 
 
