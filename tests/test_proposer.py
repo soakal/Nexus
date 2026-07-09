@@ -805,6 +805,77 @@ async def test_night_exempt_light_goal_dropped(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 12b — Known-hardware-issue backstop (2026-07-09): the porch light
+# circuit has water damage and is only reliably operable via the physical
+# switch -- a goal about it must be dropped unconditionally (not just at
+# night, unlike NIGHT_EXEMPT), even if Haiku proposes it anyway.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_known_hardware_issue_light_goal_dropped(eng, monkeypatch):
+    from backend.agents import proposer
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_response = json.dumps([
+        {
+            "title": "Turn off left and right porch lights",
+            "description": "porch_light_left (light.left_porch_light) and "
+                            "porch_light_right (light.right_porch_light) are on during daytime.",
+            "success_criteria": "Both porch lights report state=off.",
+            "risk": "low",
+            "reversibility": "reversible",
+            "confidence": 0.8,
+        },
+        {
+            "title": "Clean up old Docker images",
+            "description": "Run docker system prune to free disk space on Unraid.",
+            "success_criteria": "docker system df shows reclaimable space under 1 GB.",
+            "risk": "low",
+            "reversibility": "reversible",
+            "confidence": 0.85,
+        },
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=haiku_response)):
+        with patch("backend.config.get_settings") as mock_settings:
+            s = MagicMock()
+            s.proposer_max_per_tick = 3
+            s.goal_ttl_seconds = 86400
+            s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = False
+            s.briefing_timezone = "UTC"
+            mock_settings.return_value = s
+
+            result = await proposer.propose_goals_tick()
+
+    assert result["status"] == "ok"
+    assert result["count_proposed"] == 1
+
+    goals_rows = _all_goals(eng)
+    assert len(goals_rows) == 1
+    assert "Docker" in goals_rows[0].title
+    assert not any("porch" in g.title.lower() for g in goals_rows)
+
+
+@pytest.mark.asyncio
+async def test_proposer_prompt_mentions_known_hardware_issue(eng, monkeypatch):
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "KNOWN HARDWARE" in prompt
+    assert "light.left_porch_light" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Test 13 — Night exemption tracks the live sun.sun entity (actual dawn), not
 # a fixed clock hour. A winter-dawn scenario (still below_horizon at 8am,
 # past the NIGHT_END_HOUR=7 fallback) must still exempt the garage lights.
