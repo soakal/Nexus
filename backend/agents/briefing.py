@@ -1,9 +1,26 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Sections sourced from single-source, unverified third-party content (an
+# email subject line via Hermes's raw IMAP read) rather than a real NEXUS
+# integration. Priority Actions frequently echoes an Inbox item verbatim as
+# if confirmed (e.g. "Dropbox Storage Limit Hit" from one unread email) --
+# extract_and_store would otherwise store that as a 0.9+ confidence "durable
+# fact", and the goal proposer's KNOWN FACTS context treats durable facts as
+# grounds for an autonomous investigation + phone notification. Strip these
+# sections before fact extraction; they stay in the stored/displayed briefing.
+_UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox")
+
+
+def _strip_unverified_sections(text: str) -> str:
+    for heading in _UNVERIFIED_FACT_SECTIONS:
+        text = re.sub(rf"## {re.escape(heading)}.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
+    return text
 
 BRIEFING_PROMPT = """You are a senior intelligence analyst briefing a solo power user starting their day.
 Be direct. No filler. Assume high technical literacy. Flag anomalies clearly.
@@ -157,9 +174,10 @@ async def run_briefing() -> str:
     briefing_text = await sonnet(prompt, label="briefing")
     logger.info("Briefing generated")
 
-    # Extract durable facts from briefing content (best-effort, never raises)
+    # Extract durable facts from briefing content (best-effort, never raises).
+    # Priority Actions/Inbox are excluded -- see _strip_unverified_sections.
     from backend.agents.facts import extract_and_store as _extract_facts
-    await _extract_facts(briefing_text, None, source="briefing")
+    await _extract_facts(_strip_unverified_sections(briefing_text), None, source="briefing")
 
     # Store in DB
     with Session(engine) as session:

@@ -1,6 +1,24 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from backend.agents.briefing import _strip_unverified_sections
+
+
+def test_strip_unverified_sections_drops_priority_actions_and_inbox():
+    text = (
+        "## Priority Actions (max 3)\n"
+        "1. Dropbox Storage Limit Hit — your Dropbox is full.\n\n"
+        "## Weather\nClear, 72°F.\n\n"
+        "## Inbox\n3,888 unread. Dropbox — Storage limit hit.\n\n"
+        "## Today's Focus\nStay focused."
+    )
+    stripped = _strip_unverified_sections(text)
+    assert "Dropbox" not in stripped
+    assert "## Priority Actions" not in stripped
+    assert "## Inbox" not in stripped
+    assert "## Weather\nClear, 72°F." in stripped
+    assert "## Today's Focus\nStay focused." in stripped
+
 
 @pytest.mark.asyncio
 async def test_briefing_generates_content():
@@ -97,3 +115,36 @@ async def test_briefing_obsidian_write_called():
         mock_create_note.assert_called_once()
         call_kwargs = mock_create_note.call_args
         assert "NEXUS/Briefings" in str(call_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_briefing_fact_extraction_excludes_priority_actions_and_inbox():
+    briefing_text = (
+        "## Priority Actions (max 3)\n"
+        "1. Dropbox Storage Limit Hit — your Dropbox is full.\n\n"
+        "## Weather\nClear, 72°F.\n\n"
+        "## Inbox\n3,888 unread. Dropbox — Storage limit hit.\n\n"
+        "## Today's Focus\nStay focused."
+    )
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=briefing_text), \
+         patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        await run_briefing()
+        mock_extract.assert_called_once()
+        extracted_text = mock_extract.call_args[0][0]
+        assert "Dropbox" not in extracted_text
+        assert "## Weather\nClear, 72°F." in extracted_text
+        assert "## Today's Focus\nStay focused." in extracted_text
