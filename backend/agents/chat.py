@@ -98,6 +98,38 @@ def extract_home_state(ha) -> dict:
     }
 
 
+def extract_temperature_sensors(ha) -> list[dict]:
+    """Every sensor.*temperature* entity currently reporting a numeric value, as
+    [{"label", "entity_id", "value_f"}]. Shared by the goal proposer's dynamic
+    room-temperature discovery (proposer.py::_ha_entity_summary) and the
+    homeassistant_temperatures tool (tools.py) so both read HA the same way --
+    e.g. a newly-added sensor like "First Air Quality Monitor" shows up in
+    both without any per-sensor wiring."""
+    if isinstance(ha, Exception):
+        return []
+    result = []
+    for e in getattr(ha, "entities", []) or []:
+        if not isinstance(e, dict):
+            continue
+        eid = e.get("entity_id") or ""
+        if not eid.startswith("sensor.") or "temperature" not in eid:
+            continue
+        if e.get("state") in ("unavailable", "unknown", None):
+            continue
+        try:
+            value_f = float(e["state"])
+        except (ValueError, TypeError):
+            continue
+        label = (
+            eid.replace("sensor.", "")
+            .replace("_current_temperature", "")
+            .replace("_temperature", "")
+            .replace("_", " ")
+        )
+        result.append({"label": label, "entity_id": eid, "value_f": value_f})
+    return result
+
+
 def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
     def safe(obj, attr, default="N/A"):
         if isinstance(obj, Exception):

@@ -63,6 +63,30 @@ async def test_homeassistant_status_normal_and_raise():
 
 
 @pytest.mark.asyncio
+async def test_homeassistant_temperatures_normal_and_raise():
+    from backend.agents import tools
+
+    data = MagicMock()
+    data.entities = [
+        {"entity_id": "sensor.first_air_quality_monitor_temperature", "state": "77.54"},
+        {"entity_id": "sensor.basement_temperature", "state": "72.86"},
+        {"entity_id": "sensor.usw_pro_24_poe_temperature", "state": "unavailable"},  # excluded
+        {"entity_id": "light.left_porch_light", "state": "on"},  # not a temp sensor
+    ]
+    with patch("backend.integrations.homeassistant.fetch", new=AsyncMock(return_value=data)):
+        out = await tools._homeassistant_temperatures({})
+    assert "first air quality monitor" in out
+    assert "78°F" in out or "77°F" in out  # rounded from 77.54
+    assert "basement" in out
+    assert "usw_pro_24_poe" not in out  # unavailable readings excluded
+
+    with patch("backend.integrations.homeassistant.fetch", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        out = await tools._homeassistant_temperatures({})
+    assert out.startswith("homeassistant_temperatures unavailable:")
+    assert "boom" in out
+
+
+@pytest.mark.asyncio
 async def test_unraid_status_normal_and_raise():
     from backend.agents import tools
 
@@ -340,8 +364,8 @@ def test_dispatcher_map_keys_match_registry():
     dmap = dispatcher_map()
     assert set(dmap.keys()) == {t.name for t in READ_TOOLS}
     expected = {
-        "homeassistant_status", "unraid_status", "unifi_status", "adguard_status",
-        "channels_status", "weather", "github_status", "hermes_status",
+        "homeassistant_status", "homeassistant_temperatures", "unraid_status", "unifi_status",
+        "adguard_status", "channels_status", "weather", "github_status", "hermes_status",
         "proxmox_updates", "proxmox_backups", "vault_search", "ddg_search",
     }
     assert set(dmap.keys()) == expected

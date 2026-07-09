@@ -95,6 +95,24 @@ async def _homeassistant_status(_input: dict) -> str:
         return _truncate(f"homeassistant_status unavailable: {e}")
 
 
+async def _homeassistant_temperatures(_input: dict) -> str:
+    """Every room/device temperature sensor HA currently reports -- kept as its
+    own tool (not folded into homeassistant_status) so a query that doesn't
+    need this doesn't pay for it, and so a new sensor (e.g. a newly-added air
+    quality monitor) is queryable by name without any per-sensor wiring."""
+    try:
+        from backend.agents.chat import extract_temperature_sensors
+        from backend.integrations import homeassistant
+        data = await homeassistant.fetch()
+        sensors = extract_temperature_sensors(data)
+        if not sensors:
+            return "No temperature sensors currently reporting."
+        lines = [f"- {s['label']}: {s['value_f']:.0f}°F ({s['entity_id']})" for s in sensors]
+        return _truncate("\n".join(lines))
+    except Exception as e:
+        return _truncate(f"homeassistant_temperatures unavailable: {e}")
+
+
 async def _unraid_status(_input: dict) -> str:
     try:
         from backend.integrations import unraid
@@ -268,6 +286,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Read a live Home Assistant snapshot: entity count and current alerts.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_homeassistant_status,
+    ),
+    ReadTool(
+        name="homeassistant_temperatures",
+        description="Read every room/device temperature sensor Home Assistant currently reports (°F), by label and entity_id.",
+        input_schema=_NO_ARGS_SCHEMA,
+        dispatch=_homeassistant_temperatures,
     ),
     ReadTool(
         name="unraid_status",

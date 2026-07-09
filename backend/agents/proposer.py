@@ -162,16 +162,11 @@ def _ha_entity_summary(ha) -> str:
         # of guessing an entity_id back from the friendly label.
         lines.append(f"- {label} (entity_id: {eid}): {state}")
 
-    # Discover room temperature sensors dynamically
-    for e in entities:
-        eid = e.get("entity_id", "")
-        if eid.startswith("sensor.") and "temperature" in eid and e.get("state") not in ("unavailable", "unknown", None):
-            try:
-                temp = float(e["state"])
-                label = eid.replace("sensor.", "").replace("_current_temperature", "").replace("_temperature", "").replace("_", " ")
-                lines.append(f"- temp/{label}: {temp:.0f}°F")
-            except (ValueError, TypeError):
-                pass
+    # Discover room temperature sensors dynamically (shared with tools.py's
+    # homeassistant_temperatures so a new sensor shows up in both automatically).
+    from backend.agents.chat import extract_temperature_sensors
+    for t in extract_temperature_sensors(ha):
+        lines.append(f"- temp/{t['label']}: {t['value_f']:.0f}°F")
 
     return "\n".join(lines) if lines else "(no watched entities found)"
 
