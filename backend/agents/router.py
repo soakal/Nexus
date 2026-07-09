@@ -438,6 +438,10 @@ async def run_with_tools(
 
     loop = asyncio.get_event_loop()
     last_resp = None
+    # Tracks whichever content block currently carries the "moving" breakpoint
+    # below, so it can be cleared before the next round sets a new one -- see
+    # the comment there for why this must never be allowed to just grow.
+    _cache_block_ref: dict | None = None
 
     for _round in range(max_rounds):
         await _loop_guard(task_id, task_start)
@@ -485,7 +489,15 @@ async def run_with_tools(
         # Moving cache breakpoint on the newest tool_result: system+tools are
         # already cached (_with_tools_cache / _as_cached_system); this one extra
         # breakpoint makes rounds 2..N read the whole prior history at 0.1x.
+        # MUST actually move, not accumulate: Anthropic allows at most 4
+        # cache_control breakpoints per request. system(1) + tools(1) + one new
+        # one added EVERY round without clearing the prior round's == 400
+        # invalid_request_error by round 3 (2 base + 3 rounds = 5). Clear the
+        # previous round's marker before setting this round's.
+        if _cache_block_ref is not None:
+            _cache_block_ref.pop("cache_control", None)
         tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+        _cache_block_ref = tool_results[-1]
 
         messages.append({"role": "user", "content": tool_results})
 

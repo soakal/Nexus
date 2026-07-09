@@ -313,6 +313,58 @@ async def test_tool_result_wrapped_and_cached(spend_eng):
 
 
 @pytest.mark.asyncio
+async def test_cache_control_breakpoint_moves_not_accumulates(spend_eng):
+    """The moving cache_control breakpoint must actually MOVE across rounds,
+    not accumulate one per round -- Anthropic allows at most 4 cache_control
+    breakpoints per request (system + tools already use 2), so 3+ tool rounds
+    each adding a fresh one without clearing the last hit a real 400
+    invalid_request_error in production ("A maximum of 4 blocks with
+    cache_control may be provided. Found 5.") on exactly this kind of
+    multi-round investigation goal."""
+    from backend.agents import router
+
+    captured_messages = []
+
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+        # Snapshot now -- `messages` is the SAME list object every call and
+        # keeps growing after this call returns, so a bare reference would
+        # make every captured "round" alias the final (fully-mutated) state.
+        captured_messages.append([dict(m) if isinstance(m, dict) else m for m in messages])
+        # 4 tool-use rounds before the final answer -- enough that the OLD
+        # (broken) code would have accumulated 2 base + 4 = 6 breakpoints.
+        return _tool_use_resp(tid=f"tu_{len(captured_messages)}") if len(captured_messages) <= 4 else _final_resp()
+
+    async def _dispatch(_input):
+        return "tool result"
+
+    with patch.object(router, "_create_sync_raw", _fake_create):
+        out = await router.run_with_tools(
+            "m", 100, "prompt", "sys", [{"name": "fake_tool"}],
+            {"fake_tool": _dispatch},
+        )
+
+    assert out == "final answer"
+    # Inspect the LAST request sent (round 5, after 4 tool rounds) -- every
+    # earlier tool_result's cache_control must have been cleared, leaving
+    # exactly one (the newest).
+    final_messages = captured_messages[-1]
+    cache_control_count = sum(
+        1
+        for m in final_messages
+        if m.get("role") == "user" and isinstance(m.get("content"), list)
+        for block in m["content"]
+        if isinstance(block, dict) and "cache_control" in block
+    )
+    assert cache_control_count == 1, (
+        f"expected exactly 1 moving tool_result breakpoint, found {cache_control_count} "
+        "-- this is the exact shape Anthropic's 4-breakpoint limit rejects"
+    )
+    # And it must be on the NEWEST tool_result turn, not a stale one.
+    newest_tool_turn = final_messages[-1]
+    assert "cache_control" in newest_tool_turn["content"][-1]
+
+
+@pytest.mark.asyncio
 async def test_system_prompt_gets_injection_rule(spend_eng):
     from backend.agents import router
 
