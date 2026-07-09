@@ -563,6 +563,46 @@ def _call_api(
 
 
 # ---------------------------------------------------------------------------
+# Daily-note guard — bypasses route_topics entirely for dated/briefing files
+# ---------------------------------------------------------------------------
+
+_DAILY_NOTE_STEM_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}[a-z]?$", re.IGNORECASE)
+_DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
+_DATE_IN_STEM_PAT = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _is_daily_note(stem: str) -> bool:
+    """True for a morning-briefing/daily-log filename (mirrors
+    backend/agents/wiki_ingest.py::_is_daily_note)."""
+    return bool(_DAILY_NOTE_STEM_PAT.match(stem) or _DAILY_NOTE_NAME_PAT.search(stem))
+
+
+def _daily_note_route(
+    stem: str,
+    catalog: list[dict[str, Any]],
+    wiki_folder: Path,
+) -> list[tuple[str, Path, bool]] | None:
+    """Deterministic route for a daily note. Returns None for non-daily notes.
+
+    route_topics' near-duplicate guard (find_similar_page) compares titles,
+    but a dated title like "Daily-Operations-Log-2026-07-08" is unique every
+    day by construction, so it never fires and the model is free to invent a
+    new page daily. Skip the model call entirely for daily notes and route
+    straight to the canonical date-stamped page (matching this vault's
+    existing YYYY-MM-DD.md convention).
+    """
+    if not _is_daily_note(stem):
+        return None
+    m = _DATE_IN_STEM_PAT.search(stem)
+    title = m.group(0) if m else "Daily-Log"
+    filename = f"{title}.md"
+    for entry in catalog:
+        if entry["filename"] == filename:
+            return [(entry["title"], Path(entry["path_str"]), False)]
+    return [(title, wiki_folder / filename, True)]
+
+
+# ---------------------------------------------------------------------------
 # Catalog-aware routing (Haiku)
 # ---------------------------------------------------------------------------
 
@@ -1040,20 +1080,23 @@ def process_file(
         except (json.JSONDecodeError, OSError):
             registry = {}
 
+    wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
+    wiki_folder.mkdir(parents=True, exist_ok=True)
+
     if _routes is not None:
         routes = _routes
         logger.info("Routes (pre-computed): %s", [(t, is_new) for (t, _p, is_new) in routes])
     else:
-        routes = route_topics(content, catalog, registry, config, client)
+        routes = (
+            _daily_note_route(file_path.stem, catalog, wiki_folder)
+            or route_topics(content, catalog, registry, config, client)
+        )
         logger.info("Routes: %s", [(t, is_new) for (t, _p, is_new) in routes])
     logger.info(
         "Routed '%s' -> [%s]",
         display_name,
         ", ".join(t for (t, _p, _is_new) in routes),
     )
-
-    wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
-    wiki_folder.mkdir(parents=True, exist_ok=True)
 
     # Build a quick title -> catalog entry lookup for scope contracts
     catalog_by_title: dict[str, dict[str, Any]] = {p["title"]: p for p in catalog}
@@ -1226,7 +1269,8 @@ def run(
                     except Exception:
                         pass
                 # Snapshot catalog for routing — routing is read-only
-                routes = route_topics(content, list(catalog), reg, config, client)
+                routes = _daily_note_route(fp.stem, list(catalog), wiki_folder) or \
+                    route_topics(content, list(catalog), reg, config, client)
                 logger.info("[parallel] Routed %s -> %s", fp.name, [t for t, _, _ in routes])
                 return fp, _sha, routes
             except Exception as exc:

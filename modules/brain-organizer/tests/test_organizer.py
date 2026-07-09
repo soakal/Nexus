@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -169,6 +170,56 @@ def test_topic_detection_uses_haiku_model(tmp_config: dict[str, Any]) -> None:
     client.messages.create.return_value = make_message('{"routes": [{"title":"Test", "match": "new"}]}')
     bo.detect_topics("content", tmp_config, client)
     assert client.messages.create.call_args.kwargs["model"] == tmp_config["haiku_model"]
+
+
+# ---------------------------------------------------------------------------
+# _is_daily_note / _daily_note_route
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stem", [
+    "2026-07-08",
+    "2026-07-08b",
+    "Morning-Briefing-2026-06-28",
+    "Daily-Operations-Log-2026-07-02",
+])
+def test_is_daily_note_matches_dated_and_briefing_stems(stem: str) -> None:
+    assert bo._is_daily_note(stem) is True
+
+
+@pytest.mark.parametrize("stem", ["NEXUS", "nexus-session-2026-06-25b-ha-cover-lock-fix"])
+def test_is_daily_note_rejects_non_daily_stems(stem: str) -> None:
+    assert bo._is_daily_note(stem) is False
+
+
+def test_daily_note_route_returns_none_for_non_daily(tmp_path: Path) -> None:
+    assert bo._daily_note_route("NEXUS-session-notes", [], tmp_path) is None
+
+
+def test_daily_note_route_creates_canonical_date_page(tmp_path: Path) -> None:
+    routes = bo._daily_note_route("Daily-Operations-Log-2026-07-08", [], tmp_path)
+    assert routes == [("2026-07-08", tmp_path / "2026-07-08.md", True)]
+
+
+def test_daily_note_route_reuses_existing_date_page(tmp_path: Path) -> None:
+    catalog = [{
+        "title": "2026-07-08", "filename": "2026-07-08.md",
+        "path_str": str(tmp_path / "2026-07-08.md"), "headers": "", "summary": "",
+    }]
+    routes = bo._daily_note_route("Morning-Briefing-2026-07-08", catalog, tmp_path)
+    assert routes == [("2026-07-08", tmp_path / "2026-07-08.md", False)]
+
+
+def test_process_file_skips_llm_route_for_daily_note(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    f = write_raw(tmp_vault, "2026-07-08.md", "Morning briefing content")
+    client = MagicMock()
+    # Only the synthesis call should hit the client — a routing call would be
+    # the FIRST side_effect entry, so a single-element queue proves route_topics
+    # (and its Haiku call) was never invoked.
+    client.messages.create.return_value = make_message("Synthesized wiki content")
+    bo.process_file(f, tmp_config, client, logging.getLogger("test"), catalog=[])
+    assert client.messages.create.call_count == 1
 
 
 # ---------------------------------------------------------------------------
