@@ -651,6 +651,30 @@ async def test_proposer_prompt_includes_capability_gaps(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Test 11d2 — success_criteria must be constrained to remotely-checkable
+# conditions (2026-07-09): a real goal (#61, USW Pro 24 PoE investigation)
+# set criteria demanding physical/on-site inspection (fan status, airflow),
+# which the read-only executor can never satisfy no matter how well the
+# investigation itself goes -- failed verification every time on principle.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proposer_prompt_forbids_physical_inspection_criteria(eng, monkeypatch):
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "physical/on-site" in prompt
+    assert "remote read-only" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Test 11e — Facts as a goal-trigger source (Roadmap Build #2, 2026-07-07).
 # An actionable fact must reach the prompt so the proposer can turn it into a
 # low-risk goal via the EXISTING propose()/broker pipeline (no new pipeline).

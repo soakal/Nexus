@@ -409,6 +409,11 @@ async def propose_goals_tick() -> dict:
             '"confidence": 0.0-1.0, '
             '"category": "one of: maintenance|storage|network|media|monitoring|knowledge|other"}]\n'
             "Every goal MUST include a non-empty success_criteria.\n"
+            "success_criteria MUST be checkable by the executor's own remote read-only\n"
+            "tools (HA/UniFi/Unraid/etc. reads) — never require physical/on-site\n"
+            "inspection (checking a fan is spinning, feeling for heat, being physically\n"
+            "present). A goal whose criteria can only be confirmed in person will fail\n"
+            "verification every time regardless of how well the investigation itself goes.\n"
             "Empty array [] if nothing warrants action.\n\n"
             f"LIVE STATE:\n{snapshot}\n\n"
             f"HA ENTITY STATES (lights, security — check for left-on/open/unlocked):\n{ha_entity_text}\n\n"
