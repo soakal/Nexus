@@ -40,10 +40,17 @@ except ImportError:
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
-# Anthropic errors that warrant a retry before falling back to OpenRouter
+# Anthropic errors that warrant a retry before falling back to OpenRouter.
+# APIConnectionError (DNS failure, connection refused/reset, TLS error) is the
+# canonical transient network error -- it does NOT subclass APIStatusError (no
+# .status_code), so without it here it fell through _call_api's except clauses
+# entirely: no retry, no OpenRouter fallback, immediate propagation on the
+# first attempt. That defeated the whole point of this function for exactly
+# the failure mode (a brief 2am network blip) it exists to survive.
 _RETRYABLE_ERRORS = (
     anthropic.APITimeoutError,
     anthropic.RateLimitError,
+    anthropic.APIConnectionError,
 )
 
 
@@ -537,7 +544,7 @@ def _call_api(
             timeout=60.0,
         )
         if resp.status_code == 403:
-            msg_text = f"OpenRouter 403 Forbidden — API key invalid or out of credits (check openrouter.ai)"
+            msg_text = "OpenRouter 403 Forbidden — API key invalid or out of credits (check openrouter.ai)"
             logger.error(msg_text)
             raise _APIUsageCapped(
                 f"Anthropic capped + {msg_text}"
@@ -553,6 +560,14 @@ def _call_api(
             or_usage.get("completion_tokens", 0) or 0,
         )
         logger.info("OpenRouter fallback succeeded (finish_reason=%s)", finish_reason)
+        # Normalize to Anthropic's "max_tokens" sentinel: OpenRouter/OpenAI-style
+        # responses signal truncation as finish_reason == "length". Callers
+        # (synthesize_wiki) only ever check for the literal string "max_tokens"
+        # to decide whether to raise instead of writing truncated content --
+        # without this, a truncated OpenRouter fallback response sailed past
+        # that guard and got written as if it were complete.
+        if finish_reason == "length":
+            finish_reason = "max_tokens"
         return text, finish_reason
     except _APIUsageCapped:
         raise
@@ -609,7 +624,6 @@ def _daily_note_route(
 def route_topics(
     content: str,
     catalog: list[dict[str, Any]],
-    existing_registry: dict[str, str],
     config: dict[str, Any],
     client: anthropic.Anthropic,
 ) -> list[tuple[str, Path, bool]]:
@@ -763,23 +777,14 @@ def detect_topics(
 ) -> list[str]:
     """Back-compat wrapper: returns a list of topic title strings.
 
-    Builds the wiki catalog, loads the registry, calls route_topics, then
-    extracts just the titles so existing callers/tests see an unchanged return type.
+    Builds the wiki catalog, calls route_topics, then extracts just the titles
+    so existing callers/tests see an unchanged return type.
     """
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     meta_folder = Path(config["vault_path"]) / config["meta_folder"]
     catalog = build_wiki_catalog(wiki_folder, meta_folder)
 
-    registry: dict[str, str] = {}
-    registry_path = meta_folder / "topics-registry.json"
-    if registry_path.exists():
-        try:
-            with open(registry_path, encoding="utf-8") as fh:
-                registry = json.load(fh)
-        except (json.JSONDecodeError, OSError):
-            registry = {}
-
-    routes = route_topics(content, catalog, registry, config, client)
+    routes = route_topics(content, catalog, config, client)
     return [title for (title, _path, _is_new) in routes]
 
 
@@ -914,11 +919,17 @@ def synthesize_wiki(
 
             return result
         except Exception as exc:
-            logger.warning(
-                "Large-page splice failed for '%s': %s — returning existing content unchanged",
-                topic, exc,
-            )
-            return existing_content
+            # MUST raise, not return existing_content: process_file's raw-file
+            # deletion happens unconditionally after synthesis "succeeds," so a
+            # silent unchanged-content return here made the note's new
+            # information vanish -- no error, no retry, ledger recorded a
+            # success. Raising sends this through the normal failure path
+            # instead: raw file kept, attempt counted, Hermes notified, clean
+            # retry next run.
+            raise ValueError(
+                f"Large-page splice failed for '{topic}': {exc} — refusing to write, "
+                "would have silently dropped the new content."
+            ) from exc
 
     # -----------------------------------------------------------------
     # 5a — Normal MERGE (existing page, within size threshold)
@@ -998,6 +1009,20 @@ def synthesize_wiki(
             "skipping write to prevent data loss. Increase sonnet_max_tokens in config.json."
         )
 
+    # Sanity guard: neither branch previously validated the result before it
+    # got os.replace'd over an existing page (wiki pages are never backed up --
+    # only raw files are, so a bad write here was unrecoverable except via
+    # iCloud versioning). An empty/refusal-style response with a normal
+    # finish_reason would otherwise silently destroy a mature page, or (on
+    # OpenRouter, where content can legitimately be "") replace it with nothing.
+    if not text.strip():
+        raise ValueError(f"Synthesis for topic '{topic}' returned empty content — refusing to write.")
+    if is_merge and len(text) < len(existing_content) * 0.5:
+        raise ValueError(
+            f"Merge result for topic '{topic}' suspiciously short "
+            f"({len(text)} vs {len(existing_content)} chars) — refusing to write to avoid data loss."
+        )
+
     return text
 
 
@@ -1070,16 +1095,6 @@ def process_file(
 
     content = file_path.read_text(encoding="utf-8")
 
-    meta_folder = Path(config["vault_path"]) / config["meta_folder"]
-    registry_path = meta_folder / "topics-registry.json"
-    registry: dict[str, str] = {}
-    if registry_path.exists():
-        try:
-            with open(registry_path, encoding="utf-8") as fh:
-                registry = json.load(fh)
-        except (json.JSONDecodeError, OSError):
-            registry = {}
-
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     wiki_folder.mkdir(parents=True, exist_ok=True)
 
@@ -1089,7 +1104,7 @@ def process_file(
     else:
         routes = (
             _daily_note_route(file_path.stem, catalog, wiki_folder)
-            or route_topics(content, catalog, registry, config, client)
+            or route_topics(content, catalog, config, client)
         )
         logger.info("Routes: %s", [(t, is_new) for (t, _p, is_new) in routes])
     logger.info(
@@ -1170,6 +1185,77 @@ def process_file(
 # Main runner (injectable for tests)
 # ---------------------------------------------------------------------------
 
+def _group_files_by_shared_pages(
+    routing_results: list[tuple[Path, str, "list[tuple[str, Path, bool]] | None", "Exception | None"]],
+) -> dict[int, list]:
+    """Group routed files so any two files that touch the SAME wiki page end up
+    in the same group -- prevents a concurrent read-modify-write race on ANY of
+    a file's routes, not just its first ("primary") one. The previous grouping
+    keyed only on routes[0][1], so a file's 2nd/3rd route landing on a page
+    another file's 1st route also targeted was never serialized: both could
+    read the page before either wrote, and one write silently clobbered the
+    other's contribution with no error.
+
+    A file whose routing failed (routes is None/falsy) gets its own singleton
+    group, so a routing failure can never block a real synthesis group.
+    """
+    n = len(routing_results)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    path_to_first_idx: dict[str, int] = {}
+    for i, (_fp, _sha, routes, _exc) in enumerate(routing_results):
+        if not routes:
+            continue
+        for _title, path, _is_new in routes:
+            key = str(path)
+            if key in path_to_first_idx:
+                union(i, path_to_first_idx[key])
+            else:
+                path_to_first_idx[key] = i
+
+    groups: dict[int, list] = defaultdict(list)
+    for i, item in enumerate(routing_results):
+        groups[find(i)].append(item)
+    return groups
+
+
+def _prune_old_backups(config: dict[str, Any], logger: logging.Logger) -> None:
+    """Delete raw/backups entries older than backup_retention_days (default 30).
+
+    Backups exist for short-term manual recovery after a bad synthesis, not
+    to accumulate forever. Left unpruned, every note ever processed stays
+    copied there permanently (unbounded disk growth + iCloud sync churn), and
+    scan_raw_folder's rglob() walks the whole pile every single run just to
+    skip each entry via the relative_to() check.
+    """
+    backup_folder = Path(config["vault_path"]) / config["backup_folder"]
+    if not backup_folder.exists():
+        return
+    retention_days: int = config.get("backup_retention_days", 30)
+    cutoff = time.time() - retention_days * 86400
+    pruned = 0
+    for f in backup_folder.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                pruned += 1
+        except OSError as exc:
+            logger.warning("backup prune: could not remove %s: %s", f.name, exc)
+    if pruned:
+        logger.info("Pruned %d backup(s) older than %d day(s)", pruned, retention_days)
+
+
 def run(
     config_path: Path | None = None,
     *,
@@ -1194,6 +1280,8 @@ def run(
         logger.info("Nothing to process")
         return 0
 
+    _prune_old_backups(config, logger)
+
     # Build catalog ONCE after the empty-check so we don't pay the disk scan
     # cost on runs that have nothing to do.
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
@@ -1207,139 +1295,152 @@ def run(
     failed_count = 0
     all_topics: set[str] = set()
 
-    max_workers = config.get("max_parallel_files", 1)
+    # One unified flow for both sequential (max_parallel_files<=1) and
+    # parallel runs. These used to be two independently-maintained ~60-line
+    # implementations that had already drifted: the parallel path was missing
+    # the sequential path's _APIUsageCapped abort handling (a hard provider
+    # cap was treated as an ordinary per-file failure, burning attempts
+    # against every remaining file), and a routing failure in the parallel
+    # path returned an empty route list that process_file treated as
+    # "nothing to route" -- deleting the raw file and recording success while
+    # silently losing the note's content. max_workers=1 below still goes
+    # through ThreadPoolExecutor, but with one worker processing one group at
+    # a time it's observably sequential (same ordering, same behavior) --
+    # one implementation to keep correct instead of two.
+    max_workers = max(1, config.get("max_parallel_files", 1))
 
-    if max_workers <= 1:
-        # --- Sequential path (original, unchanged) ---
-        for file_path, sha in files:
-            try:
-                updated = process_file(file_path, config, client, logger, catalog)
-                processed[sha] = {
-                    "filename": file_path.name,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "topics": updated,
-                }
-                save_processed(config, processed)
-                success_count += 1
-                all_topics.update(updated)
-            except _APIUsageCapped as exc:
-                logger.error("API hard-capped — aborting run: %s", exc)
-                send_hermes_notification(
-                    config,
-                    f"🧠 Brain Organizer — API capped, run aborted.\n{exc}",
-                    priority="high",
-                    http_client=_http_client,
-                )
-                break
-            except Exception as exc:
-                logger.error("Failed to process %s: %s", file_path.name, exc, exc_info=True)
-                failed_count += 1
-                existing = processed.get(sha, {})
-                attempts = existing.get("attempts", 0) + 1
-                processed[sha] = {
-                    "filename": file_path.name,
-                    "status": "failed",
-                    "attempts": attempts,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "error": str(exc)[:500],
-                }
-                save_processed(config, processed)
-                send_hermes_notification(
-                    config,
-                    f"🧠 Brain Organizer — ⚠️ Error\nFile: {file_path.name}\nError: {exc}",
-                    priority="high",
-                    http_client=_http_client,
-                )
-    else:
-        # --- Parallel path ---
-        catalog_lock = threading.Lock()
-        registry_lock = threading.Lock()
-        state_lock = threading.Lock()  # protects success_count, failed_count, all_topics, processed
+    catalog_lock = threading.Lock()
+    registry_lock = threading.Lock()
+    state_lock = threading.Lock()  # protects success_count, failed_count, all_topics, processed, saves_since_flush
+    aborted = threading.Event()
+    saves_since_flush = 0
+    SAVE_BATCH = 5  # batch success-path ledger saves; failures still save immediately (see _record_failure)
 
-        # Phase A: route all files in parallel (Haiku, read-only, safe)
-        def _route_one(fp_sha):
-            fp, _sha = fp_sha
-            try:
-                content = fp.read_text(encoding="utf-8")
-                registry_path = meta_folder / "topics-registry.json"
-                reg: dict[str, str] = {}
-                if registry_path.exists():
-                    try:
-                        reg = json.loads(registry_path.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
-                # Snapshot catalog for routing — routing is read-only
-                routes = _daily_note_route(fp.stem, list(catalog), wiki_folder) or \
-                    route_topics(content, list(catalog), reg, config, client)
-                logger.info("[parallel] Routed %s -> %s", fp.name, [t for t, _, _ in routes])
-                return fp, _sha, routes
-            except Exception as exc:
-                logger.error("[parallel] Routing failed for %s: %s", fp.name, exc)
-                return fp, _sha, []
+    def _flush_processed(force: bool = False) -> None:
+        nonlocal saves_since_flush
+        # Caller must hold state_lock.
+        if force or saves_since_flush >= SAVE_BATCH:
+            save_processed(config, processed)
+            saves_since_flush = 0
 
-        route_workers = min(max_workers * 2, 8)
-        logger.info("Parallel routing %d file(s) with %d workers", len(files), route_workers)
-        with ThreadPoolExecutor(max_workers=route_workers) as ex:
-            routing_results = list(ex.map(_route_one, files))
+    # Phase A: route every file up front (Haiku, read-only -- safe to
+    # parallelize regardless of max_workers since routing never writes).
+    def _route_one(
+        fp_sha: tuple[Path, str],
+    ) -> tuple[Path, str, list | None, Exception | None]:
+        fp, sha = fp_sha
+        try:
+            content = fp.read_text(encoding="utf-8")
+            routes = _daily_note_route(fp.stem, list(catalog), wiki_folder) or \
+                route_topics(content, list(catalog), config, client)
+            logger.info("Routed %s -> %s", fp.name, [t for t, _p, _n in routes])
+            return fp, sha, routes, None
+        except Exception as exc:
+            logger.error("Routing failed for %s: %s", fp.name, exc)
+            return fp, sha, None, exc
 
-        # Group files by primary target wiki page (prevents concurrent writes to same page)
-        page_groups: dict[str, list[tuple[Path, str, list]]] = defaultdict(list)
-        for fp, sha, routes in routing_results:
-            key = str(routes[0][1]) if routes else f"_ungrouped_{fp.stem}"
-            page_groups[key].append((fp, sha, routes))
+    route_workers = min(max_workers * 2, 8)
+    with ThreadPoolExecutor(max_workers=route_workers) as ex:
+        routing_results = list(ex.map(_route_one, files))
 
-        logger.info(
-            "Parallel synthesis: %d file(s) in %d page group(s), %d workers",
-            len(files), len(page_groups), max_workers,
+    # Group files so ANY shared target page (not just each file's first/
+    # "primary" route) is serialized within one group -- a file's 2nd or 3rd
+    # route landing on the same page as another file's 1st route used to race
+    # unprotected: both could read the page before either wrote, and one
+    # write silently clobbered the other's contribution.
+    groups = _group_files_by_shared_pages(routing_results)
+    logger.info(
+        "Routed %d file(s) into %d page group(s), %d worker(s)",
+        len(files), len(groups), max_workers,
+    )
+
+    def _record_success(sha: str, fp: Path, updated: list[str]) -> None:
+        nonlocal success_count
+        with state_lock:
+            processed[sha] = {
+                "filename": fp.name,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "topics": updated,
+            }
+            success_count += 1
+            all_topics.update(updated)
+            # Batched, not per-file: the raw file is already deleted by this
+            # point, which is the real idempotency marker (scan_raw_folder
+            # simply never sees it again) -- losing a few success records to
+            # a crash only undercounts /status stats, it can never cause a
+            # reprocess.
+            _flush_processed()
+
+    def _record_failure(sha: str, fp: Path, exc: Exception) -> None:
+        nonlocal failed_count
+        with state_lock:
+            existing = processed.get(sha, {})
+            attempts = existing.get("attempts", 0) + 1
+            processed[sha] = {
+                "filename": fp.name,
+                "status": "failed",
+                "attempts": attempts,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "error": str(exc)[:500],
+            }
+            failed_count += 1
+            # Failures save immediately, unbatched: "attempts" must be
+            # accurate for the max_file_attempts permanent-skip cap to work.
+            _flush_processed(force=True)
+        send_hermes_notification(
+            config,
+            f"🧠 Brain Organizer — ⚠️ Error\nFile: {fp.name}\nError: {exc}",
+            priority="high",
+            http_client=_http_client,
         )
 
-        def _process_group(group_items):
-            nonlocal success_count, failed_count
-            for fp, sha, routes in group_items:
-                try:
-                    updated = process_file(
-                        fp, config, client, logger, catalog,
-                        _routes=routes,
-                        _catalog_lock=catalog_lock,
-                        _registry_lock=registry_lock,
-                    )
-                    with state_lock:
-                        processed[sha] = {
-                            "filename": fp.name,
-                            "timestamp": datetime.now(UTC).isoformat(),
-                            "topics": updated,
-                        }
-                        save_processed(config, processed)
-                        success_count += 1
-                        all_topics.update(updated)
-                except Exception as exc:
-                    logger.error("Failed to process %s: %s", fp.name, exc, exc_info=True)
-                    with state_lock:
-                        existing = processed.get(sha, {})
-                        attempts = existing.get("attempts", 0) + 1
-                        processed[sha] = {
-                            "filename": fp.name,
-                            "status": "failed",
-                            "attempts": attempts,
-                            "timestamp": datetime.now(UTC).isoformat(),
-                            "error": str(exc)[:500],
-                        }
-                        save_processed(config, processed)
-                        failed_count += 1
+    def _process_group(group_items: list) -> None:
+        for fp, sha, routes, route_exc in group_items:
+            if aborted.is_set():
+                return
+            try:
+                if route_exc is not None:
+                    raise route_exc
+                if not routes:
+                    # route_topics always returns at least the Uncategorized
+                    # fallback on success, so an empty/None route list here
+                    # can only mean routing raised and was swallowed
+                    # upstream. Treat it as a failure (raw file kept, retried
+                    # next run) instead of silently deleting the raw file
+                    # with nowhere for its content to have gone.
+                    raise RuntimeError("routing produced no routes")
+                updated = process_file(
+                    fp, config, client, logger, catalog,
+                    _routes=routes,
+                    _catalog_lock=catalog_lock,
+                    _registry_lock=registry_lock,
+                )
+                _record_success(sha, fp, updated)
+            except _APIUsageCapped as exc:
+                logger.error("API hard-capped — aborting run: %s", exc)
+                if not aborted.is_set():
+                    aborted.set()
                     send_hermes_notification(
                         config,
-                        f"🧠 Brain Organizer — ⚠️ Error\nFile: {fp.name}\nError: {exc}",
+                        f"🧠 Brain Organizer — API capped, run aborted.\n{exc}",
                         priority="high",
                         http_client=_http_client,
                     )
+                return
+            except Exception as exc:
+                logger.error("Failed to process %s: %s", fp.name, exc, exc_info=True)
+                _record_failure(sha, fp, exc)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(_process_group, items) for items in page_groups.values()]
-            for fut in as_completed(futs):
-                try:
-                    fut.result()
-                except Exception as exc:
-                    logger.error("Page group error: %s", exc)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(_process_group, items) for items in groups.values()]
+        for fut in as_completed(futs):
+            try:
+                fut.result()
+            except Exception as exc:
+                logger.error("Page group error: %s", exc)
+
+    with state_lock:
+        _flush_processed(force=True)
 
     duration = time.monotonic() - start
 

@@ -533,3 +533,228 @@ def test_sanitize_topic_name_strips_special_chars() -> None:
 
 def test_sanitize_topic_name_empty_falls_back() -> None:
     assert bo.sanitize_topic_name("!!!") == "Uncategorized"
+
+
+# ---------------------------------------------------------------------------
+# Unified run() -- parallel path (previously had ZERO test coverage; this is
+# where the silent-data-loss / usage-cap / secondary-route bugs all lived)
+# ---------------------------------------------------------------------------
+
+def test_run_parallel_path_processes_multiple_files(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """max_parallel_files > 1 must still process every file correctly."""
+    tmp_config["max_parallel_files"] = 4
+    write_raw(tmp_vault, "note1.md", "NEXUS content")
+    write_raw(tmp_vault, "note2.md", "Hermes content")
+
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'),
+        make_message('{"routes": [{"title":"Hermes", "match": "new"}]}'),
+        make_message("# NEXUS\n\nContent."),
+        make_message("# Hermes\n\nContent."),
+    ]
+    result = bo.run(_client=client, _config=tmp_config)
+    assert result == 0
+    assert (tmp_vault / "wiki" / "NEXUS.md").exists()
+    assert (tmp_vault / "wiki" / "Hermes.md").exists()
+    assert not (tmp_vault / "raw" / "note1.md").exists()
+    assert not (tmp_vault / "raw" / "note2.md").exists()
+
+
+def test_run_routing_failure_keeps_raw_and_records_failure_not_success(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """A routing exception must NOT delete the raw file / record success.
+
+    This is the bug all three reviews flagged: the old parallel path's
+    _route_one caught every exception and returned an empty route list,
+    which process_file treated as "nothing to route" -- deleting the raw
+    file and reporting success while the note's content went nowhere.
+    """
+    tmp_config["max_parallel_files"] = 2
+    raw_file = write_raw(tmp_vault, "note.md", "Content")
+    sha = bo.compute_sha256(raw_file)
+
+    client = MagicMock()
+    client.messages.create.side_effect = RuntimeError("routing API down")
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 1
+    assert raw_file.exists(), "raw file must survive a routing failure for retry"
+    processed = bo.load_processed(tmp_config)
+    assert processed[sha]["status"] == "failed"
+    assert processed[sha]["attempts"] == 1
+
+
+def test_run_usage_capped_aborts_without_per_file_failure_spam(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """_APIUsageCapped during routing must abort the run, not record N failures."""
+    tmp_config["max_parallel_files"] = 1
+    raw_file = write_raw(tmp_vault, "note.md", "Content")
+    sha = bo.compute_sha256(raw_file)
+
+    capped_response = MagicMock()
+    capped_response.status_code = 400
+    capped_response.request = MagicMock()
+    capped_response.headers = {}
+
+    client = MagicMock()
+    client.messages.create.side_effect = anthropic.APIStatusError(
+        "usage limits exceeded", response=capped_response, body={}
+    )
+    result = bo.run(_client=client, _config=tmp_config)
+
+    # An abort is deliberate, not a per-file failure -- matches the original
+    # sequential path's behavior (failed_count is never incremented on abort).
+    assert result == 0
+    assert raw_file.exists()  # aborted, not failed -- kept for retry, not attempt-counted
+    processed = bo.load_processed(tmp_config)
+    assert sha not in processed, "an aborted run must not record a failed attempt"
+
+
+def test_group_files_by_shared_pages_unions_on_any_shared_route() -> None:
+    """Two files sharing a SECONDARY (non-primary) route must land in one group.
+
+    This is the race the old primary-only grouping (key = routes[0][1]) missed:
+    file A's route[1] and file B's route[0] targeting the same page were never
+    serialized against each other.
+    """
+    page_a = Path("/vault/wiki/A.md")
+    page_b = Path("/vault/wiki/B.md")
+    routing_results = [
+        (Path("fileA.md"), "shaA", [("A", page_a, False), ("B", page_b, False)], None),
+        (Path("fileB.md"), "shaB", [("B", page_b, False)], None),
+        (Path("fileC.md"), "shaC", [("C", Path("/vault/wiki/C.md"), True)], None),
+    ]
+    groups = bo._group_files_by_shared_pages(routing_results)
+    assert len(groups) == 2  # {fileA, fileB} share page B; fileC stands alone
+    sizes = sorted(len(g) for g in groups.values())
+    assert sizes == [1, 2]
+
+
+def test_group_files_by_shared_pages_gives_routing_failures_singleton_groups() -> None:
+    routing_results = [
+        (Path("fileA.md"), "shaA", None, RuntimeError("boom")),
+        (Path("fileB.md"), "shaB", None, RuntimeError("boom2")),
+    ]
+    groups = bo._group_files_by_shared_pages(routing_results)
+    assert len(groups) == 2
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter truncation normalization
+# ---------------------------------------------------------------------------
+
+def test_openrouter_length_finish_reason_normalized_to_max_tokens(
+    tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenRouter signals truncation as finish_reason="length"; callers only
+    check for the literal string "max_tokens" -- verify _call_api normalizes."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    client = MagicMock()
+    client.messages.create.side_effect = anthropic.APITimeoutError(request=MagicMock())
+
+    or_response = {
+        "choices": [{"message": {"content": "truncated text"}, "finish_reason": "length"}]
+    }
+    with patch("brain_organizer.time.sleep"), patch("brain_organizer.httpx.post") as mock_post:
+        mock_post.return_value = MagicMock(
+            status_code=200, json=lambda: or_response, raise_for_status=lambda: None,
+        )
+        with pytest.raises(ValueError, match="max_tokens"):
+            bo.synthesize_wiki("Topic", "content", "", tmp_config, client)
+
+
+# ---------------------------------------------------------------------------
+# Large-page splice failure must raise, not silently return unchanged content
+# ---------------------------------------------------------------------------
+
+def test_large_page_splice_failure_raises_instead_of_dropping_content(
+    tmp_config: dict[str, Any],
+) -> None:
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    existing = "# Topic\n\n## Existing\n\n" + ("x" * 50)
+    client = MagicMock()
+    # A response with no "## " section at all defeats the splice parser's
+    # section_chunks list (stays empty), but the real failure mode we're
+    # testing is any exception during splicing -- patch re.split to force one.
+    client.messages.create.return_value = make_message("## Existing\nnew stuff")
+    with patch("brain_organizer.re.split", side_effect=RuntimeError("boom")):
+        with pytest.raises(ValueError, match="splice failed"):
+            bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
+
+
+# ---------------------------------------------------------------------------
+# Empty / suspiciously-short synthesis result guard
+# ---------------------------------------------------------------------------
+
+def test_synthesize_wiki_raises_on_empty_result(tmp_config: dict[str, Any]) -> None:
+    client = MagicMock()
+    client.messages.create.return_value = make_message("   ")
+    with pytest.raises(ValueError, match="empty"):
+        bo.synthesize_wiki("Topic", "content", "", tmp_config, client)
+
+
+def test_synthesize_wiki_raises_on_suspiciously_short_merge(tmp_config: dict[str, Any]) -> None:
+    existing = "# Topic\n\n" + ("Important existing content. " * 20)
+    client = MagicMock()
+    client.messages.create.return_value = make_message("# Topic\n\nshort")
+    with pytest.raises(ValueError, match="suspiciously short"):
+        bo.synthesize_wiki("Topic", "new info", existing, tmp_config, client)
+
+
+# ---------------------------------------------------------------------------
+# APIConnectionError must retry + fall back, not propagate immediately
+# ---------------------------------------------------------------------------
+
+def test_api_connection_error_retries_then_succeeds(tmp_config: dict[str, Any]) -> None:
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        anthropic.APIConnectionError(request=MagicMock()),
+        make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'),
+    ]
+    with patch("brain_organizer.time.sleep"):
+        topics = bo.detect_topics("content", tmp_config, client)
+    assert topics == ["NEXUS"]
+    assert client.messages.create.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Backup pruning
+# ---------------------------------------------------------------------------
+
+def test_prune_old_backups_removes_only_stale_entries(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    import time as _time
+
+    backups = tmp_vault / "raw" / "backups"
+    old = backups / "old.md"
+    fresh = backups / "fresh.md"
+    old.write_text("old", encoding="utf-8")
+    fresh.write_text("fresh", encoding="utf-8")
+
+    old_time = _time.time() - 40 * 86400  # 40 days old
+    os_stat_ns = old_time * 1e9
+    import os as _os
+    _os.utime(old, (old_time, old_time))
+
+    tmp_config["backup_retention_days"] = 30
+    bo._prune_old_backups(tmp_config, logging.getLogger("test"))
+
+    assert not old.exists()
+    assert fresh.exists()
+
+
+# ---------------------------------------------------------------------------
+# route_topics no longer takes existing_registry (dead param removed)
+# ---------------------------------------------------------------------------
+
+def test_route_topics_signature_has_no_registry_param(tmp_config: dict[str, Any]) -> None:
+    import inspect
+    params = list(inspect.signature(bo.route_topics).parameters)
+    assert "existing_registry" not in params
+    assert params == ["content", "catalog", "config", "client"]
