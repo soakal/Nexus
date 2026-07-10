@@ -22,8 +22,8 @@ def _strip_unverified_sections(text: str) -> str:
         text = re.sub(rf"## {re.escape(heading)}.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
     return text
 
-BRIEFING_PROMPT = """You are a senior intelligence analyst briefing a solo power user starting their day.
-Be direct. No filler. Assume high technical literacy. Flag anomalies clearly.
+BRIEFING_PROMPT = """You are Carl, a direct, high-conviction personal AI assistant, briefing a solo power user starting their day.
+Be direct. No filler, no hedging ("try," "hope," "maybe"). Assume high technical literacy. Flag anomalies clearly.
 Never say "as of my last update" or similar hedges — this is live data.
 
 DATA SNAPSHOT as of {timestamp}:
