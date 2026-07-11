@@ -272,6 +272,57 @@ def test_wiki_synthesis_uses_sonnet_max_tokens(tmp_config: dict[str, Any]) -> No
 
 
 # ---------------------------------------------------------------------------
+# _defuse_unknown_wikilinks -- prevents Haiku/Sonnet from wikilinking things
+# that aren't real vault pages (e.g. Claude Code memory-file names mentioned
+# in source material), which was producing permanently broken links.
+# ---------------------------------------------------------------------------
+
+def test_defuse_unknown_wikilinks_leaves_real_catalog_page_alone() -> None:
+    catalog = [{"title": "NEXUS", "filename": "NEXUS.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[NEXUS]] for details."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == text
+
+
+def test_defuse_unknown_wikilinks_converts_unknown_target_to_backticks() -> None:
+    text = "Mentioned in [[project_version_scheme]] during the session."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", [])
+    assert result == "Mentioned in `project_version_scheme` during the session."
+    assert "[[" not in result
+
+
+def test_defuse_unknown_wikilinks_preserves_alias_display_text() -> None:
+    text = "See [[project_version_scheme|the versioning note]] for details."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", [])
+    assert result == "See `the versioning note` for details."
+
+
+def test_defuse_unknown_wikilinks_allows_near_duplicate_via_find_similar_page() -> None:
+    catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Financial Forecasting]] for numbers."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == text  # left alone -- find_similar_page recognizes it
+
+
+def test_defuse_unknown_wikilinks_allows_self_reference() -> None:
+    text = "This page is about [[My New Topic]] specifically."
+    result = bo._defuse_unknown_wikilinks(text, "My New Topic", [])
+    assert result == text
+
+
+def test_synthesize_wiki_defuses_hallucinated_link_in_create_branch(tmp_config: dict[str, Any]) -> None:
+    catalog = [{"title": "NEXUS", "filename": "NEXUS.md", "path_str": "x", "headers": "", "summary": "NEXUS stuff"}]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        "# Topic\n\nSee [[NEXUS]] and also [[project_version_scheme]] for context."
+    )
+    result = bo.synthesize_wiki("Topic", "content", "", tmp_config, client, catalog=catalog)
+    assert "[[NEXUS]]" in result
+    assert "[[project_version_scheme]]" not in result
+    assert "`project_version_scheme`" in result
+
+
+# ---------------------------------------------------------------------------
 # API retry + OpenRouter fallback
 # ---------------------------------------------------------------------------
 

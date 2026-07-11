@@ -792,6 +792,46 @@ def detect_topics(
 # Wiki synthesis (Sonnet)
 # ---------------------------------------------------------------------------
 
+_WIKILINK_PAT = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
+
+
+def _defuse_unknown_wikilinks(
+    text: str,
+    topic: str,
+    catalog: list[dict[str, Any]] | None,
+) -> str:
+    """Rewrite any [[wikilink]] the model generated that doesn't resolve to a
+    real (or near-duplicate) catalog page into plain `backtick` text instead.
+
+    The CREATE branch's "use [[wikilinks]] to reference related pages"
+    instruction gets over-applied: source material often MENTIONS names that
+    aren't vault pages at all (e.g. Claude Code memory-file names like
+    "project_version_scheme" mentioned in a session note), and the model
+    wikilinks them anyway -- producing a permanently broken link every time,
+    since nothing by that name will ever exist as a page. Never rely on the
+    prompt instruction alone to prevent this -- same deterministic-backstop
+    pattern as the daily-note guard and the night-exemption filter elsewhere
+    in this codebase. Applied to every synthesis result (merge and create
+    alike), not just the branch that introduced the instruction, since a
+    merge can just as easily echo a hallucinated link from its input.
+    """
+    catalog = catalog or []
+    known_titles = {p["title"] for p in catalog}
+    known_titles.add(topic)  # the page being written links to itself, harmless
+
+    def _replace(m: "re.Match[str]") -> str:
+        target = m.group(1).strip()
+        alias = m.group(2)
+        display = (alias or target).strip()
+        if target in known_titles:
+            return m.group(0)
+        if find_similar_page(target, catalog) is not None:
+            return m.group(0)
+        return f"`{display}`"
+
+    return _WIKILINK_PAT.sub(_replace, text)
+
+
 def synthesize_wiki(
     topic: str,
     new_content: str,
@@ -976,7 +1016,10 @@ def synthesize_wiki(
                     "Related pages in this wiki: "
                     + ", ".join(f"[[{t}]]" for t in top5)
                     + ".\n"
-                    "Use [[wikilinks]] to reference them where relevant. "
+                    "Use [[wikilinks]] ONLY for titles from this exact list -- do not "
+                    "wikilink anything else, even if it looks like it should be a page "
+                    "(e.g. a tool name, a file name, or something else the source "
+                    "material mentions). If in doubt, use plain text instead. "
                     "Do not duplicate content from those pages.\n\n"
                 )
 
@@ -1023,6 +1066,7 @@ def synthesize_wiki(
             f"({len(text)} vs {len(existing_content)} chars) — refusing to write to avoid data loss."
         )
 
+    text = _defuse_unknown_wikilinks(text, topic, catalog)
     return text
 
 
