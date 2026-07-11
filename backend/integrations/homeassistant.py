@@ -26,8 +26,10 @@ _ALERT_ALLOWLIST = frozenset({
     # Lights
     "light.tall_light_lr_christmas_tree_plug",
     "switch.tall_light_lr_christmas_tree_plug",
-    "light.left_porch_light",
-    "light.right_porch_light",
+    # light.left_porch_light / light.right_porch_light intentionally excluded:
+    # fixtures are powered off due to water damage (Brian, 2026-07-11) — orphaned
+    # from the ZHA/Zigbee mesh since 2026-07-08, expected "unavailable" until
+    # physically repaired. Re-add once the fixtures are back in service.
     "light.left_garage_light",
     "light.right_garage_light",
     # Garage door
