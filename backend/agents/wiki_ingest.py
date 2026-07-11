@@ -299,13 +299,18 @@ async def ingest_file(file_path: str) -> dict:
             return {"file": key, "skipped": True, "reason": "already_processed"}
 
         daily_note = _is_daily_note(path.stem)
+        # Session dumps are big (>50KB) and header-heavy (## Human/## Assistant),
+        # so they trip BOTH verbatim-import guards below and land whole in wiki/
+        # root as fake "reference docs". Exempt them like daily notes — they must
+        # go through extract+classify, never verbatim.
+        session_note = _is_session_file(path)
 
         # --- size guard: skip reference docs, build guides, etc. ---
         try:
             file_bytes = path.stat().st_size
         except Exception:
             file_bytes = 0
-        if file_bytes > MAX_RAW_FILE_BYTES and not daily_note:
+        if file_bytes > MAX_RAW_FILE_BYTES and not daily_note and not session_note:
             # Too large to be a session note. Don't summarize/strip it — import
             # the full text (and any embedded base64 images) verbatim to the wiki.
             content = await asyncio.to_thread(
@@ -330,7 +335,7 @@ async def ingest_file(file_path: str) -> dict:
         # --- content guard: structured reference docs under the size cap ---
         # A 40 KB manual passes the byte limit but is still not a session note.
         # Import it verbatim (full text + extracted images) instead of summarizing.
-        if not daily_note and _looks_like_reference_doc(content):
+        if not daily_note and not session_note and _looks_like_reference_doc(content):
             result = await _import_reference_doc(vault, path, content)
             seen.add(key)
             await asyncio.to_thread(_save_ledger, vault, seen)
@@ -443,7 +448,11 @@ def _is_session_file(f: Path) -> bool:
         return True
     try:
         head = f.read_text(encoding="utf-8", errors="ignore")[:400]
-        return "type: daily-session" in head or "consolidated_sessions" in head
+        return (
+            "type: daily-session" in head
+            or "type: conversation" in head
+            or "consolidated_sessions" in head
+        )
     except Exception:
         return False
 

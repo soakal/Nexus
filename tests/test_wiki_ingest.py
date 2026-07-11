@@ -178,6 +178,43 @@ async def test_daily_note_bypasses_verbatim_import(vault, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_oversized_session_dump_bypasses_verbatim_import(vault, monkeypatch):
+    """Regression: a >50KB session dump (## Human/## Assistant headers) must NOT
+    be verbatim-imported into wiki/ root as a fake reference doc — it goes
+    through extract+classify like any session note."""
+    turns = "".join(f"## Human\nquestion {i}\n\n## Assistant\nanswer {i}\n\n" for i in range(2000))
+    content = (
+        "---\ntitle: \"Session 2026-07-11 abc\"\ndate: 2026-07-11\n"
+        "type: conversation\ntags:\n  - session-log\n  - raw\n  - unprocessed\n---\n\n"
+        + turns
+    )
+    assert len(content.encode()) > wiki_ingest.MAX_RAW_FILE_BYTES
+    src = _raw(vault, "2026-07-11-session-abc123.md", content)
+
+    (vault / "Brain" / "wiki" / "NEXUS.md").write_text(
+        "# NEXUS\n\n## Existing\nprior content\n", encoding="utf-8"
+    )
+
+    extract_json = json.dumps([{"topic_hint": "nexus", "bullet": "Fixed the wiki ingest bug."}])
+    monkeypatch.setattr(
+        "backend.agents.router.haiku",
+        AsyncMock(side_effect=[extract_json, json.dumps(["NEXUS"])]),
+    )
+
+    result = await wiki_ingest.ingest_file(str(src))
+
+    assert result.get("reference_doc_imported") is None
+    assert result["items"] == 1
+
+    wiki = vault / "Brain" / "wiki"
+    # No verbatim session-named page was created in wiki/ root.
+    assert not (wiki / "2026-07-11-session-abc123.md").exists()
+    # The extracted bullet landed in the topic page.
+    assert "Fixed the wiki ingest bug." in (wiki / "NEXUS.md").read_text(encoding="utf-8")
+    assert (wiki / "processed" / "2026-07-11-session-abc123.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_blank_alt_uses_counter_filename(vault):
     body = "# Guide\n\n" + ("filler line here\n" * 3000)
     content = body + f"\n![](data:image/png;base64,{_PNG_B64})\n"

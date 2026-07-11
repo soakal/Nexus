@@ -288,8 +288,21 @@ def main() -> None:
     host = args.host or config.get("mcp_host", "0.0.0.0")  # nosec B104 — intentional for Tailscale access
     port = args.port or config.get("mcp_port", 8765)
 
-    app = create_app(config)
     logger = logging.getLogger("mcp_server")
+
+    # Singleton guard: NEXUS Popen-spawns this on every startup, and a hard-killed
+    # NEXUS orphans the child. Werkzeug's SO_REUSEADDR lets orphans stack on the
+    # same port silently — dozens of instances were found bound to 8765 at once.
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as resp:
+            if resp.status == 200:
+                logger.info("MCP server already healthy on port %s — exiting.", port)
+                return
+    except Exception:
+        pass  # nothing responding — proceed to start
+
+    app = create_app(config)
     logger.info("Starting Brain Organizer MCP server on %s:%s", host, port)
     app.run(host=host, port=port, use_reloader=False)
 
