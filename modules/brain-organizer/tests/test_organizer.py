@@ -195,6 +195,44 @@ def test_daily_note_route_returns_none_for_non_daily(tmp_path: Path) -> None:
     assert bo._daily_note_route("NEXUS-session-notes", [], tmp_path) is None
 
 
+@pytest.mark.parametrize("title", [
+    "2026-07-11-session-2f47f674-a17b-4eb0-adb1-56b7ccf4b6aa",  # seen live 2026-07-11
+    "bb94406a-faf4-4f0e-833a-47d1a55df36c",                     # bare UUID
+    "NEXUS Session Notes",                                       # session token
+    "2026-07-08 Homelab Work",                                   # date-prefixed log name
+])
+def test_looks_like_session_title_rejects_log_shaped(title: str) -> None:
+    assert bo._looks_like_session_title(title) is True
+
+
+@pytest.mark.parametrize("title", [
+    "Home-Assistant",
+    "Council-Loop-Build-2026-07-01",  # date at END is fine — real page convention
+    "Budgeting",
+    "Sessions-Overview",              # 'session' as substring, not standalone token...
+])
+def test_looks_like_session_title_allows_real_topics(title: str) -> None:
+    assert bo._looks_like_session_title(title) is False
+
+
+def test_route_topics_rejects_session_shaped_new_title(
+    tmp_config: dict[str, Any],
+) -> None:
+    """A Haiku 'new' route whose title is session-log-shaped must be dropped;
+    with no other routes, content falls back to Uncategorized instead of
+    creating a filename-titled page."""
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        '{"routes": [{"match": "new", '
+        '"title": "2026-07-11-session-2f47f674-a17b-4eb0-adb1-56b7ccf4b6aa"}]}'
+    )
+    routes = bo.route_topics("some session content", [], tmp_config, client)
+    assert len(routes) == 1
+    title, path, is_new = routes[0]
+    assert title == "Uncategorized"
+    assert path.name == "Uncategorized.md"
+
+
 def test_daily_note_route_creates_canonical_date_page(tmp_path: Path) -> None:
     routes = bo._daily_note_route("Daily-Operations-Log-2026-07-08", [], tmp_path)
     assert routes == [("2026-07-08", tmp_path / "2026-07-08.md", True)]

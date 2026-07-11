@@ -585,6 +585,31 @@ _DAILY_NOTE_STEM_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}[a-z]?$", re.IGNORECASE)
 _DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
 _DATE_IN_STEM_PAT = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# A proposed page title that names a session LOG rather than a topic: contains
+# a hyphenated UUID, a standalone session/save token, or starts with a full
+# date (log-file naming). The near-duplicate guard can never catch these --
+# a UUID or dated title is unique by construction -- so Haiku routing a
+# session note's own frontmatter title back as a "new topic" created one
+# filename-titled wiki page per session (seen live 2026-07-08 and 2026-07-11).
+_UUID_PAT = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+_SESSION_TITLE_PAT = re.compile(r"(?:^|[-_ ])(session|save)(?:[-_ ]|$)", re.IGNORECASE)
+_DATE_PREFIX_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _looks_like_session_title(title: str) -> bool:
+    """True for a proposed NEW page title that is session-log-shaped.
+
+    Deterministic backstop, same pattern as the daily-note guard: never rely
+    on the routing prompt alone to keep log names from becoming topic pages.
+    """
+    return bool(
+        _UUID_PAT.search(title)
+        or _SESSION_TITLE_PAT.search(title)
+        or _DATE_PREFIX_PAT.match(title)
+    )
+
 
 def _is_daily_note(stem: str) -> bool:
     """True for a morning-briefing/daily-log filename (mirrors
@@ -739,6 +764,11 @@ def route_topics(
                 match_type = "new"
 
         if match_type == "new":
+            if _looks_like_session_title(title):
+                logger.warning(
+                    "route_topics: rejected session-shaped new title %r", title
+                )
+                continue
             similar = find_similar_page(
                 title, catalog, config.get("new_page_similarity_threshold", 0.82)
             )
