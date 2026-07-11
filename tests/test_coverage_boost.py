@@ -512,6 +512,8 @@ async def test_voice_transcribe_whisper_api():
     ("2026-06-28", ""),                       # daily file → empty topic
     ("nexus-session-20260625b-fix", "nexus fix"),  # compact date form
     ("CWI-AI-2026-06-25-redesign", "CWI AI redesign"),
+    ("2026-07-07-session-bb94406a-faf4-4f0e-833a-47d1a55df36c", ""),  # UUID → empty topic
+    ("nexus-save-bb94406a-faf4-4f0e-833a-47d1a55df36c-ha-fix", "nexus ha fix"),  # UUID stripped, real words kept
 ])
 def test_wiki_filename_hint_strips_dates_and_noise(stem, expected):
     from backend.agents.wiki_ingest import _filename_hint

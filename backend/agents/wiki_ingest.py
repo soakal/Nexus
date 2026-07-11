@@ -33,6 +33,13 @@ MAX_RAW_FILE_BYTES = 50_000
 # Any date token (2026-06-25, 2026_06_25, 20260625, optional trailing letter).
 _DATE_TOKEN = re.compile(r"\b\d{4}[-_]?\d{2}[-_]?\d{2}[a-z]?\b")
 
+# A hyphenated UUID (session-id filenames like "session-bb94406a-faf4-4f0e-
+# 833a-47d1a55df36c.md" carry one of these) — meaningless as a topic hint and
+# must not become a page title or a Haiku classify bias.
+_UUID_TOKEN = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE
+)
+
 # Noise words/separators stripped from a filename stem to leave a topic hint.
 _NOISE_TOKENS = ("session", "save", "note", "notes", "log", "draft")
 
@@ -69,8 +76,10 @@ def _filename_hint(stem: str) -> str:
     'nexus-session-2026-06-25b-ha-cover-lock-fix' -> 'nexus ha cover lock fix'
     'NEXUS-save-2026-06-24'                        -> 'NEXUS'
     '2026-06-28'                                   -> ''  (daily file, no topic)
+    '2026-07-07-session-bb94406a-faf4-4f0e-833a-47d1a55df36c' -> ''  (UUID, no topic)
     """
     s = _DATE_TOKEN.sub(" ", stem)
+    s = _UUID_TOKEN.sub(" ", s)
     s = re.sub(r"[-_]", " ", s)
     words = [w for w in s.split() if w.lower() not in _NOISE_TOKENS]
     return " ".join(words)
@@ -261,7 +270,14 @@ async def _import_reference_doc(vault: Path, path: Path, content: str) -> dict:
     await asyncio.to_thread(processed_dir.mkdir, parents=True, exist_ok=True)
     dest = processed_dir / path.name
     try:
-        await asyncio.to_thread(path.rename, dest)
+        # os.replace, not Path.rename: a long-running session is re-saved
+        # under the SAME filename on every /save, so a same-named archive
+        # entry from an earlier (shorter) snapshot of this session often
+        # already exists. rename() raises FileExistsError for that on
+        # Windows (POSIX would've silently replaced); os.replace is the
+        # atomic, cross-platform equivalent -- the newest save is always a
+        # superset of the same session, so overwriting is correct.
+        await asyncio.to_thread(os.replace, path, dest)
         logger.info("wiki_ingest: moved %s → processed/", path.name)
     except Exception as e:
         logger.warning("wiki_ingest: could not move %s to processed/: %s", path.name, e)
@@ -426,7 +442,14 @@ async def ingest_file(file_path: str) -> dict:
         processed_dir = _vault / "Brain" / "wiki" / "processed"
         processed_dir.mkdir(parents=True, exist_ok=True)
         dest = processed_dir / path.name
-        await asyncio.to_thread(path.rename, dest)
+        # os.replace, not Path.rename: a long-running session is re-saved
+        # under the SAME filename on every /save, so a same-named archive
+        # entry from an earlier (shorter) snapshot of this session often
+        # already exists. rename() raises FileExistsError for that on
+        # Windows (POSIX would've silently replaced); os.replace is the
+        # atomic, cross-platform equivalent -- the newest save is always a
+        # superset of the same session, so overwriting is correct.
+        await asyncio.to_thread(os.replace, path, dest)
         logger.info(f"wiki_ingest: moved {path.name} → processed/")
 
         return {"file": key, "items": len(items), "wikis_touched": wikis_touched}

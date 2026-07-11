@@ -215,6 +215,39 @@ async def test_oversized_session_dump_bypasses_verbatim_import(vault, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_reprocessing_same_session_filename_overwrites_archive(vault, monkeypatch):
+    """Regression: a long-running session is re-saved under the SAME filename
+    on every /save. Processing an earlier snapshot archives it to processed/;
+    processing a later, longer snapshot of the SAME session must overwrite
+    that archive entry, not crash with FileExistsError (Windows Path.rename
+    raises on an existing destination; os.replace doesn't)."""
+    wiki = vault / "Brain" / "wiki"
+    (wiki / "processed").mkdir(parents=True, exist_ok=True)
+    # Simulate an earlier snapshot already archived under this exact name.
+    (wiki / "processed" / "2026-07-11-session-xyz.md").write_text(
+        "earlier, shorter snapshot", encoding="utf-8"
+    )
+
+    content = "## Human\nquestion\n\n## Assistant\nlonger, final answer\n"
+    src = _raw(vault, "2026-07-11-session-xyz.md", content)
+
+    extract_json = json.dumps([{"topic_hint": "nexus", "bullet": "Final answer recorded."}])
+    monkeypatch.setattr(
+        "backend.agents.router.haiku",
+        AsyncMock(side_effect=[extract_json, json.dumps(["NEXUS"])]),
+    )
+
+    result = await wiki_ingest.ingest_file(str(src))
+
+    assert "error" not in result
+    assert result["items"] == 1
+    assert not src.exists()
+    archived = (wiki / "processed" / "2026-07-11-session-xyz.md").read_text(encoding="utf-8")
+    assert archived == content  # overwritten with the newer snapshot, not left stale
+    assert "Final answer recorded." in (wiki / "NEXUS.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_blank_alt_uses_counter_filename(vault):
     body = "# Guide\n\n" + ("filler line here\n" * 3000)
     content = body + f"\n![](data:image/png;base64,{_PNG_B64})\n"
