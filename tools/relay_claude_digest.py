@@ -56,7 +56,7 @@ async def _notify_telegram(date_str: str, content: str) -> bool:
     body = content if len(content) <= 3500 else content[:3500] + "\n\n...(truncated, full digest saved to the Brain vault)"
     payload = {
         "type": "claude_features_digest",
-        "content": f"Claude features digest — {date_str}\n\n{body}",
+        "content": f"Claude + AI Digest — {date_str}\n\n{body}",
     }
     return await hermes.notify(payload)
 
