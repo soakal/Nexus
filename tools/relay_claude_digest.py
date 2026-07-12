@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIGEST_DIR = REPO_ROOT / "digests" / "claude-features"
 STATE_FILE = DIGEST_DIR / ".relay_state.json"
+_DATED_DIGEST = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -65,7 +67,10 @@ async def main() -> int:
         return 0
 
     relayed = _load_relayed()
-    files = sorted(p for p in DIGEST_DIR.glob("*.md") if p.name not in relayed)
+    files = sorted(
+        p for p in DIGEST_DIR.glob("*.md")
+        if _DATED_DIGEST.match(p.name) and p.name not in relayed
+    )
     if not files:
         print("nothing new to relay")
         return 0
