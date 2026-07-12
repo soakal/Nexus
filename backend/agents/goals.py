@@ -42,8 +42,19 @@ def normalize_category(category: str | None) -> str:
 # Pure helpers
 # ---------------------------------------------------------------------------
 
+# Strips embedded sensor readings (e.g. "111°F", "-89dBm", "42%") before fingerprinting
+# so a fluctuating metric dedups on device+category instead of the literal value -- otherwise
+# "...(111°F)" and "...(108°F)" hash to different fingerprints and both get auto-approved +
+# notified for the same non-issue.
+_READING_RE = re.compile(
+    r"[-+]?\d+(?:\.\d+)?\s*(?:°f|°c|dbm|db|%|ghz|mhz|kbps|mbps|gbps)\b",
+    re.IGNORECASE,
+)
+
+
 def _normalise(text: str) -> str:
-    return re.sub(r"\s+", " ", text.lower().strip())
+    text = _READING_RE.sub("", text.lower())
+    return re.sub(r"\s+", " ", text.strip())
 
 
 def _fingerprint(title: str, description: str) -> str:

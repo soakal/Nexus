@@ -80,6 +80,44 @@ async def test_propose_creates_proposed_goal(eng):
 
 
 # ---------------------------------------------------------------------------
+# 1b. fingerprint — embedded sensor readings dedup on device+category, not the
+# literal value (a fluctuating metric must not bypass dedup just because its
+# reading changed between ticks)
+# ---------------------------------------------------------------------------
+
+def test_fingerprint_ignores_embedded_reading():
+    from backend.agents import goals
+
+    fp_a = goals._fingerprint(
+        "Investigate Switch A temperature (111°F)",
+        "Switch has been running hot at 111°F, check for airflow issues.",
+    )
+    fp_b = goals._fingerprint(
+        "Investigate Switch A temperature (108°F)",
+        "Switch has been running hot at 108°F, check for airflow issues.",
+    )
+    assert fp_a == fp_b
+
+    fp_c = goals._fingerprint(
+        "Investigate Device X WiFi signal strength (-89dBm)",
+        "Signal has dropped to -89dBm, investigate interference.",
+    )
+    fp_d = goals._fingerprint(
+        "Investigate Device X WiFi signal strength (-93dBm)",
+        "Signal has dropped to -93dBm, investigate interference.",
+    )
+    assert fp_c == fp_d
+
+    # Different devices must still fingerprint differently -- a bare model
+    # number isn't a reading and must survive the strip.
+    fp_e = goals._fingerprint(
+        "Investigate Switch B temperature (111°F)",
+        "Switch has been running hot at 111°F, check for airflow issues.",
+    )
+    assert fp_e != fp_a
+
+
+# ---------------------------------------------------------------------------
 # 2. debounce — duplicate active
 # ---------------------------------------------------------------------------
 
