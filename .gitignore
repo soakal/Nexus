@@ -37,3 +37,6 @@ Thumbs.db
 
 # Claude Code session directory
 .claude/
+
+# Local-only relay bookkeeping (not synced across machines)
+digests/claude-features/.relay_state.json
