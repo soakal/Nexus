@@ -177,6 +177,55 @@ async def test_daily_note_bypasses_verbatim_import(vault, monkeypatch):
     assert (wiki / "processed" / "2026-07-01.md").exists()
 
 
+def test_is_features_digest():
+    assert wiki_ingest._is_features_digest("claude-features-digest-2026-07-12")
+    assert wiki_ingest._is_features_digest(
+        "claude-features-digest-2026-07-12_20260712T043640Z"
+    )
+    assert not wiki_ingest._is_features_digest("claude-desktop-mcp-notes")
+    assert not wiki_ingest._is_features_digest("2026-07-01")
+    assert not wiki_ingest._is_features_digest("nexus-session-2026-06-25b")
+
+
+@pytest.mark.asyncio
+async def test_features_digest_routes_to_own_page_not_claude_md(vault, monkeypatch):
+    """Regression: claude-features-digest-* must land on its own running-log
+    page, never merged into the generic Claude.md page — the bare "claude"
+    filename hint would otherwise prefix-match Claude.md via _match_existing_page."""
+    content = "# Claude Features Digest — 2026-07-12\n\n**Some new capability** — details.\n"
+    src = _raw(vault, "claude-features-digest-2026-07-12_20260712T043640Z.md", content)
+
+    (vault / "Brain" / "wiki" / "Claude.md").write_text(
+        "# Claude\n\n## Existing\nprior content\n", encoding="utf-8"
+    )
+
+    extract_json = json.dumps(
+        [{"topic_hint": "claude", "bullet": "Some new capability shipped."}]
+    )
+    # A single-element side_effect: if the classify branch is ever reached
+    # (i.e. routing wasn't forced), the second haiku() call raises StopIteration.
+    monkeypatch.setattr(
+        "backend.agents.router.haiku",
+        AsyncMock(side_effect=[extract_json]),
+    )
+
+    result = await wiki_ingest.ingest_file(str(src))
+
+    assert result["items"] == 1
+    assert result["wikis_touched"] == ["Claude Features Digest"]
+
+    wiki = vault / "Brain" / "wiki"
+    digest_page = (wiki / "Claude Features Digest.md").read_text(encoding="utf-8")
+    assert "Some new capability shipped." in digest_page
+    assert "## 2026-07-12 — from" in digest_page
+
+    # Claude.md is untouched by the digest ingest.
+    claude_page = (wiki / "Claude.md").read_text(encoding="utf-8")
+    assert claude_page == "# Claude\n\n## Existing\nprior content\n"
+
+    assert (wiki / "processed" / "claude-features-digest-2026-07-12_20260712T043640Z.md").exists()
+
+
 @pytest.mark.asyncio
 async def test_oversized_session_dump_bypasses_verbatim_import(vault, monkeypatch):
     """Regression: a >50KB session dump (## Human/## Assistant headers) must NOT

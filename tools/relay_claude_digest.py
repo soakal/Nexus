@@ -75,19 +75,25 @@ async def main() -> int:
         print("nothing new to relay")
         return 0
 
+    any_failed = False
     for f in files:
         content = f.read_text(encoding="utf-8")
         date_str = f.stem
         try:
             await _push_to_brain(f"claude-features-digest-{date_str}.md", content)
-            await _notify_telegram(date_str, content)
+            ok = await _notify_telegram(date_str, content)
             relayed.add(f.name)
-            print(f"relayed {f.name}")
+            if ok:
+                print(f"relayed {f.name}")
+            else:
+                print(f"relayed {f.name} to Brain vault but TELEGRAM NOTIFY FAILED (check Hermes)")
+                any_failed = True
         except Exception as e:
             print(f"FAILED to relay {f.name}: {e}")
+            any_failed = True
 
     _save_relayed(relayed)
-    return 0
+    return 1 if any_failed else 0
 
 
 if __name__ == "__main__":

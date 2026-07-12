@@ -48,6 +48,17 @@ _NOISE_TOKENS = ("session", "save", "note", "notes", "log", "draft")
 _DAILY_NOTE_STEM_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}[a-z]?$", re.IGNORECASE)
 _DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
 
+# The daily "Claude features digest" automation drops a file named
+# claude-features-digest-YYYY-MM-DD.md into Brain/raw/ (the vault's ingest
+# endpoint may append a _<UTC-timestamp>Z suffix on a same-name collision,
+# which we don't control). Its topic hint reduces to the bare word "claude",
+# which prefix-matches the generic Claude.md page and swallows the digest.
+# Detect the filename shape and force it onto its own running-log page.
+_FEATURES_DIGEST_PAT = re.compile(
+    r"^claude-features-digest-\d{4}-\d{2}-\d{2}", re.IGNORECASE
+)
+_DIGEST_PAGE = "Claude Features Digest"
+
 
 def _is_daily_note(stem: str) -> bool:
     """True for a morning-briefing/daily-log filename.
@@ -59,6 +70,13 @@ def _is_daily_note(stem: str) -> bool:
     into the relevant topic pages like any other session note.
     """
     return bool(_DAILY_NOTE_STEM_PAT.match(stem) or _DAILY_NOTE_NAME_PAT.search(stem))
+
+
+def _is_features_digest(stem: str) -> bool:
+    """True for the daily Claude-features-digest filename (plain or collision-
+    suffixed). These must land on their own running-log page, not be merged
+    into the generic Claude.md topic page by the prefix matcher."""
+    return bool(_FEATURES_DIGEST_PAT.match(stem))
 
 
 def _norm(s: str) -> str:
@@ -382,7 +400,11 @@ async def ingest_file(file_path: str) -> dict:
         filename_hint = _filename_hint(path.stem)
         matched_page = _match_existing_page(filename_hint, known)
 
-        if matched_page:
+        if _is_features_digest(path.stem):
+            # Own running-log page — never merged into generic Claude.md.
+            # (See _is_features_digest.) No Haiku classify, like matched_page.
+            targets = [_DIGEST_PAGE] * len(items)
+        elif matched_page:
             # The filename maps to an existing page with confidence — route ALL
             # items there directly. No Haiku call, so Haiku can't fragment it.
             targets = [matched_page] * len(items)
