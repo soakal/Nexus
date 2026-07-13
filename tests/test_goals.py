@@ -231,6 +231,69 @@ async def test_debounce_cooldown(eng):
 
 
 # ---------------------------------------------------------------------------
+# 3b. debounce — cooldown, monitoring-category override (DEBOUNCE #3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_debounce_cooldown_monitoring_category_override(eng):
+    """A 'monitoring' category goal is debounced at a 10h gap (well under the
+    24h MONITORING_DEBOUNCE_SECONDS override) even though no debounce_seconds
+    was passed by the caller. A non-monitoring category goal with the same
+    10h gap is NOT debounced, since the caller passed no debounce_seconds and
+    the global default is untouched by the override.
+    """
+    from backend.agents import goals
+    from backend.database import Goal
+
+    ten_hours_ago = datetime.utcnow() - timedelta(hours=10)
+
+    # -- monitoring category: debounced (cooldown) at the 24h override window.
+    mon_title = "Check garage temperature"
+    mon_desc = "Recurring room-temperature monitoring check."
+    mon_fp = goals._fingerprint(mon_title, mon_desc)
+    with Session(eng) as s:
+        s.add(Goal(
+            title=mon_title,
+            description=mon_desc,
+            status="abandoned",
+            fingerprint=mon_fp,
+            category="monitoring",
+            proposal_at=ten_hours_ago,
+        ))
+        s.commit()
+
+    r = await goals.propose(mon_title, mon_desc, category="monitoring")
+    assert r["status"] == "debounced"
+    assert r["reason"] == "cooldown"
+
+    # -- non-monitoring category: same 10h gap, no debounce_seconds passed
+    # -- by the caller -> global DEBOUNCE #3 behavior is untouched, so the
+    # -- goal is reproposed (not debounced).
+    other_title = "Reorganize media library"
+    other_desc = "Sort the media folder by genre."
+    other_fp = goals._fingerprint(other_title, other_desc)
+    with Session(eng) as s:
+        s.add(Goal(
+            title=other_title,
+            description=other_desc,
+            status="abandoned",
+            fingerprint=other_fp,
+            category="media",
+            proposal_at=ten_hours_ago,
+        ))
+        s.commit()
+
+    r2 = await goals.propose(other_title, other_desc, category="media")
+    assert r2["status"] == "proposed"
+
+    with Session(eng) as s:
+        count = len(s.exec(select(Goal)).all())
+    # 2 seeded rows + 1 newly inserted (media) = 3; the monitoring propose
+    # was debounced and inserted nothing.
+    assert count == 3
+
+
+# ---------------------------------------------------------------------------
 # 4. debounce — backoff
 # ---------------------------------------------------------------------------
 

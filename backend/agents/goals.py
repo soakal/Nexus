@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 GOAL_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]
 _CATEGORY_SET = {c for c in GOAL_CATEGORIES}
 
+# "monitoring" goals (e.g. recurring temperature/uptime checks) reproposal cooldown --
+# overrides the caller-supplied debounce_seconds at DEBOUNCE #3 ONLY for this category.
+MONITORING_DEBOUNCE_SECONDS = 86400
+
 
 def normalize_category(category: str | None) -> str:
     """Map any input to a canonical category. Case-insensitive; unknown/None -> 'other'."""
@@ -487,12 +491,16 @@ async def propose(
             return {"status": "debounced", "reason": "backoff", "goal": latest}
 
     # DEBOUNCE #3 — cooldown since last proposal
-    if debounce_seconds and latest and latest["proposal_at"]:
+    _normalized_category = normalize_category(category)
+    effective_debounce_seconds = (
+        MONITORING_DEBOUNCE_SECONDS if _normalized_category == "monitoring" else debounce_seconds
+    )
+    if effective_debounce_seconds and latest and latest["proposal_at"]:
         last_proposal = datetime.fromisoformat(latest["proposal_at"])
-        if (now - last_proposal).total_seconds() < debounce_seconds:
+        if (now - last_proposal).total_seconds() < effective_debounce_seconds:
             return {"status": "debounced", "reason": "cooldown", "goal": latest}
 
-    category = normalize_category(category)
+    category = _normalized_category
     expires_at = now + timedelta(seconds=ttl_seconds) if ttl_seconds else None
     inserted = await asyncio.to_thread(
         _db_insert_goal,
