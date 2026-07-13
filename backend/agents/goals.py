@@ -777,6 +777,16 @@ async def reconcile_running(
                             rejection_reason=f"criteria_not_met: {verdict.get('reason', '')}"[:300],
                             updated_at=now,
                         )
+                        # Recurring goal with a genuine finding (criterion NOT met) —
+                        # page Brian's phone. The clean/criteria-met path above stays
+                        # silent on purpose; this is the gap that path doesn't cover.
+                        if g.get("cadence"):
+                            from backend import events
+                            await events.notify_phone(
+                                f"NEXUS goal check found an issue: {g.get('title')} — "
+                                f"{verdict.get('reason', '')}"[:300],
+                                kind="goal_criteria_failed",
+                            )
                 else:
                     try:
                         raw_out = await asyncio.to_thread(_db_get_task_result, g["task_id"])

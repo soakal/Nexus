@@ -21,7 +21,7 @@ def eng(monkeypatch):
     return e
 
 
-def _seed_running_goal_with_task(eng, result_json, criteria=None):
+def _seed_running_goal_with_task(eng, result_json, criteria=None, cadence=None):
     from backend.database import Goal, Task
     with Session(eng) as s:
         task = Task(prompt="p", status="success", result_json=result_json)
@@ -35,6 +35,7 @@ def _seed_running_goal_with_task(eng, result_json, criteria=None):
             fingerprint="fp_b2",
             task_id=task.id,
             success_criteria=criteria,
+            cadence=cadence,
         )
         s.add(goal)
         s.commit()
@@ -161,6 +162,54 @@ async def test_notify_phone_passes_buttons_through(monkeypatch):
         )
     assert ok is True
     assert sent["buttons"] == [{"text": "✓", "callback_data": "goal:approve:7"}]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_notifies_on_recurring_criteria_not_met(eng, monkeypatch):
+    from backend.agents import goals
+    from backend.database import Goal
+    gid = _seed_running_goal_with_task(
+        eng, json.dumps({"summary": "array at 90%"}),
+        criteria="array usage stays below 85%", cadence="daily",
+    )
+    monkeypatch.setattr("backend.config.get_settings", lambda: _settings(criteria_eval=True))
+
+    verdict = AsyncMock(return_value={"met": False, "reason": "array at 90% capacity"})
+    monkeypatch.setattr("backend.agents.goals._evaluate_success_criteria", verdict)
+
+    notify = AsyncMock(return_value=True)
+    with patch("backend.events.notify_phone", new=notify):
+        await goals.reconcile_running(backoff_base_seconds=60, max_attempts=5)
+
+    notify.assert_awaited_once()
+    args, kwargs = notify.await_args
+    assert "Check disk space" in args[0]
+    assert "array at 90% capacity" in args[0]
+    assert kwargs.get("kind") == "goal_criteria_failed"
+    with Session(eng) as s:
+        assert s.get(Goal, gid).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_no_notify_on_recurring_criteria_met(eng, monkeypatch):
+    from backend.agents import goals
+    from backend.database import Goal
+    gid = _seed_running_goal_with_task(
+        eng, json.dumps({"summary": "array at 40%"}),
+        criteria="array usage stays below 85%", cadence="daily",
+    )
+    monkeypatch.setattr("backend.config.get_settings", lambda: _settings(criteria_eval=True))
+
+    verdict = AsyncMock(return_value={"met": True, "reason": "array at 40% capacity"})
+    monkeypatch.setattr("backend.agents.goals._evaluate_success_criteria", verdict)
+
+    notify = AsyncMock(return_value=True)
+    with patch("backend.events.notify_phone", new=notify):
+        await goals.reconcile_running(backoff_base_seconds=60, max_attempts=5)
+
+    notify.assert_not_awaited()
+    with Session(eng) as s:
+        assert s.get(Goal, gid).status == "completed"
 
 
 @pytest.mark.asyncio
