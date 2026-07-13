@@ -738,6 +738,45 @@ async def test_proposer_excludes_task_source_facts(eng, monkeypatch):
     assert "unraid" not in facts_section
 
 
+@pytest.mark.asyncio
+async def test_proposer_caps_briefing_source_confidence(eng, monkeypatch):
+    """A source='briefing' fact is unverified and hard-capped below EFFECTIVE_FLOOR
+    by effective_confidence() regardless of its stored confidence -- it must NOT
+    reach the KNOWN FACTS prompt section even at confidence=0.95. A source='chat'
+    fact at the same confidence has no such cap and must reach the prompt."""
+    from backend.database import Fact
+
+    with Session(eng) as s:
+        s.add(Fact(
+            subject="pool heater", predicate="status", value="needs service",
+            source="briefing", confidence=0.95,
+        ))
+        s.add(Fact(
+            subject="garage door", predicate="status", value="needs sensor",
+            source="chat", confidence=0.95,
+        ))
+        s.commit()
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    # "KNOWN FACTS" also appears earlier in the instructions text, so anchor on
+    # the exact facts-block header (and the exact do-not-re-propose header that
+    # follows it) rather than the first occurrence of either bare phrase.
+    facts_idx = prompt.index("KNOWN FACTS (may imply a low-risk maintenance goal):")
+    dnr_idx = prompt.index("DO NOT RE-PROPOSE (recently rejected/abandoned by Brian")
+    facts_section = prompt[facts_idx:dnr_idx]
+    assert "needs service" not in facts_section
+    assert "needs sensor" in facts_section
+
+
 # ---------------------------------------------------------------------------
 # Test 12 — Nighttime backstop: a goal targeting an exempt exterior light is
 # dropped even if Haiku proposes it (Brian leaves porch/garage lights on
