@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 HALF_LIFE_DAYS: float = 30.0       # confidence halves every 30 days
 EFFECTIVE_FLOOR: float = 0.2       # facts below this effective confidence are hidden
+BRIEFING_CONFIDENCE_CAP: float = 0.15  # hard cap for unverified briefing-sourced facts, below EFFECTIVE_FLOOR
 RECALL_LIMIT: int = 8              # max facts injected into the memory block
 MAX_EXTRACT: int = 5               # max facts extracted per message
 CONFIRM_BUMP: float = 0.1          # confidence bump on reinforcement
@@ -34,12 +35,17 @@ CONFIRM_BUMP: float = 0.1          # confidence bump on reinforcement
 # Pure helpers (no I/O)
 # ---------------------------------------------------------------------------
 
-def effective_confidence(confidence: float, age_days: float) -> float:
+def effective_confidence(confidence: float, age_days: float, source: str | None = None) -> float:
     """Exponential decay: conf * 0.5^(age_days / HALF_LIFE_DAYS).
 
     age_days is clamped to >= 0 so future-dated rows don't gain confidence.
+    source=="briefing" facts are unverified and hard-capped at
+    BRIEFING_CONFIDENCE_CAP (below EFFECTIVE_FLOOR) regardless of decay.
     """
-    return confidence * (0.5 ** (max(0.0, age_days) / HALF_LIFE_DAYS))
+    eff = confidence * (0.5 ** (max(0.0, age_days) / HALF_LIFE_DAYS))
+    if source == "briefing":
+        eff = min(eff, BRIEFING_CONFIDENCE_CAP)
+    return eff
 
 
 def _age_days(created_at: datetime, now: datetime) -> float:
@@ -106,7 +112,7 @@ def _db_list_facts_for_audit() -> list[dict]:
     result = []
     for r in rows:
         age = _age_days(r.created_at, now)
-        eff = effective_confidence(r.confidence, age)
+        eff = effective_confidence(r.confidence, age, source=r.source)
         result.append({
             "id": r.id,
             "subject": r.subject,
@@ -293,7 +299,7 @@ async def facts_recall(query: str, limit: int = RECALL_LIMIT) -> str:
         for f in active:
             created_at = datetime.fromisoformat(f["created_at"])
             age = _age_days(created_at, now)
-            eff = effective_confidence(f["confidence"], age)
+            eff = effective_confidence(f["confidence"], age, source=f["source"])
             if eff < EFFECTIVE_FLOOR:
                 continue
             if query_tokens:

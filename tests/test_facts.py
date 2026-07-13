@@ -84,6 +84,13 @@ def test_effective_confidence_negative_age_clamped_to_zero():
     assert effective_confidence(0.5, -10.0) == pytest.approx(0.5, rel=1e-6)
 
 
+def test_effective_confidence_briefing_source_hard_capped():
+    """Unverified briefing-sourced facts are hard-capped below EFFECTIVE_FLOOR."""
+    from backend.agents.facts import EFFECTIVE_FLOOR, effective_confidence
+    assert effective_confidence(0.95, 0, source="briefing") < EFFECTIVE_FLOOR
+    assert effective_confidence(0.95, 0, source="chat") >= EFFECTIVE_FLOOR
+
+
 # ---------------------------------------------------------------------------
 # 2. _db_upsert_fact INSERT — empty table → one active fact
 # ---------------------------------------------------------------------------
