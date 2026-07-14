@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
 import functools
+import json
 import logging
 from datetime import datetime
 
@@ -630,13 +631,30 @@ async def run_with_tools(
             raw_input = getattr(block, "input", None)
             tinput = raw_input if isinstance(raw_input, dict) else {}
             fn = dispatch.get(name)
+            span_started_at = datetime.utcnow()
+            error = None
             if fn is None:
                 result = "unknown tool: " + str(name)
+                error = result
             else:
                 try:
                     result = await fn(tinput)
                 except Exception as e:
                     result = f"{name} unavailable: {e}"
+                    error = str(e)
+            # Best-effort trace span (council w-observability) -- mirrors the
+            # llm_call span recorded in _create_sync_raw. Runs on the event loop
+            # (this loop is NOT in an executor thread), but _record_trace_span is
+            # a no-op when no trace is active and the call is wrapped here too so
+            # a tracing failure can never break tool dispatch.
+            try:
+                _record_trace_span(
+                    "tool_call", name, span_started_at,
+                    input_summary=json.dumps(tinput)[:1000], output_summary=str(result)[:1000],
+                    error=error, trace_id=trace_id, parent_span_id=parent_span_id,
+                )
+            except Exception as e:  # never let tracing break the tool loop
+                logger.warning(f"trace span logging failed (non-fatal): {e}")
             # Sentinel-wrap EVERY client-side result (success, error, unknown —
             # uniform framing): tool output is untrusted DATA (HA entity names,
             # vault notes, web results), never instructions. The paired rule
