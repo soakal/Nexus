@@ -492,7 +492,7 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
     return await loop.run_in_executor(None, func)
 
 
-def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None):
+def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None, trace_id=None, parent_span_id=None):
     """Blocking Anthropic call for the tool-use loop. Returns the RAW response.
 
     Mirrors `_create_sync` but (1) takes a full `messages` list (not a single
@@ -500,6 +500,10 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
     the caller can inspect `stop_reason` / tool_use blocks. Spend is recorded
     in-thread (best-effort) exactly as in `_create_sync`. Must run in an executor,
     never on the event loop.
+
+    `trace_id`/`parent_span_id` are captured by `run_with_tools` on the event
+    loop and threaded in the same way as `task_id` (see `_record_trace_span`)
+    so each round of the tool loop gets its own best-effort llm_call span.
     """
     client = get_client()
     kwargs = {
@@ -511,6 +515,7 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
         kwargs["system"] = _as_cached_system(system)
     if tools:
         kwargs["tools"] = tools
+    span_started_at = datetime.utcnow()
     resp = client.messages.create(**kwargs)
     # Best-effort spend logging — runs INSIDE the executor worker thread (NOT the
     # event loop), so the synchronous Session(engine) write inside _record_spend
@@ -521,6 +526,17 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
         _record_spend(model, resp, label, task_id)
     except Exception as e:  # never let metering break the response
         logger.warning(f"spend logging failed (non-fatal): {e}")
+    # Best-effort trace span (council w-observability). Same in-thread
+    # reasoning as the spend write above -- no-op when no trace is active.
+    try:
+        last_content = messages[-1].get("content", "") if messages else ""
+        _record_trace_span(
+            "llm_call", model, span_started_at, resp=resp,
+            input_summary=str(last_content), output_summary=_extract_text(resp),
+            trace_id=trace_id, parent_span_id=parent_span_id,
+        )
+    except Exception as e:  # never let tracing break the response
+        logger.warning(f"trace span logging failed (non-fatal): {e}")
     return resp
 
 
@@ -575,6 +591,13 @@ async def run_with_tools(
     # since the contextvar does not survive the run_in_executor hop.
     spend_task_id = task_id if task_id is not None else _current_task_id.get()
 
+    # trace_id/parent_span_id: same capture-on-the-loop-and-thread-down pattern
+    # as spend_task_id above (see `_record_trace_span`) -- None when no trace
+    # is active, in which case span recording is a no-op.
+    trace_id = _current_trace_id.get()
+    span_stack = _current_span_stack.get()
+    parent_span_id = span_stack[-1] if span_stack else None
+
     loop = asyncio.get_event_loop()
     last_resp = None
     # Tracks whichever content block currently carries the "moving" breakpoint
@@ -586,7 +609,7 @@ async def run_with_tools(
         await _loop_guard(task_id, task_start)
         resp = await loop.run_in_executor(
             None,
-            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label, spend_task_id),
+            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label, spend_task_id, trace_id, parent_span_id),
         )
         last_resp = resp
 

@@ -291,7 +291,7 @@ async def test_tool_result_wrapped_and_cached(spend_eng):
 
     captured_messages = []
 
-    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id, trace_id=None, parent_span_id=None):
         captured_messages.append([dict(m) if isinstance(m, dict) else m for m in messages])
         return _tool_use_resp() if len(captured_messages) == 1 else _final_resp()
 
@@ -325,7 +325,7 @@ async def test_cache_control_breakpoint_moves_not_accumulates(spend_eng):
 
     captured_messages = []
 
-    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id, trace_id=None, parent_span_id=None):
         # Snapshot now -- `messages` is the SAME list object every call and
         # keeps growing after this call returns, so a bare reference would
         # make every captured "round" alias the final (fully-mutated) state.
@@ -370,7 +370,7 @@ async def test_system_prompt_gets_injection_rule(spend_eng):
 
     captured_systems = []
 
-    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id, trace_id=None, parent_span_id=None):
         captured_systems.append(system)
         return _final_resp()
 
