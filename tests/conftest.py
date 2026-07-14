@@ -75,6 +75,24 @@ def auth_headers(api_key):
 
 
 @pytest.fixture(autouse=True)
+def action_judge_off_by_default(monkeypatch):
+    """Force the action-judge gate OFF for every test by default.
+
+    Wiring `judge.evaluate_action` into `broker.execute_action` (council cycle
+    5) means any pre-existing test exercising `execute_action` through the
+    real settings singleton would otherwise fall through to the judge's real
+    "shadow" default and attempt an actual model call. Tests that specifically
+    want to exercise the judge gate override this per-test, e.g.
+    `monkeypatch.setattr(get_settings(), "action_judge_mode", "enforce")`
+    (innermost patch wins, same pattern as `auto_mock_opus_verify` below).
+    """
+    from backend.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "action_judge_mode", "off")
+
+
+@pytest.fixture(autouse=True)
 def auto_mock_opus_verify(request):
     """Auto-patch _opus_verify in the durable orchestrator path to return a
     permissive success dict by default.
