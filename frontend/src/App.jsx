@@ -21,6 +21,7 @@ import HomeAssistant from './pages/HomeAssistant'
 import Settings from './pages/Settings'
 import Safety from './pages/Safety'
 import Facts from './pages/Facts'
+import Traces from './pages/Traces'
 import { API_BASE } from './lib/api'
 
 const NAV = [
@@ -33,6 +34,7 @@ const NAV = [
   { to: '/ha',       icon: Home,             label: 'Home Assistant', group: 'SYSTEMS'  },
   { to: '/uptime',   icon: Activity,         label: 'Uptime',         group: 'SYSTEMS'  },
   { to: '/agents',   icon: Bot,              label: 'Agents',         group: 'SYSTEMS'  },
+  { to: '/traces',   icon: Activity,         label: 'Traces',         group: 'SYSTEMS'  },
   { to: '/safety',   icon: ShieldCheck,      label: 'Safety',         group: 'SYSTEMS'  },
   { to: '/facts',    icon: Brain,            label: 'Facts',          group: 'SYSTEMS'  },
   { to: '/settings', icon: SettingsIcon,     label: 'Settings',       group: 'SYSTEMS'  },
@@ -426,6 +428,7 @@ export default function App() {
             <Route path="/ha" element={<HomeAssistant />} />
             <Route path="/uptime" element={<Uptime />} />
             <Route path="/agents" element={<Agents />} />
+            <Route path="/traces" element={<Traces />} />
             <Route path="/safety" element={<Safety />} />
             <Route path="/facts" element={<Facts />} />
             <Route path="/settings" element={<Settings />} />
