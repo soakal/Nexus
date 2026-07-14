@@ -344,29 +344,50 @@ _BUDGET_REACHED_REPLY = (
 
 async def chat(conversation_id: int | None, user_message: str, *, token_queue=None) -> dict:
     """token_queue: if set (asyncio.Queue), CHAT replies stream tokens into it; None sentinel marks end."""
-    from backend.agents.router import haiku, sonnet, stream_sonnet
+    from backend.agents.router import (
+        close_trace,
+        haiku,
+        open_trace,
+        reset_trace_context,
+        set_trace_context,
+        sonnet,
+        stream_sonnet,
+    )
     from backend.safety.governor import BudgetExceeded
 
     # 1. Conversation handling — all DB ops off the event loop
     if conversation_id is None:
         conversation_id = await asyncio.to_thread(_db_create_conversation, user_message)
 
-    await asyncio.to_thread(_db_add_message, conversation_id, "user", user_message)
-    from backend.config import get_settings
-    history = await asyncio.to_thread(
-        _db_load_history, conversation_id, get_settings().chat_history_limit
-    )
-    convo_summary = await asyncio.to_thread(_db_get_summary, conversation_id)
+    # Open an AgentTrace (council w-observability) so nested LLM calls made during
+    # this chat turn attach TraceSpan rows to it. Mirrors briefing.run_briefing's
+    # trace wiring via the same generic open_trace/close_trace helper (chat has no
+    # durable task_id -- kind="chat", task_id=None). conversation_id is resolved
+    # just above, so a brand-new conversation still gets a real id in the label.
+    # trace_id is None on any open failure -- set_trace_context(None) is a safe
+    # no-op downstream (router._record_trace_span short-circuits on trace_id is None).
+    trace_id = await asyncio.to_thread(open_trace, "chat", f"conv:{conversation_id}")
+    _trace_token = set_trace_context(trace_id)
+    _trace_status = "ok"
+    _trace_error = None
 
-    # 2a. Check for briefing follow-up — load recent briefing context if relevant
-    _msg_lower = user_message.lower()
-    _is_briefing_followup = any(kw in _msg_lower for kw in _BRIEFING_FOLLOWUP_KEYWORDS)
-    _recent_briefing: dict | None = None
-    if _is_briefing_followup:
-        _recent_briefing = await asyncio.to_thread(_db_latest_briefing, 12)
+    try:
+        await asyncio.to_thread(_db_add_message, conversation_id, "user", user_message)
+        from backend.config import get_settings
+        history = await asyncio.to_thread(
+            _db_load_history, conversation_id, get_settings().chat_history_limit
+        )
+        convo_summary = await asyncio.to_thread(_db_get_summary, conversation_id)
 
-    # 2. Classify intent with haiku (fast)
-    classify_prompt = f"""Classify this user message and return JSON only.
+        # 2a. Check for briefing follow-up — load recent briefing context if relevant
+        _msg_lower = user_message.lower()
+        _is_briefing_followup = any(kw in _msg_lower for kw in _BRIEFING_FOLLOWUP_KEYWORDS)
+        _recent_briefing: dict | None = None
+        if _is_briefing_followup:
+            _recent_briefing = await asyncio.to_thread(_db_latest_briefing, 12)
+
+        # 2. Classify intent with haiku (fast)
+        classify_prompt = f"""Classify this user message and return JSON only.
 
 User message: "{user_message}"
 
@@ -380,152 +401,152 @@ HERMES = a request that targets the Hermes homelab bot specifically — controll
 NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status"."""
 
-    # Fast-path: /status command bypasses haiku classify
-    _msg_stripped = user_message.strip()
-    _is_status_cmd = (
-        _msg_stripped.lower() == "/status"
-        or _msg_stripped.lower().startswith("/status ")
-    )
-
-    # Budget-reached degrades gracefully at any point below: the haiku classify
-    # and every routing branch can raise BudgetExceeded (router's daily brake).
-    # We catch it, reply with a friendly message, and persist normally — no
-    # exception escapes to FastAPI.
-    intent = "CHAT"  # default; reassigned after Haiku classify (guards BudgetExceeded before classify)
-    try:
-        if _is_status_cmd:
-            raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
-        else:
-            raw_intent = await haiku(classify_prompt, label="chat_classify")
-        intent = "CHAT"
-        try:
-            start = raw_intent.find("{")
-            end = raw_intent.rfind("}") + 1
-            if start >= 0 and end > start:
-                parsed = json.loads(raw_intent[start:end])
-                intent = parsed.get("intent", "CHAT")
-                if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS"):
-                    intent = "CHAT"
-        except Exception:
-            intent = "CHAT"
-
-        logger.info(f"Chat intent={intent} conversation_id={conversation_id}")
-
-        # Build history transcript (exclude the last user message — sent separately)
-        prior = history[:-1]  # last item is the user message we just persisted
-        transcript = "\n".join(
-            f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
-            for m in prior
+        # Fast-path: /status command bypasses haiku classify
+        _msg_stripped = user_message.strip()
+        _is_status_cmd = (
+            _msg_stripped.lower() == "/status"
+            or _msg_stripped.lower().startswith("/status ")
         )
-        if convo_summary:
-            transcript = (
-                f"[Earlier conversation summary]\n{convo_summary}\n\n[Recent messages]\n{transcript}"
-                if transcript
-                else f"[Earlier conversation summary]\n{convo_summary}"
-            )
 
-        reply = ""
-
-        # 3. Route by intent
-        if intent == "CHAT":
-            from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
-            from backend.agents import facts, memory
-
-            results = await asyncio.gather(
-                homeassistant.fetch(),
-                unraid.fetch(),
-                channels_dvr.fetch(),
-                adguard.fetch(),
-                weather.fetch(),
-                memory.vault_recall(user_message),
-                memory.latest_briefing_seed(),
-                facts.facts_recall(user_message),
-                return_exceptions=True,
-            )
-            ha, unraid_d, channels, ag, wx, vault_str, briefing_str, facts_str = results
-            # Coerce any exception results from memory/facts fns to empty string
-            if isinstance(vault_str, Exception):
-                vault_str = ""
-            if isinstance(briefing_str, Exception):
-                briefing_str = ""
-            if isinstance(facts_str, Exception):
-                facts_str = ""
-            snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
-
-            memory_block = memory.assemble(vault_str, briefing_str, facts_str)
-
-            # Feature 3: inject full briefing context for follow-up questions
-            if _recent_briefing and _is_briefing_followup:
-                _b_content = _recent_briefing.get("content", "")
-                _b_ctx = _recent_briefing.get("context_json")
-                _b_ts = _recent_briefing.get("created_at", "")
-                _briefing_inject = f"\n\n[TODAY'S BRIEFING ({_b_ts[:16] if _b_ts else 'recent'})]:\n{_b_content}"
-                if _b_ctx:
-                    try:
-                        _ctx_parsed = json.loads(_b_ctx)
-                        _briefing_inject += f"\n\n[BRIEFING RAW CONTEXT]:\n{json.dumps(_ctx_parsed, indent=2)}"
-                    except Exception:
-                        pass
-                memory_block = (memory_block + _briefing_inject) if memory_block else _briefing_inject.lstrip("\n\n")
-
-            memory_inject = (memory_block + "\n\n") if memory_block else ""
-            system = [
-                {"type": "text", "text": CHAT_SYSTEM_STATIC, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _CHAT_SYSTEM_DYNAMIC.format(memory=memory_inject, snapshot=snapshot)},
-            ]
-            user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
-                           else f"User: {user_message}")
+        # Budget-reached degrades gracefully at any point below: the haiku classify
+        # and every routing branch can raise BudgetExceeded (router's daily brake).
+        # We catch it, reply with a friendly message, and persist normally — no
+        # exception escapes to FastAPI.
+        intent = "CHAT"  # default; reassigned after Haiku classify (guards BudgetExceeded before classify)
+        try:
+            if _is_status_cmd:
+                raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
+            else:
+                raw_intent = await haiku(classify_prompt, label="chat_classify")
+            intent = "CHAT"
             try:
-                if token_queue is not None:
-                    reply = ""
-                    async for token in stream_sonnet(user_prompt, system=system, web_search=True):
-                        reply += token
-                        await token_queue.put(token)
-                else:
-                    reply = await sonnet(user_prompt, system=system, web_search=True, label="chat_reply_websearch")
-            except BudgetExceeded:
-                raise
-            except Exception as e:
-                logger.warning(f"Chat web search unavailable, answering without it: {e}")
-                if token_queue is not None:
-                    reply = ""
-                    async for token in stream_sonnet(user_prompt, system=system):
-                        reply += token
-                        await token_queue.put(token)
-                else:
-                    reply = await sonnet(user_prompt, system=system, label="chat_reply")
+                start = raw_intent.find("{")
+                end = raw_intent.rfind("}") + 1
+                if start >= 0 and end > start:
+                    parsed = json.loads(raw_intent[start:end])
+                    intent = parsed.get("intent", "CHAT")
+                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS"):
+                        intent = "CHAT"
+            except Exception:
+                intent = "CHAT"
 
-        elif intent == "HOME_CONTROL":
-            from backend.integrations import homeassistant
+            logger.info(f"Chat intent={intent} conversation_id={conversation_id}")
 
-            try:
-                ha_data = await homeassistant.fetch()
-                _all_controllable = [
-                    {
-                        "entity_id": e["entity_id"],
-                        "friendly_name": (e.get("attributes") or {}).get("friendly_name", e["entity_id"]),
-                        "state": e.get("state", "unknown"),
-                    }
-                    for e in ha_data.entities
-                    if e.get("entity_id", "").split(".")[0] in _CONTROLLABLE_DOMAINS
-                ]
-                # Rank by token overlap with user message so the intended entity
-                # is always in the top-60 even across 1,000+ controllable entities.
-                _msg_tokens = {t.lower() for t in user_message.split() if len(t) > 2}
-                _all_controllable.sort(
-                    key=lambda ent: sum(
-                        1 for t in _msg_tokens
-                        if t in f"{ent['entity_id']} {ent['friendly_name']}".lower()
-                    ),
-                    reverse=True,
+            # Build history transcript (exclude the last user message — sent separately)
+            prior = history[:-1]  # last item is the user message we just persisted
+            transcript = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+                for m in prior
+            )
+            if convo_summary:
+                transcript = (
+                    f"[Earlier conversation summary]\n{convo_summary}\n\n[Recent messages]\n{transcript}"
+                    if transcript
+                    else f"[Earlier conversation summary]\n{convo_summary}"
                 )
-                controllable = _all_controllable[:12]
 
-                if not controllable:
-                    reply = "No controllable devices found in Home Assistant."
-                else:
-                    entity_list = json.dumps(controllable)
-                    pick_prompt = f"""The user wants to control or configure a Home Assistant entity.
+            reply = ""
+
+            # 3. Route by intent
+            if intent == "CHAT":
+                from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
+                from backend.agents import facts, memory
+
+                results = await asyncio.gather(
+                    homeassistant.fetch(),
+                    unraid.fetch(),
+                    channels_dvr.fetch(),
+                    adguard.fetch(),
+                    weather.fetch(),
+                    memory.vault_recall(user_message),
+                    memory.latest_briefing_seed(),
+                    facts.facts_recall(user_message),
+                    return_exceptions=True,
+                )
+                ha, unraid_d, channels, ag, wx, vault_str, briefing_str, facts_str = results
+                # Coerce any exception results from memory/facts fns to empty string
+                if isinstance(vault_str, Exception):
+                    vault_str = ""
+                if isinstance(briefing_str, Exception):
+                    briefing_str = ""
+                if isinstance(facts_str, Exception):
+                    facts_str = ""
+                snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
+
+                memory_block = memory.assemble(vault_str, briefing_str, facts_str)
+
+                # Feature 3: inject full briefing context for follow-up questions
+                if _recent_briefing and _is_briefing_followup:
+                    _b_content = _recent_briefing.get("content", "")
+                    _b_ctx = _recent_briefing.get("context_json")
+                    _b_ts = _recent_briefing.get("created_at", "")
+                    _briefing_inject = f"\n\n[TODAY'S BRIEFING ({_b_ts[:16] if _b_ts else 'recent'})]:\n{_b_content}"
+                    if _b_ctx:
+                        try:
+                            _ctx_parsed = json.loads(_b_ctx)
+                            _briefing_inject += f"\n\n[BRIEFING RAW CONTEXT]:\n{json.dumps(_ctx_parsed, indent=2)}"
+                        except Exception:
+                            pass
+                    memory_block = (memory_block + _briefing_inject) if memory_block else _briefing_inject.lstrip("\n\n")
+
+                memory_inject = (memory_block + "\n\n") if memory_block else ""
+                system = [
+                    {"type": "text", "text": CHAT_SYSTEM_STATIC, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": _CHAT_SYSTEM_DYNAMIC.format(memory=memory_inject, snapshot=snapshot)},
+                ]
+                user_prompt = (f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
+                               else f"User: {user_message}")
+                try:
+                    if token_queue is not None:
+                        reply = ""
+                        async for token in stream_sonnet(user_prompt, system=system, web_search=True):
+                            reply += token
+                            await token_queue.put(token)
+                    else:
+                        reply = await sonnet(user_prompt, system=system, web_search=True, label="chat_reply_websearch")
+                except BudgetExceeded:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Chat web search unavailable, answering without it: {e}")
+                    if token_queue is not None:
+                        reply = ""
+                        async for token in stream_sonnet(user_prompt, system=system):
+                            reply += token
+                            await token_queue.put(token)
+                    else:
+                        reply = await sonnet(user_prompt, system=system, label="chat_reply")
+
+            elif intent == "HOME_CONTROL":
+                from backend.integrations import homeassistant
+
+                try:
+                    ha_data = await homeassistant.fetch()
+                    _all_controllable = [
+                        {
+                            "entity_id": e["entity_id"],
+                            "friendly_name": (e.get("attributes") or {}).get("friendly_name", e["entity_id"]),
+                            "state": e.get("state", "unknown"),
+                        }
+                        for e in ha_data.entities
+                        if e.get("entity_id", "").split(".")[0] in _CONTROLLABLE_DOMAINS
+                    ]
+                    # Rank by token overlap with user message so the intended entity
+                    # is always in the top-60 even across 1,000+ controllable entities.
+                    _msg_tokens = {t.lower() for t in user_message.split() if len(t) > 2}
+                    _all_controllable.sort(
+                        key=lambda ent: sum(
+                            1 for t in _msg_tokens
+                            if t in f"{ent['entity_id']} {ent['friendly_name']}".lower()
+                        ),
+                        reverse=True,
+                    )
+                    controllable = _all_controllable[:12]
+
+                    if not controllable:
+                        reply = "No controllable devices found in Home Assistant."
+                    else:
+                        entity_list = json.dumps(controllable)
+                        pick_prompt = f"""The user wants to control or configure a Home Assistant entity.
 
 User request: "{user_message}"
 
@@ -549,99 +570,99 @@ IMPORTANT: `lock.*` entities are PHYSICAL door locks (deadbolts, August locks, e
 If no entity matches, return:
 {{"entity_id": null, "service": null, "value": null, "option": null}}"""
 
-                    raw_pick = await haiku(pick_prompt, label="chat_lane_pick")
-                    entity_id = None
-                    service = None
-                    value = None
-                    option = None
-                    try:
-                        ps = raw_pick.find("{")
-                        pe = raw_pick.rfind("}") + 1
-                        if ps >= 0 and pe > ps:
-                            pick = json.loads(raw_pick[ps:pe])
-                            entity_id = pick.get("entity_id")
-                            service = pick.get("service")
-                            value = pick.get("value")
-                            option = pick.get("option")
-                    except Exception:
-                        pass
+                        raw_pick = await haiku(pick_prompt, label="chat_lane_pick")
+                        entity_id = None
+                        service = None
+                        value = None
+                        option = None
+                        try:
+                            ps = raw_pick.find("{")
+                            pe = raw_pick.rfind("}") + 1
+                            if ps >= 0 and pe > ps:
+                                pick = json.loads(raw_pick[ps:pe])
+                                entity_id = pick.get("entity_id")
+                                service = pick.get("service")
+                                value = pick.get("value")
+                                option = pick.get("option")
+                        except Exception:
+                            pass
 
-                    if not entity_id or not service:
-                        reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\", \"set the thermostat to 72\", or \"disable the away automation\"."
-                    else:
-                        domain = entity_id.split(".")[0]
-                        friendly = next(
-                            (e["friendly_name"] for e in controllable if e["entity_id"] == entity_id),
-                            entity_id,
-                        )
-
-                        # Build service_data for parameterised services.
-                        if service == "set_temperature" and value is not None:
-                            service_data = {"entity_id": entity_id, "temperature": value}
-                        elif service == "set_value" and value is not None:
-                            service_data = {"entity_id": entity_id, "value": value}
-                        elif service == "select_option" and option:
-                            service_data = {"entity_id": entity_id, "option": option}
+                        if not entity_id or not service:
+                            reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\", \"set the thermostat to 72\", or \"disable the away automation\"."
                         else:
-                            service_data = {}
-
-                        # Guard: parameterised services with missing params.
-                        if service == "set_temperature" and value is None:
-                            reply = f"What temperature would you like to set {friendly} to?"
-                        elif service == "set_value" and value is None:
-                            reply = f"What value would you like to set {friendly} to?"
-                        elif service == "select_option" and not option:
-                            reply = f"Which option would you like to select for {friendly}?"
-                        else:
-                            from backend.safety.broker import Decision, execute_action
-                            res = await execute_action(
-                                actor="user",
-                                kind="ha_service",
-                                target=entity_id,
-                                payload={"domain": domain, "service": service, "service_data": service_data},
+                            domain = entity_id.split(".")[0]
+                            friendly = next(
+                                (e["friendly_name"] for e in controllable if e["entity_id"] == entity_id),
+                                entity_id,
                             )
-                            if res.decision == Decision.EXECUTED:
-                                reply = {
-                                    "turn_on": f"Turned on {friendly}.",
-                                    "turn_off": f"Turned off {friendly}.",
-                                    "toggle": f"Toggled {friendly}.",
-                                    "lock": f"Locked {friendly}.",
-                                    "unlock": f"Unlocked {friendly}.",
-                                    "open_cover": f"Opened {friendly}.",
-                                    "close_cover": f"Closed {friendly}.",
-                                    "stop_cover": f"Stopped {friendly}.",
-                                    "set_temperature": f"Set {friendly} to {value}°.",
-                                    "set_value": f"Set {friendly} to {value}.",
-                                    "select_option": f"Set {friendly} to {option}.",
-                                }.get(service, f"{service.replace('_', ' ').capitalize()} {friendly}.")
-                            elif res.decision == Decision.FAILED:
-                                reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+
+                            # Build service_data for parameterised services.
+                            if service == "set_temperature" and value is not None:
+                                service_data = {"entity_id": entity_id, "temperature": value}
+                            elif service == "set_value" and value is not None:
+                                service_data = {"entity_id": entity_id, "value": value}
+                            elif service == "select_option" and option:
+                                service_data = {"entity_id": entity_id, "option": option}
                             else:
-                                reply = "That action needs confirmation."
+                                service_data = {}
 
-            except BudgetExceeded:
-                raise  # budget brake reaches the outer handler
-            except Exception as e:
-                reply = f"Home Assistant is not reachable right now: {e}"
+                            # Guard: parameterised services with missing params.
+                            if service == "set_temperature" and value is None:
+                                reply = f"What temperature would you like to set {friendly} to?"
+                            elif service == "set_value" and value is None:
+                                reply = f"What value would you like to set {friendly} to?"
+                            elif service == "select_option" and not option:
+                                reply = f"Which option would you like to select for {friendly}?"
+                            else:
+                                from backend.safety.broker import Decision, execute_action
+                                res = await execute_action(
+                                    actor="user",
+                                    kind="ha_service",
+                                    target=entity_id,
+                                    payload={"domain": domain, "service": service, "service_data": service_data},
+                                )
+                                if res.decision == Decision.EXECUTED:
+                                    reply = {
+                                        "turn_on": f"Turned on {friendly}.",
+                                        "turn_off": f"Turned off {friendly}.",
+                                        "toggle": f"Toggled {friendly}.",
+                                        "lock": f"Locked {friendly}.",
+                                        "unlock": f"Unlocked {friendly}.",
+                                        "open_cover": f"Opened {friendly}.",
+                                        "close_cover": f"Closed {friendly}.",
+                                        "stop_cover": f"Stopped {friendly}.",
+                                        "set_temperature": f"Set {friendly} to {value}°.",
+                                        "set_value": f"Set {friendly} to {value}.",
+                                        "select_option": f"Set {friendly} to {option}.",
+                                    }.get(service, f"{service.replace('_', ' ').capitalize()} {friendly}.")
+                                elif res.decision == Decision.FAILED:
+                                    reply = f"Failed to {service.replace('_', ' ')} {friendly}: {res.error}"
+                                else:
+                                    reply = "That action needs confirmation."
 
-        elif intent == "TASK":
-            from backend.agents.orchestrator import run_task
-            result = await run_task(user_message)
-            if result.success:
-                reply = result.output[-1] if result.output else "Task completed."
-            else:
-                reply = f"I wasn't able to complete that task: {result.reason}"
+                except BudgetExceeded:
+                    raise  # budget brake reaches the outer handler
+                except Exception as e:
+                    reply = f"Home Assistant is not reachable right now: {e}"
 
-        elif intent == "HERMES":
-            from backend.safety import hermes_actions
-            from backend.safety.broker import Decision, execute_action
+            elif intent == "TASK":
+                from backend.agents.orchestrator import run_task
+                result = await run_task(user_message)
+                if result.success:
+                    reply = result.output[-1] if result.output else "Task completed."
+                else:
+                    reply = f"I wasn't able to complete that task: {result.reason}"
 
-            # Haiku verb-pick: map the request onto the structured allowlist. A
-            # known verb with valid args goes through the structured `hermes_action`
-            # path; anything else falls back to free-text relay (kind="hermes_relay"),
-            # which is allowed only because this is a USER action.
-            menu = json.dumps(hermes_actions.allowed_verbs())
-            verb_prompt = f"""The user wants the Hermes homelab bot to do something.
+            elif intent == "HERMES":
+                from backend.safety import hermes_actions
+                from backend.safety.broker import Decision, execute_action
+
+                # Haiku verb-pick: map the request onto the structured allowlist. A
+                # known verb with valid args goes through the structured `hermes_action`
+                # path; anything else falls back to free-text relay (kind="hermes_relay"),
+                # which is allowed only because this is a USER action.
+                menu = json.dumps(hermes_actions.allowed_verbs())
+                verb_prompt = f"""The user wants the Hermes homelab bot to do something.
 
 User request: "{user_message}"
 
@@ -656,52 +677,52 @@ Fill `args` with every required_arg and enum_arg the chosen verb needs (enum_arg
 must use one of the listed values). If nothing matches, return:
 {{"verb": "unknown", "args": {{}}}}"""
 
-            verb = "unknown"
-            args: dict = {}
-            try:
-                raw_verb = await haiku(verb_prompt, label="chat_hermes_verb")
-                vs = raw_verb.find("{")
-                ve = raw_verb.rfind("}") + 1
-                if vs >= 0 and ve > vs:
-                    vd = json.loads(raw_verb[vs:ve])
-                    verb = vd.get("verb", "unknown")
-                    args = vd.get("args") or {}
-                    if not isinstance(args, dict):
-                        args = {}
-            except BudgetExceeded:
-                raise  # budget brake reaches the outer handler
-            except Exception:
-                verb, args = "unknown", {}
+                verb = "unknown"
+                args: dict = {}
+                try:
+                    raw_verb = await haiku(verb_prompt, label="chat_hermes_verb")
+                    vs = raw_verb.find("{")
+                    ve = raw_verb.rfind("}") + 1
+                    if vs >= 0 and ve > vs:
+                        vd = json.loads(raw_verb[vs:ve])
+                        verb = vd.get("verb", "unknown")
+                        args = vd.get("args") or {}
+                        if not isinstance(args, dict):
+                            args = {}
+                except BudgetExceeded:
+                    raise  # budget brake reaches the outer handler
+                except Exception:
+                    verb, args = "unknown", {}
 
-            if hermes_actions.is_allowed(verb) and hermes_actions.validate_args(verb, args) is None:
-                res = await execute_action(
-                    actor="user",
-                    kind="hermes_action",
-                    target="hermes",
-                    payload={"verb": verb, "args": args},
+                if hermes_actions.is_allowed(verb) and hermes_actions.validate_args(verb, args) is None:
+                    res = await execute_action(
+                        actor="user",
+                        kind="hermes_action",
+                        target="hermes",
+                        payload={"verb": verb, "args": args},
+                    )
+                else:
+                    # Fallback: free-text relay (user-only path, behaviour unchanged).
+                    res = await execute_action(
+                        actor="user",
+                        kind="hermes_relay",
+                        target="hermes",
+                        payload={"message": user_message},
+                    )
+
+                # actor=user always allows, so relay still runs; its return string flows
+                # back via res.result["response"] — user-visible reply is unchanged.
+                reply = (
+                    (res.result or {}).get("response")
+                    if res.decision == Decision.EXECUTED
+                    else (res.error or "Hermes action could not be completed.")
                 )
-            else:
-                # Fallback: free-text relay (user-only path, behaviour unchanged).
-                res = await execute_action(
-                    actor="user",
-                    kind="hermes_relay",
-                    target="hermes",
-                    payload={"message": user_message},
-                )
 
-            # actor=user always allows, so relay still runs; its return string flows
-            # back via res.result["response"] — user-visible reply is unchanged.
-            reply = (
-                (res.result or {}).get("response")
-                if res.decision == Decision.EXECUTED
-                else (res.error or "Hermes action could not be completed.")
-            )
+            elif intent == "NOTE":
+                import httpx as _httpx
+                from backend.config import get_settings as _get_settings
 
-        elif intent == "NOTE":
-            import httpx as _httpx
-            from backend.config import get_settings as _get_settings
-
-            extract_prompt = f"""The user wants to save a note to their Obsidian vault.
+                extract_prompt = f"""The user wants to save a note to their Obsidian vault.
 
 User request: "{user_message}"
 
@@ -713,113 +734,125 @@ Return JSON only:
 
 If they're saving something from the conversation, use the relevant prior assistant message as the content. Otherwise use what they dictated."""
 
-            title, content = "Chat Note", user_message
-            try:
-                raw_note = await haiku(extract_prompt, label="chat_note_extract")
-                ns = raw_note.find("{")
-                ne = raw_note.rfind("}") + 1
-                if ns >= 0 and ne > ns:
-                    nd = json.loads(raw_note[ns:ne])
-                    title = nd.get("title") or "Chat Note"
-                    content = nd.get("content") or user_message
-            except BudgetExceeded:
-                raise  # budget brake reaches the outer handler
-            except Exception:
-                pass
+                title, content = "Chat Note", user_message
+                try:
+                    raw_note = await haiku(extract_prompt, label="chat_note_extract")
+                    ns = raw_note.find("{")
+                    ne = raw_note.rfind("}") + 1
+                    if ns >= 0 and ne > ns:
+                        nd = json.loads(raw_note[ns:ne])
+                        title = nd.get("title") or "Chat Note"
+                        content = nd.get("content") or user_message
+                except BudgetExceeded:
+                    raise  # budget brake reaches the outer handler
+                except Exception:
+                    pass
 
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-            body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
-            safe_title = title.replace("/", "-").replace("\\", "-")
-            _file_ts = datetime.now().strftime("%Y%m%d-%H%M")
-            filename = f"{safe_title}-{_file_ts}.md"
-            try:
-                _settings = _get_settings()
-                _mcp_url = _settings.brain_mcp_url.rstrip("/")
-                _token = getattr(_settings, "brain_mcp_token", "")
-                _headers = {"Authorization": f"Bearer {_token}"} if _token else {}
-                async with _httpx.AsyncClient(timeout=10) as _client:
-                    _resp = await _client.post(
-                        f"{_mcp_url}/raw",
-                        json={"content": body, "filename": filename},
-                        headers=_headers,
-                    )
-                    _resp.raise_for_status()
-                reply = f'Saved "{title}" to your vault (Brain/raw/{filename}).'
-            except Exception as e:
-                reply = f"Couldn't save the note: {e}"
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+                body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
+                safe_title = title.replace("/", "-").replace("\\", "-")
+                _file_ts = datetime.now().strftime("%Y%m%d-%H%M")
+                filename = f"{safe_title}-{_file_ts}.md"
+                try:
+                    _settings = _get_settings()
+                    _mcp_url = _settings.brain_mcp_url.rstrip("/")
+                    _token = getattr(_settings, "brain_mcp_token", "")
+                    _headers = {"Authorization": f"Bearer {_token}"} if _token else {}
+                    async with _httpx.AsyncClient(timeout=10) as _client:
+                        _resp = await _client.post(
+                            f"{_mcp_url}/raw",
+                            json={"content": body, "filename": filename},
+                            headers=_headers,
+                        )
+                        _resp.raise_for_status()
+                    reply = f'Saved "{title}" to your vault (Brain/raw/{filename}).'
+                except Exception as e:
+                    reply = f"Couldn't save the note: {e}"
 
-        elif intent == "STATUS":
-            from backend.integrations import unifi, unraid, channels_dvr, hermes
+            elif intent == "STATUS":
+                from backend.integrations import unifi, unraid, channels_dvr, hermes
 
-            status_results = await asyncio.gather(
-                unifi.fetch(),
-                unraid.fetch(),
-                channels_dvr.fetch(),
-                hermes.get_status(),
-                return_exceptions=True,
-            )
-            unifi_d, unraid_d, channels_d, hermes_d = status_results
-
-            lines = []
-
-            # UniFi
-            if isinstance(unifi_d, Exception):
-                lines.append("UniFi: unavailable")
-            else:
-                lines.append(f"UniFi: {unifi_d.client_count} clients online")
-
-            # Unraid
-            if isinstance(unraid_d, Exception):
-                lines.append("Unraid: unavailable")
-            else:
-                free_gb = unraid_d.storage_total_gb - unraid_d.storage_used_gb
-                lines.append(
-                    f"Unraid: array {unraid_d.array_status}, "
-                    f"{free_gb:.1f} GB free, "
-                    f"{len(unraid_d.docker_containers)} containers"
+                status_results = await asyncio.gather(
+                    unifi.fetch(),
+                    unraid.fetch(),
+                    channels_dvr.fetch(),
+                    hermes.get_status(),
+                    return_exceptions=True,
                 )
+                unifi_d, unraid_d, channels_d, hermes_d = status_results
 
-            # Channels DVR
-            if isinstance(channels_d, Exception):
-                lines.append("Channels: unavailable")
-            else:
-                rec_now = channels_d.recording_now
-                rec_str = ", ".join(r.get("title", "?") for r in rec_now) if rec_now else "idle"
-                lines.append(f"Channels: recording {rec_str}")
+                lines = []
 
-            # Hermes
-            if isinstance(hermes_d, Exception):
-                lines.append("Hermes: unavailable")
-            else:
-                lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
+                # UniFi
+                if isinstance(unifi_d, Exception):
+                    lines.append("UniFi: unavailable")
+                else:
+                    lines.append(f"UniFi: {unifi_d.client_count} clients online")
 
-            reply = "\n".join(lines)
+                # Unraid
+                if isinstance(unraid_d, Exception):
+                    lines.append("Unraid: unavailable")
+                else:
+                    free_gb = unraid_d.storage_total_gb - unraid_d.storage_used_gb
+                    lines.append(
+                        f"Unraid: array {unraid_d.array_status}, "
+                        f"{free_gb:.1f} GB free, "
+                        f"{len(unraid_d.docker_containers)} containers"
+                    )
 
-        budget_exceeded = False
-    except BudgetExceeded:
-        # Spending cap reached anywhere above — degrade gracefully. The reply is
-        # persisted below like any other; no exception escapes to FastAPI.
-        logger.info("Chat hit budget cap; returning friendly budget-reached reply")
-        reply = _BUDGET_REACHED_REPLY
-        budget_exceeded = True
+                # Channels DVR
+                if isinstance(channels_d, Exception):
+                    lines.append("Channels: unavailable")
+                else:
+                    rec_now = channels_d.recording_now
+                    rec_str = ", ".join(r.get("title", "?") for r in rec_now) if rec_now else "idle"
+                    lines.append(f"Channels: recording {rec_str}")
 
-    # 4. Persist reply and update conversation timestamp
-    await asyncio.to_thread(_db_add_message, conversation_id, "assistant", reply)
-    await asyncio.to_thread(_db_touch_conversation, conversation_id)
+                # Hermes
+                if isinstance(hermes_d, Exception):
+                    lines.append("Hermes: unavailable")
+                else:
+                    lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
 
-    # 5. Rolling summarization (best-effort; swallows its own errors). Skipped
-    # once the daily cap is already hit this turn — router._run's universal
-    # budget brake would just reject this call too, so it's a guaranteed-wasted
-    # DB round-trip + LLM attempt on every message for the rest of the day.
-    if not budget_exceeded:
-        await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
+                reply = "\n".join(lines)
 
-    # 6. Fact extraction — only for conversational intents (not imperatives/status)
-    if intent in ("CHAT", "TASK", "NOTE"):
-        from backend.agents import facts
-        await facts.extract_and_store(user_message, conversation_id)
+            budget_exceeded = False
+        except BudgetExceeded:
+            # Spending cap reached anywhere above — degrade gracefully. The reply is
+            # persisted below like any other; no exception escapes to FastAPI.
+            logger.info("Chat hit budget cap; returning friendly budget-reached reply")
+            reply = _BUDGET_REACHED_REPLY
+            budget_exceeded = True
 
-    if token_queue is not None:
-        await token_queue.put(None)  # sentinel: stream done
+        # 4. Persist reply and update conversation timestamp
+        await asyncio.to_thread(_db_add_message, conversation_id, "assistant", reply)
+        await asyncio.to_thread(_db_touch_conversation, conversation_id)
 
-    return {"conversation_id": conversation_id, "reply": reply}
+        # 5. Rolling summarization (best-effort; swallows its own errors). Skipped
+        # once the daily cap is already hit this turn — router._run's universal
+        # budget brake would just reject this call too, so it's a guaranteed-wasted
+        # DB round-trip + LLM attempt on every message for the rest of the day.
+        if not budget_exceeded:
+            await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
+
+        # 6. Fact extraction — only for conversational intents (not imperatives/status)
+        if intent in ("CHAT", "TASK", "NOTE"):
+            from backend.agents import facts
+            await facts.extract_and_store(user_message, conversation_id)
+
+        if token_queue is not None:
+            await token_queue.put(None)  # sentinel: stream done
+
+        return {"conversation_id": conversation_id, "reply": reply}
+    except Exception as exc:
+        _trace_status = "error"
+        _trace_error = str(exc)
+        raise
+    finally:
+        # Best-effort trace close, wrapped so a bookkeeping failure here can
+        # never mask the real return value / exception from chat().
+        try:
+            await asyncio.to_thread(close_trace, trace_id, _trace_status, _trace_error)
+        except Exception as e:
+            logger.warning(f"trace close failed (non-fatal): {e}")
+        reset_trace_context(_trace_token)
