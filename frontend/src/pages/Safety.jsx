@@ -878,6 +878,11 @@ export default function Safety() {
                 <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
                   {relativeTime(a.created_at)}
                 </span>
+                {a.judge_reason && (
+                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55 }}>
+                    Judge: {a.judge_reason}
+                  </div>
+                )}
                 <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                   <button
                     onClick={() => handleConfirm(a.id)}
@@ -1473,6 +1478,9 @@ export default function Safety() {
             {actions.map((a) => (
               <div key={a.id} style={rowStyle}>
                 <Badge label={a.decision || 'unknown'} t={tone(a.decision)} />
+                {a.judge_verdict != null && (
+                  <Badge label={`judge: ${a.judge_verdict}`} t={tone(a.judge_verdict)} />
+                )}
                 <span style={{ fontSize: '12px', color: '#8a96ad' }}>
                   {[a.actor, a.kind].filter(Boolean).join(' / ')}
                 </span>
