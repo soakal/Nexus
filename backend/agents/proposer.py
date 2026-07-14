@@ -238,6 +238,14 @@ async def propose_goals_tick() -> dict:
             homeassistant, unraid, channels_dvr, adguard, weather,
         )
 
+        # Retire proposals past their TTL every tick (runs even when autonomy
+        # is off, below) so stale proposals can't pile up in the Safety UI /
+        # digest -- expiry used to be applied only lazily inside approve().
+        try:
+            await goals.expire_stale_proposals()
+        except Exception as _e:
+            logger.debug("proposer: expire_stale_proposals failed (best-effort): %s", _e)
+
         # ------------------------------------------------------------------
         # Kill switch — first guard. Check BEFORE any Opus call or DB write.
         # ------------------------------------------------------------------

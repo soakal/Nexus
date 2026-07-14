@@ -606,6 +606,52 @@ async def reject(goal_id: int, *, reason: str | None = None) -> dict:
     return {"status": "conflict", "current": g["status"]}
 
 
+# A proposal with no explicit TTL still shouldn't linger forever; one older than
+# this with no expires_at is swept as stale too. (The four that piled up in the
+# 2026-07-14 digest included a no-TTL Channels-DVR one proposed 2026-06-18.)
+STALE_PROPOSAL_MAX_AGE_DAYS = 7
+
+
+def _db_expire_stale_proposals(now: datetime) -> int:
+    """Abandon proposed goals whose TTL has passed (or, for proposals with no
+    expires_at, older than STALE_PROPOSAL_MAX_AGE_DAYS). Returns the count swept.
+
+    Without this, a proposed goal nobody approves/rejects stays 'proposed'
+    forever PAST its expires_at (expiry was only ever applied lazily inside
+    approve()), so it keeps resurfacing in the daily autonomy digest as if it
+    were a current condition -- e.g. a 'garage door is open' proposal from weeks
+    ago still showing after the door was long since closed. Called via
+    asyncio.to_thread.
+    """
+    from sqlalchemy import and_, or_
+
+    cutoff = now - timedelta(days=STALE_PROPOSAL_MAX_AGE_DAYS)
+    with Session(_db_mod.engine) as session:
+        stmt = select(Goal).where(Goal.status == "proposed").where(
+            or_(
+                and_(Goal.expires_at.isnot(None), Goal.expires_at < now),  # type: ignore[attr-defined]
+                and_(Goal.expires_at.is_(None), Goal.proposal_at < cutoff),  # type: ignore[attr-defined]
+            )
+        )
+        rows = session.exec(stmt).all()
+        for g in rows:
+            g.status = "abandoned"
+            g.rejection_reason = "expired: proposal TTL passed, auto-swept"
+            g.updated_at = now
+            session.add(g)
+        if rows:
+            session.commit()
+        return len(rows)
+
+
+async def expire_stale_proposals() -> int:
+    """Sweep proposed goals past their TTL to 'abandoned'. Best-effort, safe to
+    call on any schedule; returns the number swept."""
+    import asyncio
+
+    return await asyncio.to_thread(_db_expire_stale_proposals, datetime.utcnow())
+
+
 # Editable fields (proposed goals only) and the risk vocabulary we accept.
 _EDITABLE_GOAL_FIELDS = {"title", "description", "risk", "category", "cadence", "success_criteria"}
 _VALID_RISKS = {"low", "medium", "high", "unclassifiable"}

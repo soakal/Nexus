@@ -113,6 +113,15 @@ async def build_autonomy_digest() -> str:
         since = datetime.utcnow() - timedelta(hours=24)
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
 
+        # Retire proposals past their TTL BEFORE reading the proposed list, so
+        # the digest never shows a weeks-old expired proposal (e.g. a garage-
+        # door-open alert whose door was closed long ago) as if it were current.
+        try:
+            from backend.agents import goals
+            await goals.expire_stale_proposals()
+        except Exception as e:
+            logger.debug(f"digest: expire_stale_proposals failed (best-effort): {e}")
+
         # Fan-out all DB reads + governor calls concurrently.
         from backend.safety import governor
 

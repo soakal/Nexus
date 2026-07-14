@@ -118,6 +118,52 @@ def test_fingerprint_ignores_embedded_reading():
 
 
 # ---------------------------------------------------------------------------
+# 1c. expire_stale_proposals — sweep proposals past their TTL (and no-TTL
+# proposals older than the max-age backstop), leave fresh ones alone
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_expire_stale_proposals(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        # (a) expired TTL -> should be swept
+        s.add(Goal(title="Old garage door", description="x", status="proposed",
+                   fingerprint="aaaa1111aaaa1111", proposal_at=now - timedelta(days=18),
+                   expires_at=now - timedelta(days=17)))
+        # (b) no TTL but older than the 7-day backstop -> should be swept
+        s.add(Goal(title="Ancient no-ttl", description="x", status="proposed",
+                   fingerprint="bbbb2222bbbb2222", proposal_at=now - timedelta(days=26),
+                   expires_at=None))
+        # (c) fresh, unexpired TTL -> must be LEFT alone
+        s.add(Goal(title="Fresh proposal", description="x", status="proposed",
+                   fingerprint="cccc3333cccc3333", proposal_at=now,
+                   expires_at=now + timedelta(hours=12)))
+        # (d) no TTL but recent -> must be LEFT alone
+        s.add(Goal(title="Recent no-ttl", description="x", status="proposed",
+                   fingerprint="dddd4444dddd4444", proposal_at=now - timedelta(days=1),
+                   expires_at=None))
+        # (e) already approved + expired -> only 'proposed' is swept, leave it
+        s.add(Goal(title="Approved expired", description="x", status="approved",
+                   fingerprint="eeee5555eeee5555", proposal_at=now - timedelta(days=18),
+                   expires_at=now - timedelta(days=17)))
+        s.commit()
+
+    swept = await goals.expire_stale_proposals()
+    assert swept == 2
+
+    with Session(eng) as s:
+        by_title = {g.title: g.status for g in s.exec(select(Goal)).all()}
+    assert by_title["Old garage door"] == "abandoned"
+    assert by_title["Ancient no-ttl"] == "abandoned"
+    assert by_title["Fresh proposal"] == "proposed"
+    assert by_title["Recent no-ttl"] == "proposed"
+    assert by_title["Approved expired"] == "approved"  # not a proposal, untouched
+
+
+# ---------------------------------------------------------------------------
 # 2. debounce — duplicate active
 # ---------------------------------------------------------------------------
 
