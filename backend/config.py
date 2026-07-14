@@ -77,6 +77,23 @@ class Settings(BaseSettings):
             return {k.strip() for k in v.split(",") if k.strip()}
         return v
 
+    # Action-judge gate (Tier 3 second-opinion check before dispatch).
+    # action_judge_mode: "off" (bypass entirely), "shadow" (log verdict, always
+    # allow), "enforce" (log verdict, can block). action_judge_exempt_kinds are
+    # never sent to the judge (fast-path allow). Override in .env as
+    # comma-separated: ACTION_JUDGE_EXEMPT_KINDS=send_notification,other_kind
+    action_judge_exempt_kinds: set[str] = {"send_notification"}
+    action_judge_model: str = "claude-haiku-4-5-20251001"
+    action_judge_timeout_s: int = 20
+    action_judge_mode: str = "shadow"
+
+    @field_validator("action_judge_exempt_kinds", mode="before")
+    @classmethod
+    def _parse_judge_exempt_kinds(cls, v):
+        if isinstance(v, str):
+            return {k.strip() for k in v.split(",") if k.strip()}
+        return v
+
     # Orchestrator model tiers (per role) — .env-overridable so you can trade cost
     # vs quality without code changes. Defaults are the "balanced/cheaper" profile:
     # Sonnet plans + executes (good results, ~half Opus cost), Haiku verifies (a
@@ -278,6 +295,14 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError) as e:
             raise ValueError(
                 f"Invalid briefing_timezone {self.briefing_timezone!r}: {e}"
+            )
+
+        # action_judge_mode — must be one of the three modes the judge gate understands.
+        valid_judge_modes = {"off", "shadow", "enforce"}
+        if self.action_judge_mode not in valid_judge_modes:
+            raise ValueError(
+                f"Invalid action_judge_mode {self.action_judge_mode!r}; "
+                f"expected one of {sorted(valid_judge_modes)}"
             )
 
         # Required secrets — ANTHROPIC_API_KEY (every agent call bills it) and
