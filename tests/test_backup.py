@@ -268,6 +268,79 @@ def test_prune_batches_across_multiple_chunks(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 4c. prune_old_traces — AgentTrace/TraceSpan retention pruning (cascade)
+# ---------------------------------------------------------------------------
+
+def test_prune_old_traces_precision(tmp_path, monkeypatch):
+    from sqlmodel import Session
+    from backend.database import AgentTrace, TraceSpan
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    now = datetime.utcnow()
+    with Session(engine) as s:
+        fresh = AgentTrace(kind="chat", label="keep", started_at=now)            # fresh — keep
+        old = AgentTrace(kind="chat", label="drop", started_at=now - timedelta(days=40))  # old — prune
+        s.add(fresh)
+        s.add(old)
+        s.commit()
+        s.refresh(fresh)
+        s.refresh(old)
+        # one span under each trace
+        s.add(TraceSpan(trace_id=fresh.id, span_type="llm_call", name="model", started_at=now))
+        s.add(TraceSpan(trace_id=old.id, span_type="llm_call", name="model",
+                        started_at=now - timedelta(days=40)))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.trace_retention_days = 30
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_traces
+    count = prune_old_traces()
+
+    assert count == 1  # one AgentTrace pruned
+    with Session(engine) as s:
+        traces = s.exec(select(AgentTrace)).all()
+        spans = s.exec(select(TraceSpan)).all()
+    assert len(traces) == 1
+    assert traces[0].label == "keep"
+    # the pruned trace's child span must be gone — no orphans
+    assert len(spans) == 1
+    assert spans[0].trace_id == traces[0].id
+
+
+def test_prune_old_traces_zero_is_noop(tmp_path, monkeypatch):
+    from sqlmodel import Session
+    from backend.database import AgentTrace, TraceSpan
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    old = datetime.utcnow() - timedelta(days=9999)
+    with Session(engine) as s:
+        tr = AgentTrace(kind="chat", label="drop", started_at=old)
+        s.add(tr)
+        s.commit()
+        s.refresh(tr)
+        s.add(TraceSpan(trace_id=tr.id, span_type="llm_call", name="model", started_at=old))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.trace_retention_days = 0
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_traces
+    count = prune_old_traces()
+
+    assert count == 0
+    with Session(engine) as s:
+        assert len(s.exec(select(AgentTrace)).all()) == 1, "retention_days=0 must be a no-op"
+        assert len(s.exec(select(TraceSpan)).all()) == 1
+
+
+# ---------------------------------------------------------------------------
 # 5. run_backup_job — forced failure alerts via notify_phone
 # ---------------------------------------------------------------------------
 

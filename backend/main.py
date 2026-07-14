@@ -182,6 +182,7 @@ from backend.api import (
     sources,
     tasks,
     today,
+    traces,
     unraid_api,
     uptime,
     voice,
@@ -207,6 +208,7 @@ app.include_router(unraid_api.router, prefix="/api/unraid", tags=["unraid"])
 app.include_router(homeassistant.router, prefix="/api/ha", tags=["homeassistant"])
 app.include_router(today.router, prefix="/api/today", tags=["today"])
 app.include_router(safety.router, prefix="/api/safety", tags=["safety"])
+app.include_router(traces.router, prefix="/api/traces", tags=["traces"])
 app.include_router(trigger_router, tags=["trigger"])
 
 from backend.auth import require_api_key  # noqa: E402

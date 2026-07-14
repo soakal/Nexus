@@ -164,4 +164,8 @@ export const api = {
     recall: (q) => req('GET', `/facts/recall?query=${encodeURIComponent(q)}`),
     dismiss: (id) => req('POST', `/facts/${id}/dismiss`),
   },
+  traces: {
+    list: (limit, kind) => req('GET', `/traces?limit=${limit || 50}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`),
+    get: (id) => req('GET', `/traces/${id}`),
+  },
 }

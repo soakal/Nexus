@@ -1,7 +1,9 @@
 import asyncio
 import contextvars
 import functools
+import json
 import logging
+from datetime import datetime
 
 import anthropic
 
@@ -27,6 +29,106 @@ def set_task_context(task_id):
 def reset_task_context(token) -> None:
     """Restore the task-id contextvar to its prior value via the Token."""
     _current_task_id.reset(token)
+
+
+# Carries the id of the in-flight AgentTrace row (council w-observability). Set
+# around each traced entry point (chat/briefing/orchestrator/proposer/voice) so
+# nested LLM-call and tool-call choke points can attach spans to it.
+# NOTE: the default ThreadPoolExecutor does NOT copy the contextvars Context across
+# the loop->thread hop, so the best-effort span write does NOT read this var
+# directly -- callers must capture the trace_id on the event loop and thread it
+# into the span-recording call via functools.partial. None when no trace is active.
+_current_trace_id: contextvars.ContextVar = contextvars.ContextVar(
+    "nexus_trace_id", default=None
+)
+
+
+def set_trace_context(trace_id):
+    """Bind the current trace_id for span attribution; returns a reset Token."""
+    return _current_trace_id.set(trace_id)
+
+
+def reset_trace_context(token) -> None:
+    """Restore the trace-id contextvar to its prior value via the Token."""
+    _current_trace_id.reset(token)
+
+
+# Stack of in-flight span ids for the current trace, innermost last. Used to set
+# parent_span_id when a new span is opened while another is still open (e.g. a
+# tool_call span opened during an llm_call span's tool-use loop). Empty tuple
+# when no span is currently open.
+# NOTE: the default ThreadPoolExecutor does NOT copy the contextvars Context across
+# the loop->thread hop, so the best-effort span write does NOT read this var
+# directly -- callers must capture the span stack on the event loop and thread it
+# into the span-recording call via functools.partial.
+_current_span_stack: contextvars.ContextVar = contextvars.ContextVar(
+    "nexus_span_stack", default=()
+)
+
+
+def set_span_stack_context(span_stack):
+    """Bind the current span stack for parent-span attribution; returns a reset Token."""
+    return _current_span_stack.set(span_stack)
+
+
+def reset_span_stack_context(token) -> None:
+    """Restore the span-stack contextvar to its prior value via the Token."""
+    _current_span_stack.reset(token)
+
+
+def open_trace(kind: str, label: str, task_id: int | None = None) -> int | None:
+    """Open an AgentTrace row for a traced single-shot entry point (chat/briefing/
+    proposer/voice). Generic counterpart to orchestrator._open_trace (which stays
+    hardcoded to kind='orchestrator' and untouched) -- parameterized by kind/label/
+    task_id so every remaining entry point can share this one helper.
+
+    Best-effort: any failure is logged and swallowed, returning None so the
+    caller simply runs untraced (set_trace_context(None) is a safe no-op — see
+    _record_trace_span). A trace-bookkeeping problem must never block the
+    entry point it instruments. Synchronous — callers must invoke this via
+    asyncio.to_thread.
+    """
+    try:
+        from sqlmodel import Session
+
+        from backend.database import AgentTrace, engine
+
+        with Session(engine) as session:
+            trace = AgentTrace(
+                kind=kind,
+                label=label[:200],
+                task_id=task_id,
+                status="running",
+            )
+            session.add(trace)
+            session.commit()
+            session.refresh(trace)
+            return trace.id
+    except Exception as e:
+        logger.warning(f"open_trace failed (non-fatal): {e}")
+        return None
+
+
+def close_trace(trace_id: int | None, status: str, error: str | None = None) -> None:
+    """Close an AgentTrace row opened by open_trace. No-op when trace_id is
+    None (open failed, or never attempted). Best-effort — never raises.
+    Synchronous — callers must invoke this via asyncio.to_thread."""
+    if trace_id is None:
+        return
+    try:
+        from sqlmodel import Session
+
+        from backend.database import AgentTrace, engine
+
+        with Session(engine) as session:
+            t = session.get(AgentTrace, trace_id)
+            if t:
+                t.status = status
+                t.ended_at = datetime.utcnow()
+                t.error = error
+                session.commit()
+    except Exception as e:
+        logger.warning(f"close_trace failed (non-fatal): {e}")
 
 
 class TaskAborted(Exception):
@@ -194,6 +296,82 @@ def _record_spend(model: str, resp, label: str, task_id=None) -> None:
         logger.warning(f"_record_spend failed (non-fatal): {e}")
 
 
+def _record_trace_span(
+    span_type: str,
+    name: str,
+    started_at,
+    resp=None,
+    input_summary: str = "",
+    output_summary: str = "",
+    error: str | None = None,
+    trace_id=None,
+    parent_span_id=None,
+) -> None:
+    """Best-effort: insert a TraceSpan row for one LLM/tool call within a trace.
+
+    No-op when `trace_id` is None -- the common case for calls made outside a
+    traced entry point (traced entry points such as chat/briefing are wired in
+    a later council w-observability step). Whole body is wrapped in
+    try/except-everything, mirroring `_record_spend`: a logging failure must
+    NEVER crash the LLM response.
+
+    `trace_id`/`parent_span_id` are captured by the CALLER on the event loop
+    (where `_current_trace_id`/`_current_span_stack` are set) and threaded down
+    via functools.partial -- these contextvars do NOT survive the default
+    ThreadPoolExecutor hop (same reasoning as `_record_spend`'s task_id), so we
+    do not read the contextvars here.
+
+    `resp` (a Messages API response) is optional and used, best-effort, to
+    pull token counts + cost for `span_type="llm_call"`; an unparseable usage
+    shape (e.g. a MagicMock test response) still records the span, minus
+    tokens/cost. `tool_call` spans (a later step) pass `resp=None`.
+    """
+    if trace_id is None:
+        return
+    try:
+        tokens_in = tokens_out = None
+        cost_usd = None
+        if resp is not None:
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                try:
+                    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                    cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+                    tokens_in, tokens_out = input_tokens, output_tokens
+                    cost_usd = _compute_cost(name, input_tokens, output_tokens, cache_creation, cache_read)
+                except (TypeError, ValueError):
+                    pass  # unparseable usage -- span still recorded, sans tokens/cost
+
+        from sqlmodel import Session
+
+        from backend.database import TraceSpan, engine
+
+        ended_at = datetime.utcnow()
+        duration_ms = int((ended_at - started_at).total_seconds() * 1000) if started_at else None
+
+        with Session(engine) as session:
+            session.add(TraceSpan(
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+                span_type=span_type,
+                name=name,
+                started_at=started_at or ended_at,
+                ended_at=ended_at,
+                duration_ms=duration_ms,
+                input_summary=(input_summary[:1000] if input_summary else None),
+                output_summary=(output_summary[:1000] if output_summary else None),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cost_usd=cost_usd,
+                error=error,
+            ))
+            session.commit()
+    except Exception as e:  # best-effort — never break the response
+        logger.warning(f"_record_trace_span failed (non-fatal): {e}")
+
+
 def get_client() -> anthropic.Anthropic:
     from backend.config import get_settings
     return anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
@@ -240,11 +418,13 @@ def _with_tools_cache(tools: list) -> list:
     return out
 
 
-def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None) -> str:
+def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None, trace_id=None, parent_span_id=None) -> str:
     """Blocking Anthropic call. Must be run in an executor, never on the loop.
 
     `task_id` is captured on the event loop by `_run` and passed in here (the
     contextvar does not cross the executor hop) so the spend row is attributed.
+    `trace_id`/`parent_span_id` are captured the same way (see `_record_trace_span`)
+    so the best-effort llm_call span is attached to the right trace/parent.
     """
     client = get_client()
     kwargs = {
@@ -256,6 +436,7 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
         kwargs["system"] = _as_cached_system(system)
     if web_search:
         kwargs["tools"] = [_WEB_SEARCH_TOOL]
+    span_started_at = datetime.utcnow()
     resp = client.messages.create(**kwargs)
     text = _extract_text(resp)
     # Best-effort spend logging. This runs INSIDE the executor worker thread
@@ -266,6 +447,16 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
         _record_spend(model, resp, label, task_id)
     except Exception as e:  # never let metering break the response
         logger.warning(f"spend logging failed (non-fatal): {e}")
+    # Best-effort trace span (council w-observability). Same in-thread
+    # reasoning as the spend write above -- no-op when no trace is active.
+    try:
+        _record_trace_span(
+            "llm_call", model, span_started_at, resp=resp,
+            input_summary=prompt, output_summary=text,
+            trace_id=trace_id, parent_span_id=parent_span_id,
+        )
+    except Exception as e:  # never let tracing break the response
+        logger.warning(f"trace span logging failed (non-fatal): {e}")
     return text
 
 
@@ -344,16 +535,20 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
     """
     await _budget_brake()
 
-    # Capture the task_id contextvar HERE (on the event loop, where it is set);
-    # it does not survive the run_in_executor hop, so we thread it down explicitly.
+    # Capture the task_id/trace_id/span_stack contextvars HERE (on the event
+    # loop, where they are set); none survive the run_in_executor hop, so we
+    # thread them down explicitly.
     task_id = _current_task_id.get()
+    trace_id = _current_trace_id.get()
+    span_stack = _current_span_stack.get()
+    parent_span_id = span_stack[-1] if span_stack else None
 
     loop = asyncio.get_event_loop()
-    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id)
+    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id)
     return await loop.run_in_executor(None, func)
 
 
-def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None):
+def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None, trace_id=None, parent_span_id=None):
     """Blocking Anthropic call for the tool-use loop. Returns the RAW response.
 
     Mirrors `_create_sync` but (1) takes a full `messages` list (not a single
@@ -361,6 +556,10 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
     the caller can inspect `stop_reason` / tool_use blocks. Spend is recorded
     in-thread (best-effort) exactly as in `_create_sync`. Must run in an executor,
     never on the event loop.
+
+    `trace_id`/`parent_span_id` are captured by `run_with_tools` on the event
+    loop and threaded in the same way as `task_id` (see `_record_trace_span`)
+    so each round of the tool loop gets its own best-effort llm_call span.
     """
     client = get_client()
     kwargs = {
@@ -372,6 +571,7 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
         kwargs["system"] = _as_cached_system(system)
     if tools:
         kwargs["tools"] = tools
+    span_started_at = datetime.utcnow()
     resp = client.messages.create(**kwargs)
     # Best-effort spend logging — runs INSIDE the executor worker thread (NOT the
     # event loop), so the synchronous Session(engine) write inside _record_spend
@@ -382,6 +582,17 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
         _record_spend(model, resp, label, task_id)
     except Exception as e:  # never let metering break the response
         logger.warning(f"spend logging failed (non-fatal): {e}")
+    # Best-effort trace span (council w-observability). Same in-thread
+    # reasoning as the spend write above -- no-op when no trace is active.
+    try:
+        last_content = messages[-1].get("content", "") if messages else ""
+        _record_trace_span(
+            "llm_call", model, span_started_at, resp=resp,
+            input_summary=str(last_content), output_summary=_extract_text(resp),
+            trace_id=trace_id, parent_span_id=parent_span_id,
+        )
+    except Exception as e:  # never let tracing break the response
+        logger.warning(f"trace span logging failed (non-fatal): {e}")
     return resp
 
 
@@ -436,6 +647,13 @@ async def run_with_tools(
     # since the contextvar does not survive the run_in_executor hop.
     spend_task_id = task_id if task_id is not None else _current_task_id.get()
 
+    # trace_id/parent_span_id: same capture-on-the-loop-and-thread-down pattern
+    # as spend_task_id above (see `_record_trace_span`) -- None when no trace
+    # is active, in which case span recording is a no-op.
+    trace_id = _current_trace_id.get()
+    span_stack = _current_span_stack.get()
+    parent_span_id = span_stack[-1] if span_stack else None
+
     loop = asyncio.get_event_loop()
     last_resp = None
     # Tracks whichever content block currently carries the "moving" breakpoint
@@ -447,7 +665,7 @@ async def run_with_tools(
         await _loop_guard(task_id, task_start)
         resp = await loop.run_in_executor(
             None,
-            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label, spend_task_id),
+            functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label, spend_task_id, trace_id, parent_span_id),
         )
         last_resp = resp
 
@@ -468,13 +686,30 @@ async def run_with_tools(
             raw_input = getattr(block, "input", None)
             tinput = raw_input if isinstance(raw_input, dict) else {}
             fn = dispatch.get(name)
+            span_started_at = datetime.utcnow()
+            error = None
             if fn is None:
                 result = "unknown tool: " + str(name)
+                error = result
             else:
                 try:
                     result = await fn(tinput)
                 except Exception as e:
                     result = f"{name} unavailable: {e}"
+                    error = str(e)
+            # Best-effort trace span (council w-observability) -- mirrors the
+            # llm_call span recorded in _create_sync_raw. Runs on the event loop
+            # (this loop is NOT in an executor thread), but _record_trace_span is
+            # a no-op when no trace is active and the call is wrapped here too so
+            # a tracing failure can never break tool dispatch.
+            try:
+                _record_trace_span(
+                    "tool_call", name, span_started_at,
+                    input_summary=json.dumps(tinput)[:1000], output_summary=str(result)[:1000],
+                    error=error, trace_id=trace_id, parent_span_id=parent_span_id,
+                )
+            except Exception as e:  # never let tracing break the tool loop
+                logger.warning(f"trace span logging failed (non-fatal): {e}")
             # Sentinel-wrap EVERY client-side result (success, error, unknown —
             # uniform framing): tool output is untrusted DATA (HA entity names,
             # vault notes, web results), never instructions. The paired rule

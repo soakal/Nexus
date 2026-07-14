@@ -517,6 +517,56 @@ def _finalize_task(task_id: int, status: str, result_json: str | None) -> None:
             session.commit()
 
 
+def _open_trace(task_id: int, label: str) -> int | None:
+    """Open an AgentTrace row (kind='orchestrator') for a durable run_task call.
+
+    Best-effort: any failure is logged and swallowed, returning None so the
+    caller simply runs untraced (set_trace_context(None) is a safe no-op —
+    see router._record_trace_span). A trace-bookkeeping problem must never
+    block task execution.
+    """
+    try:
+        from sqlmodel import Session
+
+        from backend.database import AgentTrace, engine
+
+        with Session(engine) as session:
+            trace = AgentTrace(
+                kind="orchestrator",
+                label=label[:200],
+                task_id=task_id,
+                status="running",
+            )
+            session.add(trace)
+            session.commit()
+            session.refresh(trace)
+            return trace.id
+    except Exception as e:
+        logger.warning(f"_open_trace failed (non-fatal): {e}")
+        return None
+
+
+def _close_trace(trace_id: int | None, status: str, error: str | None = None) -> None:
+    """Close an AgentTrace row opened by _open_trace. No-op when trace_id is
+    None (open failed, or never attempted). Best-effort — never raises."""
+    if trace_id is None:
+        return
+    try:
+        from sqlmodel import Session
+
+        from backend.database import AgentTrace, engine
+
+        with Session(engine) as session:
+            t = session.get(AgentTrace, trace_id)
+            if t:
+                t.status = status
+                t.ended_at = datetime.utcnow()
+                t.error = error
+                session.commit()
+    except Exception as e:
+        logger.warning(f"_close_trace failed (non-fatal): {e}")
+
+
 def _record_agent_run(task_id: int, prompt: str, output: str, success: bool, elapsed_ms: int) -> None:
     from sqlmodel import Session
 
@@ -781,7 +831,9 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
     from backend.agents.router import (
         TaskAborted,
         reset_task_context,
+        reset_trace_context,
         set_task_context,
+        set_trace_context,
     )
     from backend.safety.governor import BudgetExceeded, check_budget
     task_start = datetime.utcnow()
@@ -791,6 +843,15 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
     # every exit path via the Token in the finally below. The legacy (task_id is
     # None) path above returns before this and never sets the contextvar.
     _ctx_token = set_task_context(task_id)
+
+    # Open an AgentTrace (council w-observability) so nested LLM/tool calls made
+    # during this run attach TraceSpan rows to it. trace_id is None on any
+    # open failure -- set_trace_context(None) is a safe no-op downstream
+    # (router._record_trace_span short-circuits on trace_id is None).
+    trace_id = await asyncio.to_thread(_open_trace, task_id, task_prompt[:200])
+    _trace_token = set_trace_context(trace_id)
+    _trace_status = "ok"
+    _trace_error = None
 
     from backend.safety.governor import get_system_state
 
@@ -972,6 +1033,20 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
             _finalize_task, task_id, "failed", json.dumps({"error": reason})
         )
         return TaskResult(success=False, reason=reason)
+    except Exception as trace_exc:
+        # An UNEXPECTED exception (not BudgetExceeded/TaskAborted, which are
+        # handled above and return normally) — mark the trace 'error' with the
+        # detail, then re-raise unchanged so callers see the real failure.
+        _trace_status = "error"
+        _trace_error = str(trace_exc)
+        raise
     finally:
+        # Best-effort trace close, wrapped so a bookkeeping failure here can
+        # never mask the real return value / exception from run_task.
+        try:
+            await asyncio.to_thread(_close_trace, trace_id, _trace_status, _trace_error)
+        except Exception as e:
+            logger.warning(f"trace close failed (non-fatal): {e}")
+        reset_trace_context(_trace_token)
         # Unbind the task-id contextvar on EVERY exit path (return / exception).
         reset_task_context(_ctx_token)

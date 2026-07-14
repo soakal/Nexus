@@ -249,6 +249,44 @@ class SystemState(SQLModel, table=True):
     last_dead_letter_alert_at: datetime | None = Field(default=None)
 
 
+# Agent/LLM trace observability (council w-observability). One row per
+# traced run of a chat/briefing/orchestrator/proposer/voice entry point.
+# Opened at entry, closed in a finally block with status ok|error. Purely
+# additive, read-only-from-the-outside layer -- never gates control flow.
+# Created by create_all (new table, no _ensure_ migration shim needed).
+class AgentTrace(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    kind: str                # chat | briefing | orchestrator | proposer | voice
+    label: str
+    task_id: int | None = Field(default=None, index=True)
+    started_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    ended_at: datetime | None = None
+    status: str = "running"  # running | ok | error
+    error: str | None = None
+
+
+# One row per LLM call or tool call made within an AgentTrace, written
+# best-effort from router.py's _record_spend choke point (llm_call) and
+# run_with_tools()'s tool-dispatch loop (tool_call). parent_span_id is None
+# for top-level spans within a trace, set for nested spans.
+# Created by create_all (new table, no _ensure_ migration shim needed).
+class TraceSpan(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    trace_id: int = Field(index=True)
+    parent_span_id: int | None = Field(default=None, index=True)
+    span_type: str            # llm_call | tool_call
+    name: str                 # model name for llm_call, tool name for tool_call
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+    ended_at: datetime | None = None
+    duration_ms: int | None = None
+    input_summary: str | None = None    # truncated to 1000 chars
+    output_summary: str | None = None   # truncated to 1000 chars
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    cost_usd: float | None = None
+    error: str | None = None
+
+
 class Goal(SQLModel, table=True):
     """Durable objective with a propose → approve → running → completed|failed|abandoned
     state machine.  Humans propose and approve via the /api/goals router; on approval a

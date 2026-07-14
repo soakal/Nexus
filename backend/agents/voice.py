@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,39 +46,70 @@ Return JSON only:
 
 
 async def process_audio(audio_path: str) -> dict:
-    transcript = await transcribe(audio_path)
-    logger.info(f"Transcribed: {transcript[:100]}")
+    from backend.agents.router import (
+        close_trace,
+        open_trace,
+        reset_trace_context,
+        set_trace_context,
+    )
 
-    intent_data = await route_intent(transcript)
-    intent = intent_data.get("intent", "QUERY")
+    # Open an AgentTrace (council w-observability) so nested LLM calls made during
+    # this voice command attach TraceSpan rows to it. Mirrors chat.py/briefing.py's
+    # trace wiring via the same generic open_trace/close_trace helper (voice has no
+    # durable task_id -- kind="voice", task_id=None). trace_id is None on any open
+    # failure -- set_trace_context(None) is a safe no-op downstream (router.
+    # _record_trace_span short-circuits on trace_id is None).
+    trace_id = await asyncio.to_thread(open_trace, "voice", "voice_command")
+    _trace_token = set_trace_context(trace_id)
+    _trace_status = "ok"
+    _trace_error = None
 
-    result = {"transcript": transcript, "intent": intent, "intent_data": intent_data}
+    try:
+        transcript = await transcribe(audio_path)
+        logger.info(f"Transcribed: {transcript[:100]}")
 
-    if intent == "BRIEFING":
-        from backend.agents.briefing import run_briefing
-        briefing = await run_briefing()
-        result["response"] = briefing[:500] + "..." if len(briefing) > 500 else briefing
+        intent_data = await route_intent(transcript)
+        intent = intent_data.get("intent", "QUERY")
 
-    elif intent == "QUERY":
-        from backend.agents.router import sonnet
-        resp = await sonnet(f"Answer this question concisely: {intent_data.get('extracted_action', transcript)}", label="voice_answer")
-        result["response"] = resp
+        result = {"transcript": transcript, "intent": intent, "intent_data": intent_data}
 
-    elif intent == "HOME_CONTROL":
-        from backend.integrations.homeassistant import call_service
-        params = intent_data.get("parameters", {})
-        resp = await call_service(params.get("domain", ""), params.get("service", ""), params.get("data", {}))
-        result["response"] = f"Home Assistant: {resp}"
+        if intent == "BRIEFING":
+            from backend.agents.briefing import run_briefing
+            briefing = await run_briefing()
+            result["response"] = briefing[:500] + "..." if len(briefing) > 500 else briefing
 
-    elif intent == "NOTE":
-        from backend.integrations.obsidian import create_note
-        path = await create_note(title=transcript[:50], content=transcript, folder="NEXUS/Voice Notes")
-        result["response"] = f"Note saved to {path}"
+        elif intent == "QUERY":
+            from backend.agents.router import sonnet
+            resp = await sonnet(f"Answer this question concisely: {intent_data.get('extracted_action', transcript)}", label="voice_answer")
+            result["response"] = resp
 
-    elif intent == "TASK":
-        from backend.agents.orchestrator import run_task
-        task_result = await run_task(intent_data.get("extracted_action", transcript))
-        result["response"] = "Task complete" if task_result.success else f"Task failed: {task_result.reason}"
-        result["task_result"] = {"success": task_result.success, "steps": len(task_result.output)}
+        elif intent == "HOME_CONTROL":
+            from backend.integrations.homeassistant import call_service
+            params = intent_data.get("parameters", {})
+            resp = await call_service(params.get("domain", ""), params.get("service", ""), params.get("data", {}))
+            result["response"] = f"Home Assistant: {resp}"
 
-    return result
+        elif intent == "NOTE":
+            from backend.integrations.obsidian import create_note
+            path = await create_note(title=transcript[:50], content=transcript, folder="NEXUS/Voice Notes")
+            result["response"] = f"Note saved to {path}"
+
+        elif intent == "TASK":
+            from backend.agents.orchestrator import run_task
+            task_result = await run_task(intent_data.get("extracted_action", transcript))
+            result["response"] = "Task complete" if task_result.success else f"Task failed: {task_result.reason}"
+            result["task_result"] = {"success": task_result.success, "steps": len(task_result.output)}
+
+        return result
+    except Exception as exc:
+        _trace_status = "error"
+        _trace_error = str(exc)
+        raise
+    finally:
+        # Best-effort trace close, wrapped so a bookkeeping failure here can
+        # never mask the real return value / exception from process_audio.
+        try:
+            await asyncio.to_thread(close_trace, trace_id, _trace_status, _trace_error)
+        except Exception as e:
+            logger.warning(f"trace close failed (non-fatal): {e}")
+        reset_trace_context(_trace_token)

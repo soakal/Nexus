@@ -263,6 +263,55 @@ def prune_old_trend_snapshots() -> int:
     return _prune_table_by_cutoff("trendsnapshot", "captured_at", cutoff)
 
 
+def _prune_spans_for_old_traces(cutoff: datetime) -> int:
+    """Batched DELETE of TraceSpan rows whose parent AgentTrace started before cutoff.
+
+    Deleting the children first is what keeps prune_old_traces() from leaving
+    orphaned TraceSpan rows behind. Same batching/commit discipline as
+    _prune_table_by_cutoff. Never raises — best-effort, like every other function
+    in this module.
+    """
+    try:
+        from backend.database import engine
+        deleted = 0
+        while True:
+            with engine.begin() as conn:
+                result = conn.execute(
+                    text(
+                        "DELETE FROM tracespan WHERE id IN "
+                        "(SELECT id FROM tracespan WHERE trace_id IN "
+                        "(SELECT id FROM agenttrace WHERE started_at < :cutoff) "
+                        "LIMIT :batch)"
+                    ),
+                    {"cutoff": cutoff, "batch": _PRUNE_BATCH_SIZE},
+                )
+                batch_deleted = result.rowcount or 0
+            deleted += batch_deleted
+            if batch_deleted < _PRUNE_BATCH_SIZE:
+                break
+        return deleted
+    except Exception as e:
+        logger.warning(f"_prune_spans_for_old_traces failed: {e}")
+        return 0
+
+
+def prune_old_traces() -> int:
+    """Delete AgentTrace rows (and their TraceSpan children) older than
+    trace_retention_days. 0 disables pruning. Returns the count of AgentTrace
+    rows pruned (consistent with the other prune_* functions returning their
+    primary table's count).
+
+    Child spans are deleted first so no orphaned TraceSpan rows survive.
+    """
+    from backend.config import get_settings
+    retention_days = int(getattr(get_settings(), "trace_retention_days", 30))
+    if retention_days <= 0:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    _prune_spans_for_old_traces(cutoff)
+    return _prune_table_by_cutoff("agenttrace", "started_at", cutoff)
+
+
 def restore_from(backup_path: str) -> dict:
     """Restore nexus.db from a backup directory (a backups/<ts> dir or the
     Unraid share root). STOP NEXUS FIRST — restoring under a live engine

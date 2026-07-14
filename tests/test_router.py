@@ -291,7 +291,7 @@ async def test_tool_result_wrapped_and_cached(spend_eng):
 
     captured_messages = []
 
-    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id, trace_id=None, parent_span_id=None):
         captured_messages.append([dict(m) if isinstance(m, dict) else m for m in messages])
         return _tool_use_resp() if len(captured_messages) == 1 else _final_resp()
 
@@ -325,7 +325,7 @@ async def test_cache_control_breakpoint_moves_not_accumulates(spend_eng):
 
     captured_messages = []
 
-    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id, trace_id=None, parent_span_id=None):
         # Snapshot now -- `messages` is the SAME list object every call and
         # keeps growing after this call returns, so a bare reference would
         # make every captured "round" alias the final (fully-mutated) state.
@@ -370,7 +370,7 @@ async def test_system_prompt_gets_injection_rule(spend_eng):
 
     captured_systems = []
 
-    def _fake_create(model, max_tokens, messages, system, tools, label, task_id):
+    def _fake_create(model, max_tokens, messages, system, tools, label, task_id, trace_id=None, parent_span_id=None):
         captured_systems.append(system)
         return _final_resp()
 
@@ -381,3 +381,95 @@ async def test_system_prompt_gets_injection_rule(spend_eng):
     assert captured_systems[0].startswith("my system")
     assert router.TOOL_OUTPUT_RULE in captured_systems[0]
     assert captured_systems[1] == router.TOOL_OUTPUT_RULE
+
+
+# ---------------------------------------------------------------------------
+# council w-observability — LLM-call span recording in the _create_sync path
+# ---------------------------------------------------------------------------
+
+def _trace_span_rows(eng):
+    from backend.database import TraceSpan
+    with Session(eng) as s:
+        return s.exec(select(TraceSpan)).all()
+
+
+@pytest.mark.asyncio
+async def test_llm_call_span_recorded_when_trace_active(spend_eng):
+    """With a trace bound via set_trace_context, a single-shot call (router.sonnet
+    -> _create_sync) writes one TraceSpan row with tokens/cost and truncated
+    input/output summaries."""
+    from backend.agents import router
+
+    resp = _resp_with_usage()
+    resp.content = [SimpleNamespace(type="text", text="hi there")]
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = resp
+        mock_anthropic.return_value = mock_client
+
+        token = router.set_trace_context(42)
+        try:
+            out = await router.sonnet("x" * 2000, label="span_test")
+        finally:
+            router.reset_trace_context(token)
+
+    assert out == "hi there"
+    rows = _trace_span_rows(spend_eng)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.trace_id == 42
+    assert row.parent_span_id is None
+    assert row.span_type == "llm_call"
+    assert row.name == router.SONNET_MODEL
+    assert row.tokens_in == 1000
+    assert row.tokens_out == 500
+    assert row.cost_usd == pytest.approx(router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0))
+    assert row.input_summary is not None and len(row.input_summary) == 1000
+    assert row.output_summary == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_llm_call_span_not_recorded_when_no_trace(spend_eng):
+    """Without a bound trace context, no TraceSpan row is written."""
+    from backend.agents import router
+
+    resp = _resp_with_usage()
+    resp.content = [SimpleNamespace(type="text", text="hi")]
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = resp
+        mock_anthropic.return_value = mock_client
+
+        out = await router.sonnet("prompt")
+
+    assert out == "hi"
+    assert _trace_span_rows(spend_eng) == []
+
+
+@pytest.mark.asyncio
+async def test_llm_call_span_gets_parent_from_span_stack(spend_eng):
+    """When a span stack is bound, the new span's parent_span_id is the
+    innermost (last) entry on the stack."""
+    from backend.agents import router
+
+    resp = _resp_with_usage()
+    resp.content = [SimpleNamespace(type="text", text="ok")]
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = resp
+        mock_anthropic.return_value = mock_client
+
+        trace_token = router.set_trace_context(7)
+        stack_token = router.set_span_stack_context((1, 2, 3))
+        try:
+            await router.sonnet("prompt")
+        finally:
+            router.reset_span_stack_context(stack_token)
+            router.reset_trace_context(trace_token)
+
+    rows = _trace_span_rows(spend_eng)
+    assert len(rows) == 1
+    assert rows[0].parent_span_id == 3

@@ -231,6 +231,25 @@ async def propose_goals_tick() -> dict:
     Returns a result dict with 'status': 'ok' | 'skipped' | 'error'.
     Never raises — all exceptions are caught and returned as status='error'.
     """
+    from backend.agents.router import (
+        close_trace,
+        open_trace,
+        reset_trace_context,
+        set_trace_context,
+    )
+
+    # Open an AgentTrace (council w-observability) so nested LLM calls made
+    # during this tick attach TraceSpan rows to it. Mirrors run_briefing's
+    # trace wiring, via the generic open_trace/close_trace helper (proposer
+    # has no durable task_id -- kind='proposer', task_id=None). trace_id is
+    # None on any open failure -- set_trace_context(None) is a safe no-op
+    # downstream (router._record_trace_span short-circuits on trace_id is
+    # None).
+    trace_id = await asyncio.to_thread(open_trace, "proposer", "goal_proposer_tick")
+    _trace_token = set_trace_context(trace_id)
+    _trace_status = "ok"
+    _trace_error = None
+
     try:
         from backend.safety import governor
         from backend.safety.governor import BudgetExceeded
@@ -601,4 +620,14 @@ async def propose_goals_tick() -> dict:
 
     except Exception as e:
         logger.warning("propose_goals_tick failed (best-effort): %s", e)
+        _trace_status = "error"
+        _trace_error = str(e)
         return {"status": "error", "error": str(e)}
+    finally:
+        # Best-effort trace close, wrapped so a bookkeeping failure here can
+        # never mask the real return value from propose_goals_tick.
+        try:
+            await asyncio.to_thread(close_trace, trace_id, _trace_status, _trace_error)
+        except Exception as e:
+            logger.warning(f"trace close failed (non-fatal): {e}")
+        reset_trace_context(_trace_token)
