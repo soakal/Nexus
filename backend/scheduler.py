@@ -472,13 +472,11 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Brain Organizer job registered: runs daily at 02:00 %s", timezone)
-    scheduler.add_job(
-        _run_wiki_ingest,
-        CronTrigger(hour=1, minute=55, timezone=timezone),
-        id="wiki_ingest",
-        replace_existing=True,
-    )
-    logger.info("Wiki ingest batch job registered: runs daily at 01:55 %s", timezone)
+    # Daily wiki_ingest cron disabled 2026-07-14: it and brain_organizer both
+    # route Brain/raw/ into wiki pages 5 minutes apart, with a known collision
+    # risk over date-named pages. Brain Organizer is the sole nightly pipeline
+    # now; _run_wiki_ingest/run_all_unprocessed stay unused by cron but the
+    # module is still imported by wiki_fragmentation_report below.
     scheduler.add_job(
         _run_fragmentation_report,
         CronTrigger(day_of_week="sun", hour=2, minute=30, timezone=timezone),
