@@ -25,6 +25,12 @@ function ProxmoxSection() {
   }
 
   const sendCmd = async (name, action) => {
+    // stop/reboot are disruptive (Hermes is a live production bot per CLAUDE.md,
+    // and any of these can knock a VM Brian's actively using offline) -- start
+    // is harmless, so only gate the two destructive actions.
+    if (action !== 'start' && !window.confirm(`${action === 'stop' ? 'Stop' : 'Reboot'} ${name}?`)) {
+      return
+    }
     setPending((p) => ({ ...p, [name]: action }))
     try {
       const key = localStorage.getItem('nexus_api_key') || ''

@@ -63,7 +63,8 @@ export default function Dashboard() {
     }
   }
 
-  const restartDocker = async (id) => {
+  const restartDocker = async (id, name) => {
+    if (!window.confirm(`Restart ${name || 'this container'}?`)) return
     try { await api.unraid.restartDocker(id); load() } catch {}
   }
 
@@ -351,7 +352,7 @@ export default function Dashboard() {
               {(unraid.docker_containers || []).slice(0, dockerOpen ? undefined : 2).map(c => (
                 <div
                   key={c.id}
-                  onClick={() => restartDocker(c.id)}
+                  onClick={() => restartDocker(c.id, c.name)}
                   style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer' }}
                 >
                   <StatusDot color="#34d399" size={7} glow={false} />
