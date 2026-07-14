@@ -1,30 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { Mic } from 'lucide-react'
 import { api } from '../lib/api'
+import { renderInline } from '../lib/markdown'
 import ScreenHeader from '../components/ScreenHeader'
 import GhostButton from '../components/GhostButton'
 import PrimaryButton from '../components/PrimaryButton'
-
-// Inline markdown renderer reused from BriefingPanel style
-function renderInline(text) {
-  const boldParts = text.split(/\*\*(.+?)\*\*/g)
-  const result = []
-  boldParts.forEach((part, idx) => {
-    if (idx % 2 === 1) {
-      result.push(<strong key={`b${idx}`}>{part}</strong>)
-    } else {
-      const italicParts = part.split(/\*(.+?)\*/g)
-      italicParts.forEach((iPart, iIdx) => {
-        if (iIdx % 2 === 1) {
-          result.push(<em key={`i${idx}-${iIdx}`}>{iPart}</em>)
-        } else if (iPart) {
-          result.push(iPart)
-        }
-      })
-    }
-  })
-  return result
-}
 
 function renderMessageContent(content) {
   const lines = content.split('\n')

@@ -30,14 +30,6 @@ async def list_tasks(_=Depends(require_api_key), session: Session = Depends(get_
     return tasks
 
 
-@router.get("/{task_id}")
-async def get_task(task_id: int, _=Depends(require_api_key), session: Session = Depends(get_session)):
-    task = session.get(Task, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
-
-
 @router.delete("/{task_id}")
 async def cancel_task(task_id: int, _=Depends(require_api_key), session: Session = Depends(get_session)):
     """Cooperatively stop a running task, then delete it from the database."""

@@ -1,27 +1,4 @@
-// Inline markdown renderer — no npm packages required.
-
-function renderInline(text) {
-  // Split on **bold** first, then *italic* within plain segments.
-  const boldParts = text.split(/\*\*(.+?)\*\*/g)
-  const result = []
-  boldParts.forEach((part, idx) => {
-    if (idx % 2 === 1) {
-      // Odd indices are captured bold groups
-      result.push(<strong key={`b${idx}`} style={{ color: '#e9eef8' }}>{part}</strong>)
-    } else {
-      // Plain segment — now split on *italic*
-      const italicParts = part.split(/\*(.+?)\*/g)
-      italicParts.forEach((iPart, iIdx) => {
-        if (iIdx % 2 === 1) {
-          result.push(<em key={`i${idx}-${iIdx}`}>{iPart}</em>)
-        } else if (iPart) {
-          result.push(iPart)
-        }
-      })
-    }
-  })
-  return result
-}
+import { renderInline } from '../lib/markdown'
 
 function renderBody(lines) {
   const elements = []

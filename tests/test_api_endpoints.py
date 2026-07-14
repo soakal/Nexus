@@ -204,21 +204,6 @@ def test_list_tasks(app_client, auth_headers):
     assert isinstance(resp.json(), list)
 
 
-def test_get_task_not_found(app_client, auth_headers):
-    resp = app_client.get("/api/tasks/9999", headers=auth_headers)
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# Briefing
-# ---------------------------------------------------------------------------
-
-def test_list_briefings(app_client, auth_headers):
-    resp = app_client.get("/api/briefing/", headers=auth_headers)
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
-
-
 # ---------------------------------------------------------------------------
 # Agent runs
 # ---------------------------------------------------------------------------

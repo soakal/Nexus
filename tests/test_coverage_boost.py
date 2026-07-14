@@ -154,24 +154,6 @@ async def test_openrouter_health_check_exception():
 
 
 @pytest.mark.asyncio
-async def test_openrouter_complete():
-    from backend.integrations import openrouter
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {
-        "choices": [{"message": {"content": "Hello world"}}]
-    }
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.post = AsyncMock(return_value=mock_resp)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        result = await openrouter.complete("Say hello")
-    assert result == "Hello world"
-
-
-@pytest.mark.asyncio
 async def test_openrouter_no_api_key():
     from backend.integrations import openrouter
     with patch("backend.config.get_settings") as mock_settings:

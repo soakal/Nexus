@@ -46,28 +46,6 @@ async def get_uptime_summary(
     return {"sources": sources, "generated_at": datetime.utcnow().isoformat()}
 
 
-@router.get("/history/{source}")
-async def get_uptime_history(
-    source: str,
-    days: int = 7,
-    _=Depends(require_api_key),
-    session: Session = Depends(get_session),
-):
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    samples = session.exec(
-        select(UptimeSample)
-        .where(UptimeSample.source == source)
-        .where(UptimeSample.checked_at >= cutoff)
-        .order_by(UptimeSample.checked_at)
-    ).all()
-
-    data = [
-        {"timestamp": s.checked_at.isoformat(), "ok": s.ok, "latency_ms": s.latency_ms}
-        for s in samples
-    ]
-    return {"source": source, "data": data}
-
-
 @router.get("/speedtest")
 async def get_speedtest(
     days: int = 7,

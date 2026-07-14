@@ -41,20 +41,3 @@ async def health_check() -> bool:
         return data.available
     except Exception:
         return False
-
-
-async def complete(prompt: str, model: str = "openai/gpt-4o-mini") -> str:
-    from backend.config import get_settings
-    settings = get_settings()
-    headers = {
-        "Authorization": f"Bearer {settings.openrouter_api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]

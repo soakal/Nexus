@@ -21,9 +21,3 @@ async def get_latest_briefing(session: Session = Depends(get_session)):
     if not b:
         raise HTTPException(status_code=404, detail="No briefings yet")
     return b
-
-
-@router.get("/")
-async def list_briefings(_=Depends(require_api_key), session: Session = Depends(get_session)):
-    briefings = session.exec(select(Briefing).order_by(Briefing.created_at.desc()).limit(20)).all()
-    return briefings
