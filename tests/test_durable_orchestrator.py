@@ -462,6 +462,63 @@ async def test_boot_resume_normal_task_still_resumes(eng):
     mock_exec.assert_awaited_once()
 
 
+# ---------------------------------------------------------------------------
+# council w-observability — AgentTrace opened/closed around the durable
+# run_task path.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_trace_opened_and_closed_ok(eng):
+    """A successful durable run opens exactly one AgentTrace row (kind=
+    'orchestrator', tagged to this task) and closes it status='ok' with
+    ended_at set and no error."""
+    from backend.database import AgentTrace
+
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "a", status="pending")
+
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = "done"
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is True
+
+    with Session(eng) as s:
+        traces = s.exec(select(AgentTrace).where(AgentTrace.task_id == task_id)).all()
+        assert len(traces) == 1
+        assert traces[0].kind == "orchestrator"
+        assert traces[0].status == "ok"
+        assert traces[0].ended_at is not None
+        assert traces[0].error is None
+
+
+@pytest.mark.asyncio
+async def test_trace_closed_error_on_unexpected_exception(eng):
+    """An unexpected (non-BudgetExceeded/TaskAborted) exception raised mid-run
+    still closes the AgentTrace row status='error' with the exception message
+    recorded, and the exception itself propagates unchanged out of run_task."""
+    from backend.database import AgentTrace
+
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "a", status="pending")
+
+    with patch("backend.agents.router.run_with_tools", new_callable=AsyncMock) as mock_exec:
+        mock_exec.side_effect = RuntimeError("boom")
+        from backend.agents.orchestrator import run_task
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await run_task("task", task_id)
+
+    with Session(eng) as s:
+        traces = s.exec(select(AgentTrace).where(AgentTrace.task_id == task_id)).all()
+        assert len(traces) == 1
+        assert traces[0].status == "error"
+        assert traces[0].error is not None and "boom" in traces[0].error
+        assert traces[0].ended_at is not None
+
+
 @pytest.mark.asyncio
 async def test_no_id_legacy_path(eng):
     """task_id=None uses the legacy in-memory loop (results reset each retry)."""
