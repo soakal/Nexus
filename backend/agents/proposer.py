@@ -102,7 +102,10 @@ def _db_uptime_anomalies(since: datetime) -> list[dict]:
 # Module-level so the night-exemption filter in propose_goals_tick can share
 # the exact entity_id<->label mapping used to build the LLM's context.
 WATCH = {
-    "switch.tall_light_lr_christmas_tree_plug": "xmas_tree_plug",
+    # switch.tall_light_lr_christmas_tree_plug (Christmas tree plug) intentionally
+    # excluded (Brian, 2026-07-14): an HA automation already turns it off nightly at
+    # 11:59pm, so NEXUS must NOT propose/auto-off it during the day (it's on by
+    # intent, and it's already handled). Do not re-add without that automation gone.
     "light.left_porch_light": "porch_light_left",
     "light.right_porch_light": "porch_light_right",
     "light.left_garage_light": "garage_light_left",
@@ -153,8 +156,8 @@ def _is_night(ha) -> bool | None:
 def _ha_entity_summary(ha) -> str:
     """Compact state summary for lights, security devices, and room temps.
 
-    Gives Opus enough context to propose 'turn off the Christmas tree plug'
-    or 'garage door has been open for a while' without seeing all N entities.
+    Gives the proposer enough context to propose e.g. 'a garage light was left
+    on' or 'garage door has been open for a while' without seeing all N entities.
     """
     if not ha or isinstance(ha, Exception):
         return "(unavailable)"
