@@ -29,6 +29,51 @@ def reset_task_context(token) -> None:
     _current_task_id.reset(token)
 
 
+# Carries the id of the in-flight AgentTrace row (council w-observability). Set
+# around each traced entry point (chat/briefing/orchestrator/proposer/voice) so
+# nested LLM-call and tool-call choke points can attach spans to it.
+# NOTE: the default ThreadPoolExecutor does NOT copy the contextvars Context across
+# the loop->thread hop, so the best-effort span write does NOT read this var
+# directly -- callers must capture the trace_id on the event loop and thread it
+# into the span-recording call via functools.partial. None when no trace is active.
+_current_trace_id: contextvars.ContextVar = contextvars.ContextVar(
+    "nexus_trace_id", default=None
+)
+
+
+def set_trace_context(trace_id):
+    """Bind the current trace_id for span attribution; returns a reset Token."""
+    return _current_trace_id.set(trace_id)
+
+
+def reset_trace_context(token) -> None:
+    """Restore the trace-id contextvar to its prior value via the Token."""
+    _current_trace_id.reset(token)
+
+
+# Stack of in-flight span ids for the current trace, innermost last. Used to set
+# parent_span_id when a new span is opened while another is still open (e.g. a
+# tool_call span opened during an llm_call span's tool-use loop). Empty tuple
+# when no span is currently open.
+# NOTE: the default ThreadPoolExecutor does NOT copy the contextvars Context across
+# the loop->thread hop, so the best-effort span write does NOT read this var
+# directly -- callers must capture the span stack on the event loop and thread it
+# into the span-recording call via functools.partial.
+_current_span_stack: contextvars.ContextVar = contextvars.ContextVar(
+    "nexus_span_stack", default=()
+)
+
+
+def set_span_stack_context(span_stack):
+    """Bind the current span stack for parent-span attribution; returns a reset Token."""
+    return _current_span_stack.set(span_stack)
+
+
+def reset_span_stack_context(token) -> None:
+    """Restore the span-stack contextvar to its prior value via the Token."""
+    _current_span_stack.reset(token)
+
+
 class TaskAborted(Exception):
     """Raised inside the tool-use loop when a task must stop mid-flight.
 
