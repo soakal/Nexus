@@ -213,6 +213,13 @@ class ActionLog(SQLModel, table=True):
     idempotency_key: str | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Judge-gate verdict on this action, written by the broker's veto-update path
+    # after the fact. "approve" | "veto" | "error"; None until the judge runs.
+    judge_verdict: str | None = None
+    # Judge's rationale for the verdict, app-level capped at 300 chars at write
+    # time (no DB-level length constraint — matches this file's existing
+    # convention of plain TEXT columns for nullable strings).
+    judge_reason: str | None = None
 
 
 # Per-call cost/usage ledger written best-effort by the agent router
@@ -376,6 +383,18 @@ def _ensure_spendlog_columns():
         logger.warning(f"_ensure_spendlog_columns index create failed: {e}")
 
 
+def _ensure_actionlog_columns():
+    """Idempotently add columns introduced after the original `actionlog` table shipped.
+
+    Each column is added independently via _safe_add_column so a race on one
+    column never aborts the others. Best-effort — a failure here is logged but
+    never fatal to startup. No-op on a fresh DB (create_all already made the
+    column) and on test :memory: engines.
+    """
+    _safe_add_column("actionlog", "judge_verdict", "TEXT")
+    _safe_add_column("actionlog", "judge_reason", "TEXT")
+
+
 def _ensure_conversation_columns():
     """Idempotently add columns introduced after the original `conversation` table shipped.
 
@@ -496,6 +515,7 @@ def _ensure_system_state():
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     _ensure_task_columns()
+    _ensure_actionlog_columns()
     _ensure_spendlog_columns()
     _ensure_conversation_columns()
     _ensure_goal_columns()
