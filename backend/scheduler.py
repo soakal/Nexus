@@ -221,11 +221,12 @@ async def _prune_retention():
     NEVER notifies — pure background hygiene, no user-facing signal either way."""
     try:
         import asyncio
-        from backend.agents.backup import prune_old_uptime_samples, prune_old_trend_snapshots
+        from backend.agents.backup import prune_old_uptime_samples, prune_old_trend_snapshots, prune_old_traces
         uptime_deleted = await asyncio.to_thread(prune_old_uptime_samples)
         trend_deleted = await asyncio.to_thread(prune_old_trend_snapshots)
+        trace_deleted = await asyncio.to_thread(prune_old_traces)
         logger.info(
-            f"Retention prune: {uptime_deleted} uptime sample(s), {trend_deleted} trend snapshot(s)"
+            f"Retention prune: {uptime_deleted} uptime sample(s), {trend_deleted} trend snapshot(s), {trace_deleted} trace(s)"
         )
     except Exception as e:
         logger.error(f"Retention prune job error: {e}")
