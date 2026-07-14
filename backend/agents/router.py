@@ -76,6 +76,61 @@ def reset_span_stack_context(token) -> None:
     _current_span_stack.reset(token)
 
 
+def open_trace(kind: str, label: str, task_id: int | None = None) -> int | None:
+    """Open an AgentTrace row for a traced single-shot entry point (chat/briefing/
+    proposer/voice). Generic counterpart to orchestrator._open_trace (which stays
+    hardcoded to kind='orchestrator' and untouched) -- parameterized by kind/label/
+    task_id so every remaining entry point can share this one helper.
+
+    Best-effort: any failure is logged and swallowed, returning None so the
+    caller simply runs untraced (set_trace_context(None) is a safe no-op — see
+    _record_trace_span). A trace-bookkeeping problem must never block the
+    entry point it instruments. Synchronous — callers must invoke this via
+    asyncio.to_thread.
+    """
+    try:
+        from sqlmodel import Session
+
+        from backend.database import AgentTrace, engine
+
+        with Session(engine) as session:
+            trace = AgentTrace(
+                kind=kind,
+                label=label[:200],
+                task_id=task_id,
+                status="running",
+            )
+            session.add(trace)
+            session.commit()
+            session.refresh(trace)
+            return trace.id
+    except Exception as e:
+        logger.warning(f"open_trace failed (non-fatal): {e}")
+        return None
+
+
+def close_trace(trace_id: int | None, status: str, error: str | None = None) -> None:
+    """Close an AgentTrace row opened by open_trace. No-op when trace_id is
+    None (open failed, or never attempted). Best-effort — never raises.
+    Synchronous — callers must invoke this via asyncio.to_thread."""
+    if trace_id is None:
+        return
+    try:
+        from sqlmodel import Session
+
+        from backend.database import AgentTrace, engine
+
+        with Session(engine) as session:
+            t = session.get(AgentTrace, trace_id)
+            if t:
+                t.status = status
+                t.ended_at = datetime.utcnow()
+                t.error = error
+                session.commit()
+    except Exception as e:
+        logger.warning(f"close_trace failed (non-fatal): {e}")
+
+
 class TaskAborted(Exception):
     """Raised inside the tool-use loop when a task must stop mid-flight.
 
