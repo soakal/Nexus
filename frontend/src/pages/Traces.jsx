@@ -108,6 +108,7 @@ const KINDS = ['all', 'chat', 'briefing', 'orchestrator', 'proposer', 'voice']
 
 export default function Traces() {
   const [traces, setTraces] = useState(null)
+  const [loadError, setLoadError] = useState(null)
   const [kindFilter, setKindFilter] = useState('all')
   const [expandedId, setExpandedId] = useState(null)
   const [spansById, setSpansById] = useState({})
@@ -115,7 +116,9 @@ export default function Traces() {
   const [spansErrors, setSpansErrors] = useState({})
 
   const load = useCallback(() => {
-    api.traces.list(50, kindFilter === 'all' ? null : kindFilter).then(setTraces).catch(() => {})
+    api.traces.list(50, kindFilter === 'all' ? null : kindFilter)
+      .then(t => { setTraces(t); setLoadError(null) })
+      .catch(err => setLoadError(err?.message || 'Failed to load traces.'))
   }, [kindFilter])
 
   useEffect(() => {
@@ -164,7 +167,9 @@ export default function Traces() {
           </select>
         </div>
 
-        {traces === null ? (
+        {loadError ? (
+          <span style={{ fontSize: '13px', color: '#fb7185' }}>{loadError}</span>
+        ) : traces === null ? (
           <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
         ) : traces.length === 0 ? (
           <span style={{ fontSize: '13px', color: '#5d6982' }}>No traces yet.</span>

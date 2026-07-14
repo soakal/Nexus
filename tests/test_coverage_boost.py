@@ -389,10 +389,26 @@ def test_channels_trigger_recording_not_found(nexus_client, auth_headers):
 
 # ---------------------------------------------------------------------------
 # backend/agents/voice.py — process_audio dispatch
+#
+# process_audio() opens/closes a real AgentTrace row (see test_voice_trace.py)
+# via backend.database.engine -- these dispatch tests must swap in the same
+# throwaway in-memory engine, or they write straight into the live nexus.db.
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def _voice_trace_engine(monkeypatch):
+    from sqlmodel import SQLModel, create_engine
+    from sqlmodel.pool import StaticPool
+    import backend.database  # noqa: F401 -- registers all tables on metadata
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr("backend.database.engine", eng)
+    return eng
+
+
 @pytest.mark.asyncio
-async def test_voice_process_audio_query():
+async def test_voice_process_audio_query(_voice_trace_engine):
     from backend.agents.voice import process_audio
     with patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="what time is it"), \
          patch("backend.agents.voice.route_intent", new_callable=AsyncMock, return_value={
@@ -407,7 +423,7 @@ async def test_voice_process_audio_query():
 
 
 @pytest.mark.asyncio
-async def test_voice_process_audio_briefing():
+async def test_voice_process_audio_briefing(_voice_trace_engine):
     from backend.agents.voice import process_audio
     with patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="give me a briefing"), \
          patch("backend.agents.voice.route_intent", new_callable=AsyncMock, return_value={
@@ -421,7 +437,7 @@ async def test_voice_process_audio_briefing():
 
 
 @pytest.mark.asyncio
-async def test_voice_process_audio_home_control():
+async def test_voice_process_audio_home_control(_voice_trace_engine):
     from backend.agents.voice import process_audio
     with patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="turn on living room lights"), \
          patch("backend.agents.voice.route_intent", new_callable=AsyncMock, return_value={
@@ -436,7 +452,7 @@ async def test_voice_process_audio_home_control():
 
 
 @pytest.mark.asyncio
-async def test_voice_process_audio_note():
+async def test_voice_process_audio_note(_voice_trace_engine):
     from backend.agents.voice import process_audio
     with patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="remember to buy milk"), \
          patch("backend.agents.voice.route_intent", new_callable=AsyncMock, return_value={
@@ -450,7 +466,7 @@ async def test_voice_process_audio_note():
 
 
 @pytest.mark.asyncio
-async def test_voice_process_audio_task():
+async def test_voice_process_audio_task(_voice_trace_engine):
     from backend.agents.voice import process_audio
     from backend.agents.orchestrator import TaskResult
     with patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="summarize my emails"), \
