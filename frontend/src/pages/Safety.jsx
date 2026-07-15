@@ -823,6 +823,9 @@ export default function Safety() {
                 {evt.type === 'action' ? (
                   <>
                     <Badge label={evt.decision || 'event'} t={tone(evt.decision)} />
+                    {evt.judge_verdict != null && (
+                      <Badge label={`judge: ${evt.judge_verdict}`} t={tone(evt.judge_verdict)} />
+                    )}
                     <span style={{ fontSize: '12px', color: '#8a96ad' }}>
                       {[evt.actor, evt.kind].filter(Boolean).join(' / ')}
                     </span>
@@ -837,6 +840,11 @@ export default function Safety() {
                       }}>
                         {evt.target}
                       </span>
+                    )}
+                    {evt.judge_reason && (
+                      <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
+                        Judge: {evt.judge_reason}
+                      </div>
                     )}
                   </>
                 ) : evt.type === 'autonomy' ? (

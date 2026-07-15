@@ -471,11 +471,18 @@ def _coerce_actor(actor) -> Actor:
 
 
 async def _publish_action(
-    actor, kind: str, target: str, decision, risk, reversibility, log_id
+    actor, kind: str, target: str, decision, risk, reversibility, log_id,
+    judge_verdict: str | None = None, judge_reason: str | None = None,
 ) -> None:
     """Best-effort broadcast of a terminal broker outcome to /ws/logs clients.
 
     Never raises — all errors are swallowed by events.publish itself.
+
+    `judge_verdict`/`judge_reason` are included so the real-time Live Activity
+    feed can render the action-judge second opinion the same way the polled
+    Recent Actions / Pending Confirmations views do. They are None at call sites
+    reached before the judge runs (kill switch, gate refusal, throttle) — the
+    frontend renders the judge badge only when a verdict is present.
     """
     from backend import events
     await events.publish("action", {
@@ -486,6 +493,8 @@ async def _publish_action(
         "risk": getattr(risk, "value", str(risk)),
         "reversibility": getattr(reversibility, "value", str(reversibility)),
         "log_id": log_id,
+        "judge_verdict": judge_verdict,
+        "judge_reason": judge_reason,
     })
 
 
@@ -573,6 +582,14 @@ async def execute_action(
 
     risk, reversibility = classify(kind, payload)
     decision = decide(actor, risk, reversibility, confirmed, kind=kind)
+
+    # Judge verdict/reason default to None and are only populated if the action
+    # judge actually runs (AGENT/AUTONOMOUS, not confirmed, mode != off, not
+    # exempt). Pre-declared here so every post-judge _publish_action call site
+    # can pass them unconditionally — USER actions and confirmed/exempt/off
+    # paths skip the judge block and legitimately broadcast None.
+    judge_verdict: str | None = None
+    judge_reason: str | None = None
 
     # BEFORE write — the intent/gate record exists even if the process dies now.
     log_id = await asyncio.to_thread(
@@ -673,7 +690,10 @@ async def execute_action(
                     judge_reason,
                     Decision.NEEDS_CONFIRM.value,
                 )
-                await _publish_action(actor, kind, target, Decision.NEEDS_CONFIRM, risk, reversibility, log_id)
+                await _publish_action(
+                    actor, kind, target, Decision.NEEDS_CONFIRM, risk, reversibility, log_id,
+                    judge_verdict, judge_reason,
+                )
                 from backend import events
                 await events.notify_phone(
                     f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}). "
@@ -701,7 +721,10 @@ async def execute_action(
         await asyncio.to_thread(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": error})
         )
-        await _publish_action(actor, kind, target, Decision.FAILED, risk, reversibility, log_id)
+        await _publish_action(
+            actor, kind, target, Decision.FAILED, risk, reversibility, log_id,
+            judge_verdict, judge_reason,
+        )
         # Record outcome for agent/autonomous circuit breaker (no dispatcher = failure).
         if actor in (Actor.AGENT, Actor.AUTONOMOUS):
             from backend.safety import throttle as _throttle
@@ -742,7 +765,10 @@ async def execute_action(
         await asyncio.to_thread(
             _update_action_log, log_id, Decision.FAILED.value, json.dumps({"error": str(e)})
         )
-        await _publish_action(actor, kind, target, Decision.FAILED, risk, reversibility, log_id)
+        await _publish_action(
+            actor, kind, target, Decision.FAILED, risk, reversibility, log_id,
+            judge_verdict, judge_reason,
+        )
         # Record outcome for agent/autonomous circuit breaker.
         if actor in (Actor.AGENT, Actor.AUTONOMOUS):
             from backend.safety import throttle as _throttle
@@ -772,7 +798,10 @@ async def execute_action(
     await asyncio.to_thread(
         _update_action_log, log_id, Decision.EXECUTED.value, json.dumps(result)
     )
-    await _publish_action(actor, kind, target, Decision.EXECUTED, risk, reversibility, log_id)
+    await _publish_action(
+        actor, kind, target, Decision.EXECUTED, risk, reversibility, log_id,
+        judge_verdict, judge_reason,
+    )
     # Record outcome for agent/autonomous circuit breaker (success resets failure streak).
     if actor in (Actor.AGENT, Actor.AUTONOMOUS):
         from backend.safety import throttle as _throttle
