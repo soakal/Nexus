@@ -81,7 +81,18 @@ def acquire_single_instance():
 
 
 def _kill_other_tray_instances():
-    """Kill any orphaned pythonw.exe processes running tray.py."""
+    """Kill any orphaned pythonw.exe processes running tray.py.
+
+    Best-effort housekeeping — this must NEVER be fatal. At login the
+    PowerShell/WMI sweep below is cold (WMI service starting, module
+    analysis cache empty, AV scanning) and can blow well past its timeout;
+    warm it already takes ~4s on this VM. An uncaught TimeoutExpired here
+    killed the tray silently at boot (before the first log line) on
+    2026-07-14, so the whole sweep is wrapped: on any failure we log and
+    continue — the singleton socket is the real duplicate-instance guard.
+    stdin=DEVNULL everywhere: under pythonw.exe (no console) the process
+    has no usable std handles to inherit (same lesson as _run_ps).
+    """
     my_pid = os.getpid()
 
     # Get parent PID so we never kill our own venv launcher stub
@@ -90,22 +101,24 @@ def _kill_other_tray_instances():
         pr = subprocess.run(
             ["powershell", "-NonInteractive", "-Command",
              f"(Get-WmiObject Win32_Process -Filter 'ProcessId={my_pid}').ParentProcessId"],
-            capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=15,
         )
         parent_pid = int(pr.stdout.strip()) if pr.returncode == 0 else 0
     except Exception:
         pass
 
-    result = subprocess.run(
-        ["powershell", "-NonInteractive", "-Command",
-         "Get-WmiObject Win32_Process | Where-Object { "
-         "($_.Name -eq 'pythonw.exe' -or $_.Name -eq 'python.exe') "
-         "-and $_.CommandLine -like '*tray.py*' "
-         "} | Select-Object ProcessId | ConvertTo-Json"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        try:
+    try:
+        result = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command",
+             "Get-WmiObject Win32_Process | Where-Object { "
+             "($_.Name -eq 'pythonw.exe' -or $_.Name -eq 'python.exe') "
+             "-and $_.CommandLine -like '*tray.py*' "
+             "} | Select-Object ProcessId | ConvertTo-Json"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout.strip())
             if isinstance(data, dict):
                 data = [data]
@@ -113,10 +126,11 @@ def _kill_other_tray_instances():
                 pid = int(item.get("ProcessId", 0))
                 if pid and pid != my_pid and pid != parent_pid:
                     subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   stdin=subprocess.DEVNULL,
                                    capture_output=True)
                     log.info("Killed orphaned tray instance pid %d", pid)
-        except Exception:
-            log.exception("Error killing orphaned tray instances")
+    except Exception:
+        log.exception("Orphan-instance sweep failed — continuing startup")
 
 # ── icon rendering ────────────────────────────────────────────────────────────
 
@@ -428,16 +442,21 @@ def main():
         uninstall_startup()
         return
 
-    # Kill any orphaned old tray instances before claiming the singleton
-    _kill_other_tray_instances()
-
-    lock = acquire_single_instance()
-    if lock is None:
-        sys.exit(0)
-
-    _preload_icons()
+    # First log line BEFORE any subprocess/network work: if startup dies
+    # later, the log must show the process at least reached Python code
+    # (a totally silent death under pythonw.exe is undebuggable).
+    log.info("Tray launcher invoked (pid %d)", os.getpid())
 
     try:
+        # Kill any orphaned old tray instances before claiming the singleton
+        _kill_other_tray_instances()
+
+        lock = acquire_single_instance()
+        if lock is None:
+            sys.exit(0)
+
+        _preload_icons()
+
         NexusTray().run()
     except Exception:
         log.exception("Fatal error in tray")
