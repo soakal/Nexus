@@ -548,8 +548,11 @@ export default function Safety() {
   // ---------------------------------------------------------------------------
   // Row style for activity / verdict items
   // ---------------------------------------------------------------------------
+  // flexWrap is load-bearing: without it, a narrow (phone) viewport squeezes the
+  // flex:1 target span to zero width — badges + actor/kind eat the whole row and
+  // the target/reason become invisible. Rows must wrap, never clip.
   const rowStyle = {
-    display: 'flex', alignItems: 'center', gap: '12px',
+    display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px',
     padding: '11px 14px', borderRadius: '11px',
     background: 'rgba(255,255,255,0.022)',
     border: '1px solid rgba(120,160,220,0.08)',
@@ -823,16 +826,18 @@ export default function Safety() {
                     <span style={{ fontSize: '12px', color: '#8a96ad' }}>
                       {[evt.actor, evt.kind].filter(Boolean).join(' / ')}
                     </span>
-                    <span style={{
-                      flex: 1, fontSize: '13px', color: '#dbe3f0',
-                      fontFamily: "'JetBrains Mono', monospace",
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {evt.target || ''}
-                    </span>
-                    <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                    <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982', flex: 'none' }}>
                       {relativeTime(new Date(evt._t).toISOString())}
                     </span>
+                    {evt.target && (
+                      <span style={{
+                        width: '100%', fontSize: '13px', color: '#dbe3f0',
+                        fontFamily: "'JetBrains Mono', monospace",
+                        overflowWrap: 'anywhere', lineHeight: 1.45,
+                      }}>
+                        {evt.target}
+                      </span>
+                    )}
                   </>
                 ) : evt.type === 'autonomy' ? (
                   <>
@@ -868,9 +873,9 @@ export default function Safety() {
                 </span>
                 {a.target && (
                   <span style={{
-                    flex: 1, fontSize: '13px', color: '#dbe3f0',
+                    flex: '1 1 160px', minWidth: 0, fontSize: '13px', color: '#dbe3f0',
                     fontFamily: "'JetBrains Mono', monospace",
-                    overflow: 'hidden', textOverflow: 'ellipsis',
+                    overflowWrap: 'anywhere',
                   }}>
                     {a.target}
                   </span>
@@ -879,7 +884,7 @@ export default function Safety() {
                   {relativeTime(a.created_at)}
                 </span>
                 {a.judge_reason && (
-                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55 }}>
+                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
                     Judge: {a.judge_reason}
                   </div>
                 )}
@@ -1302,8 +1307,16 @@ export default function Safety() {
                 </span>
                 {/* Row 2 */}
                 {o.reason && (
-                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55 }}>
+                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
                     {o.reason}
+                  </div>
+                )}
+                {o.evidence && (
+                  <div style={{
+                    width: '100%', fontSize: '12px', color: '#5d6982', lineHeight: 1.5,
+                    fontFamily: "'JetBrains Mono', monospace", overflowWrap: 'anywhere',
+                  }}>
+                    {o.evidence}
                   </div>
                 )}
               </div>
@@ -1476,7 +1489,12 @@ export default function Safety() {
         ) : (
           <div>
             {actions.map((a) => (
-              <div key={a.id} style={rowStyle}>
+              // Badges + actor/kind + time on the top line (wrapping as needed);
+              // target, judge reason, and failure error each get a full-width line
+              // that WRAPS — never ellipsis-truncated. Shadow-mode judge review
+              // (Brian reading real verdicts before flipping enforce) depends on
+              // the FULL reason being readable, including on a ~375px phone.
+              <div key={a.id} style={{ ...rowStyle, alignItems: 'flex-start' }}>
                 <Badge label={a.decision || 'unknown'} t={tone(a.decision)} />
                 {a.judge_verdict != null && (
                   <Badge label={`judge: ${a.judge_verdict}`} t={tone(a.judge_verdict)} />
@@ -1484,19 +1502,28 @@ export default function Safety() {
                 <span style={{ fontSize: '12px', color: '#8a96ad' }}>
                   {[a.actor, a.kind].filter(Boolean).join(' / ')}
                 </span>
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                  {relativeTime(a.created_at)}
+                </span>
                 {a.target && (
                   <span style={{
-                    flex: 1, fontSize: '13px', color: '#dbe3f0',
+                    width: '100%', fontSize: '13px', color: '#dbe3f0',
                     fontFamily: "'JetBrains Mono', monospace",
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    overflowWrap: 'anywhere', lineHeight: 1.45,
                   }}>
                     {a.target}
                   </span>
                 )}
-                {!a.target && <span style={{ flex: 1 }} />}
-                <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
-                  {relativeTime(a.created_at)}
-                </span>
+                {a.judge_reason && (
+                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
+                    Judge: {a.judge_reason}
+                  </div>
+                )}
+                {a.decision === 'failed' && a.result && typeof a.result === 'object' && a.result.error && (
+                  <div style={{ width: '100%', fontSize: '12px', color: '#fb7185', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                    {String(a.result.error)}
+                  </div>
+                )}
               </div>
             ))}
           </div>
