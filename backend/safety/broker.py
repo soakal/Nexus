@@ -362,6 +362,38 @@ def _update_action_log(log_id: int, decision: str, result_json: str | None) -> N
         session.commit()
 
 
+def _update_action_log_judge(
+    log_id: int,
+    judge_verdict: str,
+    judge_reason: str,
+    decision: str | None = None,
+) -> None:
+    """Update-only: stamp the judge's verdict/reason on an existing row.
+
+    Mirrors `_update_action_log`, but for the judge-gate path: `decision` is
+    optional so a shadow-mode call (or an enforce-mode approve) can record the
+    verdict without touching the row's decision — it keeps whatever the gate
+    already wrote. An enforce-mode veto passes `decision="needs_confirm"` to
+    flip the already-inserted ALLOWED row in place, mirroring the throttle
+    ALLOWED->FORBIDDEN update above.
+    """
+    from sqlmodel import Session
+
+    from backend.database import ActionLog, engine
+
+    with Session(engine) as session:
+        row = session.get(ActionLog, log_id)
+        if row is None:  # pragma: no cover - defensive
+            return
+        row.judge_verdict = judge_verdict
+        row.judge_reason = judge_reason
+        if decision is not None:
+            row.decision = decision
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
+
+
 def _find_completed_action(key: str) -> dict | None:
     """Most-recent terminal (executed/failed/forbidden) ActionLog row for a key.
 
@@ -601,6 +633,65 @@ async def execute_action(
                 log_id=log_id,
                 error=_reason,
             )
+
+        # Action-judge gate (Tier 3 second-opinion check) — runs AFTER the
+        # throttle/circuit-breaker gate passes and BEFORE the attempt is
+        # recorded against the throttle window, so a judge veto never counts
+        # against the actor's rate cap. Skipped outright for `confirmed=True`
+        # calls (the caller already explicitly confirmed this exact dispatch),
+        # exempt kinds, and mode=="off" (fast-path allow). USER actor is
+        # already excluded — this whole throttle/judge block only runs for
+        # AGENT/AUTONOMOUS actors.
+        if (
+            not confirmed
+            and _s.action_judge_mode != "off"
+            and kind not in _s.action_judge_exempt_kinds
+        ):
+            from backend.safety import judge
+
+            try:
+                verdict = await judge.evaluate_action(actor, kind, target, payload, risk, reversibility)
+            except Exception as e:  # pragma: no cover - evaluate_action never raises
+                # per its own contract; this is a defensive fail-safe only, so a
+                # future regression there can never escape execute_action either.
+                logger.warning(f"action judge raised unexpectedly kind={kind} target={target}: {e}")
+                verdict = {"allow": False, "confidence": 0.0, "reason": f"judge error: {e}", "verdict": "error"}
+
+            judge_verdict = verdict.get("verdict") or "error"
+            judge_reason = str(verdict.get("reason") or "")[:300]
+
+            if _s.action_judge_mode == "enforce" and not verdict.get("allow"):
+                # Veto (or judge failure/timeout/BudgetExceeded, which
+                # evaluate_action fails safe into verdict="error"/allow=False):
+                # flip the already-inserted ALLOWED row to NEEDS_CONFIRM in
+                # place, mirroring the throttle ALLOWED->FORBIDDEN update just
+                # above. Do NOT record a throttle attempt for a vetoed action.
+                await asyncio.to_thread(
+                    _update_action_log_judge,
+                    log_id,
+                    judge_verdict,
+                    judge_reason,
+                    Decision.NEEDS_CONFIRM.value,
+                )
+                await _publish_action(actor, kind, target, Decision.NEEDS_CONFIRM, risk, reversibility, log_id)
+                from backend import events
+                await events.notify_phone(
+                    f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}). "
+                    f"Judge: {judge_reason}. Open the Safety page to confirm or reject.",
+                    kind="needs_confirm",
+                )
+                return ActionResult(
+                    decision=Decision.NEEDS_CONFIRM,
+                    risk=risk,
+                    reversibility=reversibility,
+                    log_id=log_id,
+                )
+
+            # Shadow mode, or enforce-mode approve: record the verdict on the
+            # row but never block dispatch — falls through to record_attempt
+            # and the normal dispatch path below.
+            await asyncio.to_thread(_update_action_log_judge, log_id, judge_verdict, judge_reason)
+
         throttle.record_attempt(kind)
 
     # dispatch.

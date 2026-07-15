@@ -52,6 +52,7 @@ def _make_settings(throttle_max: int, breaker_threshold: int = 10) -> MagicMock:
     s.verb_throttle_window_s = 300
     s.breaker_failure_threshold = breaker_threshold
     s.breaker_cooldown_s = 900
+    s.action_judge_mode = "off"
     return s
 
 

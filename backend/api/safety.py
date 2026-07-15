@@ -64,6 +64,8 @@ async def list_actions(
             "reversibility": r.reversibility,
             "decision": r.decision,
             "result": _parse_json(r.result_json),
+            "judge_verdict": r.judge_verdict,
+            "judge_reason": r.judge_reason,
             "idempotency_key": r.idempotency_key,
             "created_at": r.created_at.isoformat(),
             "updated_at": r.updated_at.isoformat(),

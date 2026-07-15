@@ -167,3 +167,99 @@ async def call_service(domain: str, service: str, data: dict | None = None) -> d
     # so the frontend's post-toggle reload sees the real new state, not the cache.
     fetch.invalidate()
     return result
+
+
+def _extract_entity_ids(obj) -> set[str]:
+    """Recursively pull every `entity_id` value out of an HA automation config.
+
+    Automation configs nest entity_id references all over the place — trigger
+    `entity_id`, condition `entity_id`, action `target.entity_id`,
+    `service_data.entity_id` — as either a single string or a list of strings.
+    Walk the whole structure rather than special-casing each shape.
+    """
+    found: set[str] = set()
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "entity_id":
+                if isinstance(value, str):
+                    found.add(value)
+                elif isinstance(value, list):
+                    found.update(v for v in value if isinstance(v, str))
+            else:
+                found.update(_extract_entity_ids(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.update(_extract_entity_ids(item))
+    return found
+
+
+@async_ttl_cache(300)
+async def fetch_automation_index() -> dict[str, list[str]]:
+    """Map entity_id -> [names of automations that reference it].
+
+    This is the "critical section" context source: before NEXUS proposes or
+    executes an action against an entity, it needs to know which automations
+    already touch that entity (e.g. the christmas-tree-plug automation that
+    turns tall_light_lr_christmas_tree_plug off nightly at 11:59pm) so a
+    judge can avoid fighting an existing automation instead of just guessing.
+
+    Enumerates automation.* entities from the cached fetch(), then does a
+    best-effort GET per automation for its full config (triggers/conditions/
+    actions, which is where target entity_ids live).
+
+    Requests are SEQUENTIAL, not concurrent — mirrors the uptime job's lesson
+    (backend/scheduler.py:_record_uptime) that firing many httpx calls at once
+    thunders the event loop; one automation config at a time is cheap enough.
+
+    Never raises. Degrades to a partial (or empty) dict on 401/timeout/any
+    error, logging exactly ONE summary warning per call — not one per
+    failure.
+    """
+    index: dict[str, list[str]] = {}
+    error_count = 0
+    try:
+        data = await fetch()
+        automations = [
+            e for e in data.entities
+            if e.get("entity_id", "").startswith("automation.")
+        ]
+
+        from backend.config import get_settings
+        settings = get_settings()
+        host = settings.hass_host
+        token = settings.hass_token
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            for ent in automations:
+                unique_id = (ent.get("attributes") or {}).get("id")
+                if not unique_id:
+                    continue
+                try:
+                    resp = await client.get(
+                        f"{host}/api/config/automation/config/{unique_id}",
+                        headers=headers,
+                    )
+                    resp.raise_for_status()
+                    config = resp.json()
+                except Exception:
+                    error_count += 1
+                    continue
+
+                name = (
+                    config.get("alias")
+                    or (ent.get("attributes") or {}).get("friendly_name")
+                    or ent.get("entity_id")
+                )
+                for target_id in _extract_entity_ids(config):
+                    index.setdefault(target_id, []).append(name)
+    except Exception as e:
+        logger.warning(f"fetch_automation_index degraded (best-effort): {e}")
+        return index
+
+    if error_count:
+        logger.warning(
+            f"fetch_automation_index: {error_count} automation config fetch(es) "
+            "failed, returning partial index"
+        )
+    return index

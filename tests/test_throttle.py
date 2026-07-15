@@ -196,6 +196,7 @@ async def test_user_never_throttled(eng, monkeypatch):
     s.verb_throttle_window_s = 300
     s.breaker_failure_threshold = 3
     s.breaker_cooldown_s = 900
+    s.action_judge_mode = "off"
     monkeypatch.setattr("backend.config._settings_instance", s)
 
     call_count = 0
@@ -232,6 +233,7 @@ async def test_agent_throttled_after_cap(eng, monkeypatch):
     s.verb_throttle_window_s = 300
     s.breaker_failure_threshold = 3
     s.breaker_cooldown_s = 900
+    s.action_judge_mode = "off"
     monkeypatch.setattr("backend.config._settings_instance", s)
 
     # Seed autonomy ON so the kill-switch doesn't block.
@@ -285,6 +287,7 @@ async def test_agent_failures_trip_breaker_and_alert(eng, monkeypatch):
     s.verb_throttle_window_s = 300
     s.breaker_failure_threshold = 3
     s.breaker_cooldown_s = 900
+    s.action_judge_mode = "off"
     monkeypatch.setattr("backend.config._settings_instance", s)
 
     # Seed autonomy ON.
