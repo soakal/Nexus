@@ -36,6 +36,15 @@ SINGLETON_PORT = 57890
 RUN_KEY        = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE      = "NEXUS_Tray"
 
+# Auto-recovery (2026-07-15 outage: backend hung at ~07:24, tray flipped to
+# "stopped" at 07:25:28 and then just sat there — nobody restarted it for
+# ~20 minutes). When the monitor sees a *running* backend go unhealthy it now
+# restarts NEXUS itself instead of only changing the icon. Bounded so a
+# broken build can't loop-restart forever:
+AUTO_RESTART_COOLDOWN = 300    # min seconds between auto-restart attempts
+AUTO_RESTART_MAX      = 3      # max attempts per rolling window
+AUTO_RESTART_WINDOW   = 3600   # rolling window (seconds) for that cap
+
 PALETTE = {
     "running": {
         "bg": (8, 14, 28), "border": (0, 212, 255),
@@ -242,6 +251,9 @@ class NexusTray:
         self._lock   = threading.Lock()
         self._status = "stopped"
         self._icon   = None
+        # Auto-recovery bookkeeping (monitor thread only).
+        self._auto_restarts = []   # timestamps of recent auto-restart attempts
+        self._auto_pending  = False  # an unhealthy-while-running episode is open
 
     def _set_status(self, status):
         with self._lock:
@@ -343,7 +355,15 @@ class NexusTray:
 
     def _do_start(self, open_browser: bool = False):
         self._set_status("starting")
-        result = self._run_ps("start.ps1")
+        try:
+            result = self._run_ps("start.ps1")
+        except Exception:
+            # _run_ps re-raises TimeoutExpired; without this guard the worker
+            # thread dies with status stuck at "starting" (monitor skips it,
+            # every menu item disables) — always land on a real state.
+            log.exception("start.ps1 raised — marking stopped")
+            self._set_status("stopped")
+            return
         # Trust start.ps1's own health verification rather than re-checking
         # immediately (backend can be slow right after start.ps1 confirms it).
         if result.returncode == 0:
@@ -355,7 +375,10 @@ class NexusTray:
 
     def _do_stop(self):
         self._set_status("starting")
-        self._run_ps("stop.ps1")
+        try:
+            self._run_ps("stop.ps1")
+        except Exception:
+            log.exception("stop.ps1 raised — marking stopped anyway")
         self._set_status("stopped")
 
     def _do_restart(self):
@@ -373,11 +396,71 @@ class NexusTray:
                     continue
             if _backend_healthy():
                 fail_count = 0
+                self._auto_pending = False
                 self._set_status("running")
             else:
                 fail_count += 1
                 if fail_count >= 2:
+                    # Auto-recover only a backend that WAS running and died
+                    # under us (or one we're already mid-recovery on) — a
+                    # manual Stop (status already "stopped") must stay stopped.
+                    with self._lock:
+                        if self._status == "running":
+                            self._auto_pending = True
                     self._set_status("stopped")
+                    fail_count = 0
+                    if self._auto_pending:
+                        try:
+                            self._maybe_auto_restart()
+                        except Exception:
+                            # The monitor thread must never die — it is the
+                            # only thing watching the backend.
+                            log.exception("Auto-restart attempt crashed")
+                            self._set_status("stopped")
+
+    def _maybe_auto_restart(self):
+        """Bounded auto-recovery: restart NEXUS after a running->unhealthy
+        transition, with a cooldown between attempts and a cap per rolling
+        window so a genuinely broken build can't restart-storm all day.
+        Runs on the monitor thread — _do_restart blocking here is fine (the
+        monitor has nothing else to do until the restart settles). While
+        _auto_pending is True a cooldown-blocked attempt is retried on a
+        later tick; hitting the cap clears it (give up until manual Start)."""
+        now = time.time()
+        self._auto_restarts = [
+            t for t in self._auto_restarts if now - t < AUTO_RESTART_WINDOW
+        ]
+        if len(self._auto_restarts) >= AUTO_RESTART_MAX:
+            self._auto_pending = False
+            log.warning(
+                "Backend unhealthy but auto-restart cap hit (%d attempts in "
+                "%ds) — giving up until restarted manually (tray Start or "
+                "start.ps1)",
+                AUTO_RESTART_MAX, AUTO_RESTART_WINDOW,
+            )
+            return
+        if self._auto_restarts and now - self._auto_restarts[-1] < AUTO_RESTART_COOLDOWN:
+            # Stay pending — a later monitor tick retries once cooled down.
+            log.warning(
+                "Backend unhealthy but auto-restart is cooling down "
+                "(last attempt %ds ago) — will retry",
+                int(now - self._auto_restarts[-1]),
+            )
+            return
+        self._auto_restarts.append(now)
+        log.warning(
+            "Backend went unhealthy while running — auto-restart attempt %d/%d",
+            len(self._auto_restarts), AUTO_RESTART_MAX,
+        )
+        # stop.ps1 first: a hung-but-alive backend still holds :8000/:3000,
+        # and start.ps1 waits for the ports to free before launching.
+        self._do_restart()
+        with self._lock:
+            recovered = self._status == "running"
+        if recovered:
+            log.info("Auto-restart succeeded — NEXUS back up")
+        else:
+            log.warning("Auto-restart did not bring NEXUS back up")
 
     # ── setup callback: fires once pystray icon loop is live ─────────────────
 
