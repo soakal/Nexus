@@ -168,10 +168,15 @@ def metering_counters() -> dict:
 # Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 per MTok. The cache multipliers in
 # _compute_cost (5m write 1.25x input, read 0.1x input) also match the official
 # rates.
+# "claude-sonnet-5" is NOT the SONNET_MODEL constant above (NEXUS still runs
+# 4.6) — added only so orchestrator_planner/executor/verifier_model can be
+# .env-overridden to it without meter-as-$0. Promo rate ($2/$10, added
+# 2026-07-18) runs through 2026-08-31 — revert to non-promo pricing after.
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 3.0, "output": 15.0},
     HAIKU_MODEL: {"input": 1.0, "output": 5.0},
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0},
 }
 
 # Hosted web-search server tool: $10 per 1,000 searches (Anthropic pricing,

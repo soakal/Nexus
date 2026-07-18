@@ -55,9 +55,20 @@ _DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
 # which prefix-matches the generic Claude.md page and swallows the digest.
 # Detect the filename shape and force it onto its own running-log page.
 _FEATURES_DIGEST_PAT = re.compile(
-    r"^claude-features-digest-\d{4}-\d{2}-\d{2}", re.IGNORECASE
+    r"^claude-features-digest-(\d{4}-\d{2}-\d{2})", re.IGNORECASE
 )
 _DIGEST_PAGE = "Claude Features Digest"
+
+
+def _digest_date(stem: str) -> str | None:
+    """Extract the embedded YYYY-MM-DD from a features-digest filename stem.
+
+    The digest is often ingested days after it was generated (relay lag,
+    manual re-run) -- the wiki section header must show the digest's own
+    date, not the ingestion date, or entries land under the wrong day.
+    """
+    m = _FEATURES_DIGEST_PAT.match(stem)
+    return m.group(1) if m else None
 
 
 def _is_daily_note(stem: str) -> bool:
@@ -375,7 +386,7 @@ async def ingest_file(file_path: str) -> dict:
             await asyncio.to_thread(_save_ledger, vault, seen)
             return result
 
-        today = date.today().isoformat()
+        today = _digest_date(path.stem) or date.today().isoformat()
         known = await asyncio.to_thread(_known_wikis, vault)
 
         # --- Haiku call 1: extract ---
