@@ -366,7 +366,7 @@ export default function Dashboard() {
               </div>
               <div style={{ fontSize: '13px', color: '#8a96ad' }}>containers running</div>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: dockerOpen ? '160px' : 'none', overflowY: dockerOpen ? 'auto' : 'visible' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {(unraid.docker_containers || []).slice(0, dockerOpen ? undefined : 2).map(c => (
                 <div
                   key={c.id}
@@ -450,7 +450,7 @@ export default function Dashboard() {
                 )}
               </div>
             )}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: proxmoxVmsOpen ? '160px' : 'none', overflowY: proxmoxVmsOpen ? 'auto' : 'visible' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {(proxmox.vms || []).slice(0, proxmoxVmsOpen ? undefined : 4).map(v => (
                 <div
                   key={v.vmid}
