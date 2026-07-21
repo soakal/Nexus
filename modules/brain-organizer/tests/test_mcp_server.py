@@ -226,6 +226,80 @@ def test_raw_post_no_auth_when_token_empty(tmp_config: dict[str, Any]) -> None:
     assert resp.status_code == 201
 
 
+def test_raw_post_loopback_exempt_when_token_configured(tmp_config: dict[str, Any]) -> None:
+    """Loopback callers never need a token, even when one IS configured (decision 1)."""
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # Default test client REMOTE_ADDR is 127.0.0.1 (loopback) — no Authorization header sent.
+    resp = client.post("/raw", json={"content": "hi"}, content_type="application/json")
+    assert resp.status_code == 201
+
+
+def test_raw_post_remote_rejected_when_no_token_configured(tmp_config: dict[str, Any]) -> None:
+    """Secure-by-default: an unset write token rejects remote writes outright (decision 2)."""
+    tmp_config["mcp_write_token"] = ""
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.post(
+        "/raw",
+        json={"content": "hi"},
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+    )
+    assert resp.status_code == 403
+
+
+def test_raw_post_empty_remote_addr_denied(tmp_config: dict[str, Any]) -> None:
+    """An empty-string REMOTE_ADDR is not one of the loopback addresses, so it is
+    treated as remote (deny-safe) rather than exempted like 127.0.0.1/::1."""
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.post(
+        "/raw",
+        json={"content": "hi"},
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": ""},
+    )
+    assert resp.status_code == 401
+
+
+def test_raw_post_malformed_authorization_header_rejected(tmp_config: dict[str, Any]) -> None:
+    """Malformed Authorization headers (wrong scheme, or bare token missing the
+    'Bearer ' prefix) from a remote caller are rejected, not silently accepted."""
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # Wrong scheme entirely
+    resp = client.post(
+        "/raw",
+        json={"content": "hi"},
+        content_type="application/json",
+        headers={"Authorization": "Basic xyz"},
+        environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+    )
+    assert resp.status_code == 401
+
+    # Bare token, missing the required "Bearer " prefix
+    resp = client.post(
+        "/raw",
+        json={"content": "hi"},
+        content_type="application/json",
+        headers={"Authorization": "secret123"},
+        environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+    )
+    assert resp.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # Server binding configuration
 # ---------------------------------------------------------------------------
