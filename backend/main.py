@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 
 # Windows: force the Selector event loop BEFORE uvicorn creates its loop (this
@@ -23,6 +24,19 @@ from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _brain_mcp_spawn_env(token: str | None) -> dict | None:
+    """Build the env for the Brain Organizer MCP server subprocess.
+
+    Returns None (inherit the parent env unchanged, today's behavior) when no
+    token is set. Otherwise returns a FULL copy of the parent env with
+    MCP_WRITE_TOKEN added — never a minimal env dict, which breaks Python
+    child process startup on Windows (missing SystemRoot/PATH etc).
+    """
+    if not token:
+        return None
+    return {**os.environ, "MCP_WRITE_TOKEN": token}
 
 
 @asynccontextmanager
@@ -97,9 +111,14 @@ async def lifespan(app: FastAPI):
                 _bo_py = _bo_dir / "venv" / "Scripts" / "python.exe"
                 _bo_srv = _bo_dir / "mcp_server.py"
                 if _bo_py.exists() and _bo_srv.exists():
+                    try:
+                        _bo_token = settings.brain_mcp_write_token
+                    except Exception:
+                        _bo_token = None  # vault hiccup -> spawn token-less (remote writes stay disabled)
                     _bo_proc[0] = subprocess.Popen(
                         [str(_bo_py), str(_bo_srv)],
                         cwd=str(_bo_dir),
+                        env=_brain_mcp_spawn_env(_bo_token),
                     )
                     logger.info(f"Brain Organizer MCP server started (PID {_bo_proc[0].pid})")
             except Exception as e:

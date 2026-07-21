@@ -274,6 +274,15 @@ class Settings(BaseSettings):
         except KeyError:
             return ""
 
+    @property
+    def brain_mcp_write_token(self) -> str:
+        """Optional write token the Brain MCP server requires from NON-loopback callers."""
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("BRAIN_MCP_WRITE_TOKEN") or ""
+        except KeyError:
+            return ""
+
     def validate(self) -> None:
         """Fail fast on misconfiguration at startup, before the scheduler/agents run.
 

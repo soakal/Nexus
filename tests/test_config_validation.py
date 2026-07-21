@@ -61,3 +61,19 @@ def test_validate_passes_with_optional_secret_missing(monkeypatch):
         property(lambda self: (_ for _ in ()).throw(KeyError("GITHUB_TOKEN"))),
     )
     _settings().validate()
+
+
+def test_brain_mcp_write_token_present_returns_value(monkeypatch):
+    # mock_secrets (autouse) falls back to os.environ for keys it doesn't mock.
+    monkeypatch.setenv("BRAIN_MCP_WRITE_TOKEN", "test-brain-mcp-token")
+    assert _settings().brain_mcp_write_token == "test-brain-mcp-token"
+
+
+def test_brain_mcp_write_token_absent_returns_empty_string():
+    # Not in MOCK_SECRETS and not in the environment -> KeyError -> "".
+    assert _settings().brain_mcp_write_token == ""
+
+
+def test_brain_mcp_write_token_not_required_by_validate():
+    # Optional secret: absent must not fail validation (mirrors github_token above).
+    _settings().validate()
