@@ -611,9 +611,12 @@ async def execute_action(
         if decision == Decision.NEEDS_CONFIRM:
             from backend import events
             await events.notify_phone(
-                f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}). "
-                f"Open the Safety page to confirm or reject.",
+                f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}).",
                 kind="needs_confirm",
+                buttons=[
+                    {"text": "✓ Confirm", "callback_data": f"safety:confirm:{log_id}"},
+                    {"text": "✗ Reject", "callback_data": f"safety:reject:{log_id}"},
+                ],
             )
         return ActionResult(
             decision=decision,
@@ -697,8 +700,12 @@ async def execute_action(
                 from backend import events
                 await events.notify_phone(
                     f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}). "
-                    f"Judge: {judge_reason}. Open the Safety page to confirm or reject.",
+                    f"Judge: {judge_reason}.",
                     kind="needs_confirm",
+                    buttons=[
+                        {"text": "✓ Confirm", "callback_data": f"safety:confirm:{log_id}"},
+                        {"text": "✗ Reject", "callback_data": f"safety:reject:{log_id}"},
+                    ],
                 )
                 return ActionResult(
                     decision=Decision.NEEDS_CONFIRM,
@@ -964,3 +971,41 @@ async def confirm_action(
             result=result if isinstance(result, dict) else {"result": result},
         ),
     )
+
+
+async def reject_action(log_id: int) -> tuple[str, None]:
+    """Close a needs_confirm action without dispatching it.
+
+    Returns (status, None) where status is one of:
+      not_found        — no ActionLog row with this id
+      not_confirmable  — row exists but decision is not needs_confirm
+      rejected          — closed, decision now forbidden
+
+    No TTL check (rejecting an already-expired action is still a valid close)
+    and no kill-switch check (rejection never dispatches, so it's always safe).
+    Updates the SAME ActionLog row in place — no second row is inserted.
+    """
+    row = await asyncio.to_thread(_get_action_log, log_id)
+    if row is None:
+        return ("not_found", None)
+
+    if row["decision"] != Decision.NEEDS_CONFIRM.value:
+        return ("not_confirmable", None)
+
+    try:
+        risk = Risk(row["risk"])
+    except ValueError:
+        risk = Risk.UNCLASSIFIABLE
+    try:
+        reversibility = Reversibility(row["reversibility"])
+    except ValueError:
+        reversibility = Reversibility.UNKNOWN
+
+    await asyncio.to_thread(
+        _update_action_log, log_id, Decision.FORBIDDEN.value, json.dumps({"reason": "rejected_by_user"})
+    )
+    await _publish_action(
+        _coerce_actor(row["actor"]), row["kind"], row["target"],
+        Decision.FORBIDDEN, risk, reversibility, log_id,
+    )
+    return ("rejected", None)

@@ -45,13 +45,8 @@ class BudgetExceeded(Exception):
         )
 
 
-def _local_midnight_utc_naive() -> datetime:
-    """The most recent local midnight (in briefing_timezone) as a NAIVE UTC instant.
-
-    SpendLog.created_at is stored as a naive `datetime.utcnow()` value, so we must
-    compare against a naive UTC datetime. We compute local midnight in the user's
-    configured timezone, then convert that instant to UTC and drop the tzinfo.
-    """
+def _local_now() -> datetime:
+    """Now in the user's configured timezone (briefing_timezone, UTC fallback)."""
     from zoneinfo import ZoneInfo
 
     try:
@@ -63,8 +58,27 @@ def _local_midnight_utc_naive() -> datetime:
         tz = ZoneInfo(tzname)
     except Exception:
         tz = ZoneInfo("UTC")
+    return datetime.now(tz)
 
-    now_local = datetime.now(tz)
+
+def _local_today_date_str() -> str:
+    """Today's date (ISO, e.g. "2026-07-20") in the user's configured timezone.
+
+    Shared by budget_warning_due — the day IS the edge for that check, so a
+    date string (not a timestamp) makes rollover reset free."""
+    return _local_now().date().isoformat()
+
+
+def _local_midnight_utc_naive() -> datetime:
+    """The most recent local midnight (in briefing_timezone) as a NAIVE UTC instant.
+
+    SpendLog.created_at is stored as a naive `datetime.utcnow()` value, so we must
+    compare against a naive UTC datetime. We compute local midnight in the user's
+    configured timezone, then convert that instant to UTC and drop the tzinfo.
+    """
+    from zoneinfo import ZoneInfo
+
+    now_local = _local_now()
     local_midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     # Convert local-midnight instant to UTC, then strip tzinfo to match naive utcnow.
     utc_midnight = local_midnight.astimezone(ZoneInfo("UTC"))
@@ -314,3 +328,48 @@ def check_budget(task_id: int | None = None, task_start: datetime | None = None)
             raise BudgetExceeded("per_task", ts, state["per_task_budget_usd"], task_id)
 
     return None
+
+
+def budget_warning_due(threshold_pct: float) -> tuple[bool, float, float]:
+    """Whether an 80%-of-daily-cap early warning should fire right now (sync).
+
+    Returns (due, spend, cap). Fires at most once per local day — claims the
+    day (writes SystemState.last_budget_warn_day) in the same call that
+    returns True, mirroring watchdog._should_alert_dead_letters_db's
+    claim-before-notify pattern (a failed notify still consumes the day; the
+    same accepted tradeoff as the dead-letter alert).
+
+    A threshold_pct outside (0, 1) is treated as 0.80 (defensive — degrade
+    rather than crash on a bad config value). cap <= 0 never fires (no
+    division, no warning). Creates SystemState row id=1 if it doesn't exist
+    yet, same as set_autonomy.
+    """
+    if not (0 < threshold_pct < 1):
+        threshold_pct = 0.80
+
+    from sqlmodel import Session
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+
+        cap = float(row.daily_budget_usd)
+        spend = today_spend_usd()
+
+        if cap <= 0:
+            return (False, spend, cap)
+
+        today_str = _local_today_date_str()
+        if spend >= threshold_pct * cap and row.last_budget_warn_day != today_str:
+            row.last_budget_warn_day = today_str
+            row.updated_at = datetime.utcnow()
+            session.add(row)
+            session.commit()
+            return (True, spend, cap)
+
+        return (False, spend, cap)

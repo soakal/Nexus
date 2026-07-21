@@ -195,6 +195,33 @@ async def confirm_action(
     }
 
 
+@router.post("/actions/{action_id}/reject")
+async def reject_action(
+    action_id: int,
+    _=Depends(require_api_key),
+):
+    """Close a `needs_confirm` action without dispatching it (Telegram/web reject).
+
+    Only a row whose decision is exactly `needs_confirm` can be rejected. No
+    kill-switch or TTL check — rejection never dispatches, so it's always safe.
+
+    Status codes:
+      200  — closed (decision: forbidden, reason: rejected_by_user)
+      404  — action row not found
+      409  — row exists but is not awaiting confirmation
+    """
+    from backend.safety import broker
+
+    status, _res = await broker.reject_action(action_id)
+
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="Action not found")
+    if status == "not_confirmable":
+        raise HTTPException(status_code=409, detail="Action is not awaiting confirmation")
+
+    return {"id": action_id, "status": status}
+
+
 # ---------------------------------------------------------------------------
 # Cost governor / kill switch (Tier 1.5)
 # ---------------------------------------------------------------------------

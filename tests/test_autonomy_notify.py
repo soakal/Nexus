@@ -156,6 +156,11 @@ async def test_broker_needs_confirm_fires_phone_alert(eng):
     call_kwargs = notify_phone_mock.await_args
     assert call_kwargs.kwargs.get("kind") == "needs_confirm"
     assert "lock.front" in call_kwargs.args[0]
+    buttons = call_kwargs.kwargs.get("buttons")
+    assert buttons == [
+        {"text": "✓ Confirm", "callback_data": f"safety:confirm:{res.log_id}"},
+        {"text": "✗ Reject", "callback_data": f"safety:reject:{res.log_id}"},
+    ]
 
 
 @pytest.mark.asyncio

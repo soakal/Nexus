@@ -95,3 +95,90 @@ async def health_check() -> bool:
             return resp.status_code == 200 and bool(resp.json().get("data"))
     except Exception:
         return False
+
+
+@async_ttl_cache(900, falsy_ttl=60)
+async def fetch_updates() -> dict:
+    """Pending apt package updates on the Proxmox node.
+
+    Raises RuntimeError on any failure (missing token, transport, non-200) —
+    same never-zero-default discipline as fetch(). A genuinely empty package
+    list (count == 0, up to date) is a real, valid result, not a failure."""
+    from backend.config import get_settings
+    settings = get_settings()
+
+    token = settings.proxmox_token
+    if not token:
+        raise RuntimeError("Proxmox unavailable: PROXMOX_TOKEN not configured")
+
+    node = (await fetch()).node
+    if not node:
+        raise RuntimeError("Proxmox unavailable: no node name from cluster/resources")
+
+    url = f"{settings.proxmox_host}/api2/json/nodes/{node}/apt/update"
+    headers = {"Authorization": token}
+
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:  # nosec B501 — Proxmox self-signed cert
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            pkgs = resp.json().get("data") or []
+    except Exception as e:
+        logger.warning(f"Proxmox fetch_updates failed (reporting unavailable): {e}")
+        raise RuntimeError(f"Proxmox unavailable: {e}") from e
+
+    names = [p.get("Package", "") for p in pkgs[:15]]
+    return {"node": node, "count": len(pkgs), "packages": names}
+
+
+@async_ttl_cache(900, falsy_ttl=60)
+async def fetch_backups() -> dict:
+    """Most recent vzdump (backup) task status on the Proxmox node.
+
+    Raises RuntimeError on any failure — same never-zero-default discipline as
+    fetch(). No vzdump tasks at all is a real result ("none"), not a failure."""
+    from backend.config import get_settings
+    settings = get_settings()
+
+    token = settings.proxmox_token
+    if not token:
+        raise RuntimeError("Proxmox unavailable: PROXMOX_TOKEN not configured")
+
+    node = (await fetch()).node
+    if not node:
+        raise RuntimeError("Proxmox unavailable: no node name from cluster/resources")
+
+    url = f"{settings.proxmox_host}/api2/json/nodes/{node}/tasks"
+    headers = {"Authorization": token}
+
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:  # nosec B501 — Proxmox self-signed cert
+            resp = await client.get(
+                url, headers=headers, params={"typefilter": "vzdump", "limit": 5}
+            )
+            resp.raise_for_status()
+            tasks = resp.json().get("data") or []
+    except Exception as e:
+        logger.warning(f"Proxmox fetch_backups failed (reporting unavailable): {e}")
+        raise RuntimeError(f"Proxmox unavailable: {e}") from e
+
+    tasks = [t for t in tasks if t.get("type") == "vzdump"]
+    if not tasks:
+        return {"node": node, "status": "none"}
+
+    tasks.sort(key=lambda t: t.get("starttime", 0), reverse=True)
+    latest = tasks[0]
+    raw_status = latest.get("status")
+    if raw_status is None:
+        status = "running"
+    elif raw_status == "OK":
+        status = "ok"
+    else:
+        status = "failed"
+
+    return {
+        "node": node,
+        "status": status,
+        "detail": raw_status or "",
+        "endtime": latest.get("endtime") or latest.get("starttime"),
+    }

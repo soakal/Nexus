@@ -276,6 +276,48 @@ def test_proxmox_get_unauthorized(app_client):
     assert resp.status_code in (401, 403)
 
 
+def test_proxmox_maintenance_both_ok(app_client, auth_headers):
+    with patch("backend.integrations.proxmox.fetch_updates", new_callable=AsyncMock) as mock_upd, \
+         patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock) as mock_bak:
+        mock_upd.return_value = {"node": "pve", "count": 3, "packages": ["a", "b", "c"]}
+        mock_bak.return_value = {"node": "pve", "status": "ok", "detail": "OK", "endtime": 100}
+        resp = app_client.get("/api/proxmox/maintenance", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["updates"]["count"] == 3
+    assert body["backup"]["status"] == "ok"
+
+
+def test_proxmox_maintenance_both_fail_returns_200_with_nulls(app_client, auth_headers):
+    with patch("backend.integrations.proxmox.fetch_updates", new_callable=AsyncMock) as mock_upd, \
+         patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock) as mock_bak:
+        mock_upd.side_effect = RuntimeError("Proxmox unavailable: down")
+        mock_bak.side_effect = RuntimeError("Proxmox unavailable: down")
+        resp = app_client.get("/api/proxmox/maintenance", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"updates": None, "backup": None}
+
+
+def test_proxmox_maintenance_one_fails_other_still_populated(app_client, auth_headers):
+    with patch("backend.integrations.proxmox.fetch_updates", new_callable=AsyncMock) as mock_upd, \
+         patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock) as mock_bak:
+        mock_upd.side_effect = RuntimeError("apt hiccup")
+        mock_bak.return_value = {"node": "pve", "status": "ok", "detail": "OK", "endtime": 100}
+        resp = app_client.get("/api/proxmox/maintenance", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["updates"] is None
+    assert body["backup"]["status"] == "ok"
+
+
+def test_proxmox_maintenance_unauthorized(app_client):
+    resp = app_client.get("/api/proxmox/maintenance")
+    assert resp.status_code in (401, 403)
+
+
 def test_hermes_actions_execute_happy_path(app_client, auth_headers):
     from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
     with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec:

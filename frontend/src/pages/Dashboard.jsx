@@ -18,6 +18,7 @@ export default function Dashboard() {
   const [unraid, setUnraid] = useState(null)
   const [proxmox, setProxmox] = useState(null)
   const [proxmoxVmsOpen, setProxmoxVmsOpen] = useState(false)
+  const [proxmoxMaint, setProxmoxMaint] = useState(null)
   const [brain, setBrain] = useState(null)
   const [dockerOpen, setDockerOpen] = useState(false)
   const [briefingLoading, setBriefingLoading] = useState(false)
@@ -32,6 +33,7 @@ export default function Dashboard() {
     api.channels.get().then(setChannels).catch(() => {})
     api.unraid.get().then(setUnraid).catch(() => {})
     api.proxmox.get().then(setProxmox).catch(() => {})
+    api.proxmox.maintenance().then(setProxmoxMaint).catch(() => {})
     api.briefing.latest().then(b => setLastBriefing(b?.created_at)).catch(() => {})
     api.brain.status().then(setBrain).catch(() => {})
   }, [])
@@ -425,6 +427,29 @@ export default function Dashboard() {
               </div>
               <div style={{ fontSize: '13px', color: '#8a96ad' }}>VMs / containers</div>
             </div>
+            {proxmoxMaint && (proxmoxMaint.updates?.count > 0 || (proxmoxMaint.backup && proxmoxMaint.backup.status !== 'none')) && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                {proxmoxMaint.updates?.count > 0 && (
+                  <StatusPill
+                    tone="amber"
+                    label={`${proxmoxMaint.updates.count} update${proxmoxMaint.updates.count === 1 ? '' : 's'} pending`}
+                  />
+                )}
+                {proxmoxMaint.backup && proxmoxMaint.backup.status !== 'none' && (
+                  <>
+                    <StatusPill
+                      tone={proxmoxMaint.backup.status === 'ok' ? 'green' : proxmoxMaint.backup.status === 'failed' ? 'red' : 'grey'}
+                      label={proxmoxMaint.backup.status === 'ok' ? 'Backup OK' : proxmoxMaint.backup.status === 'failed' ? 'Backup FAILED' : 'Backup running'}
+                    />
+                    {proxmoxMaint.backup.endtime && (
+                      <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                        {new Date(proxmoxMaint.backup.endtime * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: proxmoxVmsOpen ? '160px' : 'none', overflowY: proxmoxVmsOpen ? 'auto' : 'visible' }}>
               {(proxmox.vms || []).slice(0, proxmoxVmsOpen ? undefined : 4).map(v => (
                 <div

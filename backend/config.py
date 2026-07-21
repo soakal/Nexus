@@ -196,6 +196,12 @@ class Settings(BaseSettings):
     dead_letter_attempts: int = 8
     watchdog_alert_cooldown_s: int = 3600
 
+    # Budget early-warning — a single phone alert per local day when spend
+    # crosses budget_warn_pct of the daily cap. Runs inside the same 5-min
+    # watchdog job (see run_watchdog), so it shares watchdog_enabled's gate.
+    budget_warn_enabled: bool = True
+    budget_warn_pct: float = 0.80
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

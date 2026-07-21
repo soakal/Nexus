@@ -254,6 +254,9 @@ class SystemState(SQLModel, table=True):
     # Persisted alert cooldown — survives process restarts so stuck-delivery
     # Telegram alerts don't fire on every boot while the queue is stuck.
     last_dead_letter_alert_at: datetime | None = Field(default=None)
+    # ISO local date (e.g. "2026-07-20") of the last budget early-warning —
+    # a date string, not a timestamp, so day rollover re-arms it for free.
+    last_budget_warn_day: str | None = Field(default=None)
 
 
 # Agent/LLM trace observability (council w-observability). One row per
@@ -473,6 +476,7 @@ def _ensure_system_state_columns():
     Best-effort: a failure is logged but never fatal to startup.
     """
     _safe_add_column("systemstate", "last_dead_letter_alert_at", "TIMESTAMP")
+    _safe_add_column("systemstate", "last_budget_warn_day", "TEXT")
 
 
 def _ensure_system_state():

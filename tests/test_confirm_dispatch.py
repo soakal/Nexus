@@ -437,3 +437,102 @@ async def test_confirm_no_second_row_created(eng):
     logs = _all_logs(eng)
     assert len(logs) == 1, "must be exactly one ActionLog row after confirm"
     assert logs[0].id == log_id
+
+
+# ---------------------------------------------------------------------------
+# reject_action (Telegram/web reject — Feature 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reject_happy_path_closes_row_in_place(eng):
+    """Rejecting a needs_confirm row flips it to forbidden/rejected_by_user,
+    without dispatching, and updates the SAME row (no second row created)."""
+    from backend.safety.broker import reject_action
+
+    log_id = _seed_needs_confirm(eng, actor="agent")
+
+    with patch("backend.integrations.homeassistant.call_service", new_callable=AsyncMock) as cs:
+        status, res = await reject_action(log_id)
+        cs.assert_not_called()
+
+    assert status == "rejected"
+    assert res is None
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].decision == Decision.FORBIDDEN.value
+    assert json.loads(logs[0].result_json)["reason"] == "rejected_by_user"
+
+
+@pytest.mark.asyncio
+async def test_reject_not_found(eng):
+    from backend.safety.broker import reject_action
+    status, res = await reject_action(99999)
+    assert status == "not_found"
+    assert res is None
+
+
+@pytest.mark.asyncio
+async def test_reject_twice_is_not_confirmable(eng):
+    """A second reject of the same (now-forbidden) row is refused, not a silent no-op."""
+    from backend.safety.broker import reject_action
+
+    log_id = _seed_needs_confirm(eng, actor="agent")
+    status1, _ = await reject_action(log_id)
+    assert status1 == "rejected"
+
+    status2, _ = await reject_action(log_id)
+    assert status2 == "not_confirmable"
+
+
+@pytest.mark.asyncio
+async def test_confirm_after_reject_is_not_confirmable(eng):
+    """A row rejected via reject_action can no longer be confirmed."""
+    from backend.safety.broker import reject_action
+
+    log_id = _seed_needs_confirm(eng, actor="agent")
+    await reject_action(log_id)
+
+    status, res = await confirm_action(log_id)
+    assert status == "not_confirmable"
+    assert res is None
+
+
+def test_api_reject_200(confirm_client, auth_headers):
+    eng = confirm_client._engine
+    log_id = _seed_needs_confirm(eng, actor="agent")
+
+    resp = confirm_client.post(f"/api/safety/actions/{log_id}/reject", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"id": log_id, "status": "rejected"}
+
+
+def test_api_reject_404_missing(confirm_client, auth_headers):
+    resp = confirm_client.post("/api/safety/actions/99999/reject", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+def test_api_reject_409_already_executed(confirm_client, auth_headers):
+    eng = confirm_client._engine
+    from backend.database import ActionLog
+    with Session(eng) as s:
+        row = ActionLog(
+            actor="agent", kind="ha_service", target="lock.front",
+            payload_json='{"domain":"lock","service":"unlock"}',
+            risk="high", reversibility="unknown",
+            decision="executed",
+        )
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        log_id = row.id
+
+    resp = confirm_client.post(f"/api/safety/actions/{log_id}/reject", headers=auth_headers)
+    assert resp.status_code == 409
+
+
+def test_api_reject_auth_required(confirm_client):
+    resp = confirm_client.post("/api/safety/actions/1/reject")
+    assert resp.status_code == 401

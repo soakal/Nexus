@@ -398,3 +398,80 @@ async def test_run_watchdog_full_happy_path(eng):
     assert notify_mock.call_count == 2
     kinds = {c.kwargs["kind"] for c in notify_mock.call_args_list}
     assert kinds == {"scheduler_stall", "dead_letter"}
+
+
+# ---------------------------------------------------------------------------
+# check_budget_warning (Feature 3 — 80% early-warning)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_check_budget_warning_fires_once_across_two_runs(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import SystemState, SpendLog
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1, daily_budget_usd=25.0))
+        s.add(SpendLog(model="claude-sonnet-4-6", cost_usd=20.0))  # 80% of cap
+        s.commit()
+
+    settings = Settings(budget_warn_enabled=True, budget_warn_pct=0.80)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired1 = await watchdog.check_budget_warning()
+        fired2 = await watchdog.check_budget_warning()
+
+    assert fired1 is True
+    assert fired2 is False
+    notify_mock.assert_awaited_once()
+    assert notify_mock.await_args.kwargs["kind"] == "budget_warn"
+
+
+@pytest.mark.asyncio
+async def test_check_budget_warning_disabled_skips_entirely(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(budget_warn_enabled=False)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.governor.budget_warning_due") as mock_due, \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_budget_warning()
+
+    assert fired is False
+    mock_due.assert_not_called()
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_budget_warning_never_raises_when_governor_throws(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(budget_warn_enabled=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.governor.budget_warning_due", side_effect=RuntimeError("db down")):
+        fired = await watchdog.check_budget_warning()  # must not raise
+
+    assert fired is False
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_summary_includes_budget_warn_fired(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(watchdog_enabled=True)
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [])
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+
+    assert "budget_warn_fired" in result

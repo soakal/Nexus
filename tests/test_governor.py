@@ -621,3 +621,88 @@ def test_safety_budget_setter(safety_client, auth_headers):
         row = s.get(SystemState, 1)
         assert row.daily_budget_usd == 50.0
         assert row.per_task_budget_usd == 8.0
+
+
+# ---------------------------------------------------------------------------
+# budget_warning_due (Feature 3 — 80% early-warning)
+# ---------------------------------------------------------------------------
+
+def test_budget_warning_below_threshold_false(eng):
+    from backend.safety import governor
+    _seed_state(eng, daily=25.0)
+    _seed_spend(eng, 10.0)  # 40% of cap
+
+    due, spend, cap = governor.budget_warning_due(0.80)
+    assert due is False
+    assert spend == 10.0
+    assert cap == 25.0
+
+
+def test_budget_warning_fires_once_then_silent_same_day(eng):
+    from backend.safety import governor
+    _seed_state(eng, daily=25.0)
+    _seed_spend(eng, 20.0)  # 80% of cap
+
+    due1, _, _ = governor.budget_warning_due(0.80)
+    assert due1 is True
+
+    due2, _, _ = governor.budget_warning_due(0.80)
+    assert due2 is False, "must not re-fire on the same local day"
+
+
+def test_budget_warning_refires_on_new_local_day(eng):
+    from backend.safety import governor
+    _seed_state(eng, daily=25.0)
+    _seed_spend(eng, 20.0)
+
+    with patch("backend.safety.governor._local_today_date_str", return_value="2026-07-20"):
+        due1, _, _ = governor.budget_warning_due(0.80)
+    assert due1 is True
+
+    with patch("backend.safety.governor._local_today_date_str", return_value="2026-07-21"):
+        due2, _, _ = governor.budget_warning_due(0.80)
+    assert due2 is True, "a new local day must re-arm the warning"
+
+
+def test_budget_warning_cap_zero_never_fires(eng):
+    from backend.safety import governor
+    _seed_state(eng, daily=0.0)
+    _seed_spend(eng, 5.0)
+
+    due, spend, cap = governor.budget_warning_due(0.80)
+    assert due is False
+    assert cap == 0.0
+
+
+def test_budget_warning_bad_pct_clamps_to_default(eng):
+    from backend.safety import governor
+    _seed_state(eng, daily=25.0)
+    _seed_spend(eng, 20.0)  # 80% of cap — at the default threshold
+
+    due, _, _ = governor.budget_warning_due(1.5)  # out of (0, 1) range
+    assert due is True  # clamped to 0.80, and 20 >= 0.80*25
+
+
+def test_budget_warning_missing_row_creates_and_fires():
+    """No SystemState row yet -> a fresh in-memory engine with no seeded row.
+    Uses the default daily cap (25.0) baked into a freshly-created row."""
+    from sqlmodel import create_engine, SQLModel
+    from sqlmodel.pool import StaticPool
+    import backend.database  # noqa: F401
+
+    e = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(e)
+    with patch("backend.database.engine", e):
+        _seed_spend(e, 21.0)  # 84% of the default 25.0 cap
+
+        from backend.safety import governor
+        due, spend, cap = governor.budget_warning_due(0.80)
+
+        assert due is True
+        assert cap == 25.0
+
+        from backend.database import SystemState
+        with Session(e) as s:
+            row = s.get(SystemState, 1)
+            assert row is not None
+            assert row.last_budget_warn_day is not None

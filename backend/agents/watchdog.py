@@ -174,10 +174,43 @@ async def check_dead_letters(*, threshold: int, cooldown_s: int) -> int:
         return 0
 
 
+async def check_budget_warning() -> bool:
+    """Fire a single Telegram warning per local day when spend crosses
+    settings.budget_warn_pct of the daily cap.
+
+    Gated by settings.budget_warn_enabled (independent of the cap enforcement
+    in governor.check_budget, which is never touched by this). Best-effort:
+    any exception returns False without propagating. Returns whether it fired.
+    """
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "budget_warn_enabled", True):
+            return False
+
+        pct = getattr(s, "budget_warn_pct", 0.80)
+        from backend.safety import governor
+        due, spend, cap = await asyncio.to_thread(governor.budget_warning_due, pct)
+        if not due:
+            return False
+
+        from backend import events
+        pct_used = round(spend / cap * 100) if cap > 0 else 0
+        await events.notify_phone(
+            f"NEXUS spend warning: ${spend:.2f} of ${cap:.2f} daily LLM budget used "
+            f"({pct_used}%). Hard cap stops billed calls at ${cap:.2f}.",
+            kind="budget_warn",
+        )
+        return True
+    except Exception as exc:
+        logger.warning(f"check_budget_warning error (ignored): {exc}")
+        return False
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs both checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all three checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -192,8 +225,9 @@ async def run_watchdog() -> dict:
 
         stalled = await check_scheduler_stalls(grace_s=grace_s, cooldown_s=cooldown_s)
         dead_count = await check_dead_letters(threshold=threshold, cooldown_s=cooldown_s)
+        budget_warn_fired = await check_budget_warning()
 
-        return {"stalled": stalled, "dead_letters": dead_count}
+        return {"stalled": stalled, "dead_letters": dead_count, "budget_warn_fired": budget_warn_fired}
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
-        return {"stalled": [], "dead_letters": 0}
+        return {"stalled": [], "dead_letters": 0, "budget_warn_fired": False}

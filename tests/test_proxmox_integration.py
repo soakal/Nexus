@@ -153,3 +153,126 @@ def test_proxmox_data_defaults():
     assert data.vms == []
     assert data.storage_total_gb == 0.0
     assert data.mem_total_gb == 0.0
+
+
+# ---------------------------------------------------------------------------
+# fetch_updates / fetch_backups (Feature 2 — dashboard maintenance badges)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_updates_parses_count_and_names():
+    from backend.integrations.proxmox import ProxmoxData
+    pkgs = [{"Package": f"pkg{i}"} for i in range(20)]
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(_get_response(pkgs))
+        from backend.integrations.proxmox import fetch_updates
+        result = await fetch_updates()
+
+    assert result["node"] == "pve"
+    assert result["count"] == 20
+    assert result["packages"] == [f"pkg{i}" for i in range(15)]  # first 15 only
+
+
+@pytest.mark.asyncio
+async def test_fetch_updates_empty_is_zero_not_a_raise():
+    """An up-to-date node (empty apt data) is a real result, not a failure —
+    differs from fetch()'s own empty-rows-raises contract."""
+    from backend.integrations.proxmox import ProxmoxData
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(_get_response([]))
+        from backend.integrations.proxmox import fetch_updates
+        result = await fetch_updates()
+
+    assert result == {"node": "pve", "count": 0, "packages": []}
+
+
+@pytest.mark.asyncio
+async def test_fetch_updates_http_error_raises():
+    from backend.integrations.proxmox import ProxmoxData
+    resp = _get_response(None, status_code=500)
+    resp.raise_for_status.side_effect = Exception("HTTP 500")
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(resp)
+        from backend.integrations.proxmox import fetch_updates
+        with pytest.raises(RuntimeError):
+            await fetch_updates()
+
+
+@pytest.mark.asyncio
+async def test_fetch_backups_picks_newest_ok():
+    from backend.integrations.proxmox import ProxmoxData
+    tasks = [
+        {"type": "vzdump", "status": "OK", "starttime": 100, "endtime": 200},
+        {"type": "vzdump", "status": "OK", "starttime": 300, "endtime": 400},  # newest
+        {"type": "other", "status": "OK", "starttime": 500, "endtime": 600},  # non-vzdump, ignored
+    ]
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(_get_response(tasks))
+        from backend.integrations.proxmox import fetch_backups
+        result = await fetch_backups()
+
+    assert result == {"node": "pve", "status": "ok", "detail": "OK", "endtime": 400}
+
+
+@pytest.mark.asyncio
+async def test_fetch_backups_failed_status():
+    from backend.integrations.proxmox import ProxmoxData
+    tasks = [{"type": "vzdump", "status": "job errors", "starttime": 100, "endtime": 150}]
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(_get_response(tasks))
+        from backend.integrations.proxmox import fetch_backups
+        result = await fetch_backups()
+
+    assert result["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_fetch_backups_running_status():
+    from backend.integrations.proxmox import ProxmoxData
+    tasks = [{"type": "vzdump", "status": None, "starttime": 100}]
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(_get_response(tasks))
+        from backend.integrations.proxmox import fetch_backups
+        result = await fetch_backups()
+
+    assert result["status"] == "running"
+    assert result["endtime"] == 100  # falls back to starttime when no endtime
+
+
+@pytest.mark.asyncio
+async def test_fetch_backups_no_tasks_is_none_status():
+    from backend.integrations.proxmox import ProxmoxData
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(_get_response([]))
+        from backend.integrations.proxmox import fetch_backups
+        result = await fetch_backups()
+
+    assert result == {"node": "pve", "status": "none"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_backups_http_error_raises():
+    from backend.integrations.proxmox import ProxmoxData
+    resp = _get_response(None, status_code=500)
+    resp.raise_for_status.side_effect = Exception("HTTP 500")
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.return_value = ProxmoxData(node="pve")
+        mock_cls.return_value = _get_client(resp)
+        from backend.integrations.proxmox import fetch_backups
+        with pytest.raises(RuntimeError):
+            await fetch_backups()
