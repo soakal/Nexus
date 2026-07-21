@@ -7,16 +7,17 @@ import ScreenHeader from '../components/ScreenHeader'
 import GhostButton from '../components/GhostButton'
 import TextInput from '../components/TextInput'
 
-// Proxmox VMs/LXCs — hardcoded from NEXUS CLAUDE.md
-const PROXMOX_VMS = [
-  'Win11Pro', 'MintLinux', 'Win11ProTrudy',
-  'Hermes', 'AdGuard', 'Jellyfin',
-]
-
 function ProxmoxSection() {
+  const [vms, setVms] = useState([])          // live list of VM/LXC names from Proxmox
   const [pending, setPending] = useState({})  // { name: 'start'|'stop'|'reboot'|null }
   const [toast, setToast] = useState(null)    // { msg, ok }
   const toastTimer = useRef(null)
+
+  useEffect(() => {
+    api.proxmox.get()
+      .then((d) => setVms((d?.vms || []).map((v) => v.name || String(v.vmid))))
+      .catch(() => {})
+  }, [])
 
   const showToast = (msg, ok) => {
     clearTimeout(toastTimer.current)
@@ -113,7 +114,7 @@ function ProxmoxSection() {
         )}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {PROXMOX_VMS.map((name) => {
+        {vms.map((name) => {
           const busy = !!pending[name]
           return (
             <div key={name} style={{

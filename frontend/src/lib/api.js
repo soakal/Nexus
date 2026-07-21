@@ -87,6 +87,7 @@ export const api = {
     },
   },
   unraid: { get: () => req('GET', '/unraid/'), restartDocker: (id) => req('POST', `/unraid/docker/${id}/restart`) },
+  proxmox: { get: () => req('GET', '/proxmox/') },
   ha: {
     entities: () => req('GET', '/ha/entities'),
     service: (domain, service, entity_id, service_data) =>
@@ -142,6 +143,7 @@ export const api = {
     pendingActions: (limit) => req('GET', `/safety/actions?decision=needs_confirm&limit=${limit || 20}`),
     clearDeadLetters: () => req('DELETE', '/safety/deliveries/dead'),
     hermesActions: () => req('GET', '/safety/hermes-actions'),
+    executeHermesAction: (verb, args) => req('POST', '/safety/hermes-actions/execute', { verb, args }),
   },
   goals: {
     list: (category) => req('GET', `/goals/${category ? `?category=${encodeURIComponent(category)}` : ''}`),

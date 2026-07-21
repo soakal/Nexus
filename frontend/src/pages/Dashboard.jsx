@@ -16,6 +16,8 @@ export default function Dashboard() {
   const [adguard, setAdguard] = useState(null)
   const [channels, setChannels] = useState(null)
   const [unraid, setUnraid] = useState(null)
+  const [proxmox, setProxmox] = useState(null)
+  const [proxmoxVmsOpen, setProxmoxVmsOpen] = useState(false)
   const [brain, setBrain] = useState(null)
   const [dockerOpen, setDockerOpen] = useState(false)
   const [briefingLoading, setBriefingLoading] = useState(false)
@@ -29,6 +31,7 @@ export default function Dashboard() {
     api.adguard.get().then(setAdguard).catch(() => {})
     api.channels.get().then(setChannels).catch(() => {})
     api.unraid.get().then(setUnraid).catch(() => {})
+    api.proxmox.get().then(setProxmox).catch(() => {})
     api.briefing.latest().then(b => setLastBriefing(b?.created_at)).catch(() => {})
     api.brain.status().then(setBrain).catch(() => {})
   }, [])
@@ -66,6 +69,19 @@ export default function Dashboard() {
   const restartDocker = async (id, name) => {
     if (!window.confirm(`Restart ${name || 'this container'}?`)) return
     try { await api.unraid.restartDocker(id); load() } catch {}
+  }
+
+  const [vmActionBusy, setVmActionBusy] = useState(null)
+  const runVmAction = async (vm, action) => {
+    if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${vm}?`)) return
+    setVmActionBusy(vm)
+    try {
+      await api.safety.executeHermesAction('vm_action', { vm, action })
+      load()
+    } catch {
+    } finally {
+      setVmActionBusy(null)
+    }
   }
 
   const lastBriefingTime = fmtTime(lastBriefing)
@@ -381,6 +397,69 @@ export default function Dashboard() {
                 style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
               >
                 {dockerOpen ? 'Show less' : `+${unraid.docker_containers.length - 2} more`}
+              </button>
+            )}
+          </Card>
+        )}
+
+        {/* Proxmox */}
+        {proxmox && (
+          <Card style={{ flex: '1 1 240px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Eyebrow>Proxmox</Eyebrow>
+              <StatusPill
+                tone={proxmox.node_status === 'online' ? 'green' : 'amber'}
+                dotRing={proxmox.node_status === 'online'}
+                label={proxmox.node_status === 'online' ? 'Online' : (proxmox.node_status || 'Unknown')}
+              />
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '18px 0' }}>
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5">
+                <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+                <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+                <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+                <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+              </svg>
+              <div style={{ fontSize: '40px', fontWeight: 700, marginTop: '10px' }}>
+                {proxmox.vms?.length || 0}
+              </div>
+              <div style={{ fontSize: '13px', color: '#8a96ad' }}>VMs / containers</div>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', maxHeight: proxmoxVmsOpen ? '160px' : 'none', overflowY: proxmoxVmsOpen ? 'auto' : 'visible' }}>
+              {(proxmox.vms || []).slice(0, proxmoxVmsOpen ? undefined : 4).map(v => (
+                <div
+                  key={v.vmid}
+                  style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}
+                >
+                  <StatusDot color={v.status === 'running' ? '#34d399' : '#8a96ad'} size={7} glow={false} />
+                  <span style={{ fontSize: '12px', color: '#cdd6e6', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                    {v.name || v.vmid}
+                  </span>
+                  <select
+                    value=""
+                    disabled={vmActionBusy === v.name}
+                    onChange={(e) => { const action = e.target.value; e.target.value = ''; if (action) runVmAction(v.name, action) }}
+                    style={{ fontSize: '11px', background: 'rgba(255,255,255,0.04)', color: '#8a96ad', border: '1px solid rgba(120,160,220,0.12)', borderRadius: '6px', padding: '2px 4px' }}
+                  >
+                    <option value="">&hellip;</option>
+                    {v.status === 'running' ? (
+                      <>
+                        <option value="reboot">Reboot</option>
+                        <option value="stop">Stop</option>
+                      </>
+                    ) : (
+                      <option value="start">Start</option>
+                    )}
+                  </select>
+                </div>
+              ))}
+            </div>
+            {(proxmox.vms?.length || 0) > 4 && (
+              <button
+                onClick={() => setProxmoxVmsOpen(v => !v)}
+                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
+              >
+                {proxmoxVmsOpen ? 'Show less' : `+${proxmox.vms.length - 4} more`}
               </button>
             )}
           </Card>

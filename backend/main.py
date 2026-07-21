@@ -177,6 +177,7 @@ from backend.api import (
     facts,
     goals,
     homeassistant,
+    proxmox_api,
     safety,
     secrets,
     sources,
@@ -205,6 +206,7 @@ app.include_router(adguard.router, prefix="/api/adguard", tags=["adguard"])
 app.include_router(uptime.router, prefix="/api/uptime", tags=["uptime"])
 app.include_router(secrets.router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(unraid_api.router, prefix="/api/unraid", tags=["unraid"])
+app.include_router(proxmox_api.router, prefix="/api/proxmox", tags=["proxmox"])
 app.include_router(homeassistant.router, prefix="/api/ha", tags=["homeassistant"])
 app.include_router(today.router, prefix="/api/today", tags=["today"])
 app.include_router(safety.router, prefix="/api/safety", tags=["safety"])

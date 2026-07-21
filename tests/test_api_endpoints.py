@@ -251,6 +251,78 @@ def test_adguard_get(app_client, auth_headers):
         assert resp.status_code == 200
 
 
+def test_proxmox_get(app_client, auth_headers):
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch:
+        from backend.integrations.proxmox import ProxmoxData
+        mock_fetch.return_value = ProxmoxData(
+            node="pve", node_status="online", cpu_pct=12.5,
+            mem_used_gb=8.0, mem_total_gb=32.0,
+            vms=[
+                {"vmid": 202, "name": "processforge", "status": "running", "type": "lxc"},
+                {"vmid": 203, "name": "glp-calculator", "status": "running", "type": "lxc"},
+            ],
+            storage_used_gb=100.0, storage_total_gb=500.0,
+        )
+        resp = app_client.get("/api/proxmox/", headers=auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["node"] == "pve"
+        assert len(body["vms"]) == 2
+        assert body["vms"][0]["name"] == "processforge"
+
+
+def test_proxmox_get_unauthorized(app_client):
+    resp = app_client.get("/api/proxmox/")
+    assert resp.status_code in (401, 403)
+
+
+def test_hermes_actions_execute_happy_path(app_client, auth_headers):
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = ActionResult(
+            decision=Decision.EXECUTED, risk=Risk.HIGH,
+            reversibility=Reversibility.REVERSIBLE_BY_INVERSE, log_id=1,
+            result={"response": "rebooting processforge"},
+        )
+        resp = app_client.post(
+            "/api/safety/hermes-actions/execute",
+            json={"verb": "vm_action", "args": {"vm": "processforge", "action": "reboot"}},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["decision"] == "executed"
+        assert body["response"] == "rebooting processforge"
+        mock_exec.assert_awaited_once_with(
+            actor="user", kind="hermes_action", target="hermes",
+            payload={"verb": "vm_action", "args": {"vm": "processforge", "action": "reboot"}},
+        )
+
+
+def test_hermes_actions_execute_rejects_unknown_verb(app_client, auth_headers):
+    resp = app_client.post(
+        "/api/safety/hermes-actions/execute",
+        json={"verb": "not_a_real_verb", "args": {}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_hermes_actions_execute_rejects_bad_args(app_client, auth_headers):
+    resp = app_client.post(
+        "/api/safety/hermes-actions/execute",
+        json={"verb": "vm_action", "args": {"vm": "processforge", "action": "not_a_real_action"}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_hermes_actions_execute_unauthorized(app_client):
+    resp = app_client.post("/api/safety/hermes-actions/execute", json={"verb": "vm_action", "args": {}})
+    assert resp.status_code in (401, 403)
+
+
 def test_adguard_toggle(app_client, auth_headers):
     with patch("backend.integrations.adguard.set_filtering", new_callable=AsyncMock):
         resp = app_client.post("/api/adguard/filter", json={"enabled": False}, headers=auth_headers)
