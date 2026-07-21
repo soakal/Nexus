@@ -195,9 +195,9 @@ def _compute_cost(
     """Estimate USD cost of one billed call from token usage.
 
     Returns 0.0 for an unknown model (logged) rather than raising. Cache tokens
-    are priced as FRACTIONS of the placeholder input rate: cache_creation at
-    1.25x input, cache_read at 0.1x input. These multipliers are applied to the
-    # VERIFY placeholder input rate — refine when real prices are confirmed.
+    are priced as FRACTIONS of the input rate: cache_creation at 1.25x input,
+    cache_read at 0.1x input — both verified 2026-07-20 against _PRICE_PER_MTOK
+    (see that table's own comment for the pricing verification).
     """
     price = _PRICE_PER_MTOK.get(model)
     if price is None:

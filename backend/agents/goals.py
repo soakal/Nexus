@@ -766,12 +766,13 @@ def _summarize_outcome(title: str, raw_result: str | None) -> str:
 async def _distill_completed_goal(g: dict, raw_result: str | None) -> None:
     """Optional Haiku fact-extraction from a completed goal's outcome.
 
-    Gated by goal_outcome_distill_llm (default OFF = zero LLM calls).
+    Gated by goal_outcome_distill_llm (default ON since 2026-07-07 — see
+    Settings' own comment in config.py). Set False to disable.
     Best-effort — never raises, never blocks reconcile.
     """
     try:
         from backend.config import get_settings
-        if not getattr(get_settings(), "goal_outcome_distill_llm", False):
+        if not getattr(get_settings(), "goal_outcome_distill_llm", True):
             return
         from backend.agents import facts
         summary = _summarize_outcome(g.get("title", ""), raw_result)
