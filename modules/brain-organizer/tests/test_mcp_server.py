@@ -187,7 +187,12 @@ def test_raw_post_requires_token_when_configured(tmp_config: dict[str, Any], tmp
     client = app.test_client()
 
     # No token → 401
-    resp = client.post("/raw", json={"content": "hi"}, content_type="application/json")
+    resp = client.post(
+        "/raw",
+        json={"content": "hi"},
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
     assert resp.status_code == 401
 
     # Wrong token → 401
@@ -196,6 +201,7 @@ def test_raw_post_requires_token_when_configured(tmp_config: dict[str, Any], tmp
         json={"content": "hi"},
         content_type="application/json",
         headers={"Authorization": "Bearer wrong"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
     )
     assert resp.status_code == 401
 
@@ -205,6 +211,7 @@ def test_raw_post_requires_token_when_configured(tmp_config: dict[str, Any], tmp
         json={"content": "hi"},
         content_type="application/json",
         headers={"Authorization": "Bearer secret123"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
     )
     assert resp.status_code == 201
 

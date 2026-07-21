@@ -4,9 +4,10 @@ Brain Organizer MCP HTTP Server.
 Exposes the wiki vault for reading and accepts new raw notes via POST.
 Binds to 0.0.0.0 so it is reachable over Tailscale from any device.
 
-POST /raw requires an Authorization: Bearer <token> header when MCP_WRITE_TOKEN
-env var (or config mcp_write_token) is set. Leave blank to run without auth
-(acceptable on a trusted Tailscale tailnet).
+POST /raw is loopback-exempt: callers from 127.0.0.1/::1 never need a token.
+Non-loopback (LAN/Tailscale) callers require an Authorization: Bearer <token>
+header matching MCP_WRITE_TOKEN env var (or config mcp_write_token); if no
+token is configured, remote writes are rejected outright (403).
 
 Usage:
     python mcp_server.py
@@ -16,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
@@ -33,6 +35,12 @@ CONFIG_PATH = Path(__file__).parent / "config.json"
 # Matches [[target]], [[target|alias]], [[target#anchor]], [[target#anchor|alias]].
 # Negative lookbehind excludes embeds (![[image.png]]). Group 1=target, 2=anchor, 3=alias.
 _WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\[\]|#]*?)(#[^\[\]|]+)?(\|[^\[\]]+)?\]\]")
+
+_LOOPBACK_ADDRS = ("127.0.0.1", "::1")
+
+
+def _is_loopback(remote_addr: str | None) -> bool:
+    return remote_addr in _LOOPBACK_ADDRS
 
 
 def load_config(config_path: Path | None = None) -> dict[str, Any]:
@@ -225,10 +233,12 @@ def create_app(
     # ------------------------------------------------------------------
     @app.route("/raw", methods=["POST"])
     def post_raw() -> Any:
-        token = _write_token()
-        if token:
+        if not _is_loopback(request.remote_addr):
+            token = _write_token()
+            if not token:
+                return jsonify({"error": "Remote writes disabled (no write token configured)"}), 403
             auth_header = request.headers.get("Authorization", "")
-            if auth_header != f"Bearer {token}":
+            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
                 return jsonify({"error": "Unauthorized"}), 401
 
         data = request.get_json(silent=True)
