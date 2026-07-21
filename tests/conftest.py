@@ -123,3 +123,24 @@ def auto_mock_opus_verify(request):
         return_value=_DEFAULT,
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def mock_emit_event(request):
+    """Auto-patch obsidian.emit_event to a no-op AsyncMock for every test.
+
+    Goal-lifecycle transitions (approve/reject/reconcile_running) now call
+    `obsidian.emit_event(...)`; without this, every test exercising those code
+    paths would attempt a real HTTP call to the Brain MCP server. Tests that
+    need to assert on emit_event's call args re-patch it locally inside their
+    own `with patch(...)` block (innermost patch wins, same pattern as
+    auto_mock_opus_verify above).
+
+    Skipped for test_obsidian.py, which directly tests the real emit_event/
+    _format_event implementation.
+    """
+    if request.module.__name__ == "test_obsidian":
+        yield
+        return
+    with patch("backend.integrations.obsidian.emit_event", new_callable=AsyncMock):
+        yield

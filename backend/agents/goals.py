@@ -583,6 +583,14 @@ async def approve(goal_id: int, *, approved_by: str = "user") -> dict:
         update_fields["next_eval_at"] = datetime.utcnow() + timedelta(seconds=secs)
 
     updated = await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
+
+    from backend.integrations import obsidian
+    await obsidian.emit_event(
+        "goal.approved",
+        f"Goal approved: {g['title']}",
+        f"Goal ID: {goal_id}\nTitle: {g['title']}\nApproved by: {approved_by}",
+    )
+
     return {"status": "approved", "goal": updated, "task_id": task_id}
 
 
@@ -602,6 +610,17 @@ async def reject(goal_id: int, *, reason: str | None = None) -> dict:
         if reason is not None:
             update_fields["rejection_reason"] = reason
         await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
+
+        from backend.integrations import obsidian
+        body_lines = [f"Goal ID: {goal_id}", f"Title: {g['title']}"]
+        if reason is not None:
+            body_lines.append(f"Reason: {reason}")
+        await obsidian.emit_event(
+            "goal.rejected",
+            f"Goal rejected: {g['title']}",
+            "\n".join(body_lines),
+        )
+
         return {"status": "abandoned"}
     return {"status": "conflict", "current": g["status"]}
 
@@ -813,25 +832,44 @@ async def reconcile_running(
                     output = await asyncio.to_thread(_db_get_task_result, g["task_id"])
                     verdict = await _evaluate_success_criteria(g, output)
                     if verdict.get("met", True):
+                        outcome_summary = _summarize_outcome(g.get("title", ""), output)
                         await asyncio.to_thread(
                             _db_update_goal, g["id"],
                             status="completed",
-                            outcome_summary=_summarize_outcome(g.get("title", ""), output),
+                            outcome_summary=outcome_summary,
                             updated_at=now,
                         )
                         await _distill_completed_goal(g, output)
+
+                        from backend.integrations import obsidian
+                        await obsidian.emit_event(
+                            "goal.completed",
+                            f"Goal completed: {g.get('title', '')}",
+                            f"Goal ID: {g['id']}\nTitle: {g.get('title', '')}\n"
+                            f"Outcome: {(outcome_summary or 'no outcome summary')[:500]}",
+                        )
                     else:
                         # Criterion NOT met — treat as a failure so it retries on cadence/backoff.
                         new_attempts = g["attempts"] + 1
                         backoff_seconds = backoff_base_seconds * (2 ** min(new_attempts, 6))
+                        fail_reason = f"criteria_not_met: {verdict.get('reason', '')}"[:300]
                         await asyncio.to_thread(
                             _db_update_goal, g["id"],
                             status="failed",
                             attempts=new_attempts,
                             backoff_until=now + timedelta(seconds=backoff_seconds),
-                            rejection_reason=f"criteria_not_met: {verdict.get('reason', '')}"[:300],
+                            rejection_reason=fail_reason,
                             updated_at=now,
                         )
+
+                        from backend.integrations import obsidian
+                        await obsidian.emit_event(
+                            "goal.failed",
+                            f"Goal failed: {g.get('title', '')}",
+                            f"Goal ID: {g['id']}\nTitle: {g.get('title', '')}\n"
+                            f"Reason: {fail_reason or 'no failure reason recorded'}",
+                        )
+
                         # Recurring goal with a genuine finding (criterion NOT met) —
                         # page Brian's phone. The clean/criteria-met path above stays
                         # silent on purpose; this is the gap that path doesn't cover.
@@ -847,13 +885,22 @@ async def reconcile_running(
                         raw_out = await asyncio.to_thread(_db_get_task_result, g["task_id"])
                     except Exception:
                         raw_out = None
+                    outcome_summary = _summarize_outcome(g.get("title", ""), raw_out)
                     await asyncio.to_thread(
                         _db_update_goal, g["id"],
                         status="completed",
-                        outcome_summary=_summarize_outcome(g.get("title", ""), raw_out),
+                        outcome_summary=outcome_summary,
                         updated_at=now,
                     )
                     await _distill_completed_goal(g, raw_out)
+
+                    from backend.integrations import obsidian
+                    await obsidian.emit_event(
+                        "goal.completed",
+                        f"Goal completed: {g.get('title', '')}",
+                        f"Goal ID: {g['id']}\nTitle: {g.get('title', '')}\n"
+                        f"Outcome: {(outcome_summary or 'no outcome summary')[:500]}",
+                    )
             elif task_status in ("failed", "stopped"):
                 new_attempts = g["attempts"] + 1
                 backoff_seconds = backoff_base_seconds * (2 ** min(new_attempts, 6))
@@ -873,14 +920,24 @@ async def reconcile_running(
                             reason = (f"{err}: {why}" if err and why else (err or why))
                 except Exception:
                     reason = None
+                fail_reason = str(reason)[:300] if reason else None
                 await asyncio.to_thread(
                     _db_update_goal, g["id"],
                     status="failed",
                     attempts=new_attempts,
                     backoff_until=backoff_until,
-                    rejection_reason=(str(reason)[:300] if reason else None),
+                    rejection_reason=fail_reason,
                     updated_at=now,
                 )
+
+                from backend.integrations import obsidian
+                await obsidian.emit_event(
+                    "goal.failed",
+                    f"Goal failed: {g.get('title', '')}",
+                    f"Goal ID: {g['id']}\nTitle: {g.get('title', '')}\n"
+                    f"Reason: {fail_reason or 'no failure reason recorded'}",
+                )
+
                 # Best-effort phone alert for auto-approved goals that failed.
                 # Inside the per-goal try/except so a notify failure never aborts the loop.
                 if g.get("approved_by", "").startswith("auto:"):

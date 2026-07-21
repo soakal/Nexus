@@ -707,6 +707,146 @@ async def test_reconcile_running(eng):
 
 
 # ---------------------------------------------------------------------------
+# 9b. emit_event lifecycle hooks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_approve_emits_goal_approved_once(eng, monkeypatch):
+    from backend.agents import goals
+
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    r_propose = await goals.propose("Organise files", "Sort downloads folder by type.")
+    goal_id = r_propose["goal"]["id"]
+
+    with patch(
+        "backend.integrations.obsidian.emit_event", new_callable=AsyncMock
+    ) as mock_emit:
+        await goals.approve(goal_id)
+
+    mock_emit.assert_awaited_once()
+    event_type, title, body = mock_emit.await_args.args
+    assert event_type == "goal.approved"
+    assert "Organise files" in title
+    assert f"Goal ID: {goal_id}" in body
+    assert "Approved by: user" in body
+
+
+@pytest.mark.asyncio
+async def test_reject_emits_goal_rejected_with_reason(eng):
+    from backend.agents import goals
+
+    r_propose = await goals.propose("Buy groceries", "Pick up items from the grocery list.")
+    goal_id = r_propose["goal"]["id"]
+
+    with patch(
+        "backend.integrations.obsidian.emit_event", new_callable=AsyncMock
+    ) as mock_emit:
+        await goals.reject(goal_id, reason="no longer needed")
+
+    mock_emit.assert_awaited_once()
+    event_type, title, body = mock_emit.await_args.args
+    assert event_type == "goal.rejected"
+    assert "Buy groceries" in title
+    assert "Reason: no longer needed" in body
+
+
+@pytest.mark.asyncio
+async def test_reject_emits_goal_rejected_without_reason(eng):
+    from backend.agents import goals
+
+    r_propose = await goals.propose("Tidy garage", "Sweep and organise the garage.")
+    goal_id = r_propose["goal"]["id"]
+
+    with patch(
+        "backend.integrations.obsidian.emit_event", new_callable=AsyncMock
+    ) as mock_emit:
+        await goals.reject(goal_id)
+
+    mock_emit.assert_awaited_once()
+    _, _, body = mock_emit.await_args.args
+    assert "Reason:" not in body
+
+
+@pytest.mark.asyncio
+async def test_reconcile_running_emits_completed_and_failed_once_each(eng):
+    from backend.agents import goals
+    from backend.database import Goal, Task
+
+    with Session(eng) as s:
+        t_success = Task(prompt="do success thing", status="success")
+        t_failed = Task(prompt="do failing thing", status="failed")
+        s.add(t_success)
+        s.add(t_failed)
+        s.commit()
+        s.refresh(t_success)
+        s.refresh(t_failed)
+
+        g_success = Goal(
+            title="Succeed",
+            description="A task that will succeed.",
+            status="running",
+            fingerprint="eeee3333eeee3333",
+            task_id=t_success.id,
+        )
+        g_failed = Goal(
+            title="Fail",
+            description="A task that will fail.",
+            status="running",
+            fingerprint="ffff4444ffff4444",
+            task_id=t_failed.id,
+            attempts=0,
+        )
+        s.add(g_success)
+        s.add(g_failed)
+        s.commit()
+
+    with patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock), patch(
+        "backend.integrations.obsidian.emit_event", new_callable=AsyncMock
+    ) as mock_emit:
+        await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
+
+    assert mock_emit.await_count == 2
+    emitted_types = {call.args[0] for call in mock_emit.await_args_list}
+    assert emitted_types == {"goal.completed", "goal.failed"}
+    for call in mock_emit.await_args_list:
+        if call.args[0] == "goal.completed":
+            assert "Outcome:" in call.args[2]
+        else:
+            assert "Reason:" in call.args[2]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_running_no_transitions_emits_nothing(eng):
+    from backend.agents import goals
+    from backend.database import Goal, Task
+
+    with Session(eng) as s:
+        t_running = Task(prompt="still working", status="running")
+        s.add(t_running)
+        s.commit()
+        s.refresh(t_running)
+
+        g_running = Goal(
+            title="Still going",
+            description="A task still in progress.",
+            status="running",
+            fingerprint="dddd5555dddd5555",
+            task_id=t_running.id,
+        )
+        s.add(g_running)
+        s.commit()
+
+    with patch(
+        "backend.integrations.obsidian.emit_event", new_callable=AsyncMock
+    ) as mock_emit:
+        await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
+
+    mock_emit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # 10. API layer (TestClient + Bearer)
 # ---------------------------------------------------------------------------
 
