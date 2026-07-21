@@ -1,5 +1,5 @@
 import pytest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -293,3 +293,82 @@ def test_obsidian_data_defaults():
     assert data.daily_note is None
     assert data.recent_notes == []
     assert data.open_tasks == []
+
+
+# ---------------------------------------------------------------------------
+# _format_event() -- pure formatter, no I/O
+# ---------------------------------------------------------------------------
+
+def test_format_event_exact_template_and_filename():
+    from backend.integrations.obsidian import _format_event
+
+    when = datetime(2026, 7, 21, 14, 2, 33, tzinfo=timezone.utc)
+    content, filename = _format_event(
+        "goal.approved",
+        "Goal approved: Ship it",
+        "Goal 42 approved by user.",
+        when=when,
+    )
+
+    assert content == (
+        "# Event: Goal approved: Ship it\n"
+        "\n"
+        "- Source: nexus\n"
+        "- Type: goal.approved\n"
+        "- When: 2026-07-21T14:02:33Z\n"
+        "\n"
+        "Goal 42 approved by user.\n"
+        "\n"
+        "Powered by CwiAI"
+    )
+    assert filename == "event-nexus-goal-approved-20260721T140233Z.md"
+
+
+def test_format_event_defaults_when_to_now(monkeypatch):
+    from backend.integrations import obsidian
+
+    fixed = datetime(2026, 1, 5, 3, 4, 5, tzinfo=timezone.utc)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr(obsidian, "datetime", _FixedDatetime)
+
+    content, filename = obsidian._format_event("goal.failed", "Goal failed", "It failed.")
+
+    assert "- When: 2026-01-05T03:04:05Z\n" in content
+    assert filename == "event-nexus-goal-failed-20260105T030405Z.md"
+
+
+# ---------------------------------------------------------------------------
+# emit_event() -- best-effort POST via _post_raw, never raises
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_emit_event_calls_post_raw_with_formatted_content_and_short_timeout():
+    from backend.integrations import obsidian
+
+    mock_post_raw = AsyncMock()
+    with patch.object(obsidian, "_post_raw", mock_post_raw):
+        await obsidian.emit_event("goal.approved", "Goal approved: X", "body text")
+
+    mock_post_raw.assert_called_once()
+    args, kwargs = mock_post_raw.call_args
+    assert args[0].startswith("# Event: Goal approved: X\n")
+    assert args[1].startswith("event-nexus-goal-approved-")
+    assert kwargs["timeout"] == 5
+
+
+@pytest.mark.asyncio
+async def test_emit_event_swallows_raising_post_raw(caplog):
+    from backend.integrations import obsidian
+
+    with patch.object(obsidian, "_post_raw", AsyncMock(side_effect=Exception("boom"))):
+        with caplog.at_level("WARNING"):
+            result = await obsidian.emit_event("goal.failed", "Goal failed: X", "it broke")
+
+    assert result is None
+    assert "boom" in caplog.text
+    assert "goal.failed" in caplog.text

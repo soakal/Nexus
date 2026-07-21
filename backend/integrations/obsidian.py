@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -144,11 +144,54 @@ async def create_note(title: str, content: str, folder: str = "NEXUS") -> str:
     return filename
 
 
-async def _post_raw(content: str, filename: str) -> None:
-    async with httpx.AsyncClient(timeout=10) as client:
+async def _post_raw(content: str, filename: str, timeout: float = 10) -> None:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             f"{_mcp_url()}/raw",
             json={"content": content, "filename": filename},
             headers=_mcp_headers(),
         )
         resp.raise_for_status()
+
+
+def _format_event(
+    event_type: str, title: str, body: str, when: datetime | None = None
+) -> tuple[str, str]:
+    """Pure formatter for a Brain event note. No I/O -- unit-testable without HTTP.
+
+    Returns (content, filename) matching the shared event contract in
+    00-OVERVIEW.md: a fixed markdown template with a "Powered by CwiAI"
+    footer, and filename `event-nexus-{type-slug}-{yyyyMMddTHHmmssZ}.md`.
+    """
+    ts = when or datetime.now(timezone.utc)
+    when_iso = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    file_ts = ts.strftime("%Y%m%dT%H%M%SZ")
+    type_slug = event_type.replace(".", "-")
+
+    content = (
+        f"# Event: {title}\n"
+        "\n"
+        "- Source: nexus\n"
+        f"- Type: {event_type}\n"
+        f"- When: {when_iso}\n"
+        "\n"
+        f"{body}\n"
+        "\n"
+        "Powered by CwiAI"
+    )
+    filename = f"event-nexus-{type_slug}-{file_ts}.md"
+    return content, filename
+
+
+async def emit_event(event_type: str, title: str, body: str) -> None:
+    """Best-effort Brain event note via POST /raw. Never raises.
+
+    Fire-and-forget: swallows every exception (network errors, timeouts,
+    non-2xx responses) and logs at warning level at most, so a failed emit
+    never disrupts the calling operation (goal approval, etc).
+    """
+    try:
+        content, filename = _format_event(event_type, title, body)
+        await _post_raw(content, filename, timeout=5)
+    except Exception as e:
+        logger.warning(f"emit_event failed for {event_type!r}: {e}")
