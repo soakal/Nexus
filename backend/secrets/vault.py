@@ -47,7 +47,7 @@ def read_meta() -> dict:
 
 def _stamp_meta(key: str) -> None:
     """Record when a secret was last set/rotated. Setting a value over an existing
-    one is a rotation, so both timestamps move together — matching tools/rotate_secret.py."""
+    one is a rotation, so both timestamps move together."""
     meta = read_meta()
     entry = meta.get(key) or {}
     now = datetime.utcnow().isoformat()

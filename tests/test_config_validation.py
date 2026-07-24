@@ -79,22 +79,36 @@ def test_brain_mcp_write_token_not_required_by_validate():
     _settings().validate()
 
 
-def test_protonmail_settings_defaults():
-    # _env_file=None: isolate from the real (gitignored) .env, which sets real
-    # values for these two keys on this machine — this test checks the class
-    # default itself, not whatever happens to be in .env.
-    from backend.config import Settings
-    s = Settings(_env_file=None)
-    assert s.protonmail_mcp_url == "http://change-me:8080/mcp"
-    assert s.protonmail_account == "your-proton-account"
-
-
-def test_protonmail_settings_env_overridable(monkeypatch):
-    monkeypatch.setenv("PROTONMAIL_MCP_URL", "http://example.test:8080/mcp")
-    monkeypatch.setenv("PROTONMAIL_ACCOUNT", "other")
+def test_protonmail_secrets_served_from_store():
+    # protonmail_mcp_url/account are secret-store-backed properties (2026-07-24) —
+    # mock_secrets (autouse) covers them via conftest.MOCK_SECRETS.
     s = _settings()
-    assert s.protonmail_mcp_url == "http://example.test:8080/mcp"
-    assert s.protonmail_account == "other"
+    assert s.protonmail_mcp_url == "http://test-mcp:8080/mcp"
+    assert s.protonmail_account == "test-proton-account"
+
+
+def test_protonmail_secret_missing_raises(monkeypatch):
+    # Unlike optional secrets (e.g. github_token), these deliberately have no
+    # try/except KeyError -> "" fallback: every consumer already degrades
+    # loudly on failure (health_check -> False, agent tools -> "unavailable",
+    # API routes -> 502), so a missing key should be an unmistakable KeyError,
+    # not a silently-empty URL/account fed downstream.
+    from backend.secrets import manager
+    original = manager.get_secret
+
+    def selective_boom(key, fallback_env=True):
+        if key in ("PROTONMAIL_MCP_URL", "PROTONMAIL_ACCOUNT"):
+            raise KeyError(key)
+        return original(key, fallback_env=fallback_env)
+
+    monkeypatch.setattr("backend.secrets.manager.get_secret", selective_boom)
+    s = _settings()
+    with pytest.raises(KeyError):
+        s.protonmail_mcp_url
+    with pytest.raises(KeyError):
+        s.protonmail_account
+    # Optional secret: absent must not fail startup validation.
+    s.validate()
 
 
 def test_mail_autodraft_settings_defaults():

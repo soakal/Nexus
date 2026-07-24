@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def cmd_list(_args) -> None:
-    from backend.secrets.vault import list_keys
+    from backend.secrets.manager import list_keys
     keys = list_keys()
     if not keys:
         print("(vault is empty)")
@@ -29,25 +29,29 @@ def cmd_set(args) -> None:
     if not value.strip():
         print("Aborted — empty value not stored.", file=sys.stderr)
         sys.exit(1)
-    from backend.secrets.vault import set_secret
+    from backend.secrets.manager import set_secret
     set_secret(key, value.strip())
-    print(f"OK — {key} stored in vault.")
+    print(f"OK — {key} stored.")
 
 
 def cmd_delete(args) -> None:
     key = args.key
-    confirm = input(f"Delete '{key}' from vault? [y/N] ").strip().lower()
+    confirm = input(f"Delete '{key}'? [y/N] ").strip().lower()
     if confirm != "y":
         print("Aborted.")
         sys.exit(0)
-    from backend.secrets.vault import delete_secret, read_meta, META_PATH
-    import json
+    from backend.secrets.manager import delete_secret
     delete_secret(key)
-    meta = read_meta()
-    if key in meta:
-        del meta[key]
-        META_PATH.write_text(json.dumps(meta, indent=2))
-    print(f"OK — {key} removed from vault and metadata.")
+    # Legacy vault-file meta cleanup — no-op once Infisical is the active backend
+    # (META_PATH won't exist after Phase 6 retirement).
+    from backend.secrets.vault import read_meta, META_PATH
+    if META_PATH.exists():
+        import json
+        meta = read_meta()
+        if key in meta:
+            del meta[key]
+            META_PATH.write_text(json.dumps(meta, indent=2))
+    print(f"OK — {key} removed.")
 
 
 def main() -> None:

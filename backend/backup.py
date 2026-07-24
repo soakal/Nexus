@@ -39,7 +39,7 @@ def _mount_unc(unc_path: str, settings) -> None:
         # Fall back to the general credential store under service "unraid" (case-insensitive)
         if not user or not pw:
             try:
-                from backend.secrets.vault import get_credential, list_credentials
+                from backend.secrets.manager import get_credential, list_credentials
                 creds_map = list_credentials()
                 # find service key case-insensitively
                 svc_key = next((k for k in creds_map if k.lower() == "unraid"), None)

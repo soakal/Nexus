@@ -16,9 +16,17 @@ class Settings(BaseSettings):
     proxmox_host: str = "https://192.168.1.60:8006"
     obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
     brain_mcp_url: str = "http://localhost:8765"
-    brain_mcp_token: str = ""  # set in .env if mcp_write_token is configured
-    protonmail_mcp_url: str = "http://change-me:8080/mcp"  # set real host in .env, never commit it
-    protonmail_account: str = "your-proton-account"  # set real account in .env, never commit it
+
+    # Infisical secret store (see backend/secrets/manager.py). Empty defaults —
+    # "auto" mode (default secrets_backend) falls back to the legacy Fernet
+    # vault until all four of these are set in the gitignored .env.
+    infisical_url: str = ""
+    infisical_client_id: str = ""
+    infisical_client_secret: str = ""
+    infisical_project_id: str = ""
+    infisical_env: str = "prod"
+    infisical_cache_ttl_s: int = 300
+    secrets_backend: str = "auto"  # "auto" | "infisical" | "vault"
     mail_autodraft_enabled: bool = True
     mail_autodraft_interval_minutes: int = 30
     mail_autotrash_enabled: bool = True
@@ -287,6 +295,32 @@ class Settings(BaseSettings):
             return get_secret("BRAIN_MCP_WRITE_TOKEN") or ""
         except KeyError:
             return ""
+
+    @property
+    def brain_mcp_token(self) -> str:
+        """Token NEXUS sends as Authorization: Bearer when calling the Brain MCP
+        server. Unified with brain_mcp_write_token — same handshake, one value:
+        the server side (what it enforces) is canonical, so this just delegates
+        to it. A machine-env BRAIN_MCP_WRITE_TOKEN still overrides via
+        manager.get_secret's os.environ fallback if ever needed."""
+        return self.brain_mcp_write_token
+
+    @property
+    def protonmail_mcp_url(self) -> str:
+        """Operational config promoted to a secret 2026-07-24: a real tailnet
+        IP, worth protecting even though the MCP server itself has no auth
+        token. A missing key raises KeyError — every consumer already
+        degrades loudly on failure (health_check -> False/OFFLINE, agent
+        tools -> "unavailable" string, API routes -> 502) rather than
+        silently limping along on an empty URL."""
+        from backend.secrets.manager import get_secret
+        return get_secret("PROTONMAIL_MCP_URL")
+
+    @property
+    def protonmail_account(self) -> str:
+        """See protonmail_mcp_url — same reasoning, real personal account name."""
+        from backend.secrets.manager import get_secret
+        return get_secret("PROTONMAIL_ACCOUNT")
 
     def validate(self) -> None:
         """Fail fast on misconfiguration at startup, before the scheduler/agents run.

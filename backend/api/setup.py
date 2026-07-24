@@ -15,7 +15,7 @@ _ALLOWED_SETUP_KEYS = {
 
 def _needs_setup() -> bool:
     try:
-        from backend.secrets.vault import get_secret
+        from backend.secrets.manager import get_secret
         val = get_secret("NEXUS_API_KEY")
         return not bool(val)
     except Exception:
@@ -41,7 +41,7 @@ async def setup_complete(body: SetupPayload):
     if not key or not key.startswith("sk-ant-"):
         return JSONResponse(status_code=400, content={"error": "Invalid Anthropic API key (must start with sk-ant-)"})
 
-    from backend.secrets.vault import set_secret
+    from backend.secrets.manager import set_secret
     set_secret("ANTHROPIC_API_KEY", key)
 
     # Write any additional secrets from the wizard — allowlisted only, blanks skipped

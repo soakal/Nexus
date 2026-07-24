@@ -63,7 +63,7 @@ def test_secrets_list_unauthorized(app_client):
 
 
 def test_secrets_set(app_client, auth_headers):
-    with patch("backend.secrets.vault.set_secret") as mock_set:
+    with patch("backend.secrets.manager.set_secret") as mock_set:
         resp = app_client.post(
             "/api/secrets/set",
             json={"key": "TEST_KEY", "value": "test_value"},

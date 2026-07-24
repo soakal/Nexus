@@ -18,7 +18,7 @@ def main():
         print("Add --confirm flag to reveal a secret value.")
         sys.exit(1)
 
-    from backend.secrets.vault import get_secret
+    from backend.secrets.manager import get_secret
 
     try:
         value = get_secret(args.key)

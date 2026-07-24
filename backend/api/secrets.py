@@ -15,7 +15,7 @@ class SecretUpdate(BaseModel):
 
 @router.get("/list")
 async def list_secrets(_=Depends(require_api_key)):
-    from backend.secrets.vault import list_keys, read_meta
+    from backend.secrets.manager import list_keys, read_meta
     try:
         keys = list_keys()
         return {"keys": keys, "meta": read_meta()}
@@ -25,7 +25,7 @@ async def list_secrets(_=Depends(require_api_key)):
 
 @router.post("/set")
 async def set_secret_endpoint(body: SecretUpdate, _=Depends(require_api_key)):
-    from backend.secrets.vault import set_secret
+    from backend.secrets.manager import set_secret
     set_secret(body.key, body.value)
     return {"ok": True}
 
@@ -35,7 +35,7 @@ async def delete_secret_endpoint(key: str, _=Depends(require_api_key)):
     from fastapi import HTTPException
     if key == "NEXUS_API_KEY":
         raise HTTPException(status_code=400, detail="Cannot delete NEXUS_API_KEY — it would lock everyone out")
-    from backend.secrets.vault import delete_secret
+    from backend.secrets.manager import delete_secret
     delete_secret(key)
     return {"ok": True}
 
@@ -67,6 +67,7 @@ async def _run_test(key: str) -> tuple:
         hermes,
         homeassistant,
         openrouter,
+        protonmail,
         unifi,
         unraid,
         weather,
@@ -82,6 +83,7 @@ async def _run_test(key: str) -> tuple:
         "OPENROUTER_API_KEY": openrouter.health_check,
         "ADGUARD_PASS": adguard.health_check,
         "HERMES_WEBHOOK_SECRET": hermes.health_check,
+        "PROTONMAIL_MCP_URL": protonmail.health_check,
     }
 
     fn = TEST_MAP.get(key)
@@ -105,13 +107,13 @@ class CredentialBody(BaseModel):
 
 @router.get("/credentials")
 async def list_credentials_endpoint(_=Depends(require_api_key)):
-    from backend.secrets.vault import list_credentials
+    from backend.secrets.manager import list_credentials
     return list_credentials()
 
 
 @router.post("/credentials")
 async def set_credential_endpoint(body: CredentialBody, _=Depends(require_api_key)):
-    from backend.secrets.vault import set_credential
+    from backend.secrets.manager import set_credential
     if body.host:
         set_credential(body.service, "host", body.host)
     if body.user:
@@ -125,7 +127,7 @@ async def set_credential_endpoint(body: CredentialBody, _=Depends(require_api_ke
 
 @router.delete("/credentials/{service}")
 async def delete_credential_endpoint(service: str, _=Depends(require_api_key)):
-    from backend.secrets.vault import delete_credential
+    from backend.secrets.manager import delete_credential
     delete_credential(service)
     return {"ok": True}
 

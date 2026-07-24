@@ -27,12 +27,19 @@ MOCK_SECRETS = {
     "ADGUARD_PASS": "test-adguard-pass",
     "HERMES_WEBHOOK_SECRET": "test-hermes-secret",
     "NEXUS_API_KEY": "test-nexus-key",
+    "PROTONMAIL_MCP_URL": "http://test-mcp:8080/mcp",
+    "PROTONMAIL_ACCOUNT": "test-proton-account",
 }
 
 
 @pytest.fixture(autouse=True)
 def mock_secrets(monkeypatch):
-    """Patch get_secret to return test values without vault."""
+    """Patch secret access to return test values without a real vault or Infisical.
+
+    Forces secrets_backend=vault so the manager routing seam never picks
+    Infisical mid-test, and hard-guards infisical_client's network calls so a
+    misconfigured test can't accidentally reach out over the network.
+    """
     def fake_get_secret(key, fallback_env=True):
         if key in MOCK_SECRETS:
             return MOCK_SECRETS[key]
@@ -40,8 +47,15 @@ def mock_secrets(monkeypatch):
             return os.environ[key]
         raise KeyError(f"Secret '{key}' not in test mock")
 
+    monkeypatch.setenv("SECRETS_BACKEND", "vault")
     monkeypatch.setattr("backend.secrets.manager.get_secret", fake_get_secret)
     monkeypatch.setattr("backend.secrets.vault.get_secret", lambda k: MOCK_SECRETS.get(k, (_ for _ in ()).throw(KeyError(k))))
+
+    def _network_guard(*args, **kwargs):
+        raise AssertionError("infisical_client attempted a real network call during a test")
+
+    monkeypatch.setattr("backend.secrets.infisical_client._request", _network_guard)
+    monkeypatch.setattr("backend.secrets.infisical_client.warm_up", lambda: False)
 
 
 @pytest.fixture(autouse=True)

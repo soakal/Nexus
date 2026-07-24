@@ -1,12 +1,15 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from backend.config import get_settings
-
-# Tests assert against whatever account is actually configured (real value via
-# the gitignored .env on this machine, or the placeholder default otherwise) —
-# never hardcode the real account name in this public repo's test source.
-_ACCOUNT = get_settings().protonmail_account
+# Must equal tests/conftest.py's MOCK_SECRETS["PROTONMAIL_ACCOUNT"] exactly.
+# protonmail_account is now a secret-store-backed Settings property
+# (backend/config.py), so resolving it here at module import time (before the
+# autouse mock_secrets fixture exists) would (a) fire a real Infisical network
+# call during pytest collection, and (b) capture the REAL account name, which
+# would then mismatch the mocked value the integration actually returns
+# during tests. Hardcoding the same literal the fixture mocks avoids both —
+# and as a bonus, the real account name never touches the test run at all.
+_ACCOUNT = "test-proton-account"
 
 
 @pytest.mark.asyncio

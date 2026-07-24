@@ -84,6 +84,15 @@ async def lifespan(app: FastAPI):
             logger.error(f"Startup aborted — invalid configuration: {e}")
             raise
         try:
+            # Best-effort warm-up of the secret-store cache (no-op on the vault
+            # backend) so the first Settings property access is a cache hit,
+            # not a loop-blocking network call. Never fatal.
+            try:
+                from backend.secrets import manager as _secrets_manager
+                await asyncio.to_thread(_secrets_manager.warm_up)
+            except Exception as e:
+                logger.warning(f"Secret store warm-up skipped: {e}")
+
             from backend.scheduler import scheduler, setup_scheduler
             setup_scheduler(settings.briefing_time, settings.briefing_timezone)
             scheduler.start()
