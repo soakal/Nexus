@@ -53,7 +53,7 @@ Restore: `.estore.ps1 [-From <dir>]` — validates the backup before stopping a
 
 ## Remote Access
 
-`tailscale serve` fronts the app at `https://<your-tailnet-hostname>.ts.net` (one
+`tailscale serve` fronts the app at `https://win11-vm-proxmox.tailfa52c.ts.net` (one
 HTTPS origin: `/` frontend, `/api` + `/ws` backend). LAN clients keep using plain HTTP
 from the same build. Install it as a PWA from the browser menu. Device onboarding:
 open Settings and paste the API key — key-in-URL links are retired.

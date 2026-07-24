@@ -111,10 +111,9 @@ class Settings(BaseSettings):
 
     # Deep-link base URL appended to every phone alert so Brian can tap straight
     # to the Safety page. Set to "" to disable. .env-overridable.
-    # Use a Tailscale MagicDNS name (not a bare LAN IP) so taps from phone
-    # notifications work from anywhere on the tailnet, not just at home.
-    # Real value lives in the gitignored .env — never commit it here.
-    app_base_url: str = "http://change-me:3000"
+    # Uses the Tailscale MagicDNS name (not the LAN IP 192.168.1.119) so taps from
+    # phone notifications work from anywhere on the tailnet, not just at home.
+    app_base_url: str = "http://win11-vm-proxmox.tailfa52c.ts.net:3000"
 
     # Weekly spend reconciliation report (surfaced for manual comparison vs Anthropic billing).
     spend_report_enabled: bool = True
