@@ -1,10 +1,20 @@
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
+
+# One-off: fires once, two days before the 2026-08-07 Infisical soak gate
+# (14-day soak started 2026-07-24). Safe to delete this constant, the
+# _infisical_soak_reminder job, its registration block below, and
+# tests/test_infisical_soak_reminder.py once Phase 6 (Fernet vault
+# retirement) ships.
+INFISICAL_SOAK_REMINDER_AT = datetime(2026, 8, 5, 9, 0)
 scheduler = AsyncIOScheduler(
     job_defaults={
         "coalesce": True,        # collapse a backlog of missed runs into one
@@ -328,6 +338,23 @@ async def _run_fragmentation_report():
         logger.error(f"Fragmentation report job error: {e}")
 
 
+async def _infisical_soak_reminder():
+    try:
+        from backend import events
+        await events.notify_phone(
+            "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 days "
+            "since the 2026-07-24 flip). Before green-lighting Phase 6 (retiring "
+            "the Fernet vault), check logs/backend.err.log for 'served from legacy "
+            "vault fallback' warnings. Note: that log resets on every backend "
+            "restart, so it only covers the current run — weigh restarts since "
+            "the flip in your judgment.",
+            kind="soak_reminder",
+        )
+        logger.info("Infisical soak reminder sent")
+    except Exception as e:
+        logger.error(f"Infisical soak reminder job error: {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -500,4 +527,23 @@ def setup_scheduler(briefing_time: str, timezone: str):
         replace_existing=True,
     )
     logger.info("Wiki fragmentation report registered: runs Sundays at 02:30 %s", timezone)
+
+    try:
+        tz = ZoneInfo(timezone)
+        fire_at = INFISICAL_SOAK_REMINDER_AT.replace(tzinfo=tz)
+        if datetime.now(tz) < fire_at:
+            scheduler.add_job(
+                _infisical_soak_reminder,
+                DateTrigger(run_date=INFISICAL_SOAK_REMINDER_AT, timezone=timezone),
+                id="infisical_soak_reminder",
+                replace_existing=True,
+            )
+            logger.info(
+                "Infisical soak reminder registered: fires once at %s %s",
+                INFISICAL_SOAK_REMINDER_AT, timezone,
+            )
+        else:
+            logger.info("Infisical soak reminder window passed — not registering")
+    except Exception as e:
+        logger.warning(f"Infisical soak reminder registration skipped: {e}")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")

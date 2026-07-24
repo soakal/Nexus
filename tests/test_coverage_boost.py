@@ -203,11 +203,16 @@ async def test_scheduler_retry_pending_exception_swallowed():
         await _retry_pending_deliveries()  # Should not raise
 
 
-def test_setup_scheduler_adds_jobs():
+def test_setup_scheduler_adds_jobs(monkeypatch):
+    from datetime import datetime
+    import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
+    # Far-future so the one-off infisical_soak_reminder job always registers,
+    # regardless of the real current date.
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    assert mock_add.call_count == 18
+    assert mock_add.call_count == 19
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -230,6 +235,7 @@ def test_setup_scheduler_adds_jobs():
         "goal_recurrence",
         "brain_organizer",
         "wiki_fragmentation_report",
+        "infisical_soak_reminder",
     }
 
 
