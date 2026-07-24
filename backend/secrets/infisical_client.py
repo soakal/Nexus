@@ -15,7 +15,13 @@ on a TTL by a background daemon thread — get_secret is called from Settings
 properties on the request path, so it must never block on network I/O once
 warmed up. On a refresh failure the existing cache is served indefinitely
 (stale-serve); a cold cache (never fetched) falls through to one synchronous
-fetch. No secret value is ever written to disk or logged.
+fetch. After a failed fetch, further synchronous cold-cache attempts are
+suppressed for FETCH_FAILURE_COOLDOWN_S (fast-fail RuntimeError, so manager.py
+falls through to the legacy vault immediately instead of re-timing-out on
+every distinct secret key during a startup burst) — the background refresh
+loop is unaffected and remains the real recovery-detection mechanism, retrying
+on its own cadence regardless of the cooldown. No secret value is ever written
+to disk or logged.
 """
 import logging
 import re
@@ -29,13 +35,21 @@ logger = logging.getLogger(__name__)
 
 _SERVICE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Suppresses the synchronous cold-cache re-fetch storm after a failure (e.g.
+# a dozen+ Settings properties each triggering their own failed network
+# round-trip during startup) — NOT applied to warm_up()/the background
+# refresh loop, which always get their own real attempt.
+FETCH_FAILURE_COOLDOWN_S = 30.0
+
 _lock = threading.Lock()
 _cache: dict = {}
 _meta: dict = {}
 _known_folders: set = set()
 _token: str | None = None
 _last_fetch_ok = False
+_last_fetch_failed_at: float | None = None
 _refresh_thread_started = False
+_monotonic = time.monotonic  # test seam
 
 
 def _settings():
@@ -122,8 +136,11 @@ def _ensure_folder(path: str) -> None:
 
 def _bulk_fetch() -> bool:
     """Refresh the in-memory cache from Infisical. Leaves the existing cache
-    untouched on failure (stale-serve). Returns True on success."""
-    global _cache, _meta, _last_fetch_ok
+    untouched on failure (stale-serve). Returns True on success. Always makes
+    a real network attempt — the fetch-failure cooldown is enforced only by
+    get_secret()'s cold-cache path, never here, so warm_up() and the
+    background refresh loop always get their own real attempt."""
+    global _cache, _meta, _last_fetch_ok, _last_fetch_failed_at
     s = _settings()
     try:
         resp = _request(
@@ -150,10 +167,12 @@ def _bulk_fetch() -> bool:
             _meta = new_meta
             _known_folders.update(folders_seen)
         _last_fetch_ok = True
+        _last_fetch_failed_at = None
         return True
     except Exception as e:
         logger.warning(f"Infisical bulk fetch failed, serving stale cache: {e}")
         _last_fetch_ok = False
+        _last_fetch_failed_at = _monotonic()
         return False
 
 
@@ -181,9 +200,15 @@ def warm_up() -> bool:
 def get_secret(key: str) -> str:
     with _lock:
         has_cache = bool(_cache)
+        failed_at = _last_fetch_failed_at
         if key in _cache:
             return _cache[key]
     if not has_cache:
+        if failed_at is not None and _monotonic() - failed_at < FETCH_FAILURE_COOLDOWN_S:
+            raise RuntimeError(
+                "Infisical recently unreachable (fetch-failure cooldown active) "
+                "and no cached secrets available"
+            )
         if not _bulk_fetch():
             raise RuntimeError("Infisical unreachable and no cached secrets available")
         with _lock:

@@ -28,6 +28,7 @@ def _reset_module_state(monkeypatch):
     monkeypatch.setattr(ic, "_known_folders", set())
     monkeypatch.setattr(ic, "_token", None)
     monkeypatch.setattr(ic, "_last_fetch_ok", False)
+    monkeypatch.setattr(ic, "_last_fetch_failed_at", None)
     monkeypatch.setattr(ic, "_refresh_thread_started", True)  # never spawn a real thread in tests
     monkeypatch.setattr(ic, "_settings", lambda: _StubSettings())
     monkeypatch.setattr(ic, "_request", _real_request)
@@ -218,3 +219,83 @@ def test_module_never_writes_to_disk():
     src = inspect.getsource(ic)
     for banned in ("open(", "Path(", "pathlib", ".write_text", ".write_bytes"):
         assert banned not in src, f"infisical_client.py must never touch the filesystem (found {banned!r})"
+
+
+def test_cooldown_suppresses_reattempt_storm(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        if request.url.path.endswith("/auth/universal-auth/login"):
+            return _login_response(request)
+        calls["n"] += 1
+        return httpx.Response(500, json={"error": "down"})
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(RuntimeError):
+        ic.get_secret("ANY")
+    first_count = calls["n"]
+    assert first_count > 0
+
+    with pytest.raises(RuntimeError):
+        ic.get_secret("ANY")
+    assert calls["n"] == first_count  # no additional HTTP requests at all
+
+
+def test_cooldown_expiry_reenables_synchronous_retry(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(ic, "_monotonic", lambda: clock["now"])
+    calls = {"n": 0}
+    state = {"up": False}
+
+    def handler(request):
+        if request.url.path.endswith("/auth/universal-auth/login"):
+            return _login_response(request)
+        calls["n"] += 1
+        if not state["up"]:
+            return httpx.Response(500, json={"error": "down"})
+        return httpx.Response(200, json={"secrets": [
+            {"secretKey": "NEXUS_API_KEY", "secretPath": "/", "secretValue": "abc123", "updatedAt": None},
+        ]})
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(RuntimeError):
+        ic.get_secret("NEXUS_API_KEY")
+    count_after_failure = calls["n"]
+
+    # Still within the cooldown — no new attempt.
+    with pytest.raises(RuntimeError):
+        ic.get_secret("NEXUS_API_KEY")
+    assert calls["n"] == count_after_failure
+
+    # Advance past the cooldown and let the backend recover.
+    clock["now"] += ic.FETCH_FAILURE_COOLDOWN_S + 1
+    state["up"] = True
+    assert ic.get_secret("NEXUS_API_KEY") == "abc123"
+    assert calls["n"] > count_after_failure
+
+
+def test_cooldown_does_not_block_bulk_fetch_or_warm_up(monkeypatch):
+    calls = {"n": 0}
+    state = {"up": False}
+
+    def handler(request):
+        if request.url.path.endswith("/auth/universal-auth/login"):
+            return _login_response(request)
+        calls["n"] += 1
+        if not state["up"]:
+            return httpx.Response(500, json={"error": "down"})
+        return httpx.Response(200, json={"secrets": [
+            {"secretKey": "NEXUS_API_KEY", "secretPath": "/", "secretValue": "abc123", "updatedAt": None},
+        ]})
+
+    _patch_transport(monkeypatch, handler)
+    with pytest.raises(RuntimeError):
+        ic.get_secret("NEXUS_API_KEY")
+    count_after_failure = calls["n"]
+
+    # Cooldown is active, but a direct _bulk_fetch() (the warm_up/refresh-loop
+    # path) must still make a real attempt, unblocked by the cooldown.
+    state["up"] = True
+    assert ic._bulk_fetch() is True
+    assert calls["n"] > count_after_failure
+    assert ic.get_secret("NEXUS_API_KEY") == "abc123"

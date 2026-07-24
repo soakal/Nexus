@@ -88,7 +88,10 @@ $backend = Start-Process -PassThru -WindowStyle Hidden `
 # probe hangs until timeout on every iteration and never succeeds.
 $ready = $false
 Write-Host "  Waiting for backend..." -NoNewline
-for ($i = 0; $i -lt 30; $i++) {
+# ~60s budget: absorbs a worst-case single Infisical timeout (~10-20s inside
+# lifespan) during a vault-fallback cold start without cutting a slow-but-
+# successful startup short. Loop still exits immediately on success.
+for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep 1
     # Fail fast if the backend process died during startup.
     if ($backend.HasExited) {
