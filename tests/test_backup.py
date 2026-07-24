@@ -421,6 +421,7 @@ def test_scheduler_backup_jobs_absent_when_disabled(monkeypatch):
     mock_s.autonomy_digest_enabled = False
     mock_s.watchdog_enabled = False
     mock_s.spend_report_enabled = False
+    mock_s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
 
     with patch("backend.config.get_settings", return_value=mock_s), \
          patch.object(scheduler, "add_job") as mock_add:

@@ -266,6 +266,15 @@ async def _spend_report():
         logger.error(f"Spend report job error: {e}")
 
 
+async def _run_facts_digest():
+    try:
+        from backend.agents.facts_digest import run_facts_digest
+        result = await run_facts_digest()
+        logger.info(f"Facts digest job: {result}")
+    except Exception as e:
+        logger.error(f"Facts digest job error: {e}")
+
+
 async def _goal_recurrence():
     try:
         from backend.agents.goals import tick_recurring_goals
@@ -505,6 +514,24 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Goal recurrence tick enabled: runs every 30 minutes")
+    if getattr(s, "facts_digest_enabled", False):
+        digest_time = getattr(s, "facts_digest_time", "01:30")
+        try:
+            fdh, fdm = digest_time.split(":")
+            fdh, fdm = int(fdh), int(fdm)
+        except Exception:
+            logger.warning(f"Invalid facts_digest_time {digest_time!r}; falling back to 01:30")
+            fdh, fdm = 1, 30
+        digest_day = getattr(s, "facts_digest_day", "sun")
+        # 30 min before brain_organizer's 02:00 fold (below), intentionally --
+        # so this week's digest note lands in Brain/wiki/ the SAME night.
+        scheduler.add_job(
+            _run_facts_digest,
+            CronTrigger(day_of_week=digest_day, hour=fdh, minute=fdm, timezone=timezone),
+            id="facts_digest",
+            replace_existing=True,
+        )
+        logger.info(f"Facts digest enabled: weekly on {digest_day} at {fdh:02d}:{fdm:02d} {timezone}")
     from pathlib import Path as _Path
     _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
     if (_bo_dir / "venv" / "Scripts" / "python.exe").exists():

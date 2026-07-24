@@ -257,6 +257,9 @@ class SystemState(SQLModel, table=True):
     # ISO local date (e.g. "2026-07-20") of the last budget early-warning —
     # a date string, not a timestamp, so day rollover re-arms it for free.
     last_budget_warn_day: str | None = Field(default=None)
+    # Watermark for the weekly facts-digest job (backend/agents/facts_digest.py) —
+    # facts with last_seen_at/created_at after this instant are "new since last digest".
+    last_facts_digest_at: datetime | None = Field(default=None)
 
 
 # Agent/LLM trace observability (council w-observability). One row per
@@ -477,6 +480,7 @@ def _ensure_system_state_columns():
     """
     _safe_add_column("systemstate", "last_dead_letter_alert_at", "TIMESTAMP")
     _safe_add_column("systemstate", "last_budget_warn_day", "TEXT")
+    _safe_add_column("systemstate", "last_facts_digest_at", "TIMESTAMP")
 
 
 def _ensure_system_state():

@@ -377,6 +377,7 @@ def test_scheduler_registers_autonomy_digest_job():
         s.step_watchdog_enabled = False
         s.watchdog_enabled = False
         s.spend_report_enabled = False  # disable to avoid MagicMock day_of_week error
+        s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")
@@ -402,6 +403,7 @@ def test_scheduler_no_digest_job_when_disabled():
         s.step_watchdog_enabled = False
         s.watchdog_enabled = False
         s.spend_report_enabled = False  # disable to avoid MagicMock day_of_week error
+        s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")
@@ -427,6 +429,7 @@ def test_scheduler_digest_invalid_time_falls_back():
         s.step_watchdog_enabled = False
         s.watchdog_enabled = False
         s.spend_report_enabled = False  # disable to avoid MagicMock day_of_week error
+        s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
         mock_settings.return_value = s
 
         # Must not raise.

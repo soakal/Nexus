@@ -418,6 +418,79 @@ async def test_extract_and_store_invalid_json_creates_nothing(monkeypatch):
     assert len(_all_facts(eng)) == 0
 
 
+@pytest.mark.asyncio
+async def test_extract_and_store_prompt_includes_existing_subjects(monkeypatch):
+    """A pre-seeded subject must be listed in the prompt so the model reuses its spelling."""
+    from backend.agents.facts import _db_upsert_fact, extract_and_store
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+    _db_upsert_fact("Charlie", "birthday", "July 23", 0.9, "chat", None)
+
+    with patch("backend.agents.router.haiku", new_callable=AsyncMock) as mock_haiku:
+        mock_haiku.return_value = "[]"
+        await extract_and_store("some message", conversation_id=None)
+
+    prompt = mock_haiku.call_args[0][0]
+    assert "Charlie" in prompt
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_prompt_says_none_yet_when_no_subjects(monkeypatch):
+    """An empty fact table must render a placeholder, not an empty/malformed list."""
+    from backend.agents.facts import extract_and_store
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    with patch("backend.agents.router.haiku", new_callable=AsyncMock) as mock_haiku:
+        mock_haiku.return_value = "[]"
+        await extract_and_store("some message", conversation_id=None)
+
+    prompt = mock_haiku.call_args[0][0]
+    assert "(none yet)" in prompt
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_prompt_includes_todays_date(monkeypatch):
+    """The prompt must instruct absolute-date resolution using the real current date."""
+    from backend.agents import facts
+    from backend.agents.facts import extract_and_store
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+    fixed_now = datetime(2026, 8, 3)
+    monkeypatch.setattr(facts, "_local_today", lambda: fixed_now)
+
+    with patch("backend.agents.router.haiku", new_callable=AsyncMock) as mock_haiku:
+        mock_haiku.return_value = "[]"
+        await extract_and_store("some message", conversation_id=None)
+
+    prompt = mock_haiku.call_args[0][0]
+    assert "2026-08-03" in prompt
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_subjects_capped_at_max(monkeypatch):
+    """The subject list injected into the prompt must not exceed MAX_SUBJECTS_IN_PROMPT."""
+    from backend.agents import facts
+    from backend.agents.facts import _db_upsert_fact, extract_and_store
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+    monkeypatch.setattr(facts, "MAX_SUBJECTS_IN_PROMPT", 3)
+    for i in range(5):
+        _db_upsert_fact(f"subject{i}", "predicate", f"value{i}", 0.9, "chat", None)
+
+    with patch("backend.agents.router.haiku", new_callable=AsyncMock) as mock_haiku:
+        mock_haiku.return_value = "[]"
+        await extract_and_store("some message", conversation_id=None)
+
+    prompt = mock_haiku.call_args[0][0]
+    included = sum(1 for i in range(5) if f"subject{i}" in prompt)
+    assert included == 3
+
+
 # ---------------------------------------------------------------------------
 # 7. memory.assemble — facts_str injection + backwards compat
 # ---------------------------------------------------------------------------

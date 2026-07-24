@@ -212,6 +212,10 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
+    # facts_digest_enabled defaults to False (see backend/config.py) until the
+    # duplicate-subject fact-table cleanup has run live for a few days --
+    # bump this back to 20 (and re-add "facts_digest" below) only after
+    # flipping that default back to True.
     assert mock_add.call_count == 19
     ids_set = set()
     for c in mock_add.call_args_list:

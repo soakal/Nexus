@@ -128,6 +128,21 @@ class Settings(BaseSettings):
     spend_report_day: str = "mon"   # APScheduler day_of_week value for the weekly cron
     spend_report_time: str = "08:00"  # 24h HH:MM
 
+    # Weekly Facts -> Brain digest (backend/agents/facts_digest.py). Runs 30 min
+    # before brain_organizer's 02:00 nightly fold so the same night's digest
+    # note is picked up into Brain/wiki/.
+    # DISABLED BY DEFAULT: the Fact table currently has duplicate-subject
+    # noise (e.g. "Charlie"/"Charlee", multiple spellings of "Unraid") from
+    # before the extraction-prompt fix. A NULL last_facts_digest_at watermark
+    # means the first run digests the ENTIRE fact table as-is, and
+    # brain_organizer (02:00, same night) permanently bakes that into
+    # Brain/wiki/. Re-enable (FACTS_DIGEST_ENABLED=true in .env) only after
+    # the duplicate subjects have been merged/cleaned up and the fixed
+    # extraction has run live for several days.
+    facts_digest_enabled: bool = False
+    facts_digest_day: str = "sun"      # APScheduler day_of_week value
+    facts_digest_time: str = "01:30"   # 24h HH:MM
+
     # Local backup settings — db + secrets copied to backups/<timestamp>/ daily.
     # backups/ is gitignored; secrets NEVER leave the local machine via this path.
     backup_enabled: bool = True

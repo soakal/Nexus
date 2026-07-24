@@ -29,6 +29,7 @@ BRIEFING_CONFIDENCE_CAP: float = 0.15  # hard cap for unverified briefing-source
 RECALL_LIMIT: int = 8              # max facts injected into the memory block
 MAX_EXTRACT: int = 5               # max facts extracted per message
 CONFIRM_BUMP: float = 0.1          # confidence bump on reinforcement
+MAX_SUBJECTS_IN_PROMPT: int = 100  # defensive cap as the fact table grows
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,27 @@ def effective_confidence(confidence: float, age_days: float, source: str | None 
 def _age_days(created_at: datetime, now: datetime) -> float:
     """Return age in fractional days, clamped to >= 0."""
     return max(0.0, (now - created_at).total_seconds() / 86400.0)
+
+
+def _local_today() -> datetime:
+    """Now in the user's configured timezone (briefing_timezone, UTC fallback).
+
+    Mirrors backend.safety.governor._local_now -- duplicated intentionally to
+    avoid a facts.py -> safety.governor import for one helper (same precedent
+    as backend/agents/watchdog.py keeping its own SystemState touch-points
+    rather than reaching into governor)."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        from backend.config import get_settings
+        tzname = get_settings().briefing_timezone
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    return datetime.now(tz)
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +382,20 @@ async def extract_and_store(user_message: str, conversation_id: int | None, sour
     try:
         from backend.agents.router import haiku  # lazy import avoids circular at module load
 
+        active = await asyncio.to_thread(_db_active_facts)
+        # Alphabetical truncation is intentional-for-now: at >MAX_SUBJECTS_IN_PROMPT
+        # subjects this drops the alphabetically-last ones (Unraid*/UniFi*/User*),
+        # which is backwards -- recency would be the right key. Deferred: real
+        # count is ~40 vs a cap of 100, and sorting by recency needs last_seen_at
+        # added to the shared _db_active_facts() payload. Revisit if subjects
+        # approach 100.
+        subjects = sorted({f["subject"] for f in active})[:MAX_SUBJECTS_IN_PROMPT]
+        subjects_str = ", ".join(subjects) if subjects else "(none yet)"
+
+        today = _local_today()
+        today_str = today.strftime("%Y-%m-%d")
+        weekday_str = today.strftime("%A")
+
         extract_prompt = (
             "Extract DURABLE facts from the following user message. "
             "Return a JSON array only (no prose). Each element: "
@@ -367,6 +403,12 @@ async def extract_and_store(user_message: str, conversation_id: int | None, sour
             "Only stable facts: names, preferences, configurations, locations, relationships, decisions. "
             "NOT questions, NOT transient state, NOT one-off requests. "
             "Return [] if none.\n\n"
+            f"Known existing subjects: {subjects_str}. "
+            "If a fact is clearly about one of these, reuse its EXACT spelling as the subject "
+            "-- never invent a new spelling/variant for something already listed.\n\n"
+            f"Today's date is {today_str} ({weekday_str}). Resolve any relative date/time "
+            "reference in the value (e.g. \"today\", \"tomorrow\", \"next Friday\") to an "
+            "absolute ISO date (YYYY-MM-DD) instead of storing the relative phrase.\n\n"
             f"User message: \"{user_message}\""
         )
 

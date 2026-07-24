@@ -283,6 +283,217 @@ async def test_obsidian_vault_search_no_match(tmp_path, monkeypatch):
     assert result == "No notes found matching 'zzznotpresent'."
 
 
+@pytest.mark.asyncio
+async def test_vault_search_scopes_to_brain_subfolder_when_present(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
+
+    (tmp_path / "Brain").mkdir()
+    (tmp_path / "Brain" / "note.md").write_text("budget meeting notes", encoding="utf-8")
+    (tmp_path / "other.md").write_text("budget meeting notes", encoding="utf-8")
+
+    from backend.integrations.obsidian import vault_search
+    result = await vault_search("budget")
+
+    assert "Brain" in result and "note.md" in result
+    assert "other.md" not in result
+
+
+@pytest.mark.asyncio
+async def test_vault_search_falls_back_to_vault_root_when_no_brain_subfolder(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
+
+    (tmp_path / "note.md").write_text("budget meeting notes", encoding="utf-8")
+
+    from backend.integrations.obsidian import vault_search
+    result = await vault_search("budget")
+
+    assert "note.md" in result
+
+
+@pytest.mark.asyncio
+async def test_vault_search_context_uses_token_match_not_literal_substring(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
+
+    # No line contains the literal phrase "budget meeting" as a contiguous
+    # substring, but a line contains both tokens separately -- the old
+    # substring-only matcher would have found no context line at all.
+    (tmp_path / "note.md").write_text(
+        "Intro line\nbudget review and meeting notes here\nOutro line", encoding="utf-8"
+    )
+
+    from backend.integrations.obsidian import vault_search
+    result = await vault_search("budget meeting")
+
+    assert "budget review and meeting notes here" in result
+
+
+def test_tokenize_query_drops_stopwords():
+    from backend.integrations.obsidian import _tokenize_query
+
+    q = "what did we decide about the garage door and the thermostat schedule for the house this week"
+    assert _tokenize_query(q) == {
+        "decide", "garage", "door", "thermostat", "schedule", "house", "week",
+    }
+    assert _tokenize_query("hi ok longer word") == {"longer", "word"}
+    assert _tokenize_query("") == set()
+
+
+def test_score_note_pure_no_io():
+    from backend.integrations.obsidian import _score_note
+
+    now = 1_000_000.0
+    tokens = {"budget", "meeting"}
+
+    # No overlap -> 0.0
+    assert _score_note(tokens, "other.md", "unrelated content", now, now) == 0.0
+
+    # Filename match scores higher than a single body hit
+    name_score = _score_note(tokens, "budget.md", "nothing relevant here", now, now)
+    body_score = _score_note(tokens, "note.md", "a budget line here", now, now)
+    assert name_score > body_score
+
+    # More token overlap outranks fewer, at equal recency
+    one_hit = _score_note(tokens, "note.md", "budget only", now, now)
+    two_hits = _score_note(tokens, "note.md", "budget and meeting both", now, now)
+    assert two_hits > one_hit
+
+    # Recency breaks a tie: newer mtime scores higher for otherwise-equal text
+    older = _score_note(tokens, "note.md", "budget meeting", now - 5 * 86400, now)
+    newer = _score_note(tokens, "note.md", "budget meeting", now, now)
+    assert newer > older
+
+
+def test_score_note_returns_zero_below_min_coverage():
+    from backend.integrations.obsidian import _score_note
+
+    now = 1_000_000.0
+    tokens = {"budget", "meeting", "garage", "door"}
+    # Only 1 of 4 tokens present -> coverage 0.25, below MIN_COVERAGE (0.5)
+    assert _score_note(tokens, "note.md", "a budget line here", now, now) == 0.0
+
+
+def test_score_note_prefers_specific_filename_over_verbose_one():
+    from backend.integrations.obsidian import _score_note
+
+    now = 1_000_000.0
+    tokens = {"unraid", "storage"}
+    body = "unraid storage overview and notes"
+    specific = _score_note(tokens, "unraid.md", body, now, now)
+    verbose = _score_note(
+        tokens,
+        "VRSI-Wallboard-Covers-Overview-Deployment-Unraid-SSH-Deploy-Key-Features.md",
+        body,
+        now,
+        now,
+    )
+    assert specific > verbose
+
+
+def test_score_note_penalizes_long_notes():
+    from backend.integrations.obsidian import _score_note, LENGTH_REF_CHARS
+
+    now = 1_000_000.0
+    tokens = {"budget", "meeting"}
+    short_body = "budget meeting notes"
+    long_body = short_body + " filler " * int(LENGTH_REF_CHARS * 20 / len("filler "))
+    short_score = _score_note(tokens, "note.md", short_body, now, now)
+    long_score = _score_note(tokens, "note.md", long_body, now, now)
+    assert long_score < short_score
+
+
+def test_score_note_frequency_cannot_swamp_filename_match():
+    """The direct F1 regression guard: a note whose NAME matches, with a
+    single body mention, must outscore a note that repeats every query
+    token hundreds of times in an otherwise-irrelevant-length body."""
+    from backend.integrations.obsidian import _score_note
+
+    now = 1_000_000.0
+    tokens = {"unraid", "storage"}
+    filename_match = _score_note(tokens, "unraid-storage.md", "brief note", now, now)
+    frequency_spam = _score_note(
+        tokens, "other.md", "unraid storage " * 500, now, now
+    )
+    assert filename_match > frequency_spam
+
+
+@pytest.mark.asyncio
+async def test_vault_search_skips_backup_and_meta_folders(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
+
+    (tmp_path / "Brain" / "raw" / "backups").mkdir(parents=True)
+    (tmp_path / "Brain" / "raw" / "backups" / "dump.md").write_text(
+        "budget meeting notes " * 20, encoding="utf-8"
+    )
+    (tmp_path / "Brain" / "_meta").mkdir(parents=True)
+    (tmp_path / "Brain" / "_meta" / "x.md").write_text(
+        "budget meeting notes " * 20, encoding="utf-8"
+    )
+    (tmp_path / "Brain" / "wiki").mkdir(parents=True)
+    (tmp_path / "Brain" / "wiki" / "real.md").write_text(
+        "budget meeting notes", encoding="utf-8"
+    )
+
+    from backend.integrations.obsidian import vault_search
+    result = await vault_search("budget meeting")
+
+    assert "real.md" in result
+    assert "backups" not in result
+    assert "_meta" not in result
+
+
+@pytest.mark.asyncio
+async def test_vault_search_skips_oversized_notes(tmp_path, monkeypatch):
+    from backend.integrations import obsidian
+    monkeypatch.setattr(obsidian, "_vault", lambda: tmp_path)
+    monkeypatch.setattr(obsidian, "MAX_NOTE_BYTES", 1000)
+
+    (tmp_path / "huge.md").write_text("budget meeting " * 200, encoding="utf-8")
+
+    result = await obsidian.vault_search("budget meeting")
+
+    assert "No notes found" in result
+
+
+@pytest.mark.asyncio
+async def test_vault_search_short_query_uses_whole_word_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("backend.integrations.obsidian._vault", lambda: tmp_path)
+
+    (tmp_path / "match.md").write_text("AI platform notes", encoding="utf-8")
+    (tmp_path / "nomatch.md").write_text("Tailscale networking notes", encoding="utf-8")
+
+    from backend.integrations.obsidian import vault_search
+    result = await vault_search("AI")
+
+    assert "match.md" in result
+    assert "nomatch.md" not in result
+
+
+def test_best_match_context_picks_densest_line_and_skips_markup():
+    from backend.integrations.obsidian import _best_match_context
+
+    lines = [
+        "<command-message>loop</command-message>",
+        "budget mentioned once here",
+        "unrelated filler line",
+        "budget and meeting both mentioned in this line",
+    ]
+    ctx = _best_match_context(lines, {"budget", "meeting"})
+
+    assert "budget and meeting both mentioned" in ctx
+    assert "<command-message" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_vault_search_runs_walk_off_the_event_loop():
+    from backend.integrations import obsidian
+
+    with patch.object(obsidian, "_search_sync", return_value="X") as mock_search:
+        result = await obsidian.vault_search("q")
+
+    assert result == "X"
+    mock_search.assert_called_once_with("q", 10)
+
+
 # ---------------------------------------------------------------------------
 # ObsidianData dataclass defaults
 # ---------------------------------------------------------------------------
@@ -372,3 +583,32 @@ async def test_emit_event_swallows_raising_post_raw(caplog):
     assert result is None
     assert "boom" in caplog.text
     assert "goal.failed" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# write_facts_digest() -- POST via _post_raw, PROPAGATES failures (unlike
+# emit_event) so the caller can decide whether to advance its watermark
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_write_facts_digest_calls_post_raw_with_facts_digest_filename_prefix():
+    from backend.integrations import obsidian
+
+    mock_post_raw = AsyncMock()
+    with patch.object(obsidian, "_post_raw", mock_post_raw):
+        await obsidian.write_facts_digest("# NEXUS Facts Digest\n...")
+
+    mock_post_raw.assert_called_once()
+    args, kwargs = mock_post_raw.call_args
+    assert args[0] == "# NEXUS Facts Digest\n..."
+    assert kwargs["filename"].startswith("facts-digest-")
+    assert kwargs["filename"].endswith(".md")
+
+
+@pytest.mark.asyncio
+async def test_write_facts_digest_propagates_raising_post_raw():
+    from backend.integrations import obsidian
+
+    with patch.object(obsidian, "_post_raw", AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(RuntimeError, match="boom"):
+            await obsidian.write_facts_digest("content")
