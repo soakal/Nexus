@@ -46,7 +46,7 @@ async def notify_phone(
         if base:
             url = f"{base}/safety"
             # HTML link so Telegram renders it clickable even for non-dotted hostnames
-            # (bare hostnames like win11-vm-proxmox aren't auto-detected as URLs in plain text).
+            # (bare Tailscale MagicDNS names aren't auto-detected as URLs in plain text).
             content = f"{content}\n<a href=\"{url}\">Open Safety</a>"
             parse_mode = "HTML"
         from datetime import datetime
