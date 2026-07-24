@@ -14,13 +14,93 @@ logger = logging.getLogger(__name__)
 # fact", and the goal proposer's KNOWN FACTS context treats durable facts as
 # grounds for an autonomous investigation + phone notification. Strip these
 # sections before fact extraction; they stay in the stored/displayed briefing.
-_UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox")
+_UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox", "Proton Mail")
 
 
 def _strip_unverified_sections(text: str) -> str:
     for heading in _UNVERIFIED_FACT_SECTIONS:
         text = re.sub(rf"## {re.escape(heading)}.*?(?=\n## |\Z)", "", text, flags=re.DOTALL)
     return text
+
+
+def _truncate_subject(subject: str, cap: int = 80) -> str:
+    subject = subject or "(no subject)"
+    return subject if len(subject) <= cap else subject[: cap - 1] + "…"
+
+
+def _parse_email_list(result) -> list | None:
+    """result is either an Exception (integration failure) or the JSON text
+    from protonmail.list_recent(). Returns the parsed emails list, [] if the
+    shape is unexpected, or None if the source itself was unavailable."""
+    if isinstance(result, Exception):
+        return None
+    try:
+        data = json.loads(result)
+        emails = data.get("emails")
+        if not isinstance(emails, list):
+            return []
+        return [e for e in emails if isinstance(e, dict)]
+    except Exception:
+        return None
+
+
+def _needing_reply(unread_result, drafted_ids: set, cap: int = 5) -> list | None:
+    unread_emails = _parse_email_list(unread_result)
+    if unread_emails is None:
+        return None
+    return [e for e in unread_emails if e.get("email_id") in drafted_ids][:cap]
+
+
+def _build_protonmail_section(unread_result, drafts_result, drafted_ids: set) -> str:
+    """Deterministic, factual '## Proton Mail' section, assembled in Python and
+    appended AFTER the LLM call — never fed into the prompt. Mail data here is
+    already a finished judgment (the auto-draft scheduler's conservative
+    classifier already decided which unread emails need a reply), so there is
+    nothing for the LLM to synthesize; feeding it in would only risk the same
+    manufactured-urgency problem _UNVERIFIED_FACT_SECTIONS exists to contain.
+    Never raises for any input shape (Exception, malformed JSON, missing keys).
+    """
+    unread_emails = _parse_email_list(unread_result)
+    draft_emails = _parse_email_list(drafts_result)
+
+    if unread_emails is None and draft_emails is None:
+        return "## Proton Mail\nProton Mail data unavailable."
+
+    needing_reply = [e for e in (unread_emails or []) if e.get("email_id") in drafted_ids][:5]
+    drafts = (draft_emails or [])[:10]
+
+    if not needing_reply and not drafts and unread_emails is not None and draft_emails is not None:
+        return "## Proton Mail\nNothing needing attention."
+
+    lines = ["## Proton Mail"]
+
+    if unread_emails is None:
+        lines.append("Unread-mail data unavailable.")
+    elif needing_reply:
+        lines.append(
+            f"{len(needing_reply)} unread email(s) previously judged (conservative classifier) to need a personal reply:"
+        )
+        for e in needing_reply:
+            sender = e.get("sender") or "(unknown sender)"
+            lines.append(f'- {sender} — "{_truncate_subject(e.get("subject"))}"')
+
+    if draft_emails is None:
+        lines.append("Drafts-folder data unavailable.")
+    elif drafts:
+        lines.append(f"{len(drafts)} draft(s) awaiting your review in Proton Drafts:")
+        for e in drafts:
+            subject = _truncate_subject(e.get("subject"))
+            recipients = e.get("recipients")
+            if recipients:
+                to = ", ".join(recipients) if isinstance(recipients, list) else recipients
+                lines.append(f'- "{subject}" → {to}')
+            else:
+                lines.append(f'- "{subject}"')
+
+    if len(lines) == 1:
+        lines.append("Nothing needing attention.")
+
+    return "\n".join(lines)
 
 BRIEFING_PROMPT = """You are Carl, a direct, high-conviction personal AI assistant, briefing a solo power user starting their day.
 Be direct. No filler, no hedging ("try," "hope," "maybe"). Assume high technical literacy. Flag anomalies clearly.
@@ -88,6 +168,8 @@ async def run_briefing() -> str:
         weather,
     )
     from backend.integrations.hermes import get_calendar, get_gmail
+    from backend.integrations import protonmail
+    from backend.agents import mail_drafts
 
     logger.info("Running morning briefing")
 
@@ -115,13 +197,20 @@ async def run_briefing() -> str:
             adguard.fetch(),
             get_calendar(),
             get_gmail(),
+            protonmail.list_recent(unread_only=True, limit=25),
+            protonmail.list_recent(mailbox="Drafts", limit=10),
             return_exceptions=True,
         )
 
-        ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data, mail_data = results
+        ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data, mail_data, proton_unread, proton_drafts = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
         mail_str = mail_data if not isinstance(mail_data, Exception) else "Inbox unavailable"
+
+        try:
+            drafted_ids = await asyncio.to_thread(mail_drafts._db_drafted_email_ids)
+        except Exception:
+            drafted_ids = set()
 
         def safe(obj, attr, default="N/A"):
             if isinstance(obj, Exception):
@@ -190,7 +279,19 @@ async def run_briefing() -> str:
             inbox_block=mail_str,
         )
 
+        # Added AFTER the prompt is built, on purpose — this must never reach the
+        # LLM (see _build_protonmail_section's docstring). It only records what
+        # was surfaced, for context_json's own record-keeping.
+        proton_section = _build_protonmail_section(proton_unread, proton_drafts, drafted_ids)
+        _needing = _needing_reply(proton_unread, drafted_ids)
+        _drafts = _parse_email_list(proton_drafts)
+        context["protonmail"] = {
+            "unread_needing_reply": len(_needing) if _needing is not None else 0,
+            "pending_drafts": len(_drafts) if _drafts is not None else 0,
+        }
+
         briefing_text = await sonnet(prompt, label="briefing")
+        briefing_text = briefing_text + "\n\n" + proton_section
         logger.info("Briefing generated")
 
         # Extract durable facts from briefing content (best-effort, never raises).

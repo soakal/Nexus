@@ -73,6 +73,23 @@ _QUERY_SCHEMA = {
     "properties": {"query": {"type": "string", "description": "search query"}},
     "required": ["query"],
 }
+_PROTONMAIL_INBOX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "from_address": {"type": "string", "description": "filter by sender address"},
+        "subject": {"type": "string", "description": "filter by subject text"},
+        "unread_only": {"type": "boolean", "description": "only unread messages"},
+        "limit": {"type": "integer", "description": "max messages to return (default 10)"},
+    },
+}
+_PROTONMAIL_READ_EMAIL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "email_id": {"type": "string", "description": "email_id from protonmail_inbox"},
+        "page": {"type": "integer", "description": "body page number for long emails (default 1)"},
+    },
+    "required": ["email_id"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +273,45 @@ async def _proxmox_backups(_input: dict) -> str:
         return _truncate(f"proxmox_backups unavailable: {e}")
 
 
+async def _protonmail_inbox(input: dict) -> str:
+    input = input or {}
+    try:
+        from backend.integrations import protonmail
+        result = await protonmail.list_recent(
+            unread_only=bool(input.get("unread_only", False)),
+            from_address=input.get("from_address"),
+            subject=input.get("subject"),
+            limit=int(input.get("limit", 10)),
+        )
+        return _truncate(result if isinstance(result, str) else str(result))
+    except Exception as e:
+        return _truncate(f"protonmail_inbox unavailable: {e}")
+
+
+async def _protonmail_read_email(input: dict) -> str:
+    input = input or {}
+    email_id = input.get("email_id")
+    if not email_id or not str(email_id).strip():
+        return "protonmail_read_email unavailable: missing 'email_id'"
+    try:
+        from backend.integrations import protonmail
+        result = await protonmail.read_email(str(email_id).strip(), page=int(input.get("page", 1)))
+        return _truncate(result if isinstance(result, str) else str(result))
+    except Exception as e:
+        return _truncate(f"protonmail_read_email unavailable: {e}")
+
+
+async def _protonmail_status(_input: dict) -> str:
+    try:
+        from backend.integrations import protonmail
+        from backend.config import get_settings
+        alive = await protonmail.health_check()
+        account = get_settings().protonmail_account
+        return _truncate(f"Proton Mail: reachable={alive}, account={account}")
+    except Exception as e:
+        return _truncate(f"protonmail_status unavailable: {e}")
+
+
 async def _vault_search(input: dict) -> str:
     query = (input or {}).get("query")
     if not query or not str(query).strip():
@@ -346,6 +402,24 @@ READ_TOOLS: list[ReadTool] = [
         description="Read the status of the latest Proxmox vzdump VM backup job via Hermes. READ ONLY.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_proxmox_backups,
+    ),
+    ReadTool(
+        name="protonmail_inbox",
+        description="Read recent Proton Mail inbox messages (id, date, sender, subject), optionally filtered by sender/subject/unread. READ ONLY.",
+        input_schema=_PROTONMAIL_INBOX_SCHEMA,
+        dispatch=_protonmail_inbox,
+    ),
+    ReadTool(
+        name="protonmail_read_email",
+        description="Read the full body of one Proton Mail email by email_id (from protonmail_inbox). READ ONLY.",
+        input_schema=_PROTONMAIL_READ_EMAIL_SCHEMA,
+        dispatch=_protonmail_read_email,
+    ),
+    ReadTool(
+        name="protonmail_status",
+        description="Read Proton Mail MCP reachability status. READ ONLY.",
+        input_schema=_NO_ARGS_SCHEMA,
+        dispatch=_protonmail_status,
     ),
     ReadTool(
         name="vault_search",

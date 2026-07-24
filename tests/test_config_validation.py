@@ -77,3 +77,35 @@ def test_brain_mcp_write_token_absent_returns_empty_string():
 def test_brain_mcp_write_token_not_required_by_validate():
     # Optional secret: absent must not fail validation (mirrors github_token above).
     _settings().validate()
+
+
+def test_protonmail_settings_defaults():
+    # _env_file=None: isolate from the real (gitignored) .env, which sets real
+    # values for these two keys on this machine — this test checks the class
+    # default itself, not whatever happens to be in .env.
+    from backend.config import Settings
+    s = Settings(_env_file=None)
+    assert s.protonmail_mcp_url == "http://change-me:8080/mcp"
+    assert s.protonmail_account == "your-proton-account"
+
+
+def test_protonmail_settings_env_overridable(monkeypatch):
+    monkeypatch.setenv("PROTONMAIL_MCP_URL", "http://example.test:8080/mcp")
+    monkeypatch.setenv("PROTONMAIL_ACCOUNT", "other")
+    s = _settings()
+    assert s.protonmail_mcp_url == "http://example.test:8080/mcp"
+    assert s.protonmail_account == "other"
+
+
+def test_mail_autodraft_settings_defaults():
+    s = _settings()
+    assert s.mail_autodraft_enabled is True
+    assert s.mail_autodraft_interval_minutes == 30
+
+
+def test_mail_autodraft_settings_env_overridable(monkeypatch):
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "false")
+    monkeypatch.setenv("MAIL_AUTODRAFT_INTERVAL_MINUTES", "45")
+    s = _settings()
+    assert s.mail_autodraft_enabled is False
+    assert s.mail_autodraft_interval_minutes == 45

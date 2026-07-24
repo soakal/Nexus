@@ -18,6 +18,7 @@ async def sources_status(_=Depends(require_api_key)):
         homeassistant,
         obsidian,
         openrouter,
+        protonmail,
         proxmox,
         unifi,
         unraid,
@@ -36,6 +37,7 @@ async def sources_status(_=Depends(require_api_key)):
         "adguard": adguard,
         "hermes": hermes,
         "proxmox": proxmox,
+        "protonmail": protonmail,
     }
 
     results = await asyncio.gather(

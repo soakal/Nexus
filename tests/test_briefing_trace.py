@@ -79,13 +79,15 @@ async def test_trace_opened_and_closed_ok(eng):
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="## Priority Actions\nNone"), \
          patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock), \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock, return_value="NEXUS/Briefings/test.md"), \
-         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True):
+         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()):
 
         from backend.agents.briefing import run_briefing
 
         result = await run_briefing()
 
-    assert result == "## Priority Actions\nNone"
+    assert result == "## Priority Actions\nNone\n\n## Proton Mail\nNothing needing attention."
 
     with Session(eng) as s:
         traces = s.exec(select(AgentTrace).where(AgentTrace.kind == "briefing")).all()
@@ -116,6 +118,8 @@ async def test_trace_closed_error_on_unexpected_exception(eng):
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=d["ag"]), \
          patch("backend.integrations.hermes.get_calendar", new_callable=AsyncMock, return_value="cal"), \
          patch("backend.integrations.hermes.get_gmail", new_callable=AsyncMock, return_value="mail"), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
 
         from backend.agents.briefing import run_briefing

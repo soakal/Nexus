@@ -417,6 +417,7 @@ def test_scheduler_backup_jobs_absent_when_disabled(monkeypatch):
     # Keep other feature flags off so only the 5 unconditional jobs are added
     mock_s.step_watchdog_enabled = False
     mock_s.proposer_enabled = False
+    mock_s.mail_autodraft_enabled = False
     mock_s.autonomy_digest_enabled = False
     mock_s.watchdog_enabled = False
     mock_s.spend_report_enabled = False

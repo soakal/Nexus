@@ -170,4 +170,12 @@ export const api = {
     list: (limit, kind) => req('GET', `/traces?limit=${limit || 50}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`),
     get: (id) => req('GET', `/traces/${id}`),
   },
+  protonmail: {
+    status: () => req('GET', '/protonmail/status'),
+    inbox: () => req('GET', '/protonmail/inbox'),
+    send: (payload) => req('POST', '/protonmail/send', payload),
+    email: (id, mailbox) => req('GET', `/protonmail/email/${encodeURIComponent(id)}${mailbox ? `?mailbox=${encodeURIComponent(mailbox)}` : ''}`),
+    archive: (payload) => req('POST', '/protonmail/archive', payload),
+    remove: (payload) => req('POST', '/protonmail/delete', payload),
+  },
 }

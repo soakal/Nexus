@@ -20,6 +20,9 @@ export default function Dashboard() {
   const [proxmoxVmsOpen, setProxmoxVmsOpen] = useState(false)
   const [proxmoxMaint, setProxmoxMaint] = useState(null)
   const [brain, setBrain] = useState(null)
+  const [mail, setMail] = useState(null)
+  const [mailError, setMailError] = useState(false)
+  const [mailOpen, setMailOpen] = useState(false)
   const [dockerOpen, setDockerOpen] = useState(false)
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingError, setBriefingError] = useState(false)
@@ -36,6 +39,7 @@ export default function Dashboard() {
     api.proxmox.maintenance().then(setProxmoxMaint).catch(() => {})
     api.briefing.latest().then(b => setLastBriefing(b?.created_at)).catch(() => {})
     api.brain.status().then(setBrain).catch(() => {})
+    api.protonmail.inbox().then(d => { setMail(d); setMailError(false) }).catch(() => { setMail(null); setMailError(true) })
   }, [])
 
   useEffect(() => {
@@ -486,6 +490,56 @@ export default function Dashboard() {
               >
                 {proxmoxVmsOpen ? 'Show less' : `+${proxmox.vms.length - 4} more`}
               </button>
+            )}
+          </Card>
+        )}
+
+        {/* Proton Mail */}
+        {(mail || mailError) && (
+          <Card style={{ flex: '1.2 1 300px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Eyebrow>Proton Mail</Eyebrow>
+              {mailError ? (
+                <StatusPill tone="red" label="Offline" />
+              ) : (
+                <StatusPill
+                  tone={mail.unread > 0 ? 'amber' : 'green'}
+                  label={mail.unread > 0 ? `${mail.unread} unread` : 'Caught up'}
+                />
+              )}
+            </div>
+            {!mailError && (
+              <>
+                <div style={{ fontSize: '12px', color: '#8a96ad', margin: '8px 0' }}>
+                  {mail.total} total in inbox
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {(mail.emails || []).slice(0, mailOpen ? undefined : 3).map(e => (
+                    <div
+                      key={e.email_id}
+                      style={{ display: 'flex', flexDirection: 'column', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}
+                    >
+                      <span style={{ fontSize: '12px', color: '#cdd6e6', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {(e.sender || '').replace(/^"?([^"<]+?)"?\s*<.*$/, '$1')}
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#8a96ad', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {e.subject || '(no subject)'}
+                      </span>
+                    </div>
+                  ))}
+                  {(mail.emails?.length || 0) === 0 && (
+                    <div style={{ fontSize: '12px', color: '#5d6982' }}>No emails.</div>
+                  )}
+                </div>
+                {(mail.emails?.length || 0) > 3 && (
+                  <button
+                    onClick={() => setMailOpen(v => !v)}
+                    style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
+                  >
+                    {mailOpen ? 'Show less' : `+${mail.emails.length - 3} more`}
+                  </button>
+                )}
+              </>
             )}
           </Card>
         )}

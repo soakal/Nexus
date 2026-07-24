@@ -516,6 +516,52 @@ def _ensure_system_state():
         logger.warning(f"_ensure_system_state failed: {e}")
 
 
+# Single-row cache (id=1) of Brian's writing-voice summary, distilled from his
+# Sent-folder mail. Same singleton-row idiom as SystemState. New table (create_all
+# only, no _ensure_ shim) — missing row is a legitimate "never built yet" state,
+# handled lazily by backend/agents/mail_drafts.py::get_voice_profile.
+class MailVoiceProfile(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    summary: str = ""
+    sample_count: int = 0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Dedup ledger for the mail auto-draft scheduler job (backend/agents/mail_drafts.py).
+# One row per inbox email_id ever considered, so the same email is never
+# reprocessed/redrafted on a later tick. New table (create_all only) — the unique
+# index on email_id is the race-safety backstop (insert-then-catch-IntegrityError),
+# same idiom as Goal.fingerprint's ux_goal_fingerprint_active.
+class ProcessedMailId(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    email_id: str = Field(unique=True, index=True)
+    drafted: bool = False
+    # Added 2026-07-23 alongside the auto-junk-cleanup feature — True once this
+    # email has been moved to Trash by autodraft_tick's junk branch.
+    trashed: bool = False
+    processed_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Single-row cache (id=1) of a distilled "what Brian deletes" profile, sampled
+# from his real Trash folder (sender+subject only, no body). Same singleton-row
+# idiom as MailVoiceProfile/SystemState. New table (create_all only, no _ensure_
+# shim) — missing row is a legitimate "never built yet" state, handled lazily by
+# backend/agents/mail_drafts.py::get_junk_profile.
+class MailJunkProfile(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    summary: str = ""
+    sample_count: int = 0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+def _ensure_processedmail_columns():
+    """Idempotently add columns introduced after ProcessedMailId originally
+    shipped (2026-07-23, same day — this table already exists in Brian's live
+    DB from earlier today, so a shim is needed even though the table itself is
+    "new"). Best-effort — never fatal to startup."""
+    _safe_add_column("processedmailid", "trashed", "BOOLEAN DEFAULT 0")
+
+
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
     _ensure_task_columns()
@@ -527,6 +573,7 @@ def create_db_and_tables():
     _ensure_fact_columns()
     _ensure_system_state_columns()
     _ensure_system_state()
+    _ensure_processedmail_columns()
 
 
 def get_session():

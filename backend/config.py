@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
     brain_mcp_url: str = "http://localhost:8765"
     brain_mcp_token: str = ""  # set in .env if mcp_write_token is configured
+    protonmail_mcp_url: str = "http://change-me:8080/mcp"  # set real host in .env, never commit it
+    protonmail_account: str = "your-proton-account"  # set real account in .env, never commit it
+    mail_autodraft_enabled: bool = True
+    mail_autodraft_interval_minutes: int = 30
+    mail_autotrash_enabled: bool = True
     channels_host: str = "http://localhost:8089"
     adguard_host: str = "http://localhost:3000"
     adguard_user: str = "admin"

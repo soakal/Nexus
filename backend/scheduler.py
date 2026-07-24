@@ -55,7 +55,7 @@ async def _record_uptime():
         from backend.database import UptimeSample, engine
         from backend.integrations import (
             adguard, channels_dvr, github, hermes, homeassistant,
-            obsidian, openrouter, proxmox, unifi, unraid, weather,
+            obsidian, openrouter, protonmail, proxmox, unifi, unraid, weather,
         )
         import time
 
@@ -63,7 +63,7 @@ async def _record_uptime():
             "homeassistant": homeassistant, "unifi": unifi, "unraid": unraid,
             "obsidian": obsidian, "github": github, "openrouter": openrouter,
             "weather": weather, "channels_dvr": channels_dvr, "adguard": adguard,
-            "hermes": hermes, "proxmox": proxmox,
+            "hermes": hermes, "proxmox": proxmox, "protonmail": protonmail,
         }
 
         async def _check(name, mod):
@@ -167,6 +167,14 @@ async def _propose_goals():
         await propose_goals_tick()
     except Exception as e:
         logger.error(f"Goal proposer job error: {e}")
+
+
+async def _run_mail_autodraft():
+    try:
+        from backend.agents.mail_drafts import autodraft_tick
+        await autodraft_tick()
+    except Exception as e:
+        logger.error(f"Mail autodraft job error: {e}")
 
 
 async def _autonomy_digest():
@@ -378,6 +386,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Goal proposer enabled: every {s.proposer_interval_hours}h (suggest-only)")
+    if getattr(s, "mail_autodraft_enabled", False):
+        scheduler.add_job(
+            _run_mail_autodraft,
+            IntervalTrigger(minutes=max(5, getattr(s, "mail_autodraft_interval_minutes", 30))),
+            id="mail_autodraft",
+            replace_existing=True,
+        )
+        logger.info(f"Mail autodraft enabled: every {s.mail_autodraft_interval_minutes}m (draft-only, never sends)")
     if getattr(s, "autonomy_digest_enabled", False):
         digest_time = getattr(s, "autonomy_digest_time", "20:00")
         try:

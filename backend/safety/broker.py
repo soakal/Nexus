@@ -145,6 +145,30 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # Check off a vault task — low blast radius, reversible by unchecking.
         return Risk.LOW, Reversibility.REVERSIBLE
 
+    if kind == "protonmail_send":
+        # Sending an email cannot be unsent — IRREVERSIBLE by construction. decide()
+        # therefore hard-FORBIDs an unconfirmed agent/autonomous actor (never a
+        # needs_confirm phone tap for this kind) and always ALLOWs a user actor.
+        return Risk.HIGH, Reversibility.IRREVERSIBLE
+
+    if kind == "protonmail_archive":
+        # Moves an email between two folders inside the same mailbox — nothing
+        # leaves the account, nothing external changes, nothing live is disrupted.
+        # Cleanly reversible via move_emails back to INBOX. Same band as
+        # channels_record, not unraid_docker (that's HIGH despite being reversible
+        # because it disrupts a live running service; archiving disrupts nothing).
+        return Risk.LOW, Reversibility.REVERSIBLE_BY_INVERSE
+
+    if kind == "protonmail_delete":
+        # Verified 2026-07-23: the MCP hard-remove tool permanently expunges (a
+        # test email never appeared in the real Trash folder), so the dispatcher
+        # now moves mail to Trash instead (protonmail.trash_email, move_emails)
+        # — same band and reasoning as protonmail_archive: moves mail between
+        # folders in the same account, disrupts nothing live, reversible via
+        # move_emails back to INBOX. Kind name kept as "protonmail_delete" (not
+        # renamed) so the endpoint/frontend/audit-log history stay continuous.
+        return Risk.LOW, Reversibility.REVERSIBLE_BY_INVERSE
+
     if kind == "send_notification":
         # Send a Telegram message to the OWNER only — trivial blast radius (a
         # message to yourself). LOW + REVERSIBLE so an agent may send; per-verb
@@ -295,6 +319,40 @@ async def _dispatch_send_notification(target: str, payload: dict) -> dict:
     return {"delivered": True}
 
 
+async def _dispatch_protonmail_send(target: str, payload: dict) -> dict:
+    """Send a Proton Mail email via the MCP client integration.
+
+    protonmail.send_email raises IntegrationError on a tool-reported failure,
+    which propagates to execute_action's dispatch try/except -> recorded FAILED
+    (never re-raised), matching every other dispatcher.
+    """
+    from backend.integrations import protonmail
+
+    result = await protonmail.send_email(
+        recipients=payload["recipients"],
+        subject=payload["subject"],
+        body=payload["body"],
+        cc=payload.get("cc"),
+        bcc=payload.get("bcc"),
+        in_reply_to=payload.get("in_reply_to"),
+        references=payload.get("references"),
+        html=payload.get("html", False),
+    )
+    return result
+
+
+async def _dispatch_protonmail_archive(target: str, payload: dict) -> dict:
+    from backend.integrations import protonmail
+
+    return await protonmail.archive_email(payload["email_id"], mailbox=payload.get("mailbox"))
+
+
+async def _dispatch_protonmail_delete(target: str, payload: dict) -> dict:
+    from backend.integrations import protonmail
+
+    return await protonmail.trash_email(payload["email_id"], mailbox=payload.get("mailbox"))
+
+
 _DISPATCHERS = {
     "ha_service": _dispatch_ha_service,
     "hermes_relay": _dispatch_hermes_relay,
@@ -303,6 +361,9 @@ _DISPATCHERS = {
     "unraid_docker": _dispatch_unraid_docker,
     "obsidian_task": _dispatch_obsidian_task,
     "send_notification": _dispatch_send_notification,
+    "protonmail_send": _dispatch_protonmail_send,
+    "protonmail_archive": _dispatch_protonmail_archive,
+    "protonmail_delete": _dispatch_protonmail_delete,
 }
 
 

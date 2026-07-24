@@ -196,6 +196,7 @@ from backend.api import (
     facts,
     goals,
     homeassistant,
+    protonmail,
     proxmox_api,
     safety,
     secrets,
@@ -227,6 +228,7 @@ app.include_router(secrets.router, prefix="/api/secrets", tags=["secrets"])
 app.include_router(unraid_api.router, prefix="/api/unraid", tags=["unraid"])
 app.include_router(proxmox_api.router, prefix="/api/proxmox", tags=["proxmox"])
 app.include_router(homeassistant.router, prefix="/api/ha", tags=["homeassistant"])
+app.include_router(protonmail.router, prefix="/api/protonmail", tags=["protonmail"])
 app.include_router(today.router, prefix="/api/today", tags=["today"])
 app.include_router(safety.router, prefix="/api/safety", tags=["safety"])
 app.include_router(traces.router, prefix="/api/traces", tags=["traces"])

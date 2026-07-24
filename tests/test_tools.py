@@ -303,6 +303,9 @@ async def test_all_dispatchers_never_raise_on_error():
         "backend.integrations.hermes.relay",
         "backend.integrations.obsidian.vault_search",
         "backend.integrations.web_search.search",
+        "backend.integrations.protonmail.list_recent",
+        "backend.integrations.protonmail.read_email",
+        "backend.integrations.protonmail.health_check",
     ]
     patchers = [patch(t, new=AsyncMock(side_effect=Exception("kaboom"))) for t in integ_targets]
     for p in patchers:
@@ -367,6 +370,7 @@ def test_dispatcher_map_keys_match_registry():
         "homeassistant_status", "homeassistant_temperatures", "unraid_status", "unifi_status",
         "adguard_status", "channels_status", "weather", "github_status", "hermes_status",
         "proxmox_updates", "proxmox_backups", "vault_search", "ddg_search",
+        "protonmail_inbox", "protonmail_read_email", "protonmail_status",
     }
     assert set(dmap.keys()) == expected
     # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the

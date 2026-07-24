@@ -351,6 +351,7 @@ def test_scheduler_registers_spend_report_when_enabled():
          patch("backend.config.get_settings") as mock_settings:
         s = MagicMock()
         s.proposer_enabled = False
+        s.mail_autodraft_enabled = False
         s.autonomy_digest_enabled = False
         s.backup_enabled = False
         s.step_watchdog_enabled = False
@@ -376,6 +377,7 @@ def test_scheduler_no_spend_report_when_disabled():
          patch("backend.config.get_settings") as mock_settings:
         s = MagicMock()
         s.proposer_enabled = False
+        s.mail_autodraft_enabled = False
         s.autonomy_digest_enabled = False
         s.backup_enabled = False
         s.step_watchdog_enabled = False
@@ -399,6 +401,7 @@ def test_scheduler_spend_report_invalid_time_falls_back():
          patch("backend.config.get_settings") as mock_settings:
         s = MagicMock()
         s.proposer_enabled = False
+        s.mail_autodraft_enabled = False
         s.autonomy_digest_enabled = False
         s.backup_enabled = False
         s.step_watchdog_enabled = False

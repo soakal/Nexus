@@ -25,3 +25,5 @@ mypy==1.13.0
 bandit==1.8.0
 pystray>=0.19.5
 Pillow>=10.0.0
+mcp==1.9.4
+starlette==0.38.6  # pin: mcp pulls a newer starlette that breaks fastapi==0.115.0's <0.39.0 requirement

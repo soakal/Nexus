@@ -109,4 +109,4 @@ async def test_record_uptime_empty_targets_no_extra_rows(eng, monkeypatch):
 
     with Session(eng) as s:
         sources = {r.source for r in s.exec(select(UptimeSample)).all()}
-    assert len(sources) == 11  # only the integrations (incl. proxmox), no extras
+    assert len(sources) == 12  # only the integrations (incl. proxmox, protonmail), no extras

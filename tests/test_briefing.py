@@ -1,7 +1,9 @@
+import json
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.agents.briefing import _strip_unverified_sections
+from backend.agents.briefing import _strip_unverified_sections, _build_protonmail_section
 
 
 def test_strip_unverified_sections_drops_priority_actions_and_inbox():
@@ -18,6 +20,69 @@ def test_strip_unverified_sections_drops_priority_actions_and_inbox():
     assert "## Inbox" not in stripped
     assert "## Weather\nClear, 72°F." in stripped
     assert "## Today's Focus\nStay focused." in stripped
+
+
+def test_strip_unverified_sections_drops_proton_mail():
+    text = (
+        "## Weather\nClear, 72°F.\n\n"
+        '## Proton Mail\n1 unread email(s) previously judged (conservative classifier) to need a personal reply:\n- Jane Doe — "Can you help?"\n\n'
+        "## Today's Focus\nStay focused."
+    )
+    stripped = _strip_unverified_sections(text)
+    assert "Jane Doe" not in stripped
+    assert "## Proton Mail" not in stripped
+    assert "## Weather\nClear, 72°F." in stripped
+    assert "## Today's Focus\nStay focused." in stripped
+
+
+# ---------------------------------------------------------------------------
+# _build_protonmail_section — pure, never raises
+# ---------------------------------------------------------------------------
+
+def _emails_json(emails):
+    return json.dumps({"emails": emails})
+
+
+def test_build_protonmail_section_intersection_and_drafts():
+    unread = _emails_json([
+        {"email_id": "1", "sender": "Jane Doe", "subject": "Can you help?"},
+        {"email_id": "2", "sender": "Promo", "subject": "Sale!"},  # not in drafted_ids -> excluded
+    ])
+    drafts = _emails_json([{"subject": "Re: Can you help?", "recipients": ["jane@example.com"]}])
+    section = _build_protonmail_section(unread, drafts, drafted_ids={"1"})
+    assert "## Proton Mail" in section
+    assert "Jane Doe" in section
+    assert "Sale!" not in section
+    assert "Re: Can you help?" in section
+    assert "jane@example.com" in section
+
+
+def test_build_protonmail_section_both_empty():
+    section = _build_protonmail_section(_emails_json([]), _emails_json([]), drafted_ids=set())
+    assert section == "## Proton Mail\nNothing needing attention."
+
+
+def test_build_protonmail_section_both_unavailable():
+    section = _build_protonmail_section(RuntimeError("down"), RuntimeError("down"), drafted_ids=set())
+    assert section == "## Proton Mail\nProton Mail data unavailable."
+
+
+def test_build_protonmail_section_malformed_json_never_raises():
+    section = _build_protonmail_section("not json", "also not json", drafted_ids=set())
+    assert section.startswith("## Proton Mail")
+
+
+def test_build_protonmail_section_partial_availability():
+    section = _build_protonmail_section(RuntimeError("down"), _emails_json([]), drafted_ids=set())
+    assert "Unread-mail data unavailable." in section
+
+
+def test_build_protonmail_section_non_dict_list_elements_never_raises():
+    """Type-malformed MCP output (list elements that aren't objects) must not
+    crash the whole briefing -- non-dict entries are simply dropped."""
+    unread = json.dumps({"emails": ["not-a-dict", 42, None, {"email_id": "1", "sender": "Jane", "subject": "Hi"}]})
+    section = _build_protonmail_section(unread, _emails_json([]), drafted_ids={"1"})
+    assert "Jane" in section
 
 
 @pytest.mark.asyncio
@@ -57,6 +122,8 @@ Focus on your priorities."""
          patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_opus, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
          patch("backend.integrations.hermes.notify", new_callable=AsyncMock) as mock_hermes, \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
 
@@ -91,6 +158,7 @@ Focus on your priorities."""
         assert "## Media" in result
         assert "## From Your Vault" in result
         assert "## Today's Focus" in result
+        assert "## Proton Mail" in result
 
 
 @pytest.mark.asyncio
@@ -106,6 +174,8 @@ async def test_briefing_obsidian_write_called():
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
          patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
 
@@ -138,6 +208,8 @@ async def test_briefing_fact_extraction_excludes_priority_actions_and_inbox():
          patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
          patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
          patch("sqlmodel.Session"):
 
@@ -148,3 +220,72 @@ async def test_briefing_fact_extraction_excludes_priority_actions_and_inbox():
         assert "Dropbox" not in extracted_text
         assert "## Weather\nClear, 72°F." in extracted_text
         assert "## Today's Focus\nStay focused." in extracted_text
+        assert "## Proton Mail" not in extracted_text
+
+
+@pytest.mark.asyncio
+async def test_briefing_degrades_gracefully_when_protonmail_unavailable():
+    """A Proton Mail/MCP outage must never block the other 9 data sources or
+    the LLM call — the briefing still completes with an 'unavailable' Proton
+    section."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock,
+               return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, side_effect=RuntimeError("mcp down")), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+        assert "## Today's Focus" in result
+        assert "## Proton Mail" in result
+        assert "unavailable" in result
+
+
+@pytest.mark.asyncio
+async def test_briefing_mail_data_never_reaches_llm_or_fact_extraction():
+    """Load-bearing: mail data is a finished judgment appended AFTER the LLM
+    call, never fed into the prompt (the known Priority-Actions-echoes-raw-
+    inbox-content gotcha)."""
+    marker_subject = "MARKER-SUBJECT-Xk92"
+    unread = json.dumps({"emails": [{"email_id": "1", "sender": "Jane Doe", "subject": marker_subject}]})
+
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock,
+               return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus.") as mock_sonnet, \
+         patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value=unread), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value={"1"}), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+        # The marker DOES appear in the final returned/stored text...
+        assert marker_subject in result
+        # ...but NEVER reached the LLM prompt...
+        prompt_arg = mock_sonnet.call_args[0][0]
+        assert marker_subject not in prompt_arg
+        # ...and never reaches fact-extraction either (Proton Mail is stripped).
+        extracted_text = mock_extract.call_args[0][0]
+        assert marker_subject not in extracted_text

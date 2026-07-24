@@ -199,6 +199,13 @@ def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
     return "\n".join(lines)
 
 
+def _short_sender(sender: str) -> str:
+    """"Name" <addr> or Name <addr> -> Name; anything else returned unchanged."""
+    import re
+    m = re.match(r'^"?([^"<]+?)"?\s*<', sender or "")
+    return m.group(1).strip() if m else (sender or "(unknown sender)")
+
+
 def _db_create_conversation(title: str) -> int:
     from sqlmodel import Session
     from backend.database import Conversation, engine
@@ -392,14 +399,16 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
 User message: "{user_message}"
 
 Return exactly:
-{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE|STATUS", "reason": "brief reason"}}
+{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE|STATUS|MAIL|MAIL_SEND", "reason": "brief reason"}}
 
 HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, open/close/stop a garage door or cover, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
 CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) searching or reading your notes/vault ("search my vault for X", "what do my notes say about X", "find X in my brain") is CHAT — vault is searched automatically. The chat can also search the web.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
 NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
-STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status"."""
+STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status".
+MAIL = a question about the user's own email/inbox — "any new email?", "unread emails?", "what did X email me about?", "read the email from X", "what's in my inbox". Reading/searching email, not sending.
+MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "send an email to X about ...", "reply to X and tell them ..."."""
 
         # Fast-path: /status command bypasses haiku classify
         _msg_stripped = user_message.strip()
@@ -425,7 +434,7 @@ STATUS = user wants a quick homelab status summary — "/status" command or "wha
                 if start >= 0 and end > start:
                     parsed = json.loads(raw_intent[start:end])
                     intent = parsed.get("intent", "CHAT")
-                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS"):
+                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS", "MAIL", "MAIL_SEND"):
                         intent = "CHAT"
             except Exception:
                 intent = "CHAT"
@@ -815,6 +824,149 @@ If they're saving something from the conversation, use the relevant prior assist
                     lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
 
                 reply = "\n".join(lines)
+
+            elif intent == "MAIL":
+                from backend.integrations import protonmail
+
+                _today = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+                mail_query_prompt = f"""The user is asking about their email inbox.
+
+User request: "{user_message}"
+Current UTC datetime: {_today}
+
+Return JSON only:
+{{"mode": "list", "unread_only": false, "from_address": null, "subject": null, "since": null, "limit": 5}}
+
+mode: "list" for a general inbox question ("any new email?", "what's in my inbox?"), "read" if they want the CONTENT of one specific email ("read the last email from X", "what did X say").
+unread_only: true only if they explicitly ask about unread/new mail.
+from_address: a sender name/address if mentioned, else null.
+subject: subject-text filter if mentioned, else null.
+since: an ISO 8601 UTC datetime (e.g. "2026-07-22T00:00:00") if they reference a relative time ("since yesterday", "this week"), else null.
+limit: how many emails they want, default 5, max 10."""
+
+                mode, unread_only, from_address, subject, since, limit = "list", False, None, None, None, 5
+                try:
+                    raw_q = await haiku(mail_query_prompt, label="chat_mail_query")
+                    qs = raw_q.find("{")
+                    qe = raw_q.rfind("}") + 1
+                    if qs >= 0 and qe > qs:
+                        qd = json.loads(raw_q[qs:qe])
+                        mode = qd.get("mode") or "list"
+                        unread_only = bool(qd.get("unread_only", False))
+                        from_address = qd.get("from_address") or None
+                        subject = qd.get("subject") or None
+                        since = qd.get("since") or None
+                        limit = min(int(qd.get("limit") or 5), 10)
+                except BudgetExceeded:
+                    raise
+                except Exception:
+                    pass
+
+                try:
+                    if mode == "read":
+                        found_text = await protonmail.list_recent(
+                            unread_only=unread_only, from_address=from_address,
+                            subject=subject, since=since, limit=1,
+                        )
+                        found = json.loads(found_text)
+                        found_emails = found.get("emails") or []
+                        if not found_emails:
+                            reply = "Couldn't find an email matching that."
+                        else:
+                            email_id = found_emails[0]["email_id"]
+                            content_text = await protonmail.read_email(email_id)
+                            content = json.loads(content_text)
+                            content_emails = content.get("emails") or []
+                            body = (content_emails[0].get("body") if content_emails else "") or "(empty body)"
+                            if len(body) > 2000:
+                                body = body[:2000] + "\n…[truncated]"
+                            hdr = found_emails[0]
+                            reply = (
+                                f"From: {_short_sender(hdr.get('sender', ''))}\n"
+                                f"Subject: {hdr.get('subject', '(no subject)')}\n"
+                                f"Date: {(hdr.get('date') or '')[:16]}\n\n{body}"
+                            )
+                    else:
+                        list_text = await protonmail.list_recent(
+                            unread_only=unread_only, from_address=from_address,
+                            subject=subject, since=since, limit=limit,
+                        )
+                        data = json.loads(list_text)
+                        emails = data.get("emails") or []
+                        if not emails:
+                            reply = "No emails match."
+                        else:
+                            total = data.get("total", len(emails))
+                            lines = [f"{len(emails)} of {total} email(s):"]
+                            for e in emails:
+                                lines.append(
+                                    f"- {_short_sender(e.get('sender', ''))} — "
+                                    f"{e.get('subject', '(no subject)')} "
+                                    f"({(e.get('date') or '')[:10]})"
+                                )
+                            reply = "\n".join(lines)
+                except BudgetExceeded:
+                    raise
+                except Exception as e:
+                    reply = f"Proton Mail is unreachable right now: {e}"
+
+            elif intent == "MAIL_SEND":
+                from backend.safety.broker import Decision, execute_action
+
+                send_prompt = f"""The user wants to send an email.
+
+User request: "{user_message}"
+
+Extract only what the user actually stated — never invent a recipient, subject, or content they didn't provide.
+
+Return JSON only:
+{{"recipients": ["a@b.com"], "subject": "...", "body": "..."}}
+
+If a recipient, subject, or body is missing/unclear, return an empty string for that field (or an empty list for recipients) rather than guessing."""
+
+                recipients, mail_subject, mail_body = [], "", ""
+                try:
+                    raw_send = await haiku(send_prompt, label="chat_mail_send")
+                    ss = raw_send.find("{")
+                    se = raw_send.rfind("}") + 1
+                    if ss >= 0 and se > ss:
+                        sd = json.loads(raw_send[ss:se])
+                        recipients = sd.get("recipients") or []
+                        if not isinstance(recipients, list):
+                            recipients = []
+                        mail_subject = (sd.get("subject") or "").strip()
+                        mail_body = (sd.get("body") or "").strip()
+                except BudgetExceeded:
+                    raise
+                except Exception:
+                    pass
+
+                import re as _re
+                recipients = [
+                    r for r in recipients
+                    if isinstance(r, str) and _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", r)
+                ]
+
+                if not recipients or not mail_subject or not mail_body:
+                    missing = []
+                    if not recipients:
+                        missing.append("who to send it to")
+                    if not mail_subject:
+                        missing.append("a subject")
+                    if not mail_body:
+                        missing.append("what it should say")
+                    reply = f"I need {', '.join(missing)} before I can send that."
+                else:
+                    res = await execute_action(
+                        actor="user",
+                        kind="protonmail_send",
+                        target=recipients[0],
+                        payload={"recipients": recipients, "subject": mail_subject, "body": mail_body},
+                    )
+                    if res.decision == Decision.EXECUTED:
+                        reply = f"Sent \"{mail_subject}\" to {', '.join(recipients)}."
+                    else:
+                        reply = f"Couldn't send that: {res.error or res.decision.value}"
 
             budget_exceeded = False
         except BudgetExceeded:
