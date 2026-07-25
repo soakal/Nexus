@@ -63,6 +63,21 @@ async def list_recent(
     return await _call_tool("list_emails_metadata", args)
 
 
+def _clean_sender(sender: str, cap: int = 40) -> str:
+    """Display name only, address stripped -- a raw From header
+    ('"Name" <addr@example.com>') is unreadable in a narrow card."""
+    sender = sender or "(unknown sender)"
+    if "<" in sender:
+        sender = sender.split("<", 1)[0].strip().strip('"')
+    sender = sender.strip() or "(unknown sender)"
+    return sender if len(sender) <= cap else sender[: cap - 1] + "…"
+
+
+def _clean_subject(subject: str, cap: int = 60) -> str:
+    subject = subject or "(no subject)"
+    return subject if len(subject) <= cap else subject[: cap - 1] + "…"
+
+
 def format_inbox_summary(raw_result, limit: int = 7) -> str:
     """Pure formatter: list_recent()'s JSON text (or an Exception, from a
     gather(..., return_exceptions=True) call) -> a compact plain-text unread
@@ -84,14 +99,24 @@ def format_inbox_summary(raw_result, limit: int = 7) -> str:
     shown = emails[:limit]
     lines = [f"Inbox: {total} unread (showing last {len(shown)}):"]
     for e in shown:
-        sender = e.get("sender") or "(unknown sender)"
-        subject = e.get("subject") or "(no subject)"
+        sender = _clean_sender(e.get("sender"))
+        subject = _clean_subject(e.get("subject"))
         lines.append(f"  • {sender} — {subject}")
     return "\n".join(lines)
 
 
+@async_ttl_cache(120)
 async def inbox_summary(limit: int = 7) -> str:
-    """Gmail-shaped plain-text unread summary. Best-effort, never raises."""
+    """Gmail-shaped plain-text unread summary. Best-effort, never raises.
+
+    Cached (matches the TTL the old hermes.get_gmail() used) -- the Today
+    page polls on a timer, tab-focus, AND visibility-change, so an uncached
+    call here would open a fresh MCP session + IMAP search on every one of
+    those. Note: async_ttl_cache ignores call arguments (single shared
+    cache slot per decorated function) -- fine here since every caller
+    passes the same limit=7, same as _dashboard_inbox's existing precedent
+    in backend/api/protonmail.py.
+    """
     try:
         raw = await list_recent(unread_only=True, limit=limit, mailbox="inbox")
         return format_inbox_summary(raw, limit=limit)

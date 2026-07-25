@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -287,6 +289,26 @@ def test_format_inbox_summary_lists_unread():
     assert "Promo — Sale!" in result
 
 
+def test_format_inbox_summary_strips_raw_address_from_sender():
+    from backend.integrations.protonmail import format_inbox_summary
+    raw = json.dumps({"total": 1, "emails": [{
+        "sender": '"Amazon.com - store-news at amazon.com" <store-news_at_amazon_com_jstvrgs@simplelogin.co>',
+        "subject": "Order update",
+    }]})
+    result = format_inbox_summary(raw)
+    assert "Amazon.com - store-news at amazon.com" in result
+    assert "@" not in result
+    assert "<" not in result
+
+
+def test_format_inbox_summary_caps_long_subject():
+    from backend.integrations.protonmail import format_inbox_summary
+    raw = json.dumps({"total": 1, "emails": [{"sender": "Jane", "subject": "x" * 200}]})
+    result = format_inbox_summary(raw)
+    line = [ln for ln in result.splitlines() if ln.startswith("  •")][0]
+    assert len(line) < 100
+
+
 def test_format_inbox_summary_zero_unread():
     from backend.integrations.protonmail import format_inbox_summary
     assert format_inbox_summary('{"total": 0, "emails": []}') == "Inbox: 0 unread"
@@ -295,7 +317,7 @@ def test_format_inbox_summary_zero_unread():
 def test_format_inbox_summary_respects_limit():
     from backend.integrations.protonmail import format_inbox_summary
     emails = [{"sender": f"S{i}", "subject": f"Subj{i}"} for i in range(10)]
-    raw = f'{{"total": 10, "emails": {__import__("json").dumps(emails)}}}'
+    raw = json.dumps({"total": 10, "emails": emails})
     result = format_inbox_summary(raw, limit=3)
     assert "showing last 3" in result
     assert "S3 — Subj3" not in result
