@@ -207,10 +207,57 @@ async def check_budget_warning() -> bool:
         return False
 
 
+def _format_auth_burst(source: str, stat: dict, window_min: int) -> str:
+    paths = ", ".join(f"{path} ({n})" for path, n in stat["paths"])
+    return (
+        f"NEXUS auth alert: {stat['count']} failed API-key requests (401) from "
+        f"{source} in the last {window_min} min — {paths}. Likely a stale "
+        f"NEXUS_API_KEY cached in a browser tab on that device; open Settings "
+        f"there and re-paste the key. No further alerts for this source until "
+        f"it goes quiet for {window_min} min."
+    )
+
+
+async def check_auth_failure_burst() -> list[str]:
+    """Page once when one client floods failed API-key auths (401s).
+
+    Gated by settings.auth_burst_enabled (independent of the 401 rejection
+    itself in backend/auth.py, which this never touches). Best-effort: any
+    exception returns [] without propagating. Returns the sources paged now.
+    """
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "auth_burst_enabled", True):
+            return []
+
+        threshold = getattr(s, "auth_burst_threshold", 25)
+        window_min = getattr(s, "auth_burst_window_minutes", 30)
+        window_s = window_min * 60
+
+        from backend.safety import authfail
+        stats = authfail.recent(window_s)
+        active = set(stats)
+        over = {src for src, v in stats.items() if v["count"] >= threshold}
+
+        from backend.safety import governor
+        paged = await asyncio.to_thread(governor.claim_auth_burst_alert, over, active, float(window_s))
+
+        from backend import events
+        for src in paged:
+            logger.error(f"401 burst from {src}: {stats[src]['count']} failures in {window_min} min")
+            await events.notify_phone(_format_auth_burst(src, stats[src], window_min), kind="auth_burst")
+
+        return paged
+    except Exception as exc:
+        logger.warning(f"check_auth_failure_burst error (ignored): {exc}")
+        return []
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all three checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all four checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -226,8 +273,14 @@ async def run_watchdog() -> dict:
         stalled = await check_scheduler_stalls(grace_s=grace_s, cooldown_s=cooldown_s)
         dead_count = await check_dead_letters(threshold=threshold, cooldown_s=cooldown_s)
         budget_warn_fired = await check_budget_warning()
+        auth_bursts = await check_auth_failure_burst()
 
-        return {"stalled": stalled, "dead_letters": dead_count, "budget_warn_fired": budget_warn_fired}
+        return {
+            "stalled": stalled,
+            "dead_letters": dead_count,
+            "budget_warn_fired": budget_warn_fired,
+            "auth_bursts": auth_bursts,
+        }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
-        return {"stalled": [], "dead_letters": 0, "budget_warn_fired": False}
+        return {"stalled": [], "dead_letters": 0, "budget_warn_fired": False, "auth_bursts": []}

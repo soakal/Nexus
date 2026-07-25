@@ -706,3 +706,101 @@ def test_budget_warning_missing_row_creates_and_fires():
             row = s.get(SystemState, 1)
             assert row is not None
             assert row.last_budget_warn_day is not None
+
+
+# ---------------------------------------------------------------------------
+# claim_auth_burst_alert (401-burst watchdog)
+# ---------------------------------------------------------------------------
+
+def test_claim_auth_burst_fires_once_then_silent(eng):
+    from backend.safety import governor
+    _seed_state(eng)
+
+    paged1 = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+    assert paged1 == ["1.2.3.4"]
+
+    paged2 = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+    assert paged2 == []
+
+
+def test_claim_auth_burst_survives_restart(eng):
+    from backend.database import SystemState
+    from backend.safety import governor
+    _seed_state(eng)
+
+    governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        assert row.auth_burst_alert_sources == "1.2.3.4"
+
+    paged_again = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+    assert paged_again == []
+
+
+def test_claim_auth_burst_resets_after_quiet(eng):
+    from backend.database import SystemState
+    from backend.safety import governor
+    _seed_state(eng)
+
+    governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        row.auth_burst_alert_at = datetime.utcnow() - timedelta(minutes=31)
+        s.commit()
+
+    paged = governor.claim_auth_burst_alert(set(), set(), 1800)
+    assert paged == []
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        assert row.auth_burst_alert_sources is None
+
+    re_armed = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+    assert re_armed == ["1.2.3.4"]
+
+
+def test_claim_auth_burst_does_not_reset_while_trickling(eng):
+    from backend.database import SystemState
+    from backend.safety import governor
+    _seed_state(eng)
+
+    governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        row.auth_burst_alert_at = datetime.utcnow() - timedelta(minutes=31)
+        s.commit()
+
+    # Below threshold now, but still active (trickling) — must not reset.
+    paged = governor.claim_auth_burst_alert(set(), {"1.2.3.4"}, 1800)
+    assert paged == []
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        assert row.auth_burst_alert_sources == "1.2.3.4"
+        assert row.auth_burst_alert_at is not None
+        assert (datetime.utcnow() - row.auth_burst_alert_at).total_seconds() < 60
+
+
+def test_claim_auth_burst_multiple_sources(eng):
+    from backend.safety import governor
+    _seed_state(eng)
+
+    paged1 = governor.claim_auth_burst_alert({"a", "b"}, {"a", "b"}, 1800)
+    assert paged1 == ["a", "b"]
+
+    paged2 = governor.claim_auth_burst_alert({"a", "b", "c"}, {"a", "b", "c"}, 1800)
+    assert paged2 == ["c"]
+
+
+def test_claim_auth_burst_creates_missing_system_state_row():
+    from sqlmodel import create_engine, SQLModel
+    from sqlmodel.pool import StaticPool
+    import backend.database  # noqa: F401
+
+    e = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(e)
+    with patch("backend.database.engine", e):
+        from backend.safety import governor
+        paged = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
+        assert paged == ["1.2.3.4"]

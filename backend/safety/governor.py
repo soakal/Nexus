@@ -373,3 +373,61 @@ def budget_warning_due(threshold_pct: float) -> tuple[bool, float, float]:
             return (True, spend, cap)
 
         return (False, spend, cap)
+
+
+def claim_auth_burst_alert(
+    over_threshold: set[str], active: set[str], quiet_s: float
+) -> list[str]:
+    """Edge-trigger + persist the 401-burst alert state (sync).
+
+    `over_threshold` — sources at/above the burst threshold on this tick.
+    `active`         — sources with >=1 failure in the window on this tick
+                       (always a superset of over_threshold).
+
+    Returns the sources that crossed the edge ON THIS CALL and must be paged.
+    A source already in the persisted set is NOT returned again (page once,
+    then go quiet), and the persisted set survives restarts so a mid-storm
+    reboot does not re-page.
+
+    RESET: the tracked set is cleared, re-arming the alert, only when NONE of
+    the tracked sources has produced a failure for `quiet_s` seconds.
+    auth_burst_alert_at is refreshed on every tick where a tracked source
+    shows ANY failure, so a storm that decays to a trickle stays claimed
+    instead of re-arming and re-paging.
+
+    Claims in the same call that returns, mirroring budget_warning_due: a
+    failed notify still consumes the claim. Same accepted tradeoff. Creates
+    SystemState row id=1 if it doesn't exist yet, same as budget_warning_due.
+    """
+    from sqlmodel import Session
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+
+        tracked = {s for s in (row.auth_burst_alert_sources or "").split(",") if s}
+        new = over_threshold - tracked
+
+        if new or (tracked & active):
+            row.auth_burst_alert_at = datetime.utcnow()
+        elif (
+            tracked
+            and not (tracked & active)
+            and (
+                row.auth_burst_alert_at is None
+                or (datetime.utcnow() - row.auth_burst_alert_at).total_seconds() >= quiet_s
+            )
+        ):
+            tracked = set()
+
+        tracked |= new
+        row.auth_burst_alert_sources = ",".join(sorted(tracked)) or None
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
+        return sorted(new)

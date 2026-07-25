@@ -260,6 +260,16 @@ class SystemState(SQLModel, table=True):
     # Watermark for the weekly facts-digest job (backend/agents/facts_digest.py) —
     # facts with last_seen_at/created_at after this instant are "new since last digest".
     last_facts_digest_at: datetime | None = Field(default=None)
+    # Sources (comma-separated client identities) currently in an ACTIVE 401-burst
+    # alert state — set when the burst alert pages, cleared after a quiet window.
+    # Non-empty means "already paged, stay silent", so a restart mid-storm does
+    # not re-page. CSV rather than one column per source: this is a homelab with
+    # a handful of client IPs and SystemState is a singleton control row, not a
+    # relational store.
+    auth_burst_alert_sources: str | None = Field(default=None)
+    # Last tick at which any tracked source was still producing failures. The
+    # quiet-period reset measures from here, NOT from when the alert first fired.
+    auth_burst_alert_at: datetime | None = Field(default=None)
 
 
 # Agent/LLM trace observability (council w-observability). One row per
@@ -481,6 +491,8 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "last_dead_letter_alert_at", "TIMESTAMP")
     _safe_add_column("systemstate", "last_budget_warn_day", "TEXT")
     _safe_add_column("systemstate", "last_facts_digest_at", "TIMESTAMP")
+    _safe_add_column("systemstate", "auth_burst_alert_sources", "TEXT")
+    _safe_add_column("systemstate", "auth_burst_alert_at", "TIMESTAMP")
 
 
 def _ensure_system_state():

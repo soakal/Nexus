@@ -75,6 +75,11 @@ def reset_caches():
         _reset_rate_limit()
     except Exception:
         pass
+    try:
+        from backend.safety.authfail import reset as _reset_authfail
+        _reset_authfail()
+    except Exception:
+        pass
     yield
 
 

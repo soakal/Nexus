@@ -243,6 +243,25 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     }
 
 
+def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
+    """The 401-burst watchdog check rides the EXISTING 5-min `watchdog` job
+    (see backend/agents/watchdog.py::run_watchdog) rather than registering its
+    own scheduler job — matches the same choice already made for
+    check_budget_warning. If a future change moves it to its own job, this
+    test and test_setup_scheduler_adds_jobs's call_count==19 must both be
+    updated together, deliberately."""
+    from datetime import datetime
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "auth_burst" not in ids_set
+    assert "auth_failure" not in ids_set
+    assert mock_add.call_count == 19
+
+
 # ---------------------------------------------------------------------------
 # backend/api/agents.py — WebSocketManager
 # ---------------------------------------------------------------------------

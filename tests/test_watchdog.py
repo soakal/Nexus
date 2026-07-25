@@ -475,3 +475,141 @@ async def test_run_watchdog_summary_includes_budget_warn_fired(eng):
         result = await watchdog.run_watchdog()
 
     assert "budget_warn_fired" in result
+
+
+# ---------------------------------------------------------------------------
+# check_auth_failure_burst (401-burst watchdog)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_check_auth_failure_burst_fires_once_across_two_runs(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import SystemState
+    from backend.safety import authfail
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1))
+        s.commit()
+
+    authfail.reset()
+    for _ in range(30):
+        authfail.record_failure("1.2.3.4", "/api/ha/entities")
+
+    settings = Settings(auth_burst_enabled=True, auth_burst_threshold=25, auth_burst_window_minutes=30)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged1 = await watchdog.check_auth_failure_burst()
+        paged2 = await watchdog.check_auth_failure_burst()
+
+    assert paged1 == ["1.2.3.4"]
+    assert paged2 == []
+    notify_mock.assert_awaited_once()
+    assert notify_mock.await_args.kwargs["kind"] == "auth_burst"
+    authfail.reset()
+
+
+@pytest.mark.asyncio
+async def test_check_auth_failure_burst_below_threshold_no_alert(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import SystemState
+    from backend.safety import authfail
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1))
+        s.commit()
+
+    authfail.reset()
+    for _ in range(24):
+        authfail.record_failure("1.2.3.4", "/api/ha/entities")
+
+    settings = Settings(auth_burst_enabled=True, auth_burst_threshold=25, auth_burst_window_minutes=30)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_auth_failure_burst()
+
+    assert paged == []
+    notify_mock.assert_not_called()
+    authfail.reset()
+
+
+@pytest.mark.asyncio
+async def test_check_auth_failure_burst_disabled_skips_entirely(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(auth_burst_enabled=False)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.governor.claim_auth_burst_alert") as mock_claim, \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_auth_failure_burst()
+
+    assert paged == []
+    mock_claim.assert_not_called()
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_auth_failure_burst_never_raises_when_governor_throws(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(auth_burst_enabled=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.governor.claim_auth_burst_alert", side_effect=RuntimeError("db down")):
+        paged = await watchdog.check_auth_failure_burst()
+
+    assert paged == []
+
+
+@pytest.mark.asyncio
+async def test_auth_burst_message_contains_source_count_and_paths(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import SystemState
+    from backend.safety import authfail
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1))
+        s.commit()
+
+    authfail.reset()
+    for _ in range(30):
+        authfail.record_failure("1.2.3.4", "/api/ha/entities")
+
+    settings = Settings(auth_burst_enabled=True, auth_burst_threshold=25, auth_burst_window_minutes=30)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        await watchdog.check_auth_failure_burst()
+
+    body = notify_mock.await_args.args[0]
+    assert "1.2.3.4" in body
+    assert "30" in body
+    assert "/api/ha/entities" in body
+    authfail.reset()
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_summary_includes_auth_bursts(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(watchdog_enabled=True)
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [])
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+
+    assert "auth_bursts" in result

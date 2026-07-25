@@ -230,6 +230,32 @@ class Settings(BaseSettings):
     budget_warn_enabled: bool = True
     budget_warn_pct: float = 0.80
 
+    # 401-burst watchdog — pages once when one client floods failed API-key auths
+    # (a stale NEXUS_API_KEY cached in a browser tab's localStorage). Runs inside
+    # the same 5-min watchdog job, so it shares watchdog_enabled's gate.
+    #
+    # Numbers are calibrated against the real 2026-07-25 incident: 133 x 401 from
+    # one LAN device over 139 minutes (~0.96/min — a BACKGROUNDED tab, since Chrome
+    # throttles background timers to ~1 fire/min; the affected pages normally poll
+    # every 10-15s, so a FOREGROUND stale tab is ~6-10/min).
+    #
+    # threshold=25 / window=30min:
+    #   * At the observed background rate it trips ~25 min into a storm and pages
+    #     on the next 5-min tick — vs. the ~90 min it went unnoticed.
+    #   * At the foreground rate it trips in ~4 min.
+    #   * It is comfortably ABOVE any legitimate cause: a mistyped key in Settings,
+    #     or the gap during a key rotation, is noticed and corrected in well under
+    #     a minute, i.e. <=10 failures even at the fastest 10s poll.
+    #   Do NOT lower the threshold below ~15 without also shortening the window —
+    #   the empirical background rate is ~1/min, so a 15-min window can physically
+    #   never hold more than ~15 events from a throttled tab.
+    #
+    # quiet == window, deliberately: "no failures for a full window" is the same
+    # statement as "the counter has fully drained", so one number governs both.
+    auth_burst_enabled: bool = True
+    auth_burst_threshold: int = 25
+    auth_burst_window_minutes: int = 30
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:
