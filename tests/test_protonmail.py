@@ -22,7 +22,7 @@ async def test_health_check_true_when_account_present():
     ) as mock_call:
         from backend.integrations.protonmail import health_check
         assert await health_check() is True
-        mock_call.assert_awaited_once_with("list_available_accounts", {})
+        mock_call.assert_awaited_once_with("list_available_accounts", {}, timeout=5.0)
 
 
 @pytest.mark.asyncio

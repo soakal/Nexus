@@ -239,7 +239,16 @@ async def health_check() -> bool:
     from backend.config import get_settings
     settings = get_settings()
     try:
-        text = await _call_tool("list_available_accounts", {})
+        # timeout=5, not the 20s default: this is a liveness probe (feeds the
+        # dashboard's online/offline pill), not a functional read — every
+        # other integration's health_check() bounds its own call the same
+        # way. Note this caps each of _call_tool's two round trips
+        # (initialize + call_tool) at 5s, so ~10s is the realistic worst
+        # case, not a hard 5s wall. A slow/hung bridge used to be able to
+        # hold this open for up to 2x20s, which stalled unrelated concurrent
+        # requests behind Chrome's per-origin connection cap (found live
+        # 2026-07-25).
+        text = await _call_tool("list_available_accounts", {}, timeout=5.0)
         return settings.protonmail_account in text
     except Exception:
         return False
