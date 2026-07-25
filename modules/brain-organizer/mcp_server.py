@@ -20,6 +20,7 @@ import argparse
 import hmac
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import sys
@@ -54,8 +55,10 @@ def _setup_logging(config: dict[str, Any]) -> None:
     logs_folder.mkdir(parents=True, exist_ok=True)
     log_file = logs_folder / "mcp.log"
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
+    # RotatingFileHandler: mcp.log grew unbounded (7MB/37 days, ~98% /health
+    # noise) with a plain FileHandler — cap at 5MB x 3 backups.
     handlers: list[logging.Handler] = [
-        logging.FileHandler(log_file, encoding="utf-8"),
+        RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ]
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)

@@ -108,7 +108,12 @@ python tools/audit_secrets.py
 NEXUS is the intelligence layer. Hermes is the delivery layer.
 
 - NEXUS → Hermes: POST `/hermes/notify` (Telegram), POST `/hermes/action` (Home Assistant)
-- Hermes → NEXUS: POST `/api/trigger` (kick off tasks), GET `/api/briefing/latest`
+- Hermes → NEXUS: GET `/api/health` (watcher liveness ping), GET `/api/goals/`,
+  POST `/api/goals/{id}/approve|reject`, POST `/api/safety/actions/{id}/confirm|reject`,
+  POST `/api/chat/`
+- NEXUS also exposes POST `/api/trigger` (Bearer + optional HMAC-signed, rate-limited)
+  for Hermes to kick off tasks on demand — built and hardened, but Hermes has no live
+  caller for it yet (verified 2026-07-25).
 
 If Hermes is unreachable, payloads are queued in SQLite and retried every 60 seconds.
 

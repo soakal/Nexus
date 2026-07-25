@@ -15,9 +15,12 @@ class TriggerRequest(BaseModel):
     parameters: dict = {}
 
 
-# Process-local fixed-window rate limiter for /api/trigger. Hermes is the only
-# caller; this caps abuse if the Bearer key leaks. Window is 60s, max 5 calls.
-# A reset hook keeps the autouse test fixtures from tripping across tests.
+# Process-local fixed-window rate limiter for /api/trigger. This endpoint is
+# provisioned for Hermes but has no live caller yet (Hermes has never sent a
+# request here — verified 2026-07-25); the limiter caps abuse if the Bearer
+# key leaks regardless of whether Hermes is wired up to call it. Window is
+# 60s, max 5 calls. A reset hook keeps the autouse test fixtures from
+# tripping across tests.
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW_S = 60.0
 _rate_state = {"window_start": 0.0, "count": 0}
@@ -104,7 +107,8 @@ def _verify_trigger_hmac(timestamp: str | None, signature: str | None, body: byt
 @router.post("/api/trigger")  # full path — no prefix in include_router
 async def hermes_trigger(body: TriggerRequest, request: Request, _=Depends(require_api_key)):
     # Order: Bearer auth (Depends) → HMAC verify → rate limit → dispatch.
-    # Bearer-authenticated (Tier 1.6): Hermes presents the NEXUS_API_KEY.
+    # Bearer-authenticated (Tier 1.6): callers must present the NEXUS_API_KEY.
+    # No live caller as of 2026-07-25 — see the rate-limiter comment above.
     # HMAC (optional by default, required when trigger_hmac_required=True):
     #   Hermes signs with X-Timestamp + X-Signature headers using HERMES_WEBHOOK_SECRET.
     # Rate limiter (5/60s) caps abuse on top of auth.
