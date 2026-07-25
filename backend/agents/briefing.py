@@ -6,14 +6,20 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Sections sourced from single-source, unverified third-party content (an
-# email subject line via Hermes's raw IMAP read) rather than a real NEXUS
-# integration. Priority Actions frequently echoes an Inbox item verbatim as
-# if confirmed (e.g. "Dropbox Storage Limit Hit" from one unread email) --
-# extract_and_store would otherwise store that as a 0.9+ confidence "durable
-# fact", and the goal proposer's KNOWN FACTS context treats durable facts as
-# grounds for an autonomous investigation + phone notification. Strip these
-# sections before fact extraction; they stay in the stored/displayed briefing.
+# Sections sourced from single-source, unverified third-party content (a real
+# email subject line) rather than a cross-checked NEXUS integration --
+# extract_and_store would otherwise store an unread subject as a 0.9+
+# confidence "durable fact", and the goal proposer's KNOWN FACTS context
+# treats durable facts as grounds for an autonomous investigation + phone
+# notification (the original incident: "Dropbox Storage Limit Hit" from one
+# unread email got echoed into Priority Actions and then fact-extracted as
+# fact). Strip these sections before fact extraction; they stay in the
+# stored/displayed briefing. "Inbox" is a Gmail-era LLM-narrated heading
+# retired when mail moved to Proton (see _build_protonmail_section) -- kept
+# here defensively in case it's ever reintroduced or appears in an old stored
+# briefing. "Proton Mail" is appended AFTER the LLM call (never reaches the
+# prompt at all), but its raw subject lines still must not reach fact
+# extraction, same reasoning.
 _UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox", "Proton Mail")
 
 
@@ -136,9 +142,6 @@ DVR storage: {dvr_used}/{dvr_total} GB.
 ## Calendar
 {calendar_block}
 
-## Inbox
-{inbox_block}
-
 ## From Your Vault
 Relevant open tasks from Obsidian. Surface anything tagged #today or #urgent.
 
@@ -167,7 +170,7 @@ async def run_briefing() -> str:
         unraid,
         weather,
     )
-    from backend.integrations.hermes import get_calendar, get_gmail
+    from backend.integrations.hermes import get_calendar
     from backend.integrations import protonmail
     from backend.agents import mail_drafts
 
@@ -196,16 +199,14 @@ async def run_briefing() -> str:
             channels_dvr.fetch(),
             adguard.fetch(),
             get_calendar(),
-            get_gmail(),
             protonmail.list_recent(unread_only=True, limit=25),
             protonmail.list_recent(mailbox="Drafts", limit=10),
             return_exceptions=True,
         )
 
-        ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data, mail_data, proton_unread, proton_drafts = results
+        ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data, proton_unread, proton_drafts = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
-        mail_str = mail_data if not isinstance(mail_data, Exception) else "Inbox unavailable"
 
         try:
             drafted_ids = await asyncio.to_thread(mail_drafts._db_drafted_email_ids)
@@ -276,7 +277,6 @@ async def run_briefing() -> str:
             dvr_used=safe(channels, "storage_used_gb", 0),
             dvr_total=safe(channels, "storage_total_gb", 0),
             calendar_block=cal_str,
-            inbox_block=mail_str,
         )
 
         # Added AFTER the prompt is built, on purpose — this must never reach the

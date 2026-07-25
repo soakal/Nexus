@@ -1,3 +1,4 @@
+import json
 import logging
 
 from mcp import ClientSession
@@ -60,6 +61,42 @@ async def list_recent(
     if mailbox:
         args["mailbox"] = mailbox
     return await _call_tool("list_emails_metadata", args)
+
+
+def format_inbox_summary(raw_result, limit: int = 7) -> str:
+    """Pure formatter: list_recent()'s JSON text (or an Exception, from a
+    gather(..., return_exceptions=True) call) -> a compact plain-text unread
+    summary, same shape as the old Gmail-via-Hermes summary it replaces on
+    the Today page's Inbox card (see inbox_summary() below). Never raises."""
+    if isinstance(raw_result, Exception):
+        return "(Proton Mail unavailable)"
+    try:
+        data = json.loads(raw_result)
+        emails = [e for e in (data.get("emails") or []) if isinstance(e, dict)]
+    except Exception:
+        return "(Proton Mail unavailable: malformed response)"
+
+    if not emails:
+        return "Inbox: 0 unread"
+
+    total = data.get("total")
+    total = total if isinstance(total, int) else len(emails)
+    shown = emails[:limit]
+    lines = [f"Inbox: {total} unread (showing last {len(shown)}):"]
+    for e in shown:
+        sender = e.get("sender") or "(unknown sender)"
+        subject = e.get("subject") or "(no subject)"
+        lines.append(f"  • {sender} — {subject}")
+    return "\n".join(lines)
+
+
+async def inbox_summary(limit: int = 7) -> str:
+    """Gmail-shaped plain-text unread summary. Best-effort, never raises."""
+    try:
+        raw = await list_recent(unread_only=True, limit=limit, mailbox="inbox")
+        return format_inbox_summary(raw, limit=limit)
+    except Exception as e:
+        return f"(Proton Mail unavailable: {e})"
 
 
 async def read_email(email_id: str, *, page: int = 1, mailbox: str | None = None) -> str:

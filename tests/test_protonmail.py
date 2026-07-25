@@ -271,3 +271,67 @@ def test_protonmail_module_never_calls_delete_emails():
     src = inspect.getsource(protonmail)
     assert "delete_emails" not in src
     assert not hasattr(protonmail, "delete_email")
+
+
+# ---------------------------------------------------------------------------
+# format_inbox_summary / inbox_summary — replaces the old Gmail-via-Hermes
+# summary on the Today page and (removed from) the briefing prompt
+# ---------------------------------------------------------------------------
+
+def test_format_inbox_summary_lists_unread():
+    from backend.integrations.protonmail import format_inbox_summary
+    raw = '{"total": 2, "emails": [{"sender": "Jane Doe", "subject": "Hi"}, {"sender": "Promo", "subject": "Sale!"}]}'
+    result = format_inbox_summary(raw, limit=7)
+    assert result.startswith("Inbox: 2 unread")
+    assert "Jane Doe — Hi" in result
+    assert "Promo — Sale!" in result
+
+
+def test_format_inbox_summary_zero_unread():
+    from backend.integrations.protonmail import format_inbox_summary
+    assert format_inbox_summary('{"total": 0, "emails": []}') == "Inbox: 0 unread"
+
+
+def test_format_inbox_summary_respects_limit():
+    from backend.integrations.protonmail import format_inbox_summary
+    emails = [{"sender": f"S{i}", "subject": f"Subj{i}"} for i in range(10)]
+    raw = f'{{"total": 10, "emails": {__import__("json").dumps(emails)}}}'
+    result = format_inbox_summary(raw, limit=3)
+    assert "showing last 3" in result
+    assert "S3 — Subj3" not in result
+
+
+def test_format_inbox_summary_exception_input_never_raises():
+    from backend.integrations.protonmail import format_inbox_summary
+    assert format_inbox_summary(RuntimeError("down")) == "(Proton Mail unavailable)"
+
+
+def test_format_inbox_summary_malformed_json_never_raises():
+    from backend.integrations.protonmail import format_inbox_summary
+    result = format_inbox_summary("not json")
+    assert "unavailable" in result
+
+
+@pytest.mark.asyncio
+async def test_inbox_summary_calls_list_recent_unread_inbox():
+    with patch(
+        "backend.integrations.protonmail.list_recent",
+        AsyncMock(return_value='{"total": 1, "emails": [{"sender": "Jane", "subject": "Hi"}]}'),
+    ) as mock_list:
+        from backend.integrations.protonmail import inbox_summary
+        result = await inbox_summary(limit=7)
+
+    mock_list.assert_awaited_once_with(unread_only=True, limit=7, mailbox="inbox")
+    assert "Jane — Hi" in result
+
+
+@pytest.mark.asyncio
+async def test_inbox_summary_swallows_raising_list_recent():
+    with patch(
+        "backend.integrations.protonmail.list_recent",
+        AsyncMock(side_effect=RuntimeError("mcp down")),
+    ):
+        from backend.integrations.protonmail import inbox_summary
+        result = await inbox_summary()
+
+    assert "unavailable" in result

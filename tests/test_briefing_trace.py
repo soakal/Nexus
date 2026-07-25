@@ -75,7 +75,6 @@ async def test_trace_opened_and_closed_ok(eng):
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=d["channels"]), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=d["ag"]), \
          patch("backend.integrations.hermes.get_calendar", new_callable=AsyncMock, return_value="cal"), \
-         patch("backend.integrations.hermes.get_gmail", new_callable=AsyncMock, return_value="mail"), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="## Priority Actions\nNone"), \
          patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock), \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock, return_value="NEXUS/Briefings/test.md"), \
@@ -117,7 +116,6 @@ async def test_trace_closed_error_on_unexpected_exception(eng):
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=d["channels"]), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=d["ag"]), \
          patch("backend.integrations.hermes.get_calendar", new_callable=AsyncMock, return_value="cal"), \
-         patch("backend.integrations.hermes.get_gmail", new_callable=AsyncMock, return_value="mail"), \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
