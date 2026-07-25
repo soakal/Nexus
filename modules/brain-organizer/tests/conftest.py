@@ -53,6 +53,7 @@ def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
         "vault_path": str(tmp_vault),
         "raw_folder": "raw",
         "wiki_folder": "wiki",
+        "daily_folder": "wiki/daily",
         "backup_folder": "raw/backups",
         "meta_folder": "_meta",
         "logs_folder": str(tmp_path / "logs"),

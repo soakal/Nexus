@@ -577,7 +577,7 @@ def test_wiki_looks_like_reference_doc():
     ("2026-07-01", True),                # bare date — the observed bug
     ("2026-06-25b", True),                # date + session-style letter suffix
     ("Morning-Briefing-2026-06-28", True),  # explicit "briefing" in the name
-    ("daily-ops-log", True),              # explicit "daily" in the name
+    ("daily-ops-log", False),             # "daily" in the name but no date/event-hermes- prefix — no longer hijacked (2026-07-25 hardening)
     ("the-manual", False),                # genuine reference doc, unaffected
     ("2026-07-01-quarterly-report", False),  # date PLUS real content — not a bare daily note
 ])

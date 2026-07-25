@@ -130,10 +130,14 @@ def save_processed(config: dict[str, Any], processed: dict[str, Any]) -> None:
 
 def update_topics_registry(
     config: dict[str, Any],
-    topics: list[str],
-    wiki_folder: Path,
+    topics: list[tuple[str, Path]],
 ) -> None:
-    """Upsert topic → wiki file path in _meta/topics-registry.json (atomic write)."""
+    """Upsert topic -> RESOLVED wiki file path in _meta/topics-registry.json
+    (atomic write). Takes the actual written Path per topic rather than
+    reconstructing wiki_folder/{name}.md -- daily notes resolve into
+    daily_folder (a subfolder), and reconstructing from wiki_folder alone
+    silently wrote a dangling path that pointed at a file that was never
+    created there (found live 2026-07-25, see _daily_note_route)."""
     meta_folder = Path(config["vault_path"]) / config["meta_folder"]
     meta_folder.mkdir(parents=True, exist_ok=True)
     registry_path = meta_folder / "topics-registry.json"
@@ -146,9 +150,8 @@ def update_topics_registry(
         except (json.JSONDecodeError, OSError):
             pass
 
-    for topic in topics:
-        safe_name = sanitize_topic_name(topic)
-        registry[topic] = str(wiki_folder / f"{safe_name}.md")
+    for topic, path in topics:
+        registry[topic] = str(path)
 
     tmp = _make_temp_path(meta_folder, ".topics-registry_", ".tmp")
     try:
@@ -613,33 +616,65 @@ def _looks_like_session_title(title: str) -> bool:
 
 def _is_daily_note(stem: str) -> bool:
     """True for a morning-briefing/daily-log filename (mirrors
-    backend/agents/wiki_ingest.py::_is_daily_note)."""
-    return bool(_DAILY_NOTE_STEM_PAT.match(stem) or _DAILY_NOTE_NAME_PAT.search(stem))
+    backend/agents/wiki_ingest.py::_is_daily_note).
+
+    A pure date stem (optionally suffixed, e.g. "2026-07-24a") always
+    counts. A "daily"/"briefing"-named file only counts if it ALSO contains
+    a date or the known event-source prefix "event-hermes-" (e.g.
+    "event-hermes-hermes-daily-digest-20260724T120009Z", whose timestamp has
+    no hyphens so _DATE_IN_STEM_PAT alone would miss it) -- otherwise a
+    genuinely topical file that happens to have "daily" in its name (e.g.
+    "Daily-Driver-Setup.md") would get hijacked into the daily-note path.
+    """
+    if _DAILY_NOTE_STEM_PAT.match(stem):
+        return True
+    if _DAILY_NOTE_NAME_PAT.search(stem):
+        return bool(_DATE_IN_STEM_PAT.search(stem)) or stem.startswith("event-hermes-")
+    return False
 
 
 def _daily_note_route(
     stem: str,
     catalog: list[dict[str, Any]],
     wiki_folder: Path,
+    daily_folder: Path,
 ) -> list[tuple[str, Path, bool]] | None:
     """Deterministic route for a daily note. Returns None for non-daily notes.
 
     route_topics' near-duplicate guard (find_similar_page) compares titles,
     but a dated title like "Daily-Operations-Log-2026-07-08" is unique every
     day by construction, so it never fires and the model is free to invent a
-    new page daily. Skip the model call entirely for daily notes and route
-    straight to the canonical date-stamped page (matching this vault's
-    existing YYYY-MM-DD.md convention).
+    new page daily. Skip the model call entirely for daily notes.
+
+    Date-stem notes (the common case -- NEXUS's own daily briefing) route
+    into daily_folder/{date}.md, a dedicated subfolder kept OUT of
+    build_wiki_catalog's non-recursive wiki_folder.glob("*.md") scan ON
+    PURPOSE: one permanent page per calendar day, forever, would otherwise
+    dominate both the topic list and the router's limited prompt context
+    (catalog_max_pages_in_prompt) -- confirmed live, 10 date pages occupied
+    the first 10 of 60 catalog slots shown to the router. is_new is decided
+    by path.exists() directly, NOT a catalog scan, since the catalog can't
+    see subfolder pages at all.
+
+    Non-date-stem daily/briefing files (see _is_daily_note) fall back to the
+    shared Daily-Log.md page AT WIKI ROOT instead -- that's a real
+    synthesized topic page (sensor ranges, device inventory, etc, proven live
+    to consolidate cleanly with zero page growth), not clutter, and stays in
+    the catalog/router on purpose. This path keeps the original catalog-scan
+    behavior so an existing Daily-Log.md's exact registered title is reused.
     """
     if not _is_daily_note(stem):
         return None
     m = _DATE_IN_STEM_PAT.search(stem)
-    title = m.group(0) if m else "Daily-Log"
-    filename = f"{title}.md"
+    if m:
+        date = m.group(0)
+        path = daily_folder / f"{date}.md"
+        return [(date, path, not path.exists())]
+    filename = "Daily-Log.md"
     for entry in catalog:
         if entry["filename"] == filename:
             return [(entry["title"], Path(entry["path_str"]), False)]
-    return [(title, wiki_folder / filename, True)]
+    return [("Daily-Log", wiki_folder / filename, True)]
 
 
 # ---------------------------------------------------------------------------
@@ -1171,13 +1206,15 @@ def process_file(
 
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     wiki_folder.mkdir(parents=True, exist_ok=True)
+    daily_folder = Path(config["vault_path"]) / config.get("daily_folder", "wiki/daily")
+    daily_folder.mkdir(parents=True, exist_ok=True)
 
     if _routes is not None:
         routes = _routes
         logger.info("Routes (pre-computed): %s", [(t, is_new) for (t, _p, is_new) in routes])
     else:
         routes = (
-            _daily_note_route(file_path.stem, catalog, wiki_folder)
+            _daily_note_route(file_path.stem, catalog, wiki_folder, daily_folder)
             or route_topics(content, catalog, config, client)
         )
         logger.info("Routes: %s", [(t, is_new) for (t, _p, is_new) in routes])
@@ -1205,9 +1242,10 @@ def process_file(
         logger.info("Synthesis complete for route: %s (new=%s)", topic, is_new)
 
     # Phase 2: all synthesized — write each wiki atomically to its RESOLVED path
-    updated_topics: list[str] = []
+    updated_topics: list[tuple[str, Path]] = []
     for topic, wiki_file, wiki_content in topic_results:
-        tmp = _make_temp_path(wiki_folder, f".{wiki_file.stem}_", ".tmp")
+        wiki_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _make_temp_path(wiki_file.parent, f".{wiki_file.stem}_", ".tmp")
         try:
             tmp.write_text(wiki_content, encoding="utf-8")
             os.replace(tmp, wiki_file)
@@ -1215,7 +1253,7 @@ def process_file(
             if tmp.exists():
                 tmp.unlink(missing_ok=True)
         logger.info("Wiki written: %s", wiki_file)
-        updated_topics.append(topic)
+        updated_topics.append((topic, wiki_file))
 
         # Refresh the in-memory catalog entry so later files in THIS run route
         # against fresh content (prevents same-run duplicate creation).
@@ -1243,16 +1281,16 @@ def process_file(
     # Phase 3: update _meta/topics-registry.json
     if _registry_lock is not None:
         with _registry_lock:
-            update_topics_registry(config, updated_topics, wiki_folder)
+            update_topics_registry(config, updated_topics)
     else:
-        update_topics_registry(config, updated_topics, wiki_folder)
+        update_topics_registry(config, updated_topics)
 
     # Phase 4: raw file deleted only after all writes confirmed
     # missing_ok=True: iCloud may have evicted the file between read and delete — still a success
     file_path.unlink(missing_ok=True)
     logger.info("Deleted raw file: %s", file_path.name)
 
-    return updated_topics
+    return [topic for topic, _path in updated_topics]
 
 
 # ---------------------------------------------------------------------------
@@ -1359,6 +1397,8 @@ def run(
     # Build catalog ONCE after the empty-check so we don't pay the disk scan
     # cost on runs that have nothing to do.
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
+    daily_folder = Path(config["vault_path"]) / config.get("daily_folder", "wiki/daily")
+    daily_folder.mkdir(parents=True, exist_ok=True)
     meta_folder = Path(config["vault_path"]) / config["meta_folder"]
     catalog = build_wiki_catalog(wiki_folder, meta_folder)
     logger.info("Wiki catalog: %d page(s)", len(catalog))
@@ -1405,7 +1445,7 @@ def run(
         fp, sha = fp_sha
         try:
             content = fp.read_text(encoding="utf-8")
-            routes = _daily_note_route(fp.stem, list(catalog), wiki_folder) or \
+            routes = _daily_note_route(fp.stem, list(catalog), wiki_folder, daily_folder) or \
                 route_topics(content, list(catalog), config, client)
             logger.info("Routed %s -> %s", fp.name, [t for t, _p, _n in routes])
             return fp, sha, routes, None

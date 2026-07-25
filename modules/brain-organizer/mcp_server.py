@@ -76,18 +76,35 @@ def _canonical_key(name: str) -> str:
     return collapsed.lower().replace(" ", "-")
 
 
-def _build_stem_index(wiki_folder: Path) -> dict[str, str]:
-    """Return {canonical_key: actual_stem} for Brain root + wiki .md files.
+def _build_stem_index(wiki_folder: Path, daily_folder: Path | None = None) -> dict[str, str]:
+    """Return {canonical_key: actual_stem} for Brain root + wiki + wiki/daily
+    .md files.
 
-    Non-recursive globs of exactly two dirs means raw/, _meta/, .Trash,
-    .obsidian are never visited. Wiki entries win on key collision.
+    Deliberately NOT a blanket rglob: wiki_folder also contains
+    wiki/processed/ (263 archived pre-distillation source notes on the real
+    vault, which the rest of the codebase treats as out-of-scope --
+    backend/agents/wiki_ingest.py explicitly skips parent.name == "processed").
+    A blanket rglob swept those in too (found live 2026-07-25: search result
+    count roughly doubled, and a stem could resolve to a processed-folder
+    duplicate that GET /wiki/<topic> then 404s on, since read_wiki only
+    special-cases daily_folder). So: brain_root and wiki_folder use
+    non-recursive globs (unchanged), and ONLY daily_folder (a single flat
+    subfolder, no further nesting) is added explicitly -- covers exactly the
+    wiki/daily/ case _daily_note_route creates, nothing more.
+    Wiki (then daily) entries win on key collision, in that order.
     """
     index: dict[str, str] = {}
     brain_root = wiki_folder.parent
-    for folder in (brain_root, wiki_folder):  # wiki loaded last so it wins
-        if not folder.exists():
-            continue
-        for md in sorted(folder.glob("*.md")):
+    if brain_root.exists():
+        for md in sorted(brain_root.glob("*.md")):
+            if md.is_file():
+                index[_canonical_key(md.stem)] = md.stem
+    if wiki_folder.exists():
+        for md in sorted(wiki_folder.glob("*.md")):
+            if md.is_file():
+                index[_canonical_key(md.stem)] = md.stem
+    if daily_folder is not None and daily_folder.exists():
+        for md in sorted(daily_folder.glob("*.md")):
             if md.is_file():
                 index[_canonical_key(md.stem)] = md.stem
     return index
@@ -151,6 +168,9 @@ def create_app(
     def _wiki_folder() -> Path:
         return Path(config["vault_path"]) / config["wiki_folder"]
 
+    def _daily_folder() -> Path:
+        return Path(config["vault_path"]) / config.get("daily_folder", "wiki/daily")
+
     def _raw_folder() -> Path:
         return Path(config["vault_path"]) / config["raw_folder"]
 
@@ -193,8 +213,19 @@ def create_app(
         if not wf.exists():
             return jsonify({"results": []})
 
+        # wiki root + wiki/daily only -- NOT a blanket rglob. wiki_folder also
+        # contains wiki/processed/ (263 archived pre-distillation notes on the
+        # real vault), which the rest of the codebase treats as out-of-scope;
+        # sweeping it in roughly doubled search results with stale duplicates
+        # and could return a topic that GET /wiki/<topic> then 404s on (found
+        # live 2026-07-25). See _build_stem_index's docstring for the same call.
+        md_files = list(wf.glob("*.md"))
+        df = _daily_folder()
+        if df.exists():
+            md_files.extend(df.glob("*.md"))
+
         results = []
-        for md_file in sorted(wf.glob("*.md")):
+        for md_file in sorted(md_files):
             try:
                 content = md_file.read_text(encoding="utf-8")
             except OSError:
@@ -217,7 +248,13 @@ def create_app(
 
         wiki_file = _wiki_folder() / f"{safe}.md"
         if not wiki_file.exists():
-            return jsonify({"error": f"Topic '{safe}' not found"}), 404
+            # Daily notes live in a subfolder (brain_organizer.py's
+            # _daily_note_route) -- fall back there before 404ing.
+            daily_file = _daily_folder() / f"{safe}.md"
+            if daily_file.exists():
+                wiki_file = daily_file
+            else:
+                return jsonify({"error": f"Topic '{safe}' not found"}), 404
 
         try:
             content = wiki_file.read_text(encoding="utf-8")
@@ -248,7 +285,7 @@ def create_app(
         content = str(data["content"])
 
         try:
-            stem_index = _build_stem_index(_wiki_folder())
+            stem_index = _build_stem_index(_wiki_folder(), _daily_folder())
             content = _normalize_wikilinks(content, stem_index)
         except Exception as exc:  # never block a save on normalization
             logger.warning("Wikilink normalization skipped: %s", exc)

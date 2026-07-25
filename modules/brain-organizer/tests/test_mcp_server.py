@@ -17,6 +17,12 @@ def seed_wiki(vault: Path, topic: str, content: str) -> None:
     (wiki_dir / f"{topic}.md").write_text(content, encoding="utf-8")
 
 
+def seed_daily(vault: Path, date: str, content: str) -> None:
+    daily_dir = vault / "wiki" / "daily"
+    daily_dir.mkdir(parents=True, exist_ok=True)
+    (daily_dir / f"{date}.md").write_text(content, encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
@@ -48,6 +54,22 @@ def test_wiki_list_endpoint_returns_topics(
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert set(data["topics"]) == {"NEXUS", "Hermes"}
+
+
+def test_wiki_list_endpoint_stays_non_recursive(wiki_app, tmp_vault: Path) -> None:
+    """GET /wiki (the flat topic list) must NOT show wiki/daily/ or
+    wiki/processed/ pages -- that's the entire point of moving daily notes
+    out of wiki root in the first place. Only search/read/link-resolution
+    should be subfolder-aware, never the topic list itself."""
+    seed_wiki(tmp_vault, "NEXUS", "# NEXUS")
+    seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25")
+    (tmp_vault / "wiki" / "processed").mkdir(parents=True, exist_ok=True)
+    (tmp_vault / "wiki" / "processed" / "2026-06-08.md").write_text("# old", encoding="utf-8")
+
+    resp = wiki_app.get("/wiki")
+    data = json.loads(resp.data)
+
+    assert data["topics"] == ["NEXUS"]
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +106,25 @@ def test_wiki_read_uses_same_sanitizer_as_writer(wiki_app, tmp_vault: Path) -> N
     assert "Smart home." in data["content"]
 
 
+def test_wiki_read_falls_back_to_daily_folder(wiki_app, tmp_vault: Path) -> None:
+    """A date page lives in wiki/daily/ (brain_organizer.py's
+    _daily_note_route), not wiki root -- /wiki/<topic> must still resolve it
+    instead of 404ing."""
+    seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25\n\nDaily content.")
+    resp = wiki_app.get("/wiki/2026-07-25")
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert "Daily content." in data["content"]
+
+
+def test_wiki_read_prefers_root_over_daily_on_collision(wiki_app, tmp_vault: Path) -> None:
+    seed_wiki(tmp_vault, "2026-07-25", "root version")
+    seed_daily(tmp_vault, "2026-07-25", "daily version")
+    resp = wiki_app.get("/wiki/2026-07-25")
+    data = json.loads(resp.data)
+    assert "root version" in data["content"]
+
+
 # ---------------------------------------------------------------------------
 # GET /wiki/search
 # ---------------------------------------------------------------------------
@@ -110,6 +151,72 @@ def test_wiki_search_returns_matching_lines(wiki_app, tmp_vault: Path) -> None:
     data = json.loads(resp.data)
     assert len(data["results"]) == 1
     assert any("Claude" in line for line in data["results"][0]["matches"])
+
+
+def test_wiki_search_excludes_processed_folder(wiki_app, tmp_vault: Path) -> None:
+    """wiki/processed/ (archived pre-distillation source notes) must stay out
+    of search results -- a blanket rglob swept them in, roughly doubling
+    result counts with stale duplicates and creating a search/read
+    inconsistency (search finds a topic that GET /wiki/<topic> then 404s
+    on, since only daily_folder gets a read fallback). Found live 2026-07-25."""
+    (tmp_vault / "wiki" / "processed").mkdir(parents=True, exist_ok=True)
+    (tmp_vault / "wiki" / "processed" / "2026-06-08.md").write_text(
+        "# 2026-06-08\n\nparity check notes", encoding="utf-8"
+    )
+
+    resp = wiki_app.get("/wiki/search?q=parity")
+    data = json.loads(resp.data)
+
+    assert data["results"] == []
+
+
+def test_wiki_search_finds_daily_folder_pages(wiki_app, tmp_vault: Path) -> None:
+    """A page in wiki/daily/ must still be full-text searchable -- moving
+    daily notes out of wiki root must not blind /wiki/search to them."""
+    seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25\n\nUnraid parity check needed.")
+    resp = wiki_app.get("/wiki/search?q=parity")
+    data = json.loads(resp.data)
+    assert len(data["results"]) == 1
+    assert data["results"][0]["topic"] == "2026-07-25"
+
+
+# ---------------------------------------------------------------------------
+# _build_stem_index / _normalize_wikilinks — wiki/daily/ resolution
+# ---------------------------------------------------------------------------
+
+def test_build_stem_index_includes_daily_folder_pages(tmp_vault: Path) -> None:
+    """A [[2026-07-25]] link must resolve even though the target page moved
+    into wiki/daily/ -- without this it would get flagged in a spurious
+    '## Broken Links' footer on every note that references a daily page."""
+    from mcp_server import _build_stem_index
+
+    seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25\n\ncontent")
+    index = _build_stem_index(tmp_vault / "wiki", tmp_vault / "wiki" / "daily")
+
+    assert "2026-07-25" in index.values()
+
+
+def test_build_stem_index_excludes_processed_folder(tmp_vault: Path) -> None:
+    from mcp_server import _build_stem_index
+
+    (tmp_vault / "wiki" / "processed").mkdir(parents=True, exist_ok=True)
+    (tmp_vault / "wiki" / "processed" / "Old-Note.md").write_text("# Old", encoding="utf-8")
+
+    index = _build_stem_index(tmp_vault / "wiki", tmp_vault / "wiki" / "daily")
+
+    assert "Old-Note" not in index.values()
+
+
+def test_normalize_wikilinks_resolves_daily_folder_target(tmp_vault: Path) -> None:
+    from mcp_server import _build_stem_index, _normalize_wikilinks
+
+    seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25\n\ncontent")
+    index = _build_stem_index(tmp_vault / "wiki", tmp_vault / "wiki" / "daily")
+
+    result = _normalize_wikilinks("See [[2026-07-25]] for details.", index)
+
+    assert "Broken Links" not in result
+    assert "[[2026-07-25]]" in result
 
 
 # ---------------------------------------------------------------------------

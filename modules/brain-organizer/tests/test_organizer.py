@@ -181,18 +181,24 @@ def test_topic_detection_uses_haiku_model(tmp_config: dict[str, Any]) -> None:
     "2026-07-08b",
     "Morning-Briefing-2026-06-28",
     "Daily-Operations-Log-2026-07-02",
+    "event-hermes-hermes-daily-digest-20260724T120009Z",  # no-hyphen timestamp; needs the event-hermes- carve-out
 ])
 def test_is_daily_note_matches_dated_and_briefing_stems(stem: str) -> None:
     assert bo._is_daily_note(stem) is True
 
 
-@pytest.mark.parametrize("stem", ["NEXUS", "nexus-session-2026-06-25b-ha-cover-lock-fix"])
+@pytest.mark.parametrize("stem", [
+    "NEXUS",
+    "nexus-session-2026-06-25b-ha-cover-lock-fix",
+    "Daily-Driver-Setup",  # "daily" substring, no date, not a hermes event -- must NOT be hijacked
+    "Briefing-Template",
+])
 def test_is_daily_note_rejects_non_daily_stems(stem: str) -> None:
     assert bo._is_daily_note(stem) is False
 
 
 def test_daily_note_route_returns_none_for_non_daily(tmp_path: Path) -> None:
-    assert bo._daily_note_route("NEXUS-session-notes", [], tmp_path) is None
+    assert bo._daily_note_route("NEXUS-session-notes", [], tmp_path, tmp_path / "daily") is None
 
 
 @pytest.mark.parametrize("title", [
@@ -234,17 +240,71 @@ def test_route_topics_rejects_session_shaped_new_title(
 
 
 def test_daily_note_route_creates_canonical_date_page(tmp_path: Path) -> None:
-    routes = bo._daily_note_route("Daily-Operations-Log-2026-07-08", [], tmp_path)
-    assert routes == [("2026-07-08", tmp_path / "2026-07-08.md", True)]
+    """Date-stem notes route into daily_folder (a subfolder), NOT wiki_folder
+    root -- kept out of build_wiki_catalog's non-recursive scan on purpose."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+    routes = bo._daily_note_route("Daily-Operations-Log-2026-07-08", [], wiki_folder, daily_folder)
+    assert routes == [("2026-07-08", daily_folder / "2026-07-08.md", True)]
 
 
 def test_daily_note_route_reuses_existing_date_page(tmp_path: Path) -> None:
+    """is_new is decided by path.exists() directly (not a catalog scan --
+    the catalog can't see subfolder pages at all)."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+    daily_folder.mkdir(parents=True)
+    existing = daily_folder / "2026-07-08.md"
+    existing.write_text("# 2026-07-08\n", encoding="utf-8")
+
+    routes = bo._daily_note_route("Morning-Briefing-2026-07-08", [], wiki_folder, daily_folder)
+
+    assert routes == [("2026-07-08", existing, False)]
+
+
+def test_daily_note_route_second_note_same_day_merges(tmp_path: Path) -> None:
+    """Two daily notes on the same date must resolve to the identical path
+    (is_new True then False), not two different files."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+
+    first = bo._daily_note_route("2026-07-08", [], wiki_folder, daily_folder)
+    assert first == [("2026-07-08", daily_folder / "2026-07-08.md", True)]
+
+    first[0][1].parent.mkdir(parents=True, exist_ok=True)
+    first[0][1].write_text("content", encoding="utf-8")
+
+    second = bo._daily_note_route("Morning-Briefing-2026-07-08", [], wiki_folder, daily_folder)
+    assert second == [("2026-07-08", daily_folder / "2026-07-08.md", False)]
+
+
+def test_daily_note_route_non_date_stem_falls_back_to_daily_log_at_root(tmp_path: Path) -> None:
+    """A daily/briefing-named file with NO date in its stem (e.g. the Hermes
+    digest's non-hyphenated timestamp) routes to the shared Daily-Log.md at
+    wiki root instead -- a real synthesized topic page, stays in the catalog."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+
+    routes = bo._daily_note_route(
+        "event-hermes-hermes-daily-digest-20260724T120009Z", [], wiki_folder, daily_folder
+    )
+
+    assert routes == [("Daily-Log", wiki_folder / "Daily-Log.md", True)]
+
+
+def test_daily_note_route_reuses_existing_daily_log_catalog_entry(tmp_path: Path) -> None:
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
     catalog = [{
-        "title": "2026-07-08", "filename": "2026-07-08.md",
-        "path_str": str(tmp_path / "2026-07-08.md"), "headers": "", "summary": "",
+        "title": "Daily-Log", "filename": "Daily-Log.md",
+        "path_str": str(wiki_folder / "Daily-Log.md"), "headers": "", "summary": "",
     }]
-    routes = bo._daily_note_route("Morning-Briefing-2026-07-08", catalog, tmp_path)
-    assert routes == [("2026-07-08", tmp_path / "2026-07-08.md", False)]
+
+    routes = bo._daily_note_route(
+        "event-hermes-hermes-daily-digest-20260724T120009Z", catalog, wiki_folder, daily_folder
+    )
+
+    assert routes == [("Daily-Log", wiki_folder / "Daily-Log.md", False)]
 
 
 def test_process_file_skips_llm_route_for_daily_note(
@@ -533,6 +593,26 @@ def test_topics_registry_updated_after_success(
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     assert "NEXUS" in registry
     assert "NEXUS.md" in registry["NEXUS"]
+
+
+def test_topics_registry_records_resolved_daily_folder_path(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """A daily note's registry entry must point at the file that was
+    ACTUALLY written (wiki/daily/{date}.md), not a reconstructed wiki-root
+    path that was never created there (real bug found live 2026-07-25:
+    update_topics_registry used to rebuild the path from wiki_folder alone)."""
+    write_raw(tmp_vault, "2026-07-25.md", "Morning briefing content")
+    client = MagicMock()
+    client.messages.create.return_value = make_message("Synthesized briefing")
+    bo.run(_client=client, _config=tmp_config)
+
+    registry_path = tmp_vault / "_meta" / "topics-registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert "2026-07-25" in registry
+    registered_path = Path(registry["2026-07-25"])
+    assert registered_path.exists()
+    assert registered_path.parent.name == "daily"
 
 
 def test_topics_registry_accumulates_across_runs(
