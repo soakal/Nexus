@@ -122,6 +122,7 @@ async def hermes_trigger(body: TriggerRequest, request: Request, _=Depends(requi
     known_tasks = {
         "briefing": _trigger_briefing,
         "status": _trigger_status,
+        "council_postmortem": _trigger_council_postmortem,
     }
     fn = known_tasks.get(body.task_name)
     if not fn:
@@ -141,3 +142,8 @@ async def _trigger_status(params: dict) -> dict:
     ha_ok = await homeassistant.health_check()
     ur_ok = await unraid.health_check()
     return {"ha": ha_ok, "unraid": ur_ok}
+
+
+async def _trigger_council_postmortem(params: dict) -> dict:
+    from backend.agents.council_postmortem import run_postmortem
+    return await run_postmortem(since=params.get("since"))

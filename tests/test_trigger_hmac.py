@@ -268,3 +268,27 @@ def test_bad_signature_rejected_even_when_not_required(trigger_client, monkeypat
     )
     assert resp.status_code == 401
     assert "Bad trigger signature" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 8. council_postmortem is a registered known_task; an unknown one still 404s
+# ---------------------------------------------------------------------------
+
+def test_council_postmortem_is_a_known_task(trigger_client, monkeypatch):
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    body = {"task_name": "council_postmortem", "parameters": {}}
+    with mock_patch(
+        "backend.agents.council_postmortem.run_postmortem",
+        new_callable=AsyncMock,
+        return_value={"ok": True, "skipped": "no commits in session — nothing to check"},
+    ):
+        resp = trigger_client.post("/api/trigger", json=body, headers=_AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["result"]["ok"] is True
+
+
+def test_unknown_task_name_still_404s(trigger_client, monkeypatch):
+    body = {"task_name": "definitely_not_a_real_task", "parameters": {}}
+    resp = trigger_client.post("/api/trigger", json=body, headers=_AUTH)
+    assert resp.status_code == 404
