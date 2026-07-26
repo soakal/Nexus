@@ -51,14 +51,14 @@ async def _push_to_brain(filename: str, content: str) -> bool:
 
 
 async def _notify_telegram(date_str: str, content: str) -> bool:
-    from backend.integrations import hermes
+    from backend.integrations import telegram
 
     body = content if len(content) <= 3500 else content[:3500] + "\n\n...(truncated, full digest saved to the Brain vault)"
     payload = {
         "type": "claude_features_digest",
         "content": f"Claude + AI Digest — {date_str}\n\n{body}",
     }
-    return await hermes.notify(payload)
+    return await telegram.notify(payload)
 
 
 async def main() -> int:
@@ -86,7 +86,7 @@ async def main() -> int:
             if ok:
                 print(f"relayed {f.name}")
             else:
-                print(f"relayed {f.name} to Brain vault but TELEGRAM NOTIFY FAILED (check Hermes)")
+                print(f"relayed {f.name} to Brain vault but TELEGRAM NOTIFY FAILED (check TELEGRAM_BOT_TOKEN)")
                 any_failed = True
         except Exception as e:
             print(f"FAILED to relay {f.name}: {e}")

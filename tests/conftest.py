@@ -29,6 +29,10 @@ MOCK_SECRETS = {
     "NEXUS_API_KEY": "test-nexus-key",
     "PROTONMAIL_MCP_URL": "http://test-mcp:8080/mcp",
     "PROTONMAIL_ACCOUNT": "test-proton-account",
+    "TELEGRAM_BOT_TOKEN": "test-telegram-token",
+    "TELEGRAM_CHAT_ID": "12345",
+    "GOOGLE_CALENDAR_ICAL_URL": "https://calendar.google.com/test.ics",
+    "APPLE_CALENDAR_ICAL_URL": "https://p.icloud.com/test.ics",
 }
 
 

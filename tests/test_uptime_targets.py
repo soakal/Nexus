@@ -58,7 +58,7 @@ async def test_record_uptime_http_targets(eng, monkeypatch):
     async def _ok():
         return True
 
-    for mod in ("adguard", "channels_dvr", "github", "hermes", "homeassistant",
+    for mod in ("adguard", "calendar", "channels_dvr", "github", "hermes", "homeassistant",
                 "obsidian", "openrouter", "proxmox", "unifi", "unraid", "weather"):
         monkeypatch.setattr(
             f"backend.integrations.{mod}.health_check", _ok, raising=False
@@ -98,7 +98,7 @@ async def test_record_uptime_empty_targets_no_extra_rows(eng, monkeypatch):
     async def _ok():
         return True
 
-    for mod in ("adguard", "channels_dvr", "github", "hermes", "homeassistant",
+    for mod in ("adguard", "calendar", "channels_dvr", "github", "hermes", "homeassistant",
                 "obsidian", "openrouter", "proxmox", "unifi", "unraid", "weather"):
         monkeypatch.setattr(
             f"backend.integrations.{mod}.health_check", _ok, raising=False
@@ -109,4 +109,4 @@ async def test_record_uptime_empty_targets_no_extra_rows(eng, monkeypatch):
 
     with Session(eng) as s:
         sources = {r.source for r in s.exec(select(UptimeSample)).all()}
-    assert len(sources) == 12  # only the integrations (incl. proxmox, protonmail), no extras
+    assert len(sources) == 13  # only the integrations (incl. proxmox, protonmail, calendar), no extras

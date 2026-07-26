@@ -63,11 +63,13 @@ async def test_secret(key: str, _=Depends(require_api_key)):
 async def _run_test(key: str) -> tuple:
     from backend.integrations import (
         adguard,
+        calendar,
         github,
         hermes,
         homeassistant,
         openrouter,
         protonmail,
+        telegram,
         unifi,
         unraid,
         weather,
@@ -84,6 +86,8 @@ async def _run_test(key: str) -> tuple:
         "ADGUARD_PASS": adguard.health_check,
         "HERMES_WEBHOOK_SECRET": hermes.health_check,
         "PROTONMAIL_MCP_URL": protonmail.health_check,
+        "TELEGRAM_BOT_TOKEN": telegram.health_check,
+        "GOOGLE_CALENDAR_ICAL_URL": calendar.health_check,
     }
 
     fn = TEST_MAP.get(key)

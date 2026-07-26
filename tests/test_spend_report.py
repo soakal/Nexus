@@ -191,7 +191,7 @@ async def test_notify_phone_appends_deep_link_when_base_url_set():
     hermes_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.hermes.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = "http://192.168.1.119:3000"
@@ -214,7 +214,7 @@ async def test_notify_phone_no_deep_link_when_base_url_blank():
     hermes_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.hermes.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = ""
@@ -235,7 +235,7 @@ async def test_notify_phone_deep_link_strips_trailing_slash():
     hermes_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.hermes.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = "http://192.168.1.119:3000/"

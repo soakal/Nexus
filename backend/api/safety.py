@@ -266,7 +266,7 @@ async def resume_autonomy(_=Depends(require_api_key)):
 async def safety_status(_=Depends(require_api_key)):
     """Current kill-switch + budget state plus today's spend and notify-channel health."""
     from backend.safety import governor
-    from backend.integrations import hermes
+    from backend.integrations import telegram
     from backend.config import get_settings
 
     state = await asyncio.to_thread(governor.get_system_state)
@@ -274,7 +274,7 @@ async def safety_status(_=Depends(require_api_key)):
 
     notify_channel: dict = {}
     try:
-        queue_health = await asyncio.to_thread(hermes.delivery_queue_health)
+        queue_health = await asyncio.to_thread(telegram.delivery_queue_health)
         notify_channel = {
             **queue_health,
             "enabled": get_settings().phone_notifications_enabled,
@@ -303,7 +303,7 @@ async def clear_dead_letter_deliveries(_=Depends(require_api_key)):
     def _purge() -> int:
         from sqlmodel import Session, select
         from backend.database import PendingDelivery, SystemState, engine
-        from backend.integrations.hermes import _MAX_ATTEMPTS
+        from backend.integrations.telegram import _MAX_ATTEMPTS
 
         with Session(engine) as session:
             dead = session.exec(

@@ -191,7 +191,7 @@ async def test_scheduler_run_briefing_exception_swallowed():
 @pytest.mark.asyncio
 async def test_scheduler_retry_pending():
     from backend.scheduler import _retry_pending_deliveries
-    with patch("backend.integrations.hermes.deliver_pending", new_callable=AsyncMock) as mock_dp:
+    with patch("backend.integrations.telegram.deliver_pending", new_callable=AsyncMock) as mock_dp:
         await _retry_pending_deliveries()
     mock_dp.assert_called_once()
 
@@ -199,7 +199,7 @@ async def test_scheduler_retry_pending():
 @pytest.mark.asyncio
 async def test_scheduler_retry_pending_exception_swallowed():
     from backend.scheduler import _retry_pending_deliveries
-    with patch("backend.integrations.hermes.deliver_pending", new_callable=AsyncMock, side_effect=Exception("hermes down")):
+    with patch("backend.integrations.telegram.deliver_pending", new_callable=AsyncMock, side_effect=Exception("telegram down")):
         await _retry_pending_deliveries()  # Should not raise
 
 

@@ -115,6 +115,13 @@ async def lifespan(app: FastAPI):
             from backend.agents.worker_pool import get_pool
             await get_pool().start()
 
+            # Telegram inbound poller (goal/safety button callbacks) — a pure
+            # async task, not a thread (see telegram_poller's module docstring).
+            # Returns None (no-op) when disabled or TELEGRAM_BOT_TOKEN is unset,
+            # so its absence never blocks boot.
+            from backend.agents import telegram_poller
+            telegram_poller.start()
+
             # Brain Organizer MCP server — optional, only starts if the module is installed
             try:
                 import subprocess
@@ -165,6 +172,11 @@ async def lifespan(app: FastAPI):
     try:
         from backend.agents.worker_pool import get_pool
         await get_pool().stop()
+    except Exception:
+        pass
+    try:
+        from backend.agents import telegram_poller
+        await telegram_poller.stop()
     except Exception:
         pass
 

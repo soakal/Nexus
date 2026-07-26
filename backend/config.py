@@ -306,6 +306,13 @@ class Settings(BaseSettings):
     # not a real limit on ordinary sessions.
     council_postmortem_max_files: int = 200
 
+    # NEXUS-native Telegram (Phase 1 Hermes decoupling) — own bot, separate from
+    # Hermes's. telegram_poll_timeout_s is Telegram's long-poll wait, capped at 50
+    # by their API. calendar_days_ahead matches gcal.py's existing 7-day window.
+    telegram_poll_enabled: bool = True
+    telegram_poll_timeout_s: int = 25
+    calendar_days_ahead: int = 7
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:
@@ -413,6 +420,41 @@ class Settings(BaseSettings):
         from backend.secrets.manager import get_secret
         return get_secret("PROTONMAIL_ACCOUNT")
 
+    @property
+    def telegram_bot_token(self) -> str:
+        """Loud (KeyError) — same reasoning as protonmail_mcp_url. notify() catches
+        it, logs ERROR, and does NOT queue (a missing token never fixes itself on
+        retry — same posture as a 401 from Telegram)."""
+        from backend.secrets.manager import get_secret
+        return get_secret("TELEGRAM_BOT_TOKEN")
+
+    @property
+    def telegram_chat_id(self) -> str:
+        """Loud. Kept as str — Telegram's API accepts chat_id as a string verbatim,
+        so no int() cast is needed and a malformed value fails at the API, not at
+        import time."""
+        from backend.secrets.manager import get_secret
+        return get_secret("TELEGRAM_CHAT_ID")
+
+    @property
+    def google_calendar_ical_url(self) -> str:
+        """Quiet ("" on KeyError) — calendar.fetch() raises RuntimeError when BOTH
+        feeds are empty, so the loud failure happens once, in one place."""
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("GOOGLE_CALENDAR_ICAL_URL")
+        except KeyError:
+            return ""
+
+    @property
+    def apple_calendar_ical_url(self) -> str:
+        """Quiet — genuinely optional second feed (gcal.py already treats it so)."""
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("APPLE_CALENDAR_ICAL_URL")
+        except KeyError:
+            return ""
+
     def validate(self) -> None:
         """Fail fast on misconfiguration at startup, before the scheduler/agents run.
 
@@ -467,17 +509,20 @@ class Settings(BaseSettings):
         if missing:
             raise RuntimeError(f"Missing required secrets: {', '.join(missing)}")
 
-        # Non-fatal warning: notifications will 401 silently if the secret is absent.
+        # Non-fatal warning: notifications will fail silently if either secret is absent.
         if self.phone_notifications_enabled:
-            try:
-                secret = self.hermes_webhook_secret
-                if not secret:
-                    raise ValueError("empty")
-            except Exception:
+            missing_telegram = []
+            for name, prop in (("TELEGRAM_BOT_TOKEN", "telegram_bot_token"), ("TELEGRAM_CHAT_ID", "telegram_chat_id")):
+                try:
+                    if not getattr(self, prop):
+                        missing_telegram.append(name)
+                except Exception:
+                    missing_telegram.append(name)
+            if missing_telegram:
                 logger.error(
-                    "phone_notifications_enabled=True but HERMES_WEBHOOK_SECRET is missing "
-                    "from the vault. ALL phone notifications will 401 and silently queue. "
-                    "Add it with: python tools/manage_vault.py set HERMES_WEBHOOK_SECRET"
+                    f"phone_notifications_enabled=True but {', '.join(missing_telegram)} "
+                    "missing from the vault. ALL phone notifications will fail. Add via the "
+                    "Settings page."
                 )
 
     class Config:

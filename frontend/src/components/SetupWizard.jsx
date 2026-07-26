@@ -42,6 +42,15 @@ const STEPS = [
     ],
   },
   {
+    title: 'Notifications & Calendar',
+    fields: [
+      { key: 'TELEGRAM_BOT_TOKEN', label: 'Telegram Bot Token', placeholder: '123456:AA...', hint: 'From @BotFather' },
+      { key: 'TELEGRAM_CHAT_ID', label: 'Telegram Chat ID', placeholder: '', hint: 'Message the bot, then read chat.id from getUpdates' },
+      { key: 'GOOGLE_CALENDAR_ICAL_URL', label: 'Google Calendar iCal URL', placeholder: '' },
+      { key: 'APPLE_CALENDAR_ICAL_URL', label: 'Apple Calendar iCal URL (optional)', placeholder: '' },
+    ],
+  },
+  {
     title: 'Agent Bridge (Hermes)',
     fields: [
       { key: 'HERMES_WEBHOOK_SECRET', label: 'Hermes Webhook Secret', placeholder: '' },

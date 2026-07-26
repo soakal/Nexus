@@ -29,7 +29,7 @@ NEXUS
 ├── Backend (FastAPI)           → http://localhost:8000
 │   ├── Agents (durable task orchestrator, read/write tool loop, goal proposer, learning loop)
 │   ├── Safety (action broker + audit log, cost governor + kill switch, Hermes verb allowlist)
-│   ├── Integrations (HA, UniFi, Unraid, Proxmox, Obsidian, GitHub, Channels, AdGuard, Weather, Speedtest, Hermes)
+│   ├── Integrations (HA, UniFi, Unraid, Proxmox, Obsidian, GitHub, Channels, AdGuard, Weather, Speedtest, Telegram, Calendar, Hermes)
 │   └── Scheduler (briefing, trends, uptime, backups + integrity, watchdogs, spend ingest, goal ticks)
 └── Secrets Vault (AES-256 Fernet, nexus.vault + .vault.key)
 ```
@@ -100,22 +100,26 @@ python tools/audit_secrets.py
 | Channels DVR | Recording status, library, storage |
 | AdGuard Home | DNS stats, filtering toggle, timed disable |
 | OpenWeatherMap | Current conditions, forecast, high/low |
-| Hermes | Outbound Telegram delivery, HA action bridge |
+| Telegram | Own bot — outbound phone alerts + inbound goal/safety button taps |
+| Calendar | Google/Apple iCal feeds — agenda for the briefing and Today page |
+| Hermes | Action-relay bridge (Proxmox/Unraid/UniFi verbs via Hermes's SSH access) |
 | OpenRouter | Fallback model gateway |
 
 ## Hermes Bridge
 
-NEXUS is the intelligence layer. Hermes is the delivery layer.
+NEXUS is the intelligence layer. Hermes now only relays actions that need
+Hermes's own SSH/Proxmox access — Telegram delivery and calendar reads moved
+directly into NEXUS (own bot, own iCal integration) in 2026-07's decoupling.
 
-- NEXUS → Hermes: POST `/hermes/notify` (Telegram), POST `/hermes/action` (Home Assistant)
+- NEXUS → Hermes: POST `/hermes/action` (structured verb relay — VM restarts,
+  UniFi block/unblock, Docker prune, etc; see `backend/safety/hermes_actions.py`)
 - Hermes → NEXUS: GET `/api/health` (watcher liveness ping), GET `/api/goals/`,
-  POST `/api/goals/{id}/approve|reject`, POST `/api/safety/actions/{id}/confirm|reject`,
   POST `/api/chat/`
 - NEXUS also exposes POST `/api/trigger` (Bearer + optional HMAC-signed, rate-limited)
   for Hermes to kick off tasks on demand — built and hardened, but Hermes has no live
   caller for it yet (verified 2026-07-25).
 
-If Hermes is unreachable, payloads are queued in SQLite and retried every 60 seconds.
+If a Telegram send fails, payloads are queued in SQLite and retried every 60 seconds.
 
 ## API Authentication
 

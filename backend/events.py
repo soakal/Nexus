@@ -21,14 +21,13 @@ async def publish(event_type: str, payload: dict) -> None:
 async def notify_phone(
     content: str, *, kind: str = "autonomy_alert", buttons: list | None = None
 ) -> bool:
-    """Best-effort phone push via Hermes->Telegram. Gated by phone_notifications_enabled.
+    """Best-effort phone push via NEXUS's own Telegram bot. Gated by phone_notifications_enabled.
 
     Appends a deep-link to the Safety page when app_base_url is configured so
     Brian can tap straight through to Safety from any alert.
 
-    `buttons` (optional): [{"text": ..., "callback_data": ...}] — forwarded to
-    Hermes verbatim so it can render Telegram inline buttons. Older Hermes
-    versions ignore the extra key (backward compatible).
+    `buttons` (optional): [{"text": ..., "callback_data": ...}] — rendered as a
+    Telegram inline keyboard on the last chunk of the message.
 
     NEVER raises (a notify failure must not affect the caller). Returns delivered bool.
     """
@@ -50,13 +49,13 @@ async def notify_phone(
             content = f"{content}\n<a href=\"{url}\">Open Safety</a>"
             parse_mode = "HTML"
         from datetime import datetime
-        from backend.integrations import hermes
+        from backend.integrations import telegram
         payload: dict = {"type": kind, "content": content, "timestamp": datetime.utcnow().isoformat()}
         if parse_mode:
             payload["parse_mode"] = parse_mode
         if buttons:
             payload["buttons"] = buttons
-        return await hermes.notify(payload)
+        return await telegram.notify(payload)
     except Exception as e:
         logger.debug(f"events.notify_phone failed (ignored): {e}")
         return False

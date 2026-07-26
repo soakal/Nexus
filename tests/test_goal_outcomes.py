@@ -155,7 +155,7 @@ async def test_notify_phone_passes_buttons_through(monkeypatch):
         sent.update(payload)
         return True
 
-    with patch("backend.integrations.hermes.notify", new=_fake_notify):
+    with patch("backend.integrations.telegram.notify", new=_fake_notify):
         ok = await events.notify_phone(
             "msg", kind="goal_proposed",
             buttons=[{"text": "✓", "callback_data": "goal:approve:7"}],
@@ -227,6 +227,6 @@ async def test_notify_phone_no_buttons_key_when_absent(monkeypatch):
         sent.update(payload)
         return True
 
-    with patch("backend.integrations.hermes.notify", new=_fake_notify):
+    with patch("backend.integrations.telegram.notify", new=_fake_notify):
         await events.notify_phone("msg", kind="autonomy_digest")
     assert "buttons" not in sent

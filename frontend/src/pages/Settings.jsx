@@ -96,6 +96,15 @@ const SECTIONS = [
     secrets: [{ key: 'OPENWEATHER_API_KEY', label: 'OpenWeatherMap API Key' }],
   },
   {
+    title: 'Notifications & Calendar',
+    secrets: [
+      { key: 'TELEGRAM_BOT_TOKEN', label: 'Telegram Bot Token' },
+      { key: 'TELEGRAM_CHAT_ID', label: 'Telegram Chat ID' },
+      { key: 'GOOGLE_CALENDAR_ICAL_URL', label: 'Google Calendar iCal URL' },
+      { key: 'APPLE_CALENDAR_ICAL_URL', label: 'Apple Calendar iCal URL (optional)' },
+    ],
+  },
+  {
     title: 'Agent Bridge',
     secrets: [{ key: 'HERMES_WEBHOOK_SECRET', label: 'Hermes Webhook Secret' }],
   },
@@ -178,8 +187,8 @@ export default function Settings() {
         }}>
           <p style={{ margin: 0, fontSize: '13px', color: '#fb7185', lineHeight: '1.5' }}>
             Phone notifications are enabled but{' '}
-            <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>HERMES_WEBHOOK_SECRET</span>
-            {' '}is missing — every alert is silently failing. Set it in the Agent Bridge section below.
+            <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>TELEGRAM_BOT_TOKEN</span>
+            {' '}is missing — every alert is silently failing. Set it in the Notifications & Calendar section below.
           </p>
         </Card>
       )}
@@ -213,7 +222,7 @@ export default function Settings() {
                 secretKey={f.key}
                 label={f.label}
                 lastSet={meta[f.key]?.last_set}
-                missing={f.key === 'HERMES_WEBHOOK_SECRET' && notifyBroken}
+                missing={f.key === 'TELEGRAM_BOT_TOKEN' && notifyBroken}
                 onDelete={f.noDelete ? undefined : () => handleDelete(f.key)}
                 onSave={loadMeta}
               />

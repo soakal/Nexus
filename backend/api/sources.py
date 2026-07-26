@@ -14,6 +14,7 @@ router = APIRouter()
 REGISTRY_NAMES = (
     "homeassistant", "unifi", "unraid", "obsidian", "github", "openrouter",
     "weather", "channels_dvr", "adguard", "hermes", "proxmox", "protonmail",
+    "calendar",
 )
 
 
@@ -21,6 +22,7 @@ REGISTRY_NAMES = (
 async def sources_status(_=Depends(require_api_key)):
     from backend.integrations import (
         adguard,
+        calendar,
         channels_dvr,
         github,
         hermes,
@@ -47,6 +49,7 @@ async def sources_status(_=Depends(require_api_key)):
         "hermes": hermes,
         "proxmox": proxmox,
         "protonmail": protonmail,
+        "calendar": calendar,
     }
     assert set(sources) == set(REGISTRY_NAMES), (
         "sources dict and REGISTRY_NAMES have drifted apart — keep them in sync"

@@ -119,9 +119,10 @@ Focus on your priorities."""
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock) as wx, \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock) as channels, \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock) as ag, \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_opus, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
-         patch("backend.integrations.hermes.notify", new_callable=AsyncMock) as mock_hermes, \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock) as mock_hermes, \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
@@ -171,9 +172,10 @@ async def test_briefing_obsidian_write_called():
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
-         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
@@ -204,10 +206,11 @@ async def test_briefing_fact_extraction_excludes_priority_actions_and_inbox():
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=briefing_text), \
          patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
-         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
@@ -236,10 +239,11 @@ async def test_briefing_degrades_gracefully_when_protonmail_unavailable():
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock,
                return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
-         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, side_effect=RuntimeError("mcp down")), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
@@ -268,11 +272,12 @@ async def test_briefing_mail_data_never_reaches_llm_or_fact_extraction():
          patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
          patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
          patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock,
                return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus.") as mock_sonnet, \
          patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
-         patch("backend.integrations.hermes.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value=unread), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value={"1"}), \
          patch("backend.database.engine"), \

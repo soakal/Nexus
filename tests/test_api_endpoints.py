@@ -133,12 +133,13 @@ def test_sources_status_all_healthy(app_client, auth_headers):
          patch("backend.integrations.weather.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.channels_dvr.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.adguard.health_check", new_callable=AsyncMock, return_value=True), \
-         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True):
+         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.calendar.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.get("/api/sources/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         for name in ("homeassistant", "unifi", "unraid", "obsidian", "github",
-                     "openrouter", "weather", "channels_dvr", "adguard", "hermes"):
+                     "openrouter", "weather", "channels_dvr", "adguard", "hermes", "calendar"):
             assert name in data
             assert data[name]["healthy"] is True
             assert "last_checked" in data[name]
@@ -154,7 +155,8 @@ def test_sources_status_some_unhealthy(app_client, auth_headers):
          patch("backend.integrations.weather.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.channels_dvr.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.adguard.health_check", new_callable=AsyncMock, return_value=True), \
-         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True):
+         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.calendar.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.get("/api/sources/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
@@ -172,7 +174,8 @@ def test_sources_status_exception_is_unhealthy(app_client, auth_headers):
          patch("backend.integrations.weather.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.channels_dvr.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.adguard.health_check", new_callable=AsyncMock, return_value=True), \
-         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True):
+         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.calendar.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.get("/api/sources/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()

@@ -170,7 +170,7 @@ async def run_briefing() -> str:
         unraid,
         weather,
     )
-    from backend.integrations.hermes import get_calendar
+    from backend.integrations.calendar import get_today_events
     from backend.integrations import protonmail
     from backend.agents import mail_drafts
 
@@ -198,7 +198,7 @@ async def run_briefing() -> str:
             weather.fetch(),
             channels_dvr.fetch(),
             adguard.fetch(),
-            get_calendar(),
+            get_today_events(),
             protonmail.list_recent(unread_only=True, limit=25),
             protonmail.list_recent(mailbox="Drafts", limit=10),
             return_exceptions=True,
@@ -333,18 +333,21 @@ async def run_briefing() -> str:
         except Exception as e:
             logger.warning(f"Obsidian write failed: {e}")
 
-        # Deliver via Hermes
+        # Deliver via Telegram
         try:
-            from backend.integrations.hermes import notify
+            from backend.integrations.telegram import notify
             delivered = await notify({"type": "briefing", "content": briefing_text, "timestamp": datetime.utcnow().isoformat()})
             if delivered:
+                # Column name kept as-is (delivered_to_hermes) -- renaming it needs
+                # a migration for zero benefit; it now means "delivered via NEXUS's
+                # own Telegram notify path".
                 with Session(engine) as session:
                     b = session.get(Briefing, briefing_id)
                     if b:
                         b.delivered_to_hermes = True
                         session.commit()
         except Exception as e:
-            logger.warning(f"Hermes delivery failed: {e}")
+            logger.warning(f"Telegram delivery failed: {e}")
 
         return briefing_text
     except Exception as exc:

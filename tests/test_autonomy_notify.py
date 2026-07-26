@@ -1,9 +1,9 @@
 """Tests for the autonomy trust layer: phone notifications + daily digest.
 
 Covers:
-  1. notify_phone disabled → returns False, hermes.notify NOT called.
-  2. notify_phone enabled → awaits hermes.notify once with correct payload.
-  3. notify_phone best-effort: hermes.notify raises → returns False, does NOT raise.
+  1. notify_phone disabled → returns False, telegram.notify NOT called.
+  2. notify_phone enabled → awaits telegram.notify once with correct payload.
+  3. notify_phone best-effort: telegram.notify raises → returns False, does NOT raise.
   4a. broker needs_confirm fires a phone alert (kind="needs_confirm").
   4b. EXECUTED action does NOT call notify_phone.
   5. proposer auto-approve fires a phone alert (kind="auto_approved").
@@ -56,17 +56,17 @@ def _seed_state(eng, autonomy: bool = True):
 
 
 # ---------------------------------------------------------------------------
-# Test 1: notify_phone disabled → returns False, hermes.notify NOT called
+# Test 1: notify_phone disabled → returns False, telegram.notify NOT called
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_notify_phone_disabled_returns_false():
     """When phone_notifications_enabled=False, notify_phone returns False and
-    hermes.notify is NOT awaited."""
+    telegram.notify is NOT awaited."""
     hermes_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.hermes.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = False
         s.app_base_url = ""
@@ -80,17 +80,17 @@ async def test_notify_phone_disabled_returns_false():
 
 
 # ---------------------------------------------------------------------------
-# Test 2: notify_phone enabled → awaits hermes.notify with correct payload
+# Test 2: notify_phone enabled → awaits telegram.notify with correct payload
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_notify_phone_enabled_calls_hermes():
     """When phone_notifications_enabled=True and app_base_url="" (no deep-link),
-    notify_phone awaits hermes.notify exactly once with the correct type and content."""
+    notify_phone awaits telegram.notify exactly once with the correct type and content."""
     hermes_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.hermes.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", hermes_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = ""  # deep-link disabled for this test
@@ -108,14 +108,14 @@ async def test_notify_phone_enabled_calls_hermes():
 
 
 # ---------------------------------------------------------------------------
-# Test 3: notify_phone best-effort — hermes.notify raises → returns False
+# Test 3: notify_phone best-effort — telegram.notify raises → returns False
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_notify_phone_best_effort_on_hermes_error():
-    """If hermes.notify raises, notify_phone must return False and NOT re-raise."""
+    """If telegram.notify raises, notify_phone must return False and NOT re-raise."""
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.hermes.notify", side_effect=RuntimeError("boom")):
+         patch("backend.integrations.telegram.notify", side_effect=RuntimeError("boom")):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = ""

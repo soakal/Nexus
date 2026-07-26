@@ -1,46 +1,35 @@
-"""Regression tests for Task 1-6: notifications must never fail silently.
+"""Regression tests: notifications must never fail silently.
 
 Covers:
   - validate() logs ERROR (not raises) when notifications enabled + secret absent
   - validate() still raises for missing ANTHROPIC/NEXUS keys
-  - notify() on 401/403 does NOT queue and logs ERROR
-  - notify() on transport exception still queues (existing behaviour)
-  - deliver_pending() logs status code on non-2xx (was silent)
-  - deliver_pending() does not queue on 401 via notify() path (belt-and-suspenders)
   - GET /api/safety/status exposes notify_channel (secret_present never leaks value)
-  - parametrized: every Hermes auth-path secret is covered by the startup loudness check
+  - parametrized: every Telegram auth-path secret is covered by the startup loudness check
+
+notify()/deliver_pending() failure-classification tests (401/403/404/400 don't
+queue, 429/5xx/transport errors do) live in test_telegram_notify.py, since that
+logic moved from backend.integrations.hermes to backend.integrations.telegram
+(Phase 1 Hermes decoupling).
 """
-import asyncio
-import json
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-import httpx
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_response(status_code: int) -> httpx.Response:
-    return httpx.Response(status_code, request=httpx.Request("POST", "http://test"))
-
 
 # ---------------------------------------------------------------------------
 # Task 1 — validate() startup loudness
 # ---------------------------------------------------------------------------
 
 class TestValidateStartupLoudness:
-    def _make_settings(self, *, phone_enabled: bool, has_hermes_secret: bool, has_anthropic: bool = True, has_nexus: bool = True):
+    def _make_settings(self, *, phone_enabled: bool, has_telegram_secrets: bool, has_anthropic: bool = True, has_nexus: bool = True):
         from backend.config import Settings
         s = Settings()
         object.__setattr__(s, "phone_notifications_enabled", phone_enabled)
 
         def _secret(key):
-            if key == "HERMES_WEBHOOK_SECRET":
-                if has_hermes_secret:
+            if key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+                if has_telegram_secrets:
                     return "real-secret"
                 raise KeyError(key)
             if key == "ANTHROPIC_API_KEY":
@@ -57,226 +46,42 @@ class TestValidateStartupLoudness:
 
     def test_logs_error_when_notify_enabled_and_secret_absent(self, caplog):
         from backend.config import Settings
-        s, _secret = self._make_settings(phone_enabled=True, has_hermes_secret=False)
+        s, _secret = self._make_settings(phone_enabled=True, has_telegram_secrets=False)
         with patch("backend.secrets.manager.get_secret", side_effect=_secret), \
              caplog.at_level(logging.ERROR, logger="backend.config"):
             s.validate()  # must NOT raise
-        assert any("HERMES_WEBHOOK_SECRET" in r.message for r in caplog.records if r.levelno == logging.ERROR)
-        assert any("manage_vault.py" in r.message for r in caplog.records if r.levelno == logging.ERROR)
+        assert any("TELEGRAM_BOT_TOKEN" in r.message for r in caplog.records if r.levelno == logging.ERROR)
+        assert any("TELEGRAM_CHAT_ID" in r.message for r in caplog.records if r.levelno == logging.ERROR)
 
     def test_no_error_when_secret_present(self, caplog):
         from backend.config import Settings
-        s, _secret = self._make_settings(phone_enabled=True, has_hermes_secret=True)
+        s, _secret = self._make_settings(phone_enabled=True, has_telegram_secrets=True)
         with patch("backend.secrets.manager.get_secret", side_effect=_secret), \
              caplog.at_level(logging.ERROR, logger="backend.config"):
             s.validate()
-        assert not any("HERMES_WEBHOOK_SECRET" in r.message for r in caplog.records if r.levelno == logging.ERROR)
+        assert not any("TELEGRAM_BOT_TOKEN" in r.message for r in caplog.records if r.levelno == logging.ERROR)
 
     def test_no_error_when_notifications_disabled(self, caplog):
         from backend.config import Settings
-        s, _secret = self._make_settings(phone_enabled=False, has_hermes_secret=False)
+        s, _secret = self._make_settings(phone_enabled=False, has_telegram_secrets=False)
         with patch("backend.secrets.manager.get_secret", side_effect=_secret), \
              caplog.at_level(logging.ERROR, logger="backend.config"):
             s.validate()
-        assert not any("HERMES_WEBHOOK_SECRET" in r.message for r in caplog.records)
+        assert not any("TELEGRAM_BOT_TOKEN" in r.message for r in caplog.records)
 
     def test_still_raises_for_missing_anthropic_key(self):
         from backend.config import Settings
-        s, _secret = self._make_settings(phone_enabled=False, has_hermes_secret=True, has_anthropic=False)
+        s, _secret = self._make_settings(phone_enabled=False, has_telegram_secrets=True, has_anthropic=False)
         with patch("backend.secrets.manager.get_secret", side_effect=_secret):
             with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
                 s.validate()
 
     def test_still_raises_for_missing_nexus_key(self):
         from backend.config import Settings
-        s, _secret = self._make_settings(phone_enabled=False, has_hermes_secret=True, has_nexus=False)
+        s, _secret = self._make_settings(phone_enabled=False, has_telegram_secrets=True, has_nexus=False)
         with patch("backend.secrets.manager.get_secret", side_effect=_secret):
             with pytest.raises(RuntimeError, match="NEXUS_API_KEY"):
                 s.validate()
-
-
-# ---------------------------------------------------------------------------
-# Task 2 — notify() auth-failure handling
-# ---------------------------------------------------------------------------
-
-class TestNotifyAuthFailure:
-    @pytest.fixture(autouse=True)
-    def _patch_settings(self):
-        mock_settings = MagicMock()
-        mock_settings.hermes_host = "http://hermes-test"
-        mock_settings.hermes_webhook_secret = "test-secret"
-        with patch("backend.config.get_settings", return_value=mock_settings):
-            yield
-
-    @pytest.mark.asyncio
-    async def test_401_does_not_queue_and_logs_error(self, caplog):
-        from backend.integrations import hermes
-
-        initial_count = [0]
-
-        def _count_queue(payload, delivery_type):
-            initial_count[0] += 1
-
-        with patch.object(hermes, "_queue_delivery", side_effect=_count_queue), \
-             patch("httpx.AsyncClient") as mock_client_cls, \
-             caplog.at_level(logging.ERROR, logger="backend.integrations.hermes"):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=_make_response(401))
-            mock_client_cls.return_value = mock_client
-
-            result = await hermes.notify({"message": "test"})
-
-        assert result is False
-        assert initial_count[0] == 0, "401 must NOT queue for retry"
-        assert any("AUTH FAILED" in r.message for r in caplog.records if r.levelno == logging.ERROR)
-
-    @pytest.mark.asyncio
-    async def test_403_does_not_queue_and_logs_error(self, caplog):
-        from backend.integrations import hermes
-
-        queued = []
-
-        with patch.object(hermes, "_queue_delivery", side_effect=lambda p, t: queued.append(t)), \
-             patch("httpx.AsyncClient") as mock_client_cls, \
-             caplog.at_level(logging.ERROR, logger="backend.integrations.hermes"):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=_make_response(403))
-            mock_client_cls.return_value = mock_client
-
-            result = await hermes.notify({"message": "test"})
-
-        assert result is False
-        assert queued == [], "403 must NOT queue for retry"
-
-    @pytest.mark.asyncio
-    async def test_transport_exception_still_queues(self, caplog):
-        from backend.integrations import hermes
-
-        queued = []
-
-        with patch.object(hermes, "_queue_delivery", side_effect=lambda p, t: queued.append(t)), \
-             patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-            mock_client_cls.return_value = mock_client
-
-            result = await hermes.notify({"message": "test"})
-
-        assert result is False
-        assert "notify" in queued, "transport error must queue for retry"
-
-    @pytest.mark.asyncio
-    async def test_500_queues_with_warning(self, caplog):
-        from backend.integrations import hermes
-
-        queued = []
-
-        with patch.object(hermes, "_queue_delivery", side_effect=lambda p, t: queued.append(t)), \
-             patch("httpx.AsyncClient") as mock_client_cls, \
-             caplog.at_level(logging.WARNING, logger="backend.integrations.hermes"):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=_make_response(500))
-            mock_client_cls.return_value = mock_client
-
-            result = await hermes.notify({"message": "test"})
-
-        assert result is False
-        assert "notify" in queued
-        assert any("500" in r.message for r in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# Task 2 — deliver_pending() logs status codes
-# ---------------------------------------------------------------------------
-
-class TestDeliverPendingLogging:
-    @pytest.fixture(autouse=True)
-    def _patch_settings(self):
-        mock_settings = MagicMock()
-        mock_settings.hermes_host = "http://hermes-test"
-        mock_settings.hermes_webhook_secret = "test-secret"
-        with patch("backend.config.get_settings", return_value=mock_settings):
-            yield
-
-    @pytest.mark.asyncio
-    async def test_401_in_deliver_pending_logs_error(self, caplog):
-        from backend.integrations import hermes
-
-        pending = [{
-            "id": 1, "payload_json": json.dumps({"msg": "hi"}),
-            "delivery_type": "notify", "attempts": 3, "last_attempt": None,
-        }]
-
-        with patch.object(hermes, "_load_pending", return_value=pending), \
-             patch.object(hermes, "_apply_pending_results"), \
-             patch("httpx.AsyncClient") as mock_client_cls, \
-             caplog.at_level(logging.ERROR, logger="backend.integrations.hermes"):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=_make_response(401))
-            mock_client_cls.return_value = mock_client
-
-            await hermes.deliver_pending()
-
-        assert any("AUTH FAILED" in r.message and "401" in r.message for r in caplog.records if r.levelno == logging.ERROR)
-
-    @pytest.mark.asyncio
-    async def test_500_in_deliver_pending_logs_warning(self, caplog):
-        from backend.integrations import hermes
-
-        pending = [{
-            "id": 2, "payload_json": json.dumps({"msg": "hi"}),
-            "delivery_type": "notify", "attempts": 1, "last_attempt": None,
-        }]
-
-        with patch.object(hermes, "_load_pending", return_value=pending), \
-             patch.object(hermes, "_apply_pending_results"), \
-             patch("httpx.AsyncClient") as mock_client_cls, \
-             caplog.at_level(logging.WARNING, logger="backend.integrations.hermes"):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=_make_response(500))
-            mock_client_cls.return_value = mock_client
-
-            await hermes.deliver_pending()
-
-        assert any("500" in r.message for r in caplog.records if r.levelno == logging.WARNING)
-
-    @pytest.mark.asyncio
-    async def test_all_fail_cycle_logs_error_summary(self, caplog):
-        from backend.integrations import hermes
-
-        pending = [
-            {"id": i, "payload_json": json.dumps({"msg": "x"}),
-             "delivery_type": "notify", "attempts": 1, "last_attempt": None}
-            for i in range(3)
-        ]
-
-        with patch.object(hermes, "_load_pending", return_value=pending), \
-             patch.object(hermes, "_apply_pending_results"), \
-             patch("httpx.AsyncClient") as mock_client_cls, \
-             caplog.at_level(logging.ERROR, logger="backend.integrations.hermes"):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=_make_response(401))
-            mock_client_cls.return_value = mock_client
-
-            await hermes.deliver_pending()
-
-        summary = [r for r in caplog.records if r.levelno == logging.ERROR and "delivery cycle" in r.message]
-        assert len(summary) == 1
-        assert "0/" in summary[0].message
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +98,7 @@ class TestSafetyStatusNotifyChannel:
         app.dependency_overrides.clear()
 
     def test_notify_channel_present_in_status(self, client):
-        with patch("backend.integrations.hermes.delivery_queue_health", return_value={
+        with patch("backend.integrations.telegram.delivery_queue_health", return_value={
             "pending_count": 2,
             "oldest_age_seconds": 300,
             "dead_lettered_count": 1,
@@ -311,7 +116,7 @@ class TestSafetyStatusNotifyChannel:
         assert nc.get("secret_present") in (True, False)
 
     def test_notify_channel_no_secret_value_leaked(self, client):
-        with patch("backend.integrations.hermes.delivery_queue_health", return_value={
+        with patch("backend.integrations.telegram.delivery_queue_health", return_value={
             "pending_count": 0, "oldest_age_seconds": None,
             "dead_lettered_count": 0, "secret_present": True,
         }):
@@ -324,12 +129,12 @@ class TestSafetyStatusNotifyChannel:
 
 
 # ---------------------------------------------------------------------------
-# Parametrized: every Hermes auth-path property is covered by startup loudness
+# Parametrized: every Telegram auth-path property is covered by startup loudness
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("secret_name", ["HERMES_WEBHOOK_SECRET"])
+@pytest.mark.parametrize("secret_name", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"])
 def test_hermes_auth_secrets_covered_by_startup_check(secret_name, caplog):
-    """Any secret used for Hermes auth must be caught by validate() if missing."""
+    """Any secret used for Telegram notify auth must be caught by validate() if missing."""
     from backend.config import Settings
     s = Settings()
     object.__setattr__(s, "phone_notifications_enabled", True)

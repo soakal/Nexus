@@ -9,13 +9,13 @@ router = APIRouter()
 
 @router.get("/")
 async def get_today(_=Depends(require_api_key)):
-    from backend.integrations.hermes import get_calendar
+    from backend.integrations.calendar import get_today_events
     from backend.integrations import protonmail
-    calendar, email = await asyncio.gather(
-        get_calendar(), protonmail.inbox_summary(limit=7), return_exceptions=True
+    calendar_str, email = await asyncio.gather(
+        get_today_events(), protonmail.inbox_summary(limit=7), return_exceptions=True
     )
     return {
-        "calendar": calendar if not isinstance(calendar, Exception) else "(unavailable)",
+        "calendar": calendar_str if not isinstance(calendar_str, Exception) else "(unavailable)",
         "email": email if not isinstance(email, Exception) else "(unavailable)",
     }
 

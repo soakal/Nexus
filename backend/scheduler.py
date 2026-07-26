@@ -64,7 +64,7 @@ async def _record_uptime():
         from sqlmodel import Session
         from backend.database import UptimeSample, engine
         from backend.integrations import (
-            adguard, channels_dvr, github, hermes, homeassistant,
+            adguard, calendar, channels_dvr, github, hermes, homeassistant,
             obsidian, openrouter, protonmail, proxmox, unifi, unraid, weather,
         )
         import time
@@ -74,6 +74,7 @@ async def _record_uptime():
             "obsidian": obsidian, "github": github, "openrouter": openrouter,
             "weather": weather, "channels_dvr": channels_dvr, "adguard": adguard,
             "hermes": hermes, "proxmox": proxmox, "protonmail": protonmail,
+            "calendar": calendar,
         }
 
         async def _check(name, mod):
@@ -145,7 +146,7 @@ async def _record_speedtest():
 
 async def _retry_pending_deliveries():
     try:
-        from backend.integrations.hermes import deliver_pending
+        from backend.integrations.telegram import deliver_pending
         await deliver_pending()
     except Exception as e:
         logger.error(f"Retry delivery error: {e}")

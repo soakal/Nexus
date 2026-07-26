@@ -1,4 +1,4 @@
-"""Scheduler stall watchdog + Hermes dead-letter alert (Tier 3 blind-spot removal).
+"""Scheduler stall watchdog + notification dead-letter alert (Tier 3 blind-spot removal).
 
 Two complementary checks run on a 5-minute schedule:
 
@@ -8,9 +8,9 @@ Two complementary checks run on a 5-minute schedule:
    case is caught by health monitoring); this only catches an individual
    stalled/misfiring job.
 
-2. Hermes dead-letter alert — detects PendingDelivery rows whose attempts
-   have reached or exceeded the dead_letter_attempts threshold, meaning Hermes
-   has been unreachable for many consecutive retries.
+2. Notification dead-letter alert — detects PendingDelivery rows whose attempts
+   have reached or exceeded the dead_letter_attempts threshold, meaning
+   Telegram has been unreachable for many consecutive retries.
 
 Both checks are BEST-EFFORT (never raise), phone-alert via events.notify_phone,
 and debounced per-condition. The dead-letter alert uses a DB-backed cooldown
@@ -165,13 +165,13 @@ async def check_dead_letters(*, threshold: int, cooldown_s: int) -> int:
         rows = await asyncio.to_thread(_dead_letter_count, threshold)
         if rows:
             logger.error(
-                f"{len(rows)} Hermes deliveries dead-lettered (>= {threshold} retries) — "
-                "notification pipeline likely broken (check HERMES_WEBHOOK_SECRET / Hermes connectivity)"
+                f"{len(rows)} Telegram deliveries dead-lettered (>= {threshold} retries) — "
+                "notification pipeline likely broken (check TELEGRAM_BOT_TOKEN / Telegram reachability)"
             )
         if rows and await asyncio.to_thread(_should_alert_dead_letters_db, cooldown_s):
             await events.notify_phone(
-                f"NEXUS has {len(rows)} undelivered Hermes message(s) stuck"
-                f" (>= {threshold} retries). Check Hermes connectivity.",
+                f"NEXUS has {len(rows)} undelivered Telegram message(s) stuck"
+                f" (>= {threshold} retries). Check Telegram reachability.",
                 kind="dead_letter",
             )
         return len(rows)

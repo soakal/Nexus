@@ -165,13 +165,29 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         FieldContract("recent_notes", (list,), "nonempty",
                        consumer="obsidian.py:159 (vault is never empty; catches a bad obsidian_vault_path)"),
     ),
+    "calendar": (
+        # feeds_ok/feeds_total deliberately NOT asserted here: fetch() already
+        # raises RuntimeError when feeds_ok==0 (a total-failure "positive" rule
+        # would be tautologically true on every object this canary ever sees,
+        # since a 0 can only occur on a path that never reaches check_object).
+        # A partial failure (feeds_ok < feeds_total, one feed silently dead)
+        # would be the real 200-but-quietly-wrong case, but that needs a
+        # cross-field comparison this framework's single-field rules don't
+        # express — left as a known gap rather than a fake assertion.
+        #
+        # `summary`, not `events`: briefing.py/today.py never touch .events
+        # directly — both consume the string-returning get_today_events()
+        # wrapper (which reads .summary), so that's the field a shape change
+        # would actually break.
+        FieldContract("summary", (str,), "type", consumer="briefing.py:201,288 (via get_today_events/calendar_block), api/today.py:14,18"),
+    ),
 }
 
 EXCLUDED: dict[str, str] = {
     "speedtest": "no fetch(); run_speedtest() downloads 25MB + uploads 5MB per call — a canary must not trigger that on a schedule",
     "protonmail": "no fetch(); reads are parameterised (list_recent), and inbox_summary() never raises — it returns the error as a string, so it's unassertable",
     "openrouter": "fetch() has zero consumers; available is hardcoded True on success",
-    "hermes": "fetch() has zero callers and can never fail — everything is swallowed into HermesStatus(alive=False)",
+    "hermes": "no fetch() — it's now a pure action-relay bridge + liveness probe (get_status/health_check), not a data integration with a shape to protect",
 }
 
 
