@@ -272,8 +272,8 @@ export default function Dashboard() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <Eyebrow>AdGuard Home</Eyebrow>
             <StatusPill
-              tone={adguard?.filtering_enabled ? 'green' : 'grey'}
-              label={adguard?.filtering_enabled ? 'Filtering on' : 'Off'}
+              tone={adguard?.filtering_enabled == null ? 'amber' : adguard.filtering_enabled ? 'green' : 'grey'}
+              label={adguard?.filtering_enabled == null ? 'Unknown' : adguard.filtering_enabled ? 'Filtering on' : 'Off'}
             />
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', marginTop: '18px' }}>

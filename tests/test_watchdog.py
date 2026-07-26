@@ -11,8 +11,16 @@ Safety contract being verified:
 8. Best-effort: scheduler.get_jobs() raising does not propagate — returns [].
 9. run_watchdog always returns a dict and never raises.
 10. Scheduler registers job id "watchdog" when watchdog_enabled=True.
+11. check_integration_contracts alerts only after N consecutive breaching ticks (Feature 1).
+12. An integration whose fetch() raises is not a breach and resets its streak.
+13. A healthy tick resets a partial breach streak (no premature alert on recovery).
+14. contract_canary_enabled=False short-circuits before any fetch() call.
+15. Contract-breach alerts carry kind="contract_breach".
+16. run_watchdog's summary always includes "contract_breaches", success and exception paths alike.
+17. The canary calls the cached fetch(), never bypasses it via __wrapped__.
 """
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -613,3 +621,167 @@ async def test_run_watchdog_summary_includes_auth_bursts(eng):
         result = await watchdog.run_watchdog()
 
     assert "auth_bursts" in result
+
+
+# ---------------------------------------------------------------------------
+# check_integration_contracts (Feature 1 — Integration Contract Canary)
+#
+# All tests patch contracts.CONTRACTS down to a single fake "weather" entry
+# and patch backend.integrations.weather.fetch directly (the real module
+# object, resolved via the same import_module path the canary itself uses —
+# no real network/integration is ever touched).
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _FakeWeatherData:
+    condition: str = "Sunny"
+
+
+def _breaching_contracts():
+    from backend.safety.contracts import FieldContract
+    return {
+        "weather": (
+            FieldContract("condition", (str,), "not_default", default="Unknown", consumer="test:1"),
+        ),
+    }
+
+
+_BREACHING_CONTRACTS = _breaching_contracts()
+
+
+def _settings_with_canary(**overrides):
+    from backend.config import Settings
+    defaults = dict(watchdog_enabled=True, contract_canary_enabled=True, contract_canary_consecutive_ticks=3)
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_contract_canary_no_alert_below_streak():
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    notify_mock = AsyncMock(return_value=True)
+    breaching = AsyncMock(return_value=_FakeWeatherData(condition="Unknown"))
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", breaching), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged1 = await watchdog.check_integration_contracts()
+        paged2 = await watchdog.check_integration_contracts()
+        paged3 = await watchdog.check_integration_contracts()
+
+    assert paged1 == [] and paged2 == []
+    assert paged3 == ["weather"]
+    notify_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_contract_canary_exception_is_not_a_breach():
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    notify_mock = AsyncMock(return_value=True)
+    raising = AsyncMock(side_effect=RuntimeError("integration down"))
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", raising), \
+         patch("backend.events.notify_phone", notify_mock):
+        for _ in range(5):
+            paged = await watchdog.check_integration_contracts()
+            assert paged == []
+
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_contract_canary_streak_resets_on_recovery():
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    notify_mock = AsyncMock(return_value=True)
+    breaching = _FakeWeatherData(condition="Unknown")
+    healthy = _FakeWeatherData(condition="Sunny")
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.events.notify_phone", notify_mock):
+        for data in (breaching, breaching, healthy, breaching, breaching):
+            with patch("backend.integrations.weather.fetch", AsyncMock(return_value=data)):
+                paged = await watchdog.check_integration_contracts()
+                assert paged == []
+
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_contract_canary_disabled_flag():
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary(contract_canary_enabled=False)
+    fetch_mock = AsyncMock(return_value=_FakeWeatherData(condition="Unknown"))
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", fetch_mock):
+        paged = await watchdog.check_integration_contracts()
+
+    assert paged == []
+    fetch_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_contract_canary_alert_kind():
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    notify_mock = AsyncMock(return_value=True)
+    breaching = AsyncMock(return_value=_FakeWeatherData(condition="Unknown"))
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", breaching), \
+         patch("backend.events.notify_phone", notify_mock):
+        for _ in range(3):
+            await watchdog.check_integration_contracts()
+
+    assert notify_mock.await_args.kwargs["kind"] == "contract_breach"
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_includes_contract_breaches_key(eng):
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [])
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+    assert "contract_breaches" in result
+
+    # Also present in the outer-exception fallback path.
+    with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
+        result2 = await watchdog.run_watchdog()
+    assert "contract_breaches" in result2
+
+
+@pytest.mark.asyncio
+async def test_contract_canary_does_not_bypass_cache():
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    real_fetch = AsyncMock(return_value=_FakeWeatherData(condition="Sunny"))
+    wrapped_original = AsyncMock(side_effect=AssertionError("must not call __wrapped__"))
+    real_fetch.__wrapped__ = wrapped_original
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", real_fetch):
+        await watchdog.check_integration_contracts()
+
+    real_fetch.assert_awaited_once()
+    wrapped_original.assert_not_called()

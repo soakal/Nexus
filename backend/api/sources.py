@@ -7,6 +7,15 @@ from backend.auth import require_api_key
 
 router = APIRouter()
 
+# Module-level (not function-local) so backend/safety/contracts.py's drift
+# test can import the real registry name set instead of hardcoding a copy —
+# a copy would silently stop matching reality the moment a 13th integration
+# is added here without a matching contracts.py entry.
+REGISTRY_NAMES = (
+    "homeassistant", "unifi", "unraid", "obsidian", "github", "openrouter",
+    "weather", "channels_dvr", "adguard", "hermes", "proxmox", "protonmail",
+)
+
 
 @router.get("/status")
 async def sources_status(_=Depends(require_api_key)):
@@ -39,6 +48,9 @@ async def sources_status(_=Depends(require_api_key)):
         "proxmox": proxmox,
         "protonmail": protonmail,
     }
+    assert set(sources) == set(REGISTRY_NAMES), (
+        "sources dict and REGISTRY_NAMES have drifted apart — keep them in sync"
+    )
 
     results = await asyncio.gather(
         *[s.health_check() for s in sources.values()],

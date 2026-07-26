@@ -75,9 +75,15 @@ def _should_alert_dead_letters_db(cooldown_s: float) -> bool:
         return True
 
 
+# Process-local streak of consecutive integration-contract breaches, keyed by
+# integration name. Reset by reset() in tests.
+_contract_fail_streak: dict[str, int] = {}
+
+
 def reset() -> None:
     """Clear all debounce state.  Test hook — call at the start of each test."""
     _last_alert.clear()
+    _contract_fail_streak.clear()
 
 
 async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
@@ -254,10 +260,86 @@ async def check_auth_failure_burst() -> list[str]:
         return []
 
 
+def _format_contract_breach(name: str, breaches: list[str], streak: int, window_min: int, cooldown_s: int) -> str:
+    detail = "; ".join(breaches[:3])
+    return (
+        f"NEXUS contract alert: '{name}' returned OK but broke its expected shape "
+        f"on {streak} consecutive checks ({window_min} min) — {detail}. "
+        f"Downstream code will render this as fact. No further alerts for "
+        f"{cooldown_s // 60} min."
+    )
+
+
+async def check_integration_contracts() -> list[str]:
+    """Assert each integration's cached fetch() still has the shape its real
+    consumers depend on (backend/safety/contracts.py). Gated by
+    settings.contract_canary_enabled, independent of every other check.
+    Best-effort: any exception returns [] without propagating. Returns the
+    integration names paged on THIS tick.
+
+    Deliberately reads the CACHED fetch(), never fetch.__wrapped__: the cached
+    value is what briefing/tools/chat actually read, so validating it
+    validates reality — and bypassing the cache would re-trigger real side
+    effects (homeassistant.fetch() can POST reload_config_entry; unifi.fetch()
+    writes KnownDevice rows and does a full login).
+
+    An integration whose fetch() RAISES is not a breach — that's an outage,
+    already covered by the 2-minute uptime job. Only a successful-but-wrong-
+    shaped return counts, and a raise resets that integration's streak to 0.
+    """
+    import importlib
+
+    from backend.safety import contracts
+
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "contract_canary_enabled", True):
+            return []
+
+        consecutive_ticks = getattr(s, "contract_canary_consecutive_ticks", 3)
+        cooldown_s = getattr(s, "watchdog_alert_cooldown_s", 3600)
+        window_min = consecutive_ticks * 5
+
+        paged = []
+        from backend import events
+
+        # Sequential, not asyncio.gather — same reasoning as the 2-min uptime
+        # job ("firing all 10 at once thunders the event loop"). These calls
+        # hit an already-warm cache, so sequential costs nothing real.
+        for name, field_contracts in contracts.CONTRACTS.items():
+            try:
+                mod = importlib.import_module(f"backend.integrations.{name}")
+                data = await mod.fetch()
+            except Exception:
+                _contract_fail_streak[name] = 0
+                continue
+
+            breaches = contracts.check_object(data, field_contracts)
+            if not breaches:
+                _contract_fail_streak[name] = 0
+                continue
+
+            _contract_fail_streak[name] = _contract_fail_streak.get(name, 0) + 1
+            streak = _contract_fail_streak[name]
+            if streak >= consecutive_ticks and _should_alert(f"contract:{name}", cooldown_s):
+                logger.error(f"Integration contract breach: '{name}' — {'; '.join(breaches)}")
+                await events.notify_phone(
+                    _format_contract_breach(name, breaches, streak, window_min, cooldown_s),
+                    kind="contract_breach",
+                )
+                paged.append(name)
+
+        return paged
+    except Exception as exc:
+        logger.warning(f"check_integration_contracts error (ignored): {exc}")
+        return []
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all four checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all five checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -274,13 +356,21 @@ async def run_watchdog() -> dict:
         dead_count = await check_dead_letters(threshold=threshold, cooldown_s=cooldown_s)
         budget_warn_fired = await check_budget_warning()
         auth_bursts = await check_auth_failure_burst()
+        contract_breaches = await check_integration_contracts()
 
         return {
             "stalled": stalled,
             "dead_letters": dead_count,
             "budget_warn_fired": budget_warn_fired,
             "auth_bursts": auth_bursts,
+            "contract_breaches": contract_breaches,
         }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
-        return {"stalled": [], "dead_letters": 0, "budget_warn_fired": False, "auth_bursts": []}
+        return {
+            "stalled": [],
+            "dead_letters": 0,
+            "budget_warn_fired": False,
+            "auth_bursts": [],
+            "contract_breaches": [],
+        }

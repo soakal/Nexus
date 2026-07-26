@@ -218,6 +218,15 @@ async def run_briefing() -> str:
                 return default
             return getattr(obj, attr, default)
 
+        # AdGuard's filtering_enabled is None (not a default True/False) when its
+        # own /control/status read failed — a real reading exists but couldn't be
+        # taken, distinct from "AdGuard is unreachable" (ag itself would be an
+        # Exception then, caught above by safe()). Render that as "unknown", not
+        # a bare None, since a bare None reads as a bug in the prompt/JSON either
+        # way and used to silently read as "filtering on" instead.
+        ag_filtering = safe(ag, "filtering_enabled", None)
+        ag_filtering = "unknown" if ag_filtering is None else ag_filtering
+
         context = {
             "home_assistant": {
                 "entity_count": len(safe(ha, "entities", [])),
@@ -254,7 +263,7 @@ async def run_briefing() -> str:
                 "queries_today": safe(ag, "queries_today", 0),
                 "blocked_today": safe(ag, "blocked_today", 0),
                 "blocked_pct": safe(ag, "blocked_pct", 0),
-                "filtering_enabled": safe(ag, "filtering_enabled", True),
+                "filtering_enabled": ag_filtering,
             },
         }
 
@@ -272,7 +281,7 @@ async def run_briefing() -> str:
             weather_summary=weather_summary,
             blocked_today=safe(ag, "blocked_today", 0),
             blocked_pct=safe(ag, "blocked_pct", 0),
-            filtering_enabled=safe(ag, "filtering_enabled", True),
+            filtering_enabled=ag_filtering,
             recording_now=rec_str,
             dvr_used=safe(channels, "storage_used_gb", 0),
             dvr_total=safe(channels, "storage_total_gb", 0),

@@ -16,7 +16,11 @@ class AdGuardData:
     blocked_pct: float = 0.0
     top_blocked: list = field(default_factory=list)
     top_clients: list = field(default_factory=list)
-    filtering_enabled: bool = True
+    # None (not True) when /control/status can't be read — a failed read used
+    # to default to "protection on", which could report protection enabled
+    # when it's actually off. None means "unknown"; only a real 200 sets a
+    # concrete True/False.
+    filtering_enabled: bool | None = None
 
 
 def _auth(settings):
@@ -44,9 +48,12 @@ async def fetch() -> AdGuardData:
         stats = resp.json()
 
         resp2 = await client.get(f"{host}/control/status", auth=auth)
-        filtering_enabled = True
+        filtering_enabled = None
         if resp2.status_code == 200:
-            filtering_enabled = resp2.json().get("protection_enabled", True)
+            # No default on .get(): a 200 whose body is missing the key is
+            # still an unknown read, not a confirmed True — same reasoning
+            # as the non-200 case above.
+            filtering_enabled = resp2.json().get("protection_enabled")
 
     total = stats.get("num_dns_queries", 0)
     blocked = stats.get("num_blocked_filtering", 0)

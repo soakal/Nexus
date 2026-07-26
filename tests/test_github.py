@@ -65,24 +65,40 @@ async def test_github_fetch_no_prs():
 
 
 @pytest.mark.asyncio
-async def test_github_fetch_api_error_returns_empty():
-    """Non-200 responses from GitHub produce empty lists, not exceptions."""
+async def test_github_raises_on_non_200():
+    """A non-200 response must raise, not silently report an empty list — a
+    dead token (401/403) or rate limit used to be indistinguishable from a
+    genuinely quiet week, and the briefing rendered the empty list as fact.
+    Matches the raise-on-failure convention every other integration already
+    uses (unraid.py, proxmox.py, channels_dvr.py)."""
     with patch("httpx.AsyncClient") as mock_cls:
         mock_client = AsyncMock()
         r1 = MagicMock(status_code=403)
         r1.json.return_value = {"items": []}
-        r2 = MagicMock(status_code=403)
-        r2.json.return_value = []
-        r3 = MagicMock(status_code=403)
-        r3.json.return_value = []
-        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[r1, r2, r3])
+        mock_client.__aenter__.return_value.get = AsyncMock(return_value=r1)
         mock_cls.return_value = mock_client
 
         from backend.integrations.github import fetch
-        data = await fetch()
-        assert data.open_prs == []
-        assert data.assigned_issues == []
-        assert data.recent_commits == []
+        with pytest.raises(RuntimeError, match="403"):
+            await fetch()
+
+
+@pytest.mark.asyncio
+async def test_github_raises_on_non_200_for_issues_endpoint():
+    """The open-PRs call can succeed while a later call (issues) fails —
+    that must still raise, not silently blend a success with a failure."""
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        r1 = MagicMock(status_code=200)
+        r1.json.return_value = {"items": []}
+        r2 = MagicMock(status_code=403)
+        r2.json.return_value = []
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[r1, r2])
+        mock_cls.return_value = mock_client
+
+        from backend.integrations.github import fetch
+        with pytest.raises(RuntimeError, match="403"):
+            await fetch()
 
 
 @pytest.mark.asyncio

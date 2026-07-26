@@ -256,6 +256,29 @@ class Settings(BaseSettings):
     auth_burst_threshold: int = 25
     auth_burst_window_minutes: int = 30
 
+    # Integration contract canary — asserts each integration's CACHED fetch() still
+    # has the shape its real consumers index into (backend/safety/contracts.py).
+    # Runs inside the same 5-min watchdog job, so it shares watchdog_enabled's gate.
+    #
+    # Deliberately reads the CACHED fetch(), not fetch.__wrapped__: the cached value
+    # IS what briefing/tools/chat read, so validating it validates reality; and a
+    # fresh call would re-trigger real side effects (homeassistant.fetch can POST
+    # reload_config_entry; unifi.fetch writes KnownDevice rows + does a full login).
+    #
+    # consecutive_ticks=3: the watchdog fires every 5 min and these fetch() caches
+    # hold for 30-60s, so 3 ticks are 3 genuinely independent observations spanning
+    # 15 min — no two can share a cache window. One tick can be a transient; three
+    # spanning 15 min is a persistent shape change. 15 min is also comfortably
+    # inside the lead time before the 07:00 briefing, which is the single biggest
+    # consumer of these fields and the thing a silent blank would turn into a lie.
+    # An integration that RAISES is not a breach (that's an outage, already covered
+    # by the 2-min uptime job) — only a successful-but-wrong-shaped return counts.
+    #
+    # Reuses watchdog_alert_cooldown_s (3600) for the repeat-alert cooldown — no new
+    # knob, same one the stall/dead-letter checks use.
+    contract_canary_enabled: bool = True
+    contract_canary_consecutive_ticks: int = 3
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

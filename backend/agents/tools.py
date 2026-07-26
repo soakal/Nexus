@@ -168,10 +168,15 @@ async def _adguard_status(_input: dict) -> str:
     try:
         from backend.integrations import adguard
         data = await adguard.fetch()
+        # filtering_enabled is None when AdGuard answered but its own
+        # /control/status read failed. Render as "unknown", not a bare None
+        # or the old silently-wrong True default.
+        filtering = _safe(data, "filtering_enabled", None)
+        filtering = "unknown" if filtering is None else filtering
         summary = (
             f"AdGuard: {_safe(data, 'blocked_today', 0)} blocked today "
             f"({_safe(data, 'blocked_pct', 0)}%), "
-            f"filtering={_safe(data, 'filtering_enabled', True)}"
+            f"filtering={filtering}"
         )
         return _truncate(summary)
     except Exception as e:

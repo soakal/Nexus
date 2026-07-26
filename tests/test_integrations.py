@@ -105,6 +105,27 @@ async def test_adguard_fetch():
 
 
 @pytest.mark.asyncio
+async def test_adguard_filtering_unknown_on_status_failure():
+    """A failed /control/status read must report filtering_enabled=None
+    ("unknown"), not silently default to True — a failed read used to be
+    able to report protection ON when it might actually be off."""
+    stats = {"num_dns_queries": 1000, "num_blocked_filtering": 234, "top_blocked_domains": {}, "top_clients": {}}
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_stats = MagicMock(status_code=200)
+        mock_stats.raise_for_status = MagicMock()
+        mock_stats.json.return_value = stats
+        mock_status = MagicMock(status_code=500)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[mock_stats, mock_status])
+        mock_client_cls.return_value = mock_client
+
+        from backend.integrations.adguard import fetch
+        data = await fetch()
+        assert data.filtering_enabled is None
+
+
+@pytest.mark.asyncio
 async def test_channels_fetch():
     dvr_data = {"disk": {"total": 1024**3 * 2000, "free": 1024**3 * 1500, "used": 1024**3 * 500}}
 

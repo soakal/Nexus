@@ -183,9 +183,15 @@ def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
 
     # AdGuard
     if not isinstance(ag, Exception):
+        # filtering_enabled is None when AdGuard answered but its own
+        # /control/status read failed — distinct from AdGuard being fully
+        # unreachable (the isinstance(ag, Exception) branch above). Render as
+        # "unknown", not a bare None or a silently-wrong True default.
+        ag_filtering = safe(ag, "filtering_enabled", None)
+        ag_filtering = "unknown" if ag_filtering is None else ag_filtering
         lines.append(
             f"AdGuard: {safe(ag, 'blocked_today', 0)} blocked today "
-            f"({safe(ag, 'blocked_pct', 0)}%), filtering={safe(ag, 'filtering_enabled', True)}"
+            f"({safe(ag, 'blocked_pct', 0)}%), filtering={ag_filtering}"
         )
     else:
         lines.append("AdGuard: unavailable")
