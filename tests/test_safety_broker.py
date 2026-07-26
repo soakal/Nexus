@@ -395,6 +395,38 @@ def test_safety_actions_endpoint_auth_and_list(safety_client, auth_headers):
     assert data[0]["decision"] == "failed"
 
 
+def test_policy_endpoints_get_and_delete(safety_client, auth_headers):
+    from backend.safety import governor
+
+    eng = safety_client._engine
+    with patch("backend.database.engine", eng):
+        governor.add_auto_allow_kind("ha_service")
+        governor.add_forbidden_kind("hermes_relay")
+
+    resp = safety_client.get("/api/safety/policy", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["auto_allow"] == ["ha_service"]
+    assert data["forbid"] == ["hermes_relay"]
+
+    # No auth -> 401
+    resp = safety_client.get("/api/safety/policy")
+    assert resp.status_code == 401
+
+    # Revoke the promotion — no confirm gate, always allowed.
+    resp = safety_client.delete("/api/safety/policy/auto-allow/ha_service", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["auto_allow"] == []
+
+    # Un-forbid.
+    resp = safety_client.delete("/api/safety/policy/forbid/hermes_relay", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["forbid"] == []
+
+    resp = safety_client.get("/api/safety/policy", headers=auth_headers)
+    assert resp.json() == {"auto_allow": [], "forbid": []}
+
+
 def test_safety_confirm_404_and_409(safety_client, auth_headers):
     eng = safety_client._engine
     # missing -> 404
@@ -689,4 +721,102 @@ async def test_chat_hermes_invalid_json_falls_back(eng):  # AC4.4
     logs = _all_logs(eng)
     assert len([l for l in logs if l.kind == "hermes_relay"]) == 1
     assert len([l for l in logs if l.kind == "hermes_action"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Feature 3 Phase 1 — policy_promote classification + dispatcher
+# ---------------------------------------------------------------------------
+
+def test_policy_promote_classification():
+    risk, reversibility = classify("policy_promote", {"kind": "ha_service"})
+    assert risk == Risk.HIGH
+    assert reversibility == Reversibility.REVERSIBLE_BY_INVERSE
+
+
+@pytest.mark.asyncio
+async def test_policy_promote_dispatcher_writes_csv(eng):
+    from backend.safety import governor
+
+    with Session(eng) as s:
+        from backend.database import SystemState
+        s.add(SystemState(id=1))
+        s.commit()
+
+    # Confirmed=True (as if via the safety:confirm flow) so it dispatches.
+    res = await execute_action(
+        actor="user", kind="policy_promote", target="ha_service",
+        payload={"kind": "ha_service"},
+    )
+    assert res.decision == Decision.EXECUTED
+    overrides = governor.get_policy_overrides()
+    assert "ha_service" in overrides["auto_allow"]
+
+
+@pytest.mark.asyncio
+async def test_policy_promote_rejects_kind_target_mismatch(eng):
+    """Verification caught a real gap: nothing enforced that payload["kind"]
+    matched target, and add_auto_allow_kind splits on comma — a payload of
+    "a,b" would promote TWO kinds while the confirm alert (built from
+    target) only ever named one. Must fail closed (FAILED, not EXECUTED),
+    and must not write anything to the CSV."""
+    from backend.safety import governor
+
+    with Session(eng) as s:
+        from backend.database import SystemState
+        s.add(SystemState(id=1))
+        s.commit()
+
+    res = await execute_action(
+        actor="user", kind="policy_promote", target="ha_service",
+        payload={"kind": "obsidian_task,unraid_docker"},
+    )
+    assert res.decision == Decision.FAILED
+    overrides = governor.get_policy_overrides()
+    assert overrides["auto_allow"] == set()
+
+
+@pytest.mark.asyncio
+async def test_policy_promote_rejects_never_promotable_even_if_matching(eng):
+    with Session(eng) as s:
+        from backend.database import SystemState
+        s.add(SystemState(id=1))
+        s.commit()
+
+    res = await execute_action(
+        actor="user", kind="policy_promote", target="hermes_relay",
+        payload={"kind": "hermes_relay"},
+    )
+    assert res.decision == Decision.FAILED
+
+
+@pytest.mark.asyncio
+async def test_policy_promote_autonomous_needs_confirm(eng):
+    # An autonomous proposer must always land on NEEDS_CONFIRM for its own
+    # promotion request, never auto-allow itself.
+    res = await execute_action(
+        actor="autonomous", kind="policy_promote", target="ha_service",
+        payload={"kind": "ha_service"},
+    )
+    assert res.decision == Decision.NEEDS_CONFIRM
+
+
+# ---------------------------------------------------------------------------
+# Feature 3 Phase 1 — zero extra DB round trips for the policy fetch
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_no_extra_db_roundtrip_for_policy(eng):
+    from backend.safety import governor
+
+    # A HIGH-risk unconfirmed HA lock action lands on NEEDS_CONFIRM without
+    # dispatching anything — isolates the round-trip count to the gate path.
+    with patch("backend.safety.governor.get_system_state", wraps=governor.get_system_state) as spy:
+        res = await execute_action(
+            actor="agent", kind="ha_service", target="lock.front_door",
+            payload={"domain": "lock", "service": "unlock"},
+        )
+    assert res.decision == Decision.NEEDS_CONFIRM
+    # Exactly one call — the existing kill-switch fetch is reused for the
+    # policy override lookup, no second round trip added.
+    assert spy.call_count == 1
 

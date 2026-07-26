@@ -69,6 +69,7 @@ async def list_actions(
             "idempotency_key": r.idempotency_key,
             "created_at": r.created_at.isoformat(),
             "updated_at": r.updated_at.isoformat(),
+            "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
         }
         for r in rows
     ]
@@ -367,3 +368,46 @@ async def set_budget(
         "per_task_budget_usd": state["per_task_budget_usd"],
         "scheduler_running": _scheduler_running(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Confirm-policy overrides (Feature 3 — Confirm-Policy Learner, Phase 1)
+# ---------------------------------------------------------------------------
+# Reading and revoking are plain GET/DELETE — granting a promotion is
+# deliberately NOT here: that only ever happens via the broker's
+# policy_promote kind + the existing safety:confirm Telegram buttons, so a
+# promotion always goes through a real human confirm. Revoking a promotion
+# (the DELETE below) needs no such gate — it only removes capability.
+
+@router.get("/policy")
+async def get_policy(_=Depends(require_api_key)):
+    """Current confirm-policy overrides: kinds promoted to auto-allow and
+    kinds demoted to always-forbidden for agent/autonomous actors."""
+    from backend.safety import governor
+
+    overrides = await asyncio.to_thread(governor.get_policy_overrides)
+    return {
+        "auto_allow": sorted(overrides["auto_allow"]),
+        "forbid": sorted(overrides["forbid"]),
+    }
+
+
+@router.delete("/policy/forbid/{kind}")
+async def delete_forbidden_kind(kind: str, _=Depends(require_api_key)):
+    """Remove a kind from the always-forbidden list (un-demote it)."""
+    from backend.safety import governor
+
+    await asyncio.to_thread(governor.remove_forbidden_kind, kind)
+    overrides = await asyncio.to_thread(governor.get_policy_overrides)
+    return {"ok": True, "forbid": sorted(overrides["forbid"])}
+
+
+@router.delete("/policy/auto-allow/{kind}")
+async def delete_auto_allow_kind(kind: str, _=Depends(require_api_key)):
+    """Revoke a kind's auto-allow promotion. Always allowed without a confirm
+    gate — unlike granting one, revoking only removes capability."""
+    from backend.safety import governor
+
+    await asyncio.to_thread(governor.remove_auto_allow_kind, kind)
+    overrides = await asyncio.to_thread(governor.get_policy_overrides)
+    return {"ok": True, "auto_allow": sorted(overrides["auto_allow"])}

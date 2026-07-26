@@ -155,6 +155,89 @@ async def test_confirm_happy_path_executes_and_updates_row_in_place(eng):
 
 
 # ---------------------------------------------------------------------------
+# Feature 3 Phase 1 — confirmed_at stamping
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_confirm_stamps_confirmed_at(eng):
+    _seed_state(eng, autonomy=True)
+    log_id = _seed_needs_confirm(eng)
+
+    with patch("backend.integrations.homeassistant.call_service", new_callable=AsyncMock) as cs:
+        cs.return_value = {"ok": True}
+        status, res = await confirm_action(log_id)
+
+    assert status == "executed"
+    logs = _all_logs(eng)
+    assert logs[0].confirmed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_confirmed_at_precedes_dispatch(eng):
+    """confirmed_at is stamped even when the dispatch itself subsequently fails
+    — the timestamp measures the human's tap, not dispatch success."""
+    _seed_state(eng, autonomy=True)
+    log_id = _seed_needs_confirm(eng)
+
+    with patch("backend.integrations.homeassistant.call_service", new_callable=AsyncMock) as cs:
+        cs.side_effect = RuntimeError("HA unreachable")
+        status, res = await confirm_action(log_id)
+
+    assert status == "failed"
+    logs = _all_logs(eng)
+    assert logs[0].confirmed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_double_confirm_does_not_restamp(eng):
+    _seed_state(eng, autonomy=True)
+    log_id = _seed_needs_confirm(eng)
+
+    with patch("backend.integrations.homeassistant.call_service", new_callable=AsyncMock) as cs:
+        cs.return_value = {"ok": True}
+        await confirm_action(log_id)
+
+    logs = _all_logs(eng)
+    first_stamp = logs[0].confirmed_at
+    assert first_stamp is not None
+
+    # Second confirm attempt on the now-executed row is not_confirmable —
+    # must not touch confirmed_at again.
+    status, res = await confirm_action(log_id)
+    assert status == "not_confirmable"
+    logs = _all_logs(eng)
+    assert logs[0].confirmed_at == first_stamp
+
+
+@pytest.mark.asyncio
+async def test_expired_confirm_still_stamps(eng):
+    """A confirm that arrives after the TTL window still stamps confirmed_at
+    — "he tapped, too late" is meaningfully different from never tapping."""
+    _seed_state(eng, autonomy=True)
+    log_id = _seed_needs_confirm(eng, age_seconds=10000)
+
+    status, res = await confirm_action(log_id, ttl_seconds=60)
+
+    assert status == "expired"
+    logs = _all_logs(eng)
+    assert logs[0].confirmed_at is not None
+    assert logs[0].decision == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_reject_does_not_stamp_confirmed_at(eng):
+    from backend.safety.broker import reject_action
+    _seed_state(eng, autonomy=True)
+    log_id = _seed_needs_confirm(eng)
+
+    status, res = await reject_action(log_id)
+
+    assert status == "rejected"
+    logs = _all_logs(eng)
+    assert logs[0].confirmed_at is None
+
+
+# ---------------------------------------------------------------------------
 # Test 2: Re-confirm — same row cannot be dispatched again
 # ---------------------------------------------------------------------------
 

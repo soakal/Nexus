@@ -93,3 +93,55 @@ def test_ensure_system_state_columns_adds_auth_burst_columns(file_db):
     bd._ensure_system_state_columns()
     assert "auth_burst_alert_sources" in cols()
     assert "auth_burst_alert_at" in cols()
+
+
+def test_ensure_system_state_columns_adds_policy_columns(file_db):
+    """Feature 3 Phase 1: same idempotent-shim contract as the auth-burst
+    columns above, for the two confirm-policy CSV columns."""
+    bd, eng = file_db
+
+    with eng.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE systemstate ("
+            "id INTEGER PRIMARY KEY, autonomy_enabled BOOLEAN, "
+            "daily_budget_usd REAL, per_task_budget_usd REAL, updated_at TEXT)"
+        ))
+
+    def cols():
+        with eng.connect() as conn:
+            return {row[1] for row in conn.execute(text("PRAGMA table_info(systemstate)"))}
+
+    assert "policy_auto_allow_kinds" not in cols()
+    assert "policy_forbid_kinds" not in cols()
+
+    bd._ensure_system_state_columns()
+    assert "policy_auto_allow_kinds" in cols()
+    assert "policy_forbid_kinds" in cols()
+
+    bd._ensure_system_state_columns()
+    assert "policy_auto_allow_kinds" in cols()
+    assert "policy_forbid_kinds" in cols()
+
+
+def test_ensure_actionlog_columns_adds_confirmed_at(file_db):
+    """Feature 3 Phase 1: ActionLog.confirmed_at follows the same idempotent-
+    shim contract as judge_verdict/judge_reason above it."""
+    bd, eng = file_db
+
+    with eng.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE actionlog ("
+            "id INTEGER PRIMARY KEY, actor TEXT, kind TEXT, target TEXT, "
+            "payload_json TEXT, risk TEXT, reversibility TEXT, decision TEXT, "
+            "result_json TEXT, idempotency_key TEXT, created_at TEXT, updated_at TEXT)"
+        ))
+
+    def cols():
+        with eng.connect() as conn:
+            return {row[1] for row in conn.execute(text("PRAGMA table_info(actionlog)"))}
+
+    assert "confirmed_at" not in cols()
+    bd._ensure_actionlog_columns()
+    assert "confirmed_at" in cols()
+    bd._ensure_actionlog_columns()
+    assert "confirmed_at" in cols()

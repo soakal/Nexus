@@ -138,12 +138,88 @@ def get_system_state() -> dict:
                 "autonomy_enabled": _DEFAULT_AUTONOMY_ENABLED,
                 "daily_budget_usd": _DEFAULT_DAILY_BUDGET_USD,
                 "per_task_budget_usd": _DEFAULT_PER_TASK_BUDGET_USD,
+                "policy_auto_allow_kinds": set(),
+                "policy_forbid_kinds": set(),
             }
         return {
             "autonomy_enabled": bool(row.autonomy_enabled),
             "daily_budget_usd": float(row.daily_budget_usd),
             "per_task_budget_usd": float(row.per_task_budget_usd),
+            "policy_auto_allow_kinds": {k for k in (row.policy_auto_allow_kinds or "").split(",") if k},
+            "policy_forbid_kinds": {k for k in (row.policy_forbid_kinds or "").split(",") if k},
         }
+
+
+def _add_csv_kind(column: str, kind: str) -> None:
+    """Shared write path for the two policy CSV columns (sync). Idempotent —
+    adding an already-present kind is a no-op, not a duplicate."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+        current = {k for k in (getattr(row, column) or "").split(",") if k}
+        current.add(kind)
+        setattr(row, column, ",".join(sorted(current)))
+        row.updated_at = datetime.utcnow()
+        session.commit()
+
+
+def _remove_csv_kind(column: str, kind: str) -> None:
+    """Shared write path for the two policy CSV columns (sync). Removing a
+    kind that isn't present is a no-op."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            return  # nothing to remove from a row that doesn't exist yet
+        current = {k for k in (getattr(row, column) or "").split(",") if k}
+        current.discard(kind)
+        setattr(row, column, ",".join(sorted(current)) or None)
+        row.updated_at = datetime.utcnow()
+        session.commit()
+
+
+def add_auto_allow_kind(kind: str) -> None:
+    """Promote a kind to auto-allow for agent/autonomous actors (sync).
+    Called ONLY by the broker's policy_promote dispatcher, which is itself
+    gated behind a human confirm — never called directly by the learner."""
+    _add_csv_kind("policy_auto_allow_kinds", kind)
+
+
+def remove_auto_allow_kind(kind: str) -> None:
+    """Revoke a kind's auto-allow promotion (sync). Always safe to call
+    directly — revoking only removes capability, the same asymmetry as
+    add_forbidden_kind below."""
+    _remove_csv_kind("policy_auto_allow_kinds", kind)
+
+
+def add_forbidden_kind(kind: str) -> None:
+    """Demote a kind to always-forbidden for agent/autonomous actors (sync).
+    Safe to call directly (no confirm gate) — tightening only removes
+    capability, unlike add_auto_allow_kind."""
+    _add_csv_kind("policy_forbid_kinds", kind)
+
+
+def remove_forbidden_kind(kind: str) -> None:
+    """Un-forbid a kind (sync)."""
+    _remove_csv_kind("policy_forbid_kinds", kind)
+
+
+def get_policy_overrides() -> dict:
+    """Return {"auto_allow": set[str], "forbid": set[str]} (sync)."""
+    state = get_system_state()
+    return {
+        "auto_allow": state["policy_auto_allow_kinds"],
+        "forbid": state["policy_forbid_kinds"],
+    }
 
 
 def set_autonomy(enabled: bool) -> None:

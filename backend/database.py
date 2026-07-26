@@ -220,6 +220,16 @@ class ActionLog(SQLModel, table=True):
     # time (no DB-level length constraint — matches this file's existing
     # convention of plain TEXT columns for nullable strings).
     judge_reason: str | None = None
+    # Set by broker.confirm_action at the TOP of the call — BEFORE the TTL
+    # check, kill-switch re-check, and dispatch — so (confirmed_at -
+    # created_at) is pure human reaction time, uncontaminated by dispatch
+    # latency (median 1.9s, but 19-30s for protonmail_delete). None means this
+    # row was never confirmed by a human — also what makes "allowed→executed"
+    # distinguishable from "needs_confirm→confirmed→executed" (today those two
+    # rows are otherwise identical). A row that stamps this and THEN hits
+    # expired/forbidden still means something ("he tapped, too late") —
+    # deliberately not cleared in that case.
+    confirmed_at: datetime | None = Field(default=None)
 
 
 # Per-call cost/usage ledger written best-effort by the agent router
@@ -270,6 +280,19 @@ class SystemState(SQLModel, table=True):
     # Last tick at which any tracked source was still producing failures. The
     # quiet-period reset measures from here, NOT from when the alert first fired.
     auth_burst_alert_at: datetime | None = Field(default=None)
+    # Kinds promoted to auto-allow for agent/autonomous actors, CSV. ONLY ever
+    # written by a human-confirmed policy_promote action (broker.py) — never
+    # by the learner directly. Filtered at read time against a hardcoded
+    # _NEVER_PROMOTABLE floor, so a stale/hand-edited value can never grant
+    # more than the code permits. Same CSV-on-singleton-row idiom as
+    # auth_burst_alert_sources above, for the same reason (a handful of kinds,
+    # not a relational store).
+    policy_auto_allow_kinds: str | None = Field(default=None)
+    # Kinds demoted to always-forbidden for agent/autonomous actors, CSV.
+    # Safe to auto-apply without asking (tightening only removes capability —
+    # unlike auto_allow, which always requires a human confirm). Always wins
+    # over auto_allow if a kind somehow ends up in both.
+    policy_forbid_kinds: str | None = Field(default=None)
 
 
 # Agent/LLM trace observability (council w-observability). One row per
@@ -409,6 +432,7 @@ def _ensure_actionlog_columns():
     """
     _safe_add_column("actionlog", "judge_verdict", "TEXT")
     _safe_add_column("actionlog", "judge_reason", "TEXT")
+    _safe_add_column("actionlog", "confirmed_at", "TIMESTAMP")
 
 
 def _ensure_conversation_columns():
@@ -493,6 +517,8 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "last_facts_digest_at", "TIMESTAMP")
     _safe_add_column("systemstate", "auth_burst_alert_sources", "TEXT")
     _safe_add_column("systemstate", "auth_burst_alert_at", "TIMESTAMP")
+    _safe_add_column("systemstate", "policy_auto_allow_kinds", "TEXT")
+    _safe_add_column("systemstate", "policy_forbid_kinds", "TEXT")
 
 
 def _ensure_system_state():

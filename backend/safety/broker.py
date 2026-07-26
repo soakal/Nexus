@@ -176,8 +176,26 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # kill switch forbids it when autonomy is off.
         return Risk.LOW, Reversibility.REVERSIBLE
 
+    if kind == "policy_promote":
+        # Feature 3 — Confirm-Policy Learner proposing to auto-allow a kind.
+        # HIGH so an autonomous proposer always lands on NEEDS_CONFIRM, never
+        # auto-allow itself (the mechanism that grants more autonomy is gated
+        # by the exact confirm mechanism it's trying to reduce).
+        # REVERSIBLE_BY_INVERSE: a later demotion (or the DELETE endpoint)
+        # undoes the promotion, so decide()'s irreversibility branch doesn't
+        # hard-forbid it outright.
+        return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
+
     # Unknown kind — we have no policy for it.
     return Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN
+
+
+# Kinds that may NEVER be auto-allowed by policy, whatever the persisted
+# override state says. Hardcoded, not configurable — this is the floor.
+_NEVER_PROMOTABLE = frozenset({
+    "hermes_relay",    # already quarantined to humans (Tier 1.4) — see below
+    "policy_promote",  # the promotion mechanism must never promote itself
+})
 
 
 def decide(
@@ -186,6 +204,8 @@ def decide(
     reversibility: Reversibility,
     confirmed: bool,
     kind: str | None = None,
+    *,
+    policy: dict | None = None,
 ) -> Decision:
     """Gate decision: may this actor run this action now?
 
@@ -197,11 +217,32 @@ def decide(
     free-text relay to the live Hermes bot is quarantined to humans only (Tier
     1.4). `confirmed` is NOT an escape hatch for it — an agent must use the
     structured `hermes_action` allowlist instead.
+
+    `policy` (Feature 3 — Confirm-Policy Learner) is an optional
+    `{"auto_allow": set[str], "forbid": set[str]}` dict of kinds a human has
+    explicitly promoted/demoted via the weekly policy review. `policy=None`
+    (the default) reproduces pre-Feature-3 behavior byte for byte — every
+    existing positional-arg call/test keeps working unchanged. Evaluation
+    order below IS the safety property: forbid beats auto_allow (checked
+    first, so a kind in both lists is FORBIDDEN, fail-safe on contradictory
+    state); auto_allow can never reach an IRREVERSIBLE action (checked after
+    irreversibility, not before) or an UNCLASSIFIABLE risk (an unknown kind
+    has no real policy behind it, so promoting it would sign a blank cheque);
+    and `_NEVER_PROMOTABLE` cannot be overridden by any policy/config value.
     """
     # A direct human action is always allowed (preserves the chat UX); it is still
     # classified and logged so the audit trail is complete.
     if actor == Actor.USER:
         return Decision.ALLOWED
+
+    forbid = (policy or {}).get("forbid") or set()
+    auto_allow = (policy or {}).get("auto_allow") or set()
+
+    # A demotion always beats a promotion, checked BEFORE the hermes_relay/
+    # irreversibility/risk logic below — fail-safe if a kind somehow ends up
+    # in both lists.
+    if kind in forbid:
+        return Decision.FORBIDDEN
 
     # Free-text Hermes relay is forbidden for agent/autonomous, confirmed or not.
     if kind == "hermes_relay":
@@ -209,8 +250,13 @@ def decide(
 
     # agent / autonomous — evaluate irreversibility FIRST: an irreversible action
     # is the highest-stakes case and must be confirmed regardless of risk band.
+    # Auto-allow CANNOT reach here — an irreversible kind stays unpromotable
+    # by construction, not by policy (e.g. protonmail_send).
     if reversibility == Reversibility.IRREVERSIBLE:
         return Decision.ALLOWED if confirmed else Decision.FORBIDDEN
+
+    if kind in auto_allow and kind not in _NEVER_PROMOTABLE and risk != Risk.UNCLASSIFIABLE:
+        return Decision.ALLOWED
 
     if risk in (Risk.HIGH, Risk.UNCLASSIFIABLE):
         return Decision.ALLOWED if confirmed else Decision.NEEDS_CONFIRM
@@ -353,6 +399,35 @@ async def _dispatch_protonmail_delete(target: str, payload: dict) -> dict:
     return await protonmail.trash_email(payload["email_id"], mailbox=payload.get("mailbox"))
 
 
+async def _dispatch_policy_promote(target: str, payload: dict) -> dict:
+    """Feature 3 — apply a human-confirmed policy promotion. `target` is the
+    kind being promoted (so the audit trail reads "policy_promote -> kind",
+    and it's what the confirm alert Brian actually taps is built from —
+    broker.py's _publish_action call). `payload["kind"]` must describe the
+    SAME single kind, or this must refuse to dispatch.
+
+    Verification caught a real gap here: nothing previously enforced that
+    `payload["kind"]` matched `target` at all. Since `add_auto_allow_kind`
+    splits on comma, a payload of "obsidian_task,unraid_docker" promoted
+    THREE kinds while the alert only ever named one — the human taps confirm
+    on a description of the action that isn't what actually happens. Not
+    reachable in Phase 1 (no caller of policy_promote exists yet — the
+    learner that would propose one is Phase 2, not built), but this is the
+    exact guard that must exist before Phase 2 ever calls execute_action
+    with this kind.
+    """
+    from backend.safety import governor
+
+    kind = payload.get("kind")
+    if not isinstance(kind, str) or "," in kind or kind != target or kind in _NEVER_PROMOTABLE:
+        raise ValueError(
+            f"policy_promote refused: payload kind {kind!r} must be a single "
+            f"kind matching target {target!r}, and not in _NEVER_PROMOTABLE"
+        )
+    await asyncio.to_thread(governor.add_auto_allow_kind, kind)
+    return {"ok": True, "promoted_kind": kind}
+
+
 _DISPATCHERS = {
     "ha_service": _dispatch_ha_service,
     "hermes_relay": _dispatch_hermes_relay,
@@ -364,6 +439,7 @@ _DISPATCHERS = {
     "protonmail_send": _dispatch_protonmail_send,
     "protonmail_archive": _dispatch_protonmail_archive,
     "protonmail_delete": _dispatch_protonmail_delete,
+    "policy_promote": _dispatch_policy_promote,
 }
 
 
@@ -451,6 +527,32 @@ def _update_action_log_judge(
         if decision is not None:
             row.decision = decision
         row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
+
+
+def _stamp_confirmed_at(log_id: int) -> None:
+    """UPDATE-only: stamp confirmed_at=utcnow on an existing row (Feature 3 —
+    Confirm-Policy Learner). Sync — to_thread only.
+
+    Called from confirm_action() immediately after the needs_confirm guard
+    and BEFORE the TTL/kill-switch/dispatch checks, so the timestamp is the
+    moment the human tapped confirm, uncontaminated by dispatch latency
+    (median ~1.9s, but 19-30s for protonmail_delete) — confirmed_at minus
+    created_at is meant to be a clean human-reaction-time signal the learner
+    can threshold on. A row that stamps this and then still hits expired or
+    forbidden is meaningfully different from one that was never tapped at all
+    ("he did tap, too late") — deliberately not cleared in that case.
+    """
+    from sqlmodel import Session
+
+    from backend.database import ActionLog, engine
+
+    with Session(engine) as session:
+        row = session.get(ActionLog, log_id)
+        if row is None:  # pragma: no cover - defensive
+            return
+        row.confirmed_at = datetime.utcnow()
         session.add(row)
         session.commit()
 
@@ -610,9 +712,18 @@ async def execute_action(
     # are forbidden outright (a USER action is unaffected — preserves chat UX).
     # Checked AFTER the idempotency replay (a completed action still replays its
     # recorded result) but BEFORE classify/decide/dispatch.
+    policy: dict | None = None
     if actor in (Actor.AGENT, Actor.AUTONOMOUS):
         from backend.safety import governor
         state = await asyncio.to_thread(governor.get_system_state)
+        # Same state fetch as the kill-switch check below — zero extra DB
+        # round trips for the policy override layer (Feature 3). USER actors
+        # never reach here, so `policy` stays None for them (decide() never
+        # touches it before its own actor==USER early return anyway).
+        policy = {
+            "auto_allow": state.get("policy_auto_allow_kinds", set()),
+            "forbid": state.get("policy_forbid_kinds", set()),
+        }
         if not state["autonomy_enabled"]:
             risk, reversibility = classify(kind, payload)
             log_id = await asyncio.to_thread(
@@ -642,7 +753,7 @@ async def execute_action(
             )
 
     risk, reversibility = classify(kind, payload)
-    decision = decide(actor, risk, reversibility, confirmed, kind=kind)
+    decision = decide(actor, risk, reversibility, confirmed, kind=kind, policy=policy)
 
     # Judge verdict/reason default to None and are only populated if the action
     # judge actually runs (AGENT/AUTONOMOUS, not confirmed, mode != off, not
@@ -917,6 +1028,14 @@ async def confirm_action(
     if row["decision"] != Decision.NEEDS_CONFIRM.value:
         return ("not_confirmable", None)
 
+    # Step 2b: stamp the human-tap timestamp NOW — before TTL/kill-switch/
+    # dispatch below, so it measures reaction time, not dispatch latency.
+    # Placed after the needs_confirm guard (a double-confirm attempt never
+    # re-stamps) and unconditionally before every possible outcome below,
+    # including expired/forbidden — "he tapped, too late" is still real
+    # signal, distinct from never tapping at all.
+    await asyncio.to_thread(_stamp_confirmed_at, log_id)
+
     # Step 3: parse risk/reversibility defensively
     try:
         risk = Risk(row["risk"])
@@ -943,7 +1062,12 @@ async def confirm_action(
             )
             return ("expired", None)
 
-    # Step 5: kill switch re-check for non-user actors
+    # Step 5: kill switch re-check for non-user actors. Deliberately does NOT
+    # re-consult the forbid/auto_allow policy lists (Feature 3) — an explicit
+    # human tap on a specific pending row outranks a policy change that
+    # happened to land while it was in flight. This means a kind demoted to
+    # forbid AFTER a needs_confirm row was created can still dispatch on
+    # confirm; that's the accepted tradeoff, not an oversight.
     actor = _coerce_actor(row["actor"])
     if actor in (Actor.AGENT, Actor.AUTONOMOUS):
         from backend.safety import governor
