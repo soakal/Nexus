@@ -4,10 +4,12 @@ Brain Organizer MCP HTTP Server.
 Exposes the wiki vault for reading and accepts new raw notes via POST.
 Binds to 0.0.0.0 so it is reachable over Tailscale from any device.
 
-POST /raw is loopback-exempt: callers from 127.0.0.1/::1 never need a token.
-Non-loopback (LAN/Tailscale) callers require an Authorization: Bearer <token>
-header matching MCP_WRITE_TOKEN env var (or config mcp_write_token); if no
-token is configured, remote writes are rejected outright (403).
+Every route except /health is loopback-exempt: callers from 127.0.0.1/::1 never
+need a token. Non-loopback (LAN/Tailscale) callers require an
+Authorization: Bearer <token> header matching MCP_WRITE_TOKEN env var (or config
+mcp_write_token); if no token is configured, remote access is rejected outright
+(403). The wiki is a personal knowledge base, so reads are gated exactly like
+writes — the bind is 0.0.0.0 and anything on the LAN or tailnet can reach it.
 
 Usage:
     python mcp_server.py
@@ -185,6 +187,23 @@ def create_app(
     def _log_request() -> None:
         logger.info("%s %s", request.method, request.path)
 
+    @app.before_request
+    def _require_token() -> Any:
+        """Gate every non-loopback request on the shared token.
+
+        /health is exempt so liveness probes (NEXUS's uptime job, Hermes's
+        watcher) keep working without credentials — it returns a fixed
+        {"status": "ok"} and discloses nothing.
+        """
+        if request.path == "/health" or _is_loopback(request.remote_addr):
+            return None
+        token = _write_token()
+        if not token:
+            return jsonify({"error": "Remote access disabled (no write token configured)"}), 403
+        if not hmac.compare_digest(request.headers.get("Authorization", ""), f"Bearer {token}"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return None
+
     # ------------------------------------------------------------------
     # GET /health
     # ------------------------------------------------------------------
@@ -269,18 +288,10 @@ def create_app(
 
     # ------------------------------------------------------------------
     # POST /raw  — drop a new note into raw/ for next processing run
-    # Optionally protected by a bearer token (MCP_WRITE_TOKEN env var).
+    # Non-loopback callers are gated by _require_token above.
     # ------------------------------------------------------------------
     @app.route("/raw", methods=["POST"])
     def post_raw() -> Any:
-        if not _is_loopback(request.remote_addr):
-            token = _write_token()
-            if not token:
-                return jsonify({"error": "Remote writes disabled (no write token configured)"}), 403
-            auth_header = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
-                return jsonify({"error": "Unauthorized"}), 401
-
         data = request.get_json(silent=True)
         if not data or "content" not in data:
             return jsonify({"error": "JSON body with 'content' field required"}), 400

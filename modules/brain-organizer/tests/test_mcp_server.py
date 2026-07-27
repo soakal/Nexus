@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from mcp_server import create_app
 
 # ---------------------------------------------------------------------------
@@ -405,6 +406,60 @@ def test_raw_post_malformed_authorization_header_rejected(tmp_config: dict[str, 
         environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
     )
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Remote READ auth — the wiki is a personal knowledge base and the bind is
+# 0.0.0.0, so reads are gated exactly like writes.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", ["/wiki", "/wiki/search?q=nexus", "/wiki/NEXUS"])
+def test_wiki_read_remote_requires_token(tmp_config: dict[str, Any], path: str) -> None:
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get(path, environ_overrides={"REMOTE_ADDR": "192.0.2.10"})
+    assert resp.status_code == 401
+
+    resp = client.get(
+        path,
+        headers={"Authorization": "Bearer secret123"},
+        environ_overrides={"REMOTE_ADDR": "192.0.2.10"},
+    )
+    assert resp.status_code in (200, 404)
+
+
+def test_wiki_read_remote_rejected_when_no_token_configured(tmp_config: dict[str, Any]) -> None:
+    tmp_config["mcp_write_token"] = ""
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki", environ_overrides={"REMOTE_ADDR": "192.0.2.10"})
+    assert resp.status_code == 403
+
+
+def test_health_stays_open_to_remote_callers(tmp_config: dict[str, Any]) -> None:
+    """Liveness probes (NEXUS uptime job, Hermes watcher) carry no credentials."""
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/health", environ_overrides={"REMOTE_ADDR": "192.0.2.10"})
+    assert resp.status_code == 200
+
+
+def test_wiki_read_loopback_needs_no_token(tmp_config: dict[str, Any]) -> None:
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------

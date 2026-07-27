@@ -15,8 +15,7 @@ async def trigger_briefing(_=Depends(require_api_key)):
 
 
 @router.get("/latest")
-async def get_latest_briefing(session: Session = Depends(get_session)):
-    # No auth required — Hermes needs this
+async def get_latest_briefing(_=Depends(require_api_key), session: Session = Depends(get_session)):
     b = session.exec(select(Briefing).order_by(Briefing.created_at.desc()).limit(1)).first()
     if not b:
         raise HTTPException(status_code=404, detail="No briefings yet")

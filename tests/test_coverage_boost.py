@@ -1,5 +1,6 @@
 """Targeted tests to bring coverage from 72% to >=80%."""
 import asyncio
+import io
 import os
 import pathlib
 import pytest
@@ -353,6 +354,29 @@ def test_voice_upload_mp3_success(nexus_client, auth_headers):
             headers=auth_headers,
         )
     assert resp.status_code == 200
+
+
+def test_voice_missing_filename_is_400_not_500():
+    """filename is optional in multipart — a missing one must reject, not AttributeError."""
+    from fastapi import HTTPException, UploadFile
+
+    from backend.api.voice import _checked_suffix
+
+    upload = UploadFile(filename=None, file=io.BytesIO(b"data"))
+    with pytest.raises(HTTPException) as exc:
+        _checked_suffix(upload, (".wav",))
+    assert exc.value.status_code == 400
+
+
+def test_voice_upload_oversized_rejected(nexus_client, auth_headers, monkeypatch):
+    from backend.api import voice as voice_api
+    monkeypatch.setattr(voice_api, "MAX_UPLOAD_BYTES", 16)
+    resp = nexus_client.post(
+        "/api/voice/upload",
+        files={"file": ("clip.wav", b"R" * 64, "audio/wav")},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 413
 
 
 def test_voice_upload_requires_auth(nexus_client):

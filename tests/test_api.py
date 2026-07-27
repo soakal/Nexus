@@ -73,6 +73,11 @@ def test_sources_status_unauthorized(client):
     assert resp.status_code == 401
 
 
-def test_briefing_latest_no_auth(client):
+def test_briefing_latest_requires_auth(client):
     resp = client.get("/api/briefing/latest")
-    assert resp.status_code in (200, 404)  # No auth required
+    assert resp.status_code == 401
+
+
+def test_briefing_latest_with_token(client, auth_headers):
+    resp = client.get("/api/briefing/latest", headers=auth_headers)
+    assert resp.status_code in (200, 404)

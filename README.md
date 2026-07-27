@@ -123,12 +123,16 @@ If a Telegram send fails, payloads are queued in SQLite and retried every 60 sec
 
 ## API Authentication
 
-All API endpoints except `/api/health` and `/api/briefing/latest` require:
+All API endpoints except `/api/health` and the first-run `/api/setup/*` pair require:
 ```
 Authorization: Bearer <NEXUS_API_KEY>
 ```
 
 The `NEXUS_API_KEY` is stored in the vault and generated during setup.
+`/api/setup/complete` self-closes as soon as a key exists.
+
+Interactive API docs (`/docs`, `/redoc`, `/openapi.json`) are disabled unless
+`DEBUG=true` — FastAPI serves them outside the auth dependency graph.
 
 ## Model Routing
 

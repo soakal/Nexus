@@ -15,12 +15,23 @@ _ALLOWED_SETUP_KEYS = {
 
 
 def _needs_setup() -> bool:
+    """True only when the secret store is reachable AND holds no NEXUS_API_KEY.
+
+    Fail CLOSED: /complete is unauthenticated (it has to be — there is no key
+    yet on a fresh install), so anything other than a definitive "the store
+    answered and the key is absent" must read as "already configured". A
+    KeyError is that definitive answer; any other error (store unreachable,
+    vault undecryptable, config invalid) previously reported needs_setup=True
+    and reopened an unauthenticated write path over ANTHROPIC_API_KEY and
+    NEXUS_API_KEY on an already-provisioned install.
+    """
+    from backend.secrets.manager import get_secret
     try:
-        from backend.secrets.manager import get_secret
-        val = get_secret("NEXUS_API_KEY")
-        return not bool(val)
-    except Exception:
+        return not bool(get_secret("NEXUS_API_KEY"))
+    except KeyError:
         return True
+    except Exception:
+        return False
 
 
 @router.get("/status")

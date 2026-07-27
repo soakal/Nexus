@@ -181,7 +181,28 @@ async def lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="NEXUS Agentic OS", version="1.0.0", lifespan=lifespan)
+def _debug_enabled() -> bool:
+    try:
+        from backend.config import get_settings as _gs_debug
+        return bool(_gs_debug().debug)
+    except Exception:
+        return False
+
+
+# /docs, /redoc and /openapi.json are unauthenticated by construction (FastAPI
+# mounts them outside the dependency graph), so on a box reachable over LAN +
+# Tailscale they hand an anonymous caller the full write-endpoint map. They are
+# a dev affordance, not a runtime one — DEBUG=true in .env brings them back.
+_DOCS_ON = _debug_enabled()
+
+app = FastAPI(
+    title="NEXUS Agentic OS",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
+)
 
 try:
     from backend.config import get_settings as _gs_cors
