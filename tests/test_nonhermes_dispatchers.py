@@ -81,6 +81,26 @@ def test_classify_unraid_docker():
     assert classify("unraid_docker", {"container_id": "plex"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
 
 
+def test_classify_vm_power():
+    from backend.safety.broker import classify, Risk, Reversibility
+
+    assert classify("vm_power", {}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+    assert classify("vm_power", {"vmid": 101, "action": "start"}) == (
+        Risk.HIGH,
+        Reversibility.REVERSIBLE_BY_INVERSE,
+    )
+
+
+def test_classify_unifi_block_and_unblock():
+    from backend.safety.broker import classify, Risk, Reversibility
+
+    assert classify("unifi_block", {}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+    assert classify("unifi_unblock", {"mac": "aa:bb:cc:dd:ee:ff"}) == (
+        Risk.HIGH,
+        Reversibility.REVERSIBLE_BY_INVERSE,
+    )
+
+
 def test_classify_obsidian_task():
     from backend.safety.broker import classify, Risk, Reversibility
 
@@ -145,6 +165,87 @@ async def test_unraid_docker_restart_needs_confirm(eng):
     assert len(logs) == 1
     assert logs[0].actor == "agent"
     assert logs[0].kind == "unraid_docker"
+    assert logs[0].decision == "needs_confirm"
+
+
+# ===========================================================================
+# 3a. vm_power — NEEDS_CONFIRM path (HIGH risk, agent)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_vm_power_needs_confirm(eng):
+    """HIGH risk → NEEDS_CONFIRM for agent → 'BLOCKED'; set_vm_power NOT awaited."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _vm_power
+
+    with patch(
+        "backend.integrations.proxmox.set_vm_power",
+        new_callable=AsyncMock,
+        return_value={"data": "UPID:..."},
+    ) as svp:
+        result = await _vm_power({"vmid": 101, "action": "start"})
+
+    assert result.startswith("BLOCKED"), f"expected 'BLOCKED', got: {result!r}"
+    assert "NOT performed" in result
+    svp.assert_not_awaited()
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].actor == "agent"
+    assert logs[0].kind == "vm_power"
+    assert logs[0].decision == "needs_confirm"
+
+
+# ===========================================================================
+# 3b. unifi_block / unifi_unblock — NEEDS_CONFIRM path (HIGH risk, agent)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_unifi_block_needs_confirm(eng):
+    """HIGH risk → NEEDS_CONFIRM for agent → 'BLOCKED'; block_client NOT awaited."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _unifi_block
+
+    with patch(
+        "backend.integrations.unifi.block_client",
+        new_callable=AsyncMock,
+        return_value={"meta": {"rc": "ok"}},
+    ) as bc:
+        result = await _unifi_block({"mac": "aa:bb:cc:dd:ee:ff"})
+
+    assert result.startswith("BLOCKED"), f"expected 'BLOCKED', got: {result!r}"
+    assert "NOT performed" in result
+    bc.assert_not_awaited()
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].actor == "agent"
+    assert logs[0].kind == "unifi_block"
+    assert logs[0].decision == "needs_confirm"
+
+
+@pytest.mark.asyncio
+async def test_unifi_unblock_needs_confirm(eng):
+    """Same band/gate as block — HIGH risk needs a human tap for an agent."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _unifi_unblock
+
+    with patch(
+        "backend.integrations.unifi.unblock_client",
+        new_callable=AsyncMock,
+        return_value={"meta": {"rc": "ok"}},
+    ) as uc:
+        result = await _unifi_unblock({"mac": "aa:bb:cc:dd:ee:ff"})
+
+    assert result.startswith("BLOCKED"), f"expected 'BLOCKED', got: {result!r}"
+    uc.assert_not_awaited()
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].kind == "unifi_unblock"
     assert logs[0].decision == "needs_confirm"
 
 
@@ -241,6 +342,62 @@ async def test_obsidian_complete_task_kill_switch(eng):
     ct.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_vm_power_kill_switch(eng):
+    """Autonomy OFF → vm_power returns FORBIDDEN; set_vm_power NOT awaited."""
+    _seed_state(eng, autonomy=False)
+
+    from backend.agents.write_tools import _vm_power
+
+    with patch(
+        "backend.integrations.proxmox.set_vm_power",
+        new_callable=AsyncMock,
+        return_value={"data": "UPID:..."},
+    ) as svp:
+        result = await _vm_power({"vmid": 101, "action": "start"})
+
+    assert result.startswith("FORBIDDEN"), f"expected FORBIDDEN, got: {result!r}"
+    assert "NOT performed" in result
+    svp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unifi_block_kill_switch(eng):
+    """Autonomy OFF → unifi_block returns FORBIDDEN; block_client NOT awaited."""
+    _seed_state(eng, autonomy=False)
+
+    from backend.agents.write_tools import _unifi_block
+
+    with patch(
+        "backend.integrations.unifi.block_client",
+        new_callable=AsyncMock,
+        return_value={"meta": {"rc": "ok"}},
+    ) as bc:
+        result = await _unifi_block({"mac": "aa:bb:cc:dd:ee:ff"})
+
+    assert result.startswith("FORBIDDEN"), f"expected FORBIDDEN, got: {result!r}"
+    assert "NOT performed" in result
+    bc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unifi_unblock_kill_switch(eng):
+    """Autonomy OFF → unifi_unblock returns FORBIDDEN; unblock_client NOT awaited."""
+    _seed_state(eng, autonomy=False)
+
+    from backend.agents.write_tools import _unifi_unblock
+
+    with patch(
+        "backend.integrations.unifi.unblock_client",
+        new_callable=AsyncMock,
+        return_value={"meta": {"rc": "ok"}},
+    ) as uc:
+        result = await _unifi_unblock({"mac": "aa:bb:cc:dd:ee:ff"})
+
+    assert result.startswith("FORBIDDEN"), f"expected FORBIDDEN, got: {result!r}"
+    uc.assert_not_awaited()
+
+
 # ===========================================================================
 # 6. Bad input — helpful error, broker NOT called, never raises
 # ===========================================================================
@@ -282,6 +439,60 @@ async def test_unraid_docker_restart_bad_input_missing_container_id(eng):
 
     assert isinstance(result, str)
     assert isinstance(result2, str)
+
+
+@pytest.mark.asyncio
+async def test_vm_power_bad_input(eng):
+    """Missing/invalid vmid or action → helpful error, broker not called."""
+    from backend.agents.write_tools import _vm_power
+
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_broker:
+        result = await _vm_power({})
+        assert "vmid" in result.lower() or "error" in result.lower()
+        mock_broker.assert_not_awaited()
+
+        result2 = await _vm_power({"vmid": "not-a-number", "action": "start"})
+        assert "vmid" in result2.lower() or "error" in result2.lower()
+        mock_broker.assert_not_awaited()
+
+        result3 = await _vm_power({"vmid": 101, "action": "destroy"})
+        assert "action" in result3.lower() or "error" in result3.lower()
+        mock_broker.assert_not_awaited()
+
+    assert isinstance(result, str)
+    assert isinstance(result2, str)
+    assert isinstance(result3, str)
+
+
+@pytest.mark.asyncio
+async def test_unifi_block_bad_input_missing_mac(eng):
+    """Missing or empty mac → helpful error, broker not called."""
+    from backend.agents.write_tools import _unifi_block
+
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_broker:
+        result = await _unifi_block({})
+        assert "mac" in result.lower() or "error" in result.lower()
+        mock_broker.assert_not_awaited()
+
+        result2 = await _unifi_block({"mac": "   "})
+        assert "mac" in result2.lower() or "error" in result2.lower()
+        mock_broker.assert_not_awaited()
+
+    assert isinstance(result, str)
+    assert isinstance(result2, str)
+
+
+@pytest.mark.asyncio
+async def test_unifi_unblock_bad_input_missing_mac(eng):
+    """Missing or empty mac → helpful error, broker not called."""
+    from backend.agents.write_tools import _unifi_unblock
+
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_broker:
+        result = await _unifi_unblock({})
+        assert "mac" in result.lower() or "error" in result.lower()
+        mock_broker.assert_not_awaited()
+
+    assert isinstance(result, str)
 
 
 @pytest.mark.asyncio
@@ -362,14 +573,14 @@ async def test_obsidian_complete_task_never_raises_on_broker_exception(eng):
 # ===========================================================================
 
 def test_all_tool_specs_length():
-    """all_tool_specs() == read specs + 6 write specs."""
+    """all_tool_specs() == read specs + 9 write specs (Phase 7a/7b added vm_power/unifi_block/unifi_unblock)."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 6, (
-        f"expected {len(read_specs) + 6} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 9, (
+        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
     )
 
 
@@ -381,23 +592,29 @@ def test_all_dispatchers_contains_new_kinds():
     assert "channels_record" in disp, "all_dispatchers must contain 'channels_record'"
     assert "unraid_docker_restart" in disp, "all_dispatchers must contain 'unraid_docker_restart'"
     assert "obsidian_complete_task" in disp, "all_dispatchers must contain 'obsidian_complete_task'"
+    assert "unifi_block" in disp, "all_dispatchers must contain 'unifi_block'"
+    assert "unifi_unblock" in disp, "all_dispatchers must contain 'unifi_unblock'"
+    assert "vm_power" in disp, "all_dispatchers must contain 'vm_power'"
     # Existing ones must still be present
     assert "home_control" in disp
     assert "hermes_command" in disp
 
 
 def test_write_tool_names_includes_new_tools():
-    """write_tool_names() includes all six write tools."""
+    """write_tool_names() includes all nine write tools (Phase 7a/7b added 3)."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
     assert "channels_record" in names
     assert "unraid_docker_restart" in names
     assert "obsidian_complete_task" in names
+    assert "unifi_block" in names
+    assert "unifi_unblock" in names
+    assert "vm_power" in names
     assert "home_control" in names
     assert "hermes_command" in names
     assert "send_notification" in names
-    assert len(names) == 6
+    assert len(names) == 9
 
 
 # ===========================================================================
@@ -449,6 +666,98 @@ async def test_broker_unraid_docker_dispatches_direct(eng):
 
     assert res.decision == Decision.EXECUTED
     rd.assert_awaited_once_with("plex")
+
+
+@pytest.mark.asyncio
+async def test_broker_vm_power_dispatches_direct(eng):
+    """execute_action(kind='vm_power') calls proxmox.set_vm_power (not hermes)."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.proxmox.set_vm_power",
+        new_callable=AsyncMock,
+        return_value={"data": "UPID:..."},
+    ) as svp:
+        res = await execute_action(
+            actor="user",
+            kind="vm_power",
+            target="101",
+            payload={"vmid": 101, "action": "start"},
+        )
+
+    assert res.decision == Decision.EXECUTED
+    svp.assert_awaited_once_with(101, "start")
+
+
+@pytest.mark.asyncio
+async def test_broker_vm_power_invalid_action_fails_cleanly(eng):
+    """An invalid action must record FAILED, never raise out of execute_action,
+    and must never reach proxmox.set_vm_power."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.proxmox.set_vm_power",
+        new_callable=AsyncMock,
+    ) as svp:
+        res = await execute_action(
+            actor="user",
+            kind="vm_power",
+            target="101",
+            payload={"vmid": 101, "action": "destroy"},
+        )
+
+    assert res.decision == Decision.FAILED
+    svp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_broker_unifi_block_dispatches_direct(eng):
+    """execute_action(kind='unifi_block') calls unifi.block_client (not hermes)."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.unifi.block_client",
+        new_callable=AsyncMock,
+        return_value={"meta": {"rc": "ok"}},
+    ) as bc:
+        res = await execute_action(
+            actor="user",
+            kind="unifi_block",
+            target="aa:bb:cc:dd:ee:ff",
+            payload={"mac": "aa:bb:cc:dd:ee:ff"},
+        )
+
+    assert res.decision == Decision.EXECUTED
+    bc.assert_awaited_once_with("aa:bb:cc:dd:ee:ff")
+
+
+@pytest.mark.asyncio
+async def test_broker_unifi_unblock_dispatches_direct(eng):
+    """execute_action(kind='unifi_unblock') calls unifi.unblock_client (not hermes)."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.unifi.unblock_client",
+        new_callable=AsyncMock,
+        return_value={"meta": {"rc": "ok"}},
+    ) as uc:
+        res = await execute_action(
+            actor="user",
+            kind="unifi_unblock",
+            target="aa:bb:cc:dd:ee:ff",
+            payload={"mac": "aa:bb:cc:dd:ee:ff"},
+        )
+
+    assert res.decision == Decision.EXECUTED
+    uc.assert_awaited_once_with("aa:bb:cc:dd:ee:ff")
 
 
 @pytest.mark.asyncio

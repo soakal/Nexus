@@ -14,7 +14,10 @@ async def get_unraid_data(_=Depends(require_api_key)):
 @router.post("/docker/{container_id}/restart")
 async def restart_container(container_id: str, _=Depends(require_api_key)):
     from backend.integrations.unraid import restart_docker
-    ok = await restart_docker(container_id)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Restart failed")
+    result = await restart_docker(container_id)
+    if not result.get("success"):
+        detail = result.get("error", "Restart failed")
+        if result.get("stopped"):
+            detail = f"Container STOPPED but failed to restart: {detail}"
+        raise HTTPException(status_code=500, detail=detail)
     return {"ok": True}

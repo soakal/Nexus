@@ -140,6 +140,167 @@ Chat/classify: Sonnet 4.6 (`claude-sonnet-4-6`) answers · Haiku 4.5 (`claude-ha
   - **Two new Telegram callback namespaces**, `docker:restart:<name>` and `vm:start:<vmid>`, added to `telegram_poller.py`. Docker restart dispatches `unraid_docker` directly (native, not via Hermes) — note `_dispatch_unraid_docker` does NOT raise on a failed restart, it returns `{"success": False}` and the broker still records `EXECUTED`, so success must be read off the result, not the decision (the exact gap `test_docker_restart_failure_alerts_and_keeps_buttons` guards). VM start dispatches through the existing `hermes_action`/`vm_action` bridge verb (one of the kept 19) since NEXUS has no native Proxmox start capability. Both use `actor="user"` (a button tap IS the human decision, same precedent as the Safety page's confirm/reject buttons) and route through `broker.execute_action`, never a direct integration call. The int-coercion on `handle_callback`'s third callback_data segment is now namespace-scoped (`_INT_ID_NAMESPACES = {"goal", "safety"}`) since a container name/vmid isn't a DB primary key — `goal:*`/`safety:*` behavior is unchanged.
   - **KNOWN ISSUE, unverified (found by Opus verify, 2026-07-27): the ↺ Restart button may not actually work.** `unraid.py`'s `fetch()` truncates every container's GraphQL id to `[:12]` — live schema introspection against the real server showed Unraid's real container ids are 129-char `<server-hash>:<container-hash>` PrefixedIDs, and the `[:12]` truncation collapses EVERY container to the identical shared server-hash prefix. `restart_docker`'s own `_SAFE_CONTAINER_ID` guard also rejects the `:` in a real id outright. This is a PRE-EXISTING bug (Dashboard.jsx's restart button, which passes `c.id`, inherits the exact same breakage — not introduced by Phase 2c), not something safe to blind-fix overnight against a shared, live integration without empirical confirmation. It degrades gracefully — a failed restart shows "Restart failed." and keeps the button for a retry, never crashes or silently no-ops. **Before trusting this button: tap ↺ Restart once on a container you don't mind bouncing and read the popup.** If it fails, the fix is in `unraid.py` (stop truncating `id`, relax `_SAFE_CONTAINER_ID` to allow `:`) plus resolving the Telegram-carried container NAME to its real id before the mutation (keep the name in `callback_data` — the real id is 144 bytes, well past Telegram's 64-byte limit).
   - A container-restart button is only attached when the name passes `unraid._SAFE_CONTAINER_ID` AND the full `callback_data` fits Telegram's 64-byte limit — otherwise the alert still sends, just with no button, rather than risking a truncated `callback_data` restarting the wrong container. Every interpolated name (container, VM, disk) is `html.escape()`d before going into the alert text — `notify_phone` sends `parse_mode="HTML"`, and an unescaped `<`/`&` would make Telegram reject the whole message as a 400 (terminal, never queued — the alert would simply vanish).
-  - **Explicitly NOT built**: doorbell/camera-snapshot alerts (Brian declined — needs a separate 5s poll + `send_photo`, not worth it yet) and NEXUS's own liveness check (a process cannot monitor its own death — this needs EXTERNAL monitoring, e.g. Uptime-Kuma or a cron job elsewhere; until that exists, nothing in NEXUS covers "NEXUS itself is down", and Hermes's own `_check_nexus` — still running, untouched — is the only thing that does).
+  - **Explicitly NOT built**: doorbell/camera-snapshot alerts (Brian declined — needs a separate 5s poll + `send_photo`, not worth it yet). NEXUS's own liveness check (a process cannot monitor its own death) was solved externally on 2026-07-27 — see "NEXUS liveness monitoring (Phase 5)" below. Hermes's own `_check_nexus` still runs today (Hermes hasn't retired yet) but is no longer the only thing watching NEXUS.
+## Write-actions brought in-house (Phase 7, 2026-07-27)
+Three of the 19 verbs NEXUS used to relay through Hermes's `/hermes/action` now dispatch natively
+— `backend/safety/broker.py`'s dispatch table already treated a direct-integration call and a
+Hermes-relay call as fully interchangeable (confirm/audit/idempotency/kill-switch operate purely
+on the `kind` string), so no broker redesign was needed. **Recommendation: soak all three in
+Hermes's allowlist for 14 days (matching the Infisical migration pattern) before removing them —
+zero-cost rollback while the native paths prove themselves.**
+
+- **7a — UniFi block/unblock.** `backend/integrations/unifi.py`: `_login()` extracted from
+  `fetch()`'s inline login block, now also captures the `X-CSRF-Token` UniFi OS requires for
+  mutating POSTs (header first, falls back to decoding it out of the `TOKEN` cookie's JWT payload).
+  `_normalize_mac()` accepts colon/hyphen/dot/bare-hex forms, raises on anything else — a
+  malformed value never reaches the `stamgr` POST body. `block_client(mac)`/`unblock_client(mac)`
+  raise on any failure (non-2xx or a 200 with `rc != "ok"`) rather than returning a swallowed
+  `False`. Broker: `unifi_block`/`unifi_unblock`, HIGH risk (same band Hermes's own verbs already
+  carried) — the inverse is clean, but a wrong MAC risks locking out a real device, so an agent
+  always needs a human tap. **Drilled live** against the Ecobee thermostat (`44:61:32:bb:53:fd`):
+  blocked, confirmed offline both via a fresh UniFi API query and visually on the device, unblocked,
+  confirmed reconnected.
+- **7b — Proxmox VM power (start/stop/reboot).** Checked the existing `PROXMOX_TOKEN`'s actual
+  Proxmox-side permissions directly (`pveum user token list root@pam` → `"privsep": 0`) before
+  writing any code — privilege separation is disabled, so the token already has full `root@pam`
+  admin rights; no permission grant was needed. `backend/integrations/proxmox.py::set_vm_power`
+  resolves the vmid against `fetch()` to get both `node` and `type` (never assumes qemu vs lxc —
+  the API path differs: `/nodes/{node}/qemu/{vmid}/...` vs `.../lxc/{vmid}/...`). `action="stop"`
+  deliberately maps to Proxmox's graceful `shutdown` op, not the raw power-pull `stop` — that
+  harsher operation isn't exposed. Broker: `vm_power`, HIGH risk (matches Hermes's `vm_action`
+  exactly). New broker-gated route `POST /api/proxmox/vm/{vmid}/power`; `telegram_poller.py`'s
+  `vm:start:<vmid>` and `Dashboard.jsx`'s VM action dropdown both repointed from the old
+  `hermes_action`/`vm_action` bridge to this native path (Dashboard now sends `vmid`, not `name`).
+  **Drilled live** against LXC 201 (already stopped since Phase 6, so free to bounce): start → real
+  Proxmox UPID + `pct status` confirms running; stop → real UPID + confirms stopped; start again to
+  leave it in a known state.
+- **7c — Unraid docker restart, actually fixed.** Live GraphQL introspection (schema-level
+  `__schema` is disabled server-side, but named-type queries like `__type(name: "Mutation")` still
+  work) confirmed two things the original plan didn't know going in: **no `restartContainer`
+  mutation exists anywhere in the schema** — the OLD `restart_docker()` had been silently calling a
+  mutation that doesn't exist, failing gracefully (caught by its own error handling) but for a more
+  fundamental reason than the previously-documented id-truncation bug — and **no prune mutation
+  exists at all**, root or nested (Hermes's `docker_prune` uses raw SSH, not GraphQL — confirming
+  7d's original scoping was correct). Fixed both real bugs found in this pass:
+  1. **Id truncation removed.** `fetch()` no longer truncates container ids to `[:12]` (real ids
+     are 129-char `<hash>:<hash>` PrefixedIDs); `_SAFE_CONTAINER_ID` relaxed to allow `:`.
+  2. **`restart_docker(name_or_id)` is now genuinely two calls: `stop` then `start`**, via a new
+     `resolve_container_id()` (passes through a real id as-is, else resolves an exact name match,
+     raising on unknown/ambiguous — never guesses) and `_docker_mutation()`. Polls up to ~5s for
+     the container to actually report non-RUNNING before firing `start` (starting mid-stop was the
+     likely failure mode of firing immediately). Returns a 3-state result — `{"success": True}`,
+     `{"success": False, "error": ...}` (stop itself failed, container presumed untouched), or
+     `{"success": False, "stopped": True, "error": ...}` (stop succeeded, start failed — **the
+     container is confirmed DOWN**, must never read as a routine failure). Every caller
+     (`broker._dispatch_unraid_docker`, the REST route, `telegram_poller.py`, and
+     `write_tools._unraid_docker_restart`'s agent-facing string) updated to surface the `stopped`
+     state distinctly — the generic `_decision_to_str` helper would otherwise have rendered a
+     failed/half-restart as `"OK — performed. {...}"` for an agent, a real gap found while fixing
+     this (predates Phase 7c, now closed for this dispatcher specifically).
+  3. Callback data / Dashboard both keep passing the container **name** (never the 129-byte real
+     id — past Telegram's 64-byte `callback_data` limit); the backend resolves name → id
+     server-side. This is what the Phase 2c note's "known issue, unverified" restart button was
+     actually blocked on — resolved now, not just theorized.
+  **Drilled live** against `glp-app` (the public GLP calculator container) via the real broker
+  path: `{"success": True}`, independently confirmed via a fresh `fetch()` (state `RUNNING`,
+  `"Up 19 seconds"` — genuinely fresh, not stale) and a live `HTTP 200` from the actual public
+  site.
+- **7d — deliberately out of scope**, unchanged from the original plan: `docker_prune`,
+  `restart_service`, `service_logs` have no REST/GraphQL surface NEXUS's current credentials can
+  reach — Hermes's own implementations use raw SSH. Unlocking these is a credential-scope decision
+  (give NEXUS its own SSH key to Unraid/the LXCs), not an engineering one.
+
+## Open WebUI dependency retired (Phase 6, 2026-07-27)
+Open WebUI (LXC 201 `hermes-webui`, `192.168.1.56`) ran a Pipelines container calling Hermes's
+`/ask` REST endpoint for browser-based chat — a consumer entirely separate from NEXUS. Brian
+confirmed he rarely/never uses it anymore. Verified empirically before touching anything: grepped
+Hermes's `hermes-api` journal for all `/ask` hits — real traffic (from `192.168.1.56` and, oddly,
+an old pre-Phase-1 NEXUS integration from `192.168.1.119`) stopped **3+ weeks ago** (last real hit
+2026-07-02); the only hits since were two isolated `127.0.0.1` 401s (manual smoke-tests, matching
+Hermes's own documented `curl .../ask` example), not real usage. Stopped both Docker containers
+(`open-webui`, `pipelines`) on LXC 201 via `docker stop` — confirmed functionally down (both ports
+refuse connections, no process running), though `docker ps`/`docker inspect` on that container
+unreliably still reported them as "Up" due to a **pre-existing, unrelated Docker data corruption**
+on that LXC (`dockerd` logs show `local-kv.db`/overlay2 layer files missing under
+`/opt/openwebui-data/docker/` — a libnetwork/container-state bookkeeping issue, not a live-service
+problem). Not investigated further since this whole container stack is heading toward eventual
+retirement anyway. Initially left LXC 201 itself running (only the two Docker containers
+stopped) — Brian then asked for the whole container stopped too (`pct stop 201`), since Proxmox's
+UI only shows LXC-level status and doesn't reflect what's stopped inside it. LXC 201 is now fully
+stopped. No other consumer depends on it. This dependency is now fully cleared; no replacement
+was needed. To bring it back if ever needed: `pct start 201` (Docker containers have no
+restart-on-boot issue — `docker` itself starts with the container; `open-webui`/`pipelines` would
+need `docker start open-webui pipelines` afterward since they were stopped, not just left to
+auto-restart).
+
+## NEXUS liveness monitoring (Phase 5, 2026-07-27)
+External alerting + OS-level recovery, closing the gap left by every prior phase (nothing watched
+NEXUS's own liveness except Hermes's `watcher.py:_check_nexus`, which won't exist once Hermes
+retires). Two independent layers:
+
+- **Alerting: self-hosted Uptime Kuma on new Proxmox LXC 206** (`uptime-kuma`, `192.168.1.61`,
+  Debian 13, unprivileged, Docker via `nesting=1,keyctl=1` features + a manually-mapped
+  `/dev/net/tun` for Tailscale — unprivileged CTs don't get this by default, added via
+  `lxc.cgroup2.devices.allow`/`lxc.mount.entry` in `/etc/pve/lxc/206.conf`). Also joined to the
+  tailnet (`uptime-kuma.tailfa52c.ts.net`, `100.99.177.105`) — LAN + tailnet only, no Funnel, same
+  private-by-default pattern as Proton Bridge (CT 204). Two monitors: `NEXUS backend`
+  (`http://192.168.1.119:8000/api/health`, **HTTP(s)-Keyword** type checking `"status":"ok"`, NOT
+  plain status-code — the endpoint always returns HTTP 200 even when `vault_missing`, so a
+  status-only check would report healthy against a broken vault) and `NEXUS frontend`
+  (`http://192.168.1.119:3000`, plain HTTP(s)). Both: 60s interval, 3 retries (~3min to alarm,
+  chosen so the tray's own ~30-90s self-heal gets a chance to fix things first — Kuma should only
+  page on failures recovery *didn't* already handle). **Notification deliberately reuses NEXUS's
+  own `TELEGRAM_BOT_TOKEN`/chat** (not a dedicated bot) — Kuma's Telegram integration calls the Bot
+  API directly from inside the Kuma container, so NEXUS's own backend is never in the alert path
+  either way; the choice of bot token doesn't reintroduce the single-point-of-failure this phase
+  exists to remove, it's purely a "which chat do alerts land in" question, and reusing the existing
+  one was simpler.
+- **Recovery: Windows Task Scheduler task "NEXUS Tray"**, replacing the old `HKCU...Run` autostart
+  entry entirely (backed up to `NEXUS_Tray_autostart_backup.reg` in the repo root first — not
+  deleted, just superseded). **Real mechanism-design bug found and fixed during this build, twice:**
+  1. `start.ps1` isn't a persistent process (it launches things and exits), so Task Scheduler can't
+     wrap it directly — the task action targets `tray.py` (via a wrapper, see below), which is the
+     actual long-lived process.
+  2. The venv's `pythonw.exe` is a launcher STUB for windowless apps — it starts the real
+     interpreter as a detached child and exits in under a second without waiting on it, so Task
+     Scheduler tracking `pythonw.exe` directly loses the real process's lifetime almost
+     immediately. Fixed with `tray_supervisor.ps1`, a wrapper that Task Scheduler actually tracks —
+     it launches tray.py and polls (CIM, matched on command line) until that specific process is
+     gone.
+  3. **The bigger bug, confirmed via the TaskScheduler operational event log and corroborated by
+     Microsoft's own forum guidance: `RestartOnFailure` does NOT fire on a non-zero exit code from
+     a successfully-launched action — only if the scheduler fails to START the action at all.**
+     Event 201 logged "successfully completed" despite the wrapper's deliberate `exit 1`, and no
+     retry was ever queued, with `RestartCount=3`/`RestartInterval=PT1M` configured. This makes the
+     entire "exit code → Task Scheduler restarts it" design a dead end regardless of wrapper
+     script — confirmed, not guessed, before changing approach (per the standing "loop 3x → ask
+     Opus" rule). **Fix: `tray_supervisor.ps1` no longer exits and relies on Task Scheduler's
+     restart feature at all — it self-loops forever** (launch tray.py → poll until it's gone →
+     relaunch, with a fast-fail backoff: 5 consecutive sub-60s crashes trigger a 10-minute pause
+     rather than spinning hot). Task Scheduler's job is reduced to starting this once at logon,
+     plus a **15-minute indefinite repetition on the logon trigger** as a backstop in case the
+     supervisor process itself dies (a no-op most of the time, since `MultipleInstances=IgnoreNew`
+     + the wrapper's own "attach if already running" check make a redundant fire harmless).
+  4. Also fixed while here: `tray.py`'s `_kill_other_tray_instances()` runs before
+     `acquire_single_instance()`, so a naive relaunch that doesn't check for an already-running
+     tray first would kill a healthy one and steal its place — the wrapper checks for a live
+     `tray.py` process before ever launching a new one.
+- **Drilled live, twice, both passed**: (1) killed just the real tray process — supervisor detected
+  it in ~31s and relaunched cleanly (`logs/tray_supervisor.log` shows the exact detect→relaunch
+  sequence), new tray correctly saw NEXUS's backend/frontend still healthy and did NOT
+  unnecessarily restart them. (2) Full failure — `stop.ps1` plus killing the supervisor and tray
+  entirely, backend/frontend down for ~4 minutes (confirmed via repeated `/api/health` connection
+  refusals) — manually fired the task to simulate the 15-min backstop, full chain recovered within
+  ~15s (supervisor → tray → `start.ps1` → healthy). Confirm with Brian whether the real Telegram
+  DOWN/UP alerts landed during this drill — that part can't be verified from this session alone.
+- **Residual gap, explicitly not closed here**: a full reboot with nobody logged in leaves NEXUS
+  down until someone logs in (the tray needs an interactive desktop session — it's a systray icon,
+  Windows services can't own one, Session 0 is isolated from the desktop). The 15-min repetition
+  backstop only helps if a session is already active. Closing this needs Windows auto-logon (a
+  stored credential, its own security tradeoff) — deliberately not bundled into this phase, Brian's
+  call if he wants it later.
+- **Also confirmed while building this**: Proxmox host access still works via the existing
+  `processforge_proxmox_ed25519` keypair (no new credential handoff needed for the LXC itself).
+
 - **Council-loop post-mortem trigger** (2026-07-27): `Council-loop/run-loop.ps1` now POSTs `{"task_name": "council_postmortem", "parameters": {"since": <run start>}}` to `/api/trigger` at driver exit (best-effort, own `try/catch`, separate from the Brain-event block) — the NEXUS-side `council_postmortem.py` has existed since earlier this session but had no live caller until this hookup. Auth is `$env:NEXUS_API_KEY` (a one-time manual `[Environment]::SetEnvironmentVariable`, not stored in any Council-loop file); absent, it logs a skip line and does nothing else. See that repo's own `CLAUDE.md` for the full design.
 - **Brain Organizer moved off the old Hermes relay too** (2026-07-27): `modules/brain-organizer/brain_organizer.py` is a standalone script/venv run as a subprocess by `scheduler.py::_run_brain_organizer` — it never called `backend/events.py`'s `notify_phone`, so Phase 1's Telegram migration missed it entirely (found live: its "Run complete" summary kept arriving on the OLD Hermes-relayed bot). `send_hermes_notification` (POSTed to `{HERMES_HOST}/hermes/notify`) is now `send_telegram_notification` (POSTs straight to `https://api.telegram.org/bot<TOKEN>/sendMessage`). `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are injected into the subprocess's env by `_run_brain_organizer` from the NEXUS vault (same pattern as `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` — replaces the old `HERMES_HOST` injection), so the bot token never needs a second on-disk copy in the module's own `.env`. The module's test suite has its own `_no_real_secrets_in_tests` autouse fixture (`tests/conftest.py`) that strips these env vars for every test — this is the SAME guard that already exists for the retired Hermes secrets, put there after a real incident where a leaked `HERMES_HOST`/`HERMES_WEBHOOK_SECRET` fired real Telegram spam from a failure-path test; treat `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` with the identical suspicion in any future test work on this module.

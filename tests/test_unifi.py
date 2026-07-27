@@ -207,3 +207,159 @@ def test_unifi_data_defaults():
     assert data.bandwidth_mbps == 0.0
     assert data.alerts == []
     assert data.new_devices == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 7a — block/unblock (native, not via Hermes)
+# ---------------------------------------------------------------------------
+
+def test_normalize_mac_accepts_various_formats():
+    from backend.integrations.unifi import _normalize_mac
+    expected = "aa:bb:cc:dd:ee:ff"
+    assert _normalize_mac("aa:bb:cc:dd:ee:ff") == expected
+    assert _normalize_mac("AA:BB:CC:DD:EE:FF") == expected
+    assert _normalize_mac("aa-bb-cc-dd-ee-ff") == expected
+    assert _normalize_mac("aabb.ccdd.eeff") == expected
+    assert _normalize_mac("aabbccddeeff") == expected
+
+
+def test_normalize_mac_rejects_invalid():
+    from backend.integrations.unifi import _normalize_mac
+    for bad in ("", "aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:gg", "aa:bb:cc:dd:ee:ff:00",
+                "'; DROP TABLE--", "not a mac at all"):
+        with pytest.raises(ValueError):
+            _normalize_mac(bad)
+
+
+@pytest.mark.asyncio
+async def test_login_extracts_csrf_from_header():
+    from backend.integrations.unifi import _login
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {"X-CSRF-Token": "tok-from-header"}
+    login_resp.cookies = {}
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=login_resp)
+    headers = await _login(client)
+    assert headers["X-CSRF-Token"] == "tok-from-header"
+
+
+@pytest.mark.asyncio
+async def test_login_extracts_csrf_from_cookie_fallback():
+    import base64
+    import json
+    from backend.integrations.unifi import _login
+    payload = base64.urlsafe_b64encode(json.dumps({"csrfToken": "tok-from-cookie"}).encode()).decode().rstrip("=")
+    jwt_like = f"header.{payload}.sig"
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {}
+    login_resp.cookies = {"TOKEN": jwt_like}
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=login_resp)
+    headers = await _login(client)
+    assert headers["X-CSRF-Token"] == "tok-from-cookie"
+
+
+@pytest.mark.asyncio
+async def test_login_no_csrf_available_omits_header():
+    """Neither header nor a decodable cookie -- degrade to no CSRF header rather
+    than crash; the stamgr POST will simply fail loudly downstream if UniFi
+    actually requires it, matching every other 'raise, don't guess' pattern here."""
+    from backend.integrations.unifi import _login
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {}
+    login_resp.cookies = {}
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=login_resp)
+    headers = await _login(client)
+    assert "X-CSRF-Token" not in headers
+
+
+@pytest.mark.asyncio
+async def test_block_client_success():
+    from backend.integrations.unifi import block_client, fetch
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {"X-CSRF-Token": "tok"}
+    login_resp.cookies = {}
+    cmd_resp = MagicMock(status_code=200)
+    cmd_resp.json.return_value = {"meta": {"rc": "ok"}, "data": []}
+
+    with patch("httpx.AsyncClient") as mock_cls, patch.object(fetch, "invalidate") as mock_inval:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(side_effect=[login_resp, cmd_resp])
+        mock_cls.return_value = mock_client
+
+        result = await block_client("aa:bb:cc:dd:ee:ff")
+
+    assert result["meta"]["rc"] == "ok"
+    mock_inval.assert_called_once()
+    # Second POST (the actual stamgr call) must carry the normalized mac + cmd.
+    second_call = mock_client.__aenter__.return_value.post.call_args_list[1]
+    assert second_call.kwargs["json"] == {"cmd": "block-sta", "mac": "aa:bb:cc:dd:ee:ff"}
+    assert second_call.kwargs["headers"]["X-CSRF-Token"] == "tok"
+
+
+@pytest.mark.asyncio
+async def test_unblock_client_success():
+    from backend.integrations.unifi import unblock_client, fetch
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {"X-CSRF-Token": "tok"}
+    login_resp.cookies = {}
+    cmd_resp = MagicMock(status_code=200)
+    cmd_resp.json.return_value = {"meta": {"rc": "ok"}}
+
+    with patch("httpx.AsyncClient") as mock_cls, patch.object(fetch, "invalidate"):
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(side_effect=[login_resp, cmd_resp])
+        mock_cls.return_value = mock_client
+
+        result = await unblock_client("aabbccddeeff")
+
+    assert result["meta"]["rc"] == "ok"
+    second_call = mock_client.__aenter__.return_value.post.call_args_list[1]
+    assert second_call.kwargs["json"]["cmd"] == "unblock-sta"
+
+
+@pytest.mark.asyncio
+async def test_block_client_http_failure_raises():
+    from backend.integrations.unifi import block_client
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {}
+    login_resp.cookies = {}
+    cmd_resp = MagicMock(status_code=500)
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(side_effect=[login_resp, cmd_resp])
+        mock_cls.return_value = mock_client
+
+        with pytest.raises(Exception, match="UniFi block-sta failed"):
+            await block_client("aa:bb:cc:dd:ee:ff")
+
+
+@pytest.mark.asyncio
+async def test_block_client_rc_error_raises():
+    """A 200 whose body reports rc != 'ok' must still raise -- HTTP 200 alone
+    does not mean the command actually succeeded."""
+    from backend.integrations.unifi import block_client
+    login_resp = MagicMock(status_code=200)
+    login_resp.headers = {}
+    login_resp.cookies = {}
+    cmd_resp = MagicMock(status_code=200)
+    cmd_resp.json.return_value = {"meta": {"rc": "error", "msg": "api.err.NoSTAFound"}}
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(side_effect=[login_resp, cmd_resp])
+        mock_cls.return_value = mock_client
+
+        with pytest.raises(Exception, match="UniFi block-sta failed"):
+            await block_client("aa:bb:cc:dd:ee:ff")
+
+
+@pytest.mark.asyncio
+async def test_block_client_invalid_mac_raises_before_any_request():
+    from backend.integrations.unifi import block_client
+    with patch("httpx.AsyncClient") as mock_cls:
+        with pytest.raises(ValueError):
+            await block_client("not-a-real-mac")
+        mock_cls.assert_not_called()

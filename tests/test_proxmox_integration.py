@@ -276,3 +276,115 @@ async def test_fetch_backups_http_error_raises():
         from backend.integrations.proxmox import fetch_backups
         with pytest.raises(RuntimeError):
             await fetch_backups()
+
+
+# ---------------------------------------------------------------------------
+# Phase 7b — set_vm_power (native, not via Hermes)
+# ---------------------------------------------------------------------------
+
+def _post_client(resp):
+    client = AsyncMock()
+    client.__aenter__.return_value.post = AsyncMock(return_value=resp)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_start_qemu_url_and_op():
+    from backend.integrations.proxmox import ProxmoxData
+    fake_data = ProxmoxData(vms=[{"vmid": 101, "name": "win11", "status": "stopped", "type": "qemu", "node": "pve"}])
+    resp = _get_response({"data": "UPID:pve:..."})
+
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=fake_data) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.invalidate = MagicMock()
+        mock_client = _post_client(resp)
+        mock_cls.return_value = mock_client
+        from backend.integrations.proxmox import set_vm_power
+        await set_vm_power(101, "start")
+
+    called_url = mock_client.__aenter__.return_value.post.call_args.args[0]
+    assert called_url == "https://192.168.1.60:8006/api2/json/nodes/pve/qemu/101/status/start"
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_stop_maps_to_shutdown_lxc():
+    """action='stop' must map to Proxmox's graceful 'shutdown' op, and the
+    URL must use /lxc/ for an lxc-typed vmid, never assumed as qemu."""
+    from backend.integrations.proxmox import ProxmoxData
+    fake_data = ProxmoxData(vms=[{"vmid": 200, "name": "hermes", "status": "running", "type": "lxc", "node": "pve"}])
+    resp = _get_response({"data": "UPID:pve:..."})
+
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=fake_data) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.invalidate = MagicMock()
+        mock_client = _post_client(resp)
+        mock_cls.return_value = mock_client
+        from backend.integrations.proxmox import set_vm_power
+        await set_vm_power(200, "stop")
+
+    called_url = mock_client.__aenter__.return_value.post.call_args.args[0]
+    assert called_url == "https://192.168.1.60:8006/api2/json/nodes/pve/lxc/200/status/shutdown"
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_reboot():
+    from backend.integrations.proxmox import ProxmoxData
+    fake_data = ProxmoxData(vms=[{"vmid": 101, "name": "win11", "status": "running", "type": "qemu", "node": "pve"}])
+    resp = _get_response({"data": "UPID:pve:..."})
+
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=fake_data) as mock_fetch, \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_fetch.invalidate = MagicMock()
+        mock_client = _post_client(resp)
+        mock_cls.return_value = mock_client
+        from backend.integrations.proxmox import set_vm_power
+        await set_vm_power(101, "reboot")
+
+    called_url = mock_client.__aenter__.return_value.post.call_args.args[0]
+    assert called_url.endswith("/status/reboot")
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_unknown_vmid_raises_before_any_http_call():
+    from backend.integrations.proxmox import ProxmoxData, set_vm_power
+    fake_data = ProxmoxData(vms=[{"vmid": 101, "name": "win11", "status": "running", "type": "qemu", "node": "pve"}])
+
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=fake_data), \
+         patch("httpx.AsyncClient") as mock_cls:
+        with pytest.raises(ValueError, match="unknown Proxmox vmid"):
+            await set_vm_power(999, "start")
+        mock_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_invalid_action_raises_before_any_lookup():
+    from backend.integrations.proxmox import set_vm_power
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_fetch:
+        with pytest.raises(ValueError, match="unknown vm power action"):
+            await set_vm_power(101, "destroy")
+        mock_fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_http_error_raises():
+    from backend.integrations.proxmox import ProxmoxData
+    fake_data = ProxmoxData(vms=[{"vmid": 101, "name": "win11", "status": "running", "type": "qemu", "node": "pve"}])
+    resp = _get_response(None, status_code=500)
+    resp.raise_for_status.side_effect = Exception("HTTP 500")
+
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=fake_data), \
+         patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(resp)
+        from backend.integrations.proxmox import set_vm_power
+        with pytest.raises(RuntimeError, match="Proxmox power action failed"):
+            await set_vm_power(101, "start")
+
+
+@pytest.mark.asyncio
+async def test_set_vm_power_no_token_raises(_token_configured):
+    _token_configured.proxmox_token = ""
+    from backend.integrations.proxmox import set_vm_power
+    with patch("httpx.AsyncClient") as mock_cls:
+        with pytest.raises(RuntimeError, match="PROXMOX_TOKEN"):
+            await set_vm_power(101, "start")
+        mock_cls.assert_not_called()

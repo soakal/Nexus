@@ -72,17 +72,20 @@ export default function Dashboard() {
     }
   }
 
-  const restartDocker = async (id, name) => {
+  const restartDocker = async (name) => {
+    // Pass the container NAME, not its id -- real Unraid container ids are
+    // 129-char PrefixedIDs; the backend resolves name -> id server-side
+    // (unraid.resolve_container_id), same as the Telegram restart path.
     if (!window.confirm(`Restart ${name || 'this container'}?`)) return
-    try { await api.unraid.restartDocker(id); load() } catch {}
+    try { await api.unraid.restartDocker(name); load() } catch {}
   }
 
   const [vmActionBusy, setVmActionBusy] = useState(null)
-  const runVmAction = async (vm, action) => {
-    if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${vm}?`)) return
-    setVmActionBusy(vm)
+  const runVmAction = async (vmid, name, action) => {
+    if (!window.confirm(`${action[0].toUpperCase()}${action.slice(1)} ${name || vmid}?`)) return
+    setVmActionBusy(vmid)
     try {
-      await api.safety.executeHermesAction('vm_action', { vm, action })
+      await api.proxmox.vmPower(vmid, action)
       load()
     } catch {
     } finally {
@@ -374,7 +377,7 @@ export default function Dashboard() {
               {(unraid.docker_containers || []).slice(0, dockerOpen ? undefined : 2).map(c => (
                 <div
                   key={c.id}
-                  onClick={() => restartDocker(c.id, c.name)}
+                  onClick={() => restartDocker(c.name)}
                   style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer' }}
                 >
                   <StatusDot color="#34d399" size={7} glow={false} />
@@ -466,8 +469,8 @@ export default function Dashboard() {
                   </span>
                   <select
                     value=""
-                    disabled={vmActionBusy === v.name}
-                    onChange={(e) => { const action = e.target.value; e.target.value = ''; if (action) runVmAction(v.name, action) }}
+                    disabled={vmActionBusy === v.vmid}
+                    onChange={(e) => { const action = e.target.value; e.target.value = ''; if (action) runVmAction(v.vmid, v.name, action) }}
                     style={{ fontSize: '11px', background: 'rgba(255,255,255,0.04)', color: '#8a96ad', border: '1px solid rgba(120,160,220,0.12)', borderRadius: '6px', padding: '2px 4px' }}
                   >
                     <option value="">&hellip;</option>

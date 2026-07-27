@@ -739,7 +739,11 @@ async def test_docker_restart_failure_alerts_and_keeps_buttons():
 
 
 @pytest.mark.asyncio
-async def test_vm_start_dispatches_via_hermes_action_bridge():
+async def test_vm_start_dispatches_via_native_vm_power():
+    """Phase 7b: vm:start:<vmid> now dispatches the native vm_power kind
+    (proxmox.set_vm_power directly), not the Hermes relay bridge -- vmid is
+    coerced to int (the 'vm' namespace isn't in _INT_ID_NAMESPACES, so
+    obj_id arrives as a string from callback_data)."""
     from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
     result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
                            reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
@@ -750,19 +754,20 @@ async def test_vm_start_dispatches_via_hermes_action_bridge():
         await telegram_poller.handle_callback(_cq("vm:start:101"))
 
     mock_exec.assert_awaited_once_with(
-        actor="user", kind="hermes_action", target="hermes",
-        payload={"verb": "vm_action", "args": {"action": "start", "vm": "101"}},
+        actor="user", kind="vm_power", target="101",
+        payload={"vmid": 101, "action": "start"},
     )
     assert "✓" in mock_edit.await_args.args[2]
 
-    # The mock above proves the CALL shape; this proves that shape is actually
-    # a VALID vm_action invocation against the real allowlist spec (required
-    # args, enum values) -- a payload matching the mock's literal but wrong
-    # against build_command (e.g. a swapped key, an int vm) would pass the
-    # assertion above yet fail for real against Hermes.
-    from backend.safety import hermes_actions
-    payload = mock_exec.await_args.kwargs["payload"]
-    assert hermes_actions.build_command(payload["verb"], payload["args"]) == "start 101"
+
+@pytest.mark.asyncio
+async def test_vm_start_invalid_vmid_returns_error_not_crash():
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True):
+        await telegram_poller.handle_callback(_cq("vm:start:not-a-number"))
+
+    mock_exec.assert_not_awaited()
 
 
 @pytest.mark.asyncio

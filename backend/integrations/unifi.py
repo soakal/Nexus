@@ -1,4 +1,7 @@
+import base64
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -8,6 +11,8 @@ from sqlmodel import Session, select
 from backend.cache import async_ttl_cache
 
 logger = logging.getLogger(__name__)
+
+_MAC_HEX_RE = re.compile(r"^[0-9a-fA-F]{12}$")
 
 
 @dataclass
@@ -19,10 +24,17 @@ class UniFiData:
     new_devices: list = field(default_factory=list)
 
 
-@async_ttl_cache(60)
-async def fetch() -> UniFiData:
+async def _login(client: httpx.AsyncClient) -> dict:
+    """Log into the UniFi controller and return headers for subsequent requests.
+
+    GETs (fetch/health_check) only ever needed session cookies, which httpx's
+    client handles automatically -- but mutating POSTs (block/unblock) also
+    require an X-CSRF-Token header, or UniFi OS rejects them. Captured from
+    the login response header when present, else decoded out of the `TOKEN`
+    cookie's JWT payload (UniFi OS puts a `csrfToken` claim there) -- both
+    paths are exercised by real controllers depending on firmware version.
+    """
     from backend.config import get_settings
-    from backend.database import KnownDevice, engine
     settings = get_settings()
     try:
         password = settings.unifi_password
@@ -30,17 +42,90 @@ async def fetch() -> UniFiData:
         raise Exception("UNIFI_PASSWORD not configured")
 
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    login_resp = await client.post(
+        f"{settings.unifi_host}/api/auth/login",
+        json={"username": settings.unifi_username, "password": password},
+        headers=headers,
+    )
+    if login_resp.status_code not in (200, 201):
+        raise Exception(f"UniFi login failed: {login_resp.status_code}")
+
+    csrf = login_resp.headers.get("X-CSRF-Token")
+    if not csrf:
+        token_cookie = login_resp.cookies.get("TOKEN")
+        if token_cookie:
+            try:
+                payload_b64 = token_cookie.split(".")[1]
+                padding = "=" * (-len(payload_b64) % 4)
+                payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+                csrf = payload.get("csrfToken")
+            except Exception:
+                csrf = None
+
+    result_headers = dict(headers)
+    if csrf:
+        result_headers["X-CSRF-Token"] = csrf
+    return result_headers
+
+
+def _normalize_mac(value: str) -> str:
+    """Accepts aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabb.ccdd.eeff, or bare
+    aabbccddeeff -- returns lowercase colon form. Raises ValueError on
+    anything that isn't exactly 6 octets of hex, so a malformed/injected
+    value can never reach the stamgr POST body."""
+    if not value:
+        raise ValueError("empty MAC address")
+    stripped = re.sub(r"[:\-.]", "", value)
+    if not _MAC_HEX_RE.match(stripped):
+        raise ValueError(f"invalid MAC address: {value!r}")
+    pairs = [stripped[i:i + 2] for i in range(0, 12, 2)]
+    return ":".join(pairs).lower()
+
+
+async def _stamgr_cmd(cmd: str, mac: str) -> dict:
+    """POST a station-manager command (block-sta/unblock-sta) for one client.
+
+    Raises on any failure (non-2xx, or a 200 whose body reports rc != "ok")
+    -- the broker needs a real failure signal, not a swallowed False, or a
+    failed block/unblock would still get recorded EXECUTED."""
+    from backend.config import get_settings
+    settings = get_settings()
+    normalized = _normalize_mac(mac)
+
+    async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501 — UniFi uses self-signed LAN cert
+        headers = await _login(client)
+        resp = await client.post(
+            f"{settings.unifi_host}/proxy/network/api/s/default/cmd/stamgr",
+            json={"cmd": cmd, "mac": normalized},
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"UniFi {cmd} failed: HTTP {resp.status_code}")
+        body = resp.json()
+        if (body.get("meta") or {}).get("rc") != "ok":
+            raise Exception(f"UniFi {cmd} failed: {body.get('meta')}")
+
+    fetch.invalidate()
+    return body
+
+
+async def block_client(mac: str) -> dict:
+    return await _stamgr_cmd("block-sta", mac)
+
+
+async def unblock_client(mac: str) -> dict:
+    return await _stamgr_cmd("unblock-sta", mac)
+
+
+@async_ttl_cache(60)
+async def fetch() -> UniFiData:
+    from backend.config import get_settings
+    from backend.database import KnownDevice, engine
+    settings = get_settings()
 
     # UniFi uses cookie auth or API key depending on version
     async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501 — UniFi uses self-signed LAN cert
-        # Login
-        login_resp = await client.post(
-            f"{settings.unifi_host}/api/auth/login",
-            json={"username": settings.unifi_username, "password": password},
-            headers=headers,
-        )
-        if login_resp.status_code not in (200, 201):
-            raise Exception(f"UniFi login failed: {login_resp.status_code}")
+        headers = await _login(client)
 
         # Get clients — raise on failure rather than defaulting to 0 clients
         # (the "Unraid lesson": a zero-default here looks like a dead AP, not

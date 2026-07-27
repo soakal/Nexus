@@ -207,7 +207,7 @@ async def _unraid_docker_restart(input: dict) -> str:  # noqa: A002
         container_id = str(container_id).strip()
         key = _idem_key_for("unraid_docker_restart", {"container_id": container_id})
 
-        from backend.safety.broker import execute_action
+        from backend.safety.broker import Decision, execute_action
         res = await execute_action(
             actor="agent",
             kind="unraid_docker",
@@ -215,9 +215,110 @@ async def _unraid_docker_restart(input: dict) -> str:  # noqa: A002
             payload={"container_id": container_id},
             idempotency_key=key,
         )
+        # _decision_to_str's generic EXECUTED branch would render a failed or
+        # half-restart as "OK — performed. {'success': False, ...}" -- it only
+        # looks at the Decision enum, not this dispatcher's result shape.
+        # Success must be read off the result, and a stop-succeeded/
+        # start-failed half-restart (the container is now DOWN) must never
+        # be readable as "OK".
+        if res.decision == Decision.EXECUTED:
+            result = res.result or {}
+            if result.get("success"):
+                return "OK — container restarted."
+            if result.get("stopped"):
+                return _wtruncate(f"STOPPED but failed to restart: {result.get('error', '')}")
+            return _wtruncate(f"FAILED: {result.get('error', 'restart failed')}")
         return _wtruncate(_decision_to_str(res))
     except Exception as e:
         return f"unraid_docker_restart error: {e}"
+
+
+async def _vm_power(input: dict) -> str:  # noqa: A002
+    """Start/stop/reboot a Proxmox VM or LXC by vmid.
+
+    Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM;
+    a human must confirm before the power action executes).
+    Dispatches DIRECT from this PC — not via Hermes.
+    """
+    try:
+        vmid_raw = (input or {}).get("vmid")
+        action = (input or {}).get("action", "")
+        try:
+            vmid = int(vmid_raw)
+        except (TypeError, ValueError):
+            return f"vm_power error: 'vmid' must be an integer; got {vmid_raw!r}"
+        if action not in ("start", "stop", "reboot"):
+            return f"vm_power error: 'action' must be one of start/stop/reboot; got {action!r}"
+
+        key = _idem_key_for("vm_power", {"vmid": vmid, "action": action})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="vm_power",
+            target=str(vmid),
+            payload={"vmid": vmid, "action": action},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"vm_power error: {e}"
+
+
+async def _unifi_block(input: dict) -> str:  # noqa: A002
+    """Block a client from the UniFi network by MAC address.
+
+    Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM;
+    a human must confirm before the block executes — a wrong MAC is a
+    self-lockout risk).
+    Dispatches DIRECT from this PC — not via Hermes.
+    """
+    try:
+        mac = (input or {}).get("mac", "")
+        if not mac or not str(mac).strip():
+            return f"unifi_block error: 'mac' is required and must be a non-empty string; got {mac!r}"
+
+        mac = str(mac).strip()
+        key = _idem_key_for("unifi_block", {"mac": mac})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="unifi_block",
+            target=mac,
+            payload={"mac": mac},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"unifi_block error: {e}"
+
+
+async def _unifi_unblock(input: dict) -> str:  # noqa: A002
+    """Unblock a client on the UniFi network by MAC address.
+
+    Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM).
+    Dispatches DIRECT from this PC — not via Hermes.
+    """
+    try:
+        mac = (input or {}).get("mac", "")
+        if not mac or not str(mac).strip():
+            return f"unifi_unblock error: 'mac' is required and must be a non-empty string; got {mac!r}"
+
+        mac = str(mac).strip()
+        key = _idem_key_for("unifi_unblock", {"mac": mac})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="unifi_unblock",
+            target=mac,
+            payload={"mac": mac},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"unifi_unblock error: {e}"
 
 
 async def _obsidian_complete_task(input: dict) -> str:  # noqa: A002
@@ -378,6 +479,72 @@ WRITE_TOOLS: list[ReadTool] = [
             "required": ["container_id"],
         },
         dispatch=_unraid_docker_restart,
+    ),
+    ReadTool(
+        name="vm_power",
+        description=(
+            "Start, stop, or reboot a Proxmox VM or LXC by vmid. "
+            "Goes through the safety broker (HIGH risk — needs human confirmation "
+            "before the action executes for an agent). "
+            "Dispatches direct from this PC, not via Hermes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "vmid": {
+                    "type": "integer",
+                    "description": "Proxmox VM or LXC id, e.g. 101",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop", "reboot"],
+                    "description": "'stop' performs a graceful shutdown, not a hard power-pull",
+                },
+            },
+            "required": ["vmid", "action"],
+        },
+        dispatch=_vm_power,
+    ),
+    ReadTool(
+        name="unifi_block",
+        description=(
+            "Block a client from the UniFi network by MAC address. "
+            "Goes through the safety broker (HIGH risk — needs human confirmation "
+            "before the block executes for an agent; a wrong MAC risks locking out "
+            "a real device). "
+            "Dispatches direct from this PC, not via Hermes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mac": {
+                    "type": "string",
+                    "description": "MAC address to block, any common format (aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)",
+                },
+            },
+            "required": ["mac"],
+        },
+        dispatch=_unifi_block,
+    ),
+    ReadTool(
+        name="unifi_unblock",
+        description=(
+            "Unblock a client on the UniFi network by MAC address. "
+            "Goes through the safety broker (HIGH risk — needs human confirmation "
+            "before the unblock executes for an agent). "
+            "Dispatches direct from this PC, not via Hermes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mac": {
+                    "type": "string",
+                    "description": "MAC address to unblock, any common format (aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff, aabbccddeeff)",
+                },
+            },
+            "required": ["mac"],
+        },
+        dispatch=_unifi_unblock,
     ),
     ReadTool(
         name="obsidian_complete_task",

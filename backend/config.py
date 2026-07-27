@@ -331,6 +331,12 @@ class Settings(BaseSettings):
     homelab_garage_entity_id: str = "cover.garage_door_garage_door"
     homelab_garage_open_minutes: int = 30
 
+    # Phase 3 of the Hermes decoupling: a proactive daily homelab-status
+    # digest (Proxmox/Unraid/UniFi/AdGuard/Channels DVR/HA/sports), ported
+    # from Hermes's own 8am cron (main.py:daily_digest). Scheduled 5 minutes
+    # after briefing_time, not independently configurable.
+    homelab_digest_enabled: bool = True
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

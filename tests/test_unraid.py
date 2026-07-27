@@ -231,75 +231,187 @@ async def test_unraid_health_check_fail():
         assert await health_check() is False
 
 
+# ---------------------------------------------------------------------------
+# Phase 7c — resolve_container_id + restart_docker (stop-then-start, since no
+# restartContainer mutation exists in Unraid's GraphQL schema; confirmed live
+# 2026-07-27)
+# ---------------------------------------------------------------------------
+
+def _containers_data(containers):
+    from backend.integrations.unraid import UnraidData
+    return UnraidData(docker_containers=containers)
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_id_passthrough_for_real_id():
+    """A real PrefixedID (contains ':') is used as-is -- fetch() never called."""
+    from backend.integrations.unraid import resolve_container_id
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock) as mock_fetch:
+        result = await resolve_container_id("abcdef0123456789:fedcba9876543210")
+    assert result == "abcdef0123456789:fedcba9876543210"
+    mock_fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_id_resolves_by_name():
+    from backend.integrations.unraid import resolve_container_id
+    data = _containers_data([
+        {"id": "hash1:hash2", "name": "plex", "status": "Up", "state": "running"},
+        {"id": "hash3:hash4", "name": "sonarr", "status": "Up", "state": "running"},
+    ])
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data):
+        result = await resolve_container_id("plex")
+    assert result == "hash1:hash2"
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_id_unknown_name_raises():
+    from backend.integrations.unraid import resolve_container_id
+    data = _containers_data([{"id": "hash1:hash2", "name": "plex", "status": "Up", "state": "running"}])
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data):
+        with pytest.raises(ValueError, match="no container found"):
+            await resolve_container_id("nonexistent")
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_id_ambiguous_name_raises():
+    from backend.integrations.unraid import resolve_container_id
+    data = _containers_data([
+        {"id": "hash1:hash2", "name": "app", "status": "Up", "state": "running"},
+        {"id": "hash3:hash4", "name": "app", "status": "Up", "state": "running"},
+    ])
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data):
+        with pytest.raises(ValueError, match="ambiguous"):
+            await resolve_container_id("app")
+
+
+@pytest.mark.asyncio
+async def test_resolve_container_id_rejects_unsafe_input():
+    """Rejected BEFORE any fetch()/HTTP call, regardless of what the server
+    would do with it -- ids/names are spliced into a GraphQL mutation via an
+    f-string (no query variables)."""
+    from backend.integrations.unraid import resolve_container_id
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock) as mock_fetch:
+        with pytest.raises(ValueError, match="unsafe or empty"):
+            await resolve_container_id('abc" }) mutation evil { x')
+        with pytest.raises(ValueError, match="unsafe or empty"):
+            await resolve_container_id("")
+        mock_fetch.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_unraid_restart_docker_success():
-    with patch("httpx.AsyncClient") as mock_cls:
-        mock_cls.return_value = _post_client(_gql_response({"restartContainer": {"success": True}}))
-        from backend.integrations.unraid import restart_docker
-        assert await restart_docker("abc123") is True
+    """Happy path: resolve -> stop -> poll shows stopped -> start. Both
+    mutations issued in order, cache invalidated on success."""
+    from backend.integrations import unraid
+    data = _containers_data([{"id": "hash1:hash2", "name": "plex", "status": "Up", "state": "EXITED"}])
+    with patch("backend.integrations.unraid.resolve_container_id", new_callable=AsyncMock, return_value="hash1:hash2"), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data) as mock_fetch, \
+         patch("backend.integrations.unraid._docker_mutation", new_callable=AsyncMock, side_effect=[(True, ""), (True, "")]) as mock_mut, \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+        mock_fetch.invalidate = MagicMock()
+        result = await unraid.restart_docker("plex")
+
+    assert result == {"success": True}
+    assert mock_mut.await_args_list[0].args == ("stop", "hash1:hash2")
+    assert mock_mut.await_args_list[1].args == ("start", "hash1:hash2")
+    mock_fetch.invalidate.assert_called()
 
 
 @pytest.mark.asyncio
-async def test_unraid_restart_docker_invalidates_cache():
-    """A successful restart busts the fetch cache so the next poll shows new state."""
-    with patch("httpx.AsyncClient") as mock_cls:
-        mock_cls.return_value = _post_client(_gql_response({"restartContainer": {"success": True}}))
-        from backend.integrations import unraid
-        with patch.object(unraid.fetch, "invalidate") as mock_inv:
-            assert await unraid.restart_docker("abc123") is True
-            mock_inv.assert_called_once()
+async def test_unraid_restart_docker_stop_fails_start_never_issued():
+    from backend.integrations import unraid
+    with patch("backend.integrations.unraid.resolve_container_id", new_callable=AsyncMock, return_value="hash1:hash2"), \
+         patch("backend.integrations.unraid._docker_mutation", new_callable=AsyncMock, return_value=(False, "no such container")) as mock_mut:
+        result = await unraid.restart_docker("plex")
+
+    assert result["success"] is False
+    assert "stopped" not in result
+    assert "stop failed" in result["error"]
+    mock_mut.assert_awaited_once()  # start never attempted
 
 
 @pytest.mark.asyncio
-async def test_unraid_restart_docker_gql_errors_returns_false():
+async def test_unraid_restart_docker_start_fails_after_stop_succeeds():
+    """The critical case: stop succeeds, start fails -- container is DOWN.
+    Must be distinguishable ('stopped': True) from a routine failure."""
+    from backend.integrations import unraid
+    data = _containers_data([{"id": "hash1:hash2", "name": "plex", "status": "Exited", "state": "EXITED"}])
+    with patch("backend.integrations.unraid.resolve_container_id", new_callable=AsyncMock, return_value="hash1:hash2"), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data) as mock_fetch, \
+         patch("backend.integrations.unraid._docker_mutation", new_callable=AsyncMock, side_effect=[(True, ""), (False, "connection reset")]), \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+        mock_fetch.invalidate = MagicMock()
+        result = await unraid.restart_docker("plex")
+
+    assert result["success"] is False
+    assert result["stopped"] is True
+    assert "stopped but failed to restart" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_unraid_restart_docker_polls_until_stopped():
+    """Fires start only once fetch() reports the container is no longer
+    RUNNING -- not immediately after the stop call returns."""
+    from backend.integrations import unraid
+    still_running = _containers_data([{"id": "hash1:hash2", "name": "plex", "status": "Up", "state": "RUNNING"}])
+    now_stopped = _containers_data([{"id": "hash1:hash2", "name": "plex", "status": "Exited", "state": "EXITED"}])
+    with patch("backend.integrations.unraid.resolve_container_id", new_callable=AsyncMock, return_value="hash1:hash2"), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[still_running, still_running, now_stopped]) as mock_fetch, \
+         patch("backend.integrations.unraid._docker_mutation", new_callable=AsyncMock, side_effect=[(True, ""), (True, "")]), \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        mock_fetch.invalidate = MagicMock()
+        result = await unraid.restart_docker("plex")
+
+    assert result == {"success": True}
+    assert mock_fetch.await_count == 3
+    assert mock_sleep.await_count == 2  # slept between the 2 "still running" polls
+
+
+@pytest.mark.asyncio
+async def test_unraid_restart_docker_unknown_name_returns_error_no_mutation_attempted():
+    from backend.integrations import unraid
+    with patch("backend.integrations.unraid.resolve_container_id", new_callable=AsyncMock, side_effect=ValueError("no container found with name 'ghost'")), \
+         patch("backend.integrations.unraid._docker_mutation", new_callable=AsyncMock) as mock_mut:
+        result = await unraid.restart_docker("ghost")
+
+    assert result == {"success": False, "error": "no container found with name 'ghost'"}
+    mock_mut.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_docker_mutation_gql_errors_returns_false():
     """HTTP 200 with a GraphQL 'errors' array is a failed mutation, not a success."""
     resp = MagicMock(status_code=200)
     resp.json.return_value = {"errors": [{"message": "no such container"}]}
     with patch("httpx.AsyncClient") as mock_cls:
         mock_cls.return_value = _post_client(resp)
-        from backend.integrations import unraid
-        with patch.object(unraid.fetch, "invalidate") as mock_inv:
-            assert await unraid.restart_docker("abc123") is False
-            mock_inv.assert_not_called()
+        from backend.integrations.unraid import _docker_mutation
+        ok, err = await _docker_mutation("stop", "hash1:hash2")
+    assert ok is False
+    assert "no such container" in err
 
 
 @pytest.mark.asyncio
-async def test_unraid_restart_docker_gql_success_false_returns_false():
-    """HTTP 200 with restartContainer.success=false is a failed mutation."""
-    with patch("httpx.AsyncClient") as mock_cls:
-        mock_cls.return_value = _post_client(_gql_response({"restartContainer": {"success": False}}))
-        from backend.integrations.unraid import restart_docker
-        assert await restart_docker("abc123") is False
-
-
-@pytest.mark.asyncio
-async def test_unraid_restart_docker_server_error():
-    """restart_docker returns False for 5xx responses."""
+async def test_docker_mutation_server_error_returns_false():
     with patch("httpx.AsyncClient") as mock_cls:
         mock_cls.return_value = _post_client(MagicMock(status_code=500))
-        from backend.integrations.unraid import restart_docker
-        assert await restart_docker("abc123") is False
+        from backend.integrations.unraid import _docker_mutation
+        ok, err = await _docker_mutation("start", "hash1:hash2")
+    assert ok is False
+    assert "500" in err
 
 
 @pytest.mark.asyncio
-async def test_unraid_restart_docker_rejects_unsafe_container_id():
-    """container_id is spliced into a GraphQL mutation via an f-string (no query
-    variables) -- a quote must never reach the HTTP call at all, regardless of
-    what the server would do with it."""
-    with patch("httpx.AsyncClient") as mock_cls:
-        from backend.integrations.unraid import restart_docker
-        assert await restart_docker('abc" }) mutation evil { restartContainer(id: "x') is False
-        mock_cls.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_unraid_restart_docker_fail():
+async def test_docker_mutation_transport_error_returns_false():
     with patch("httpx.AsyncClient") as mock_cls:
         client = AsyncMock()
-        client.__aenter__.return_value.post = AsyncMock(side_effect=Exception("fail"))
+        client.__aenter__.return_value.post = AsyncMock(side_effect=Exception("connection refused"))
         mock_cls.return_value = client
-        from backend.integrations.unraid import restart_docker
-        assert await restart_docker("abc123") is False
+        from backend.integrations.unraid import _docker_mutation
+        ok, err = await _docker_mutation("stop", "hash1:hash2")
+    assert ok is False
+    assert "connection refused" in err
 
 
 def test_unraid_data_defaults():

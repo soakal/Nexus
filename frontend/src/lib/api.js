@@ -87,7 +87,11 @@ export const api = {
     },
   },
   unraid: { get: () => req('GET', '/unraid/'), restartDocker: (id) => req('POST', `/unraid/docker/${id}/restart`) },
-  proxmox: { get: () => req('GET', '/proxmox/'), maintenance: () => req('GET', '/proxmox/maintenance') },
+  proxmox: {
+    get: () => req('GET', '/proxmox/'),
+    maintenance: () => req('GET', '/proxmox/maintenance'),
+    vmPower: (vmid, action) => req('POST', `/proxmox/vm/${vmid}/power`, { action }),
+  },
   ha: {
     entities: () => req('GET', '/ha/entities'),
     service: (domain, service, entity_id, service_data) =>

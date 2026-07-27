@@ -112,17 +112,29 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
             # _dispatch_hermes_action) -- it returns {"success": False} and the
             # broker still records EXECUTED. Success must be read off the
             # result, not the decision, or a failed restart would show ✓.
-            if res.decision == Decision.EXECUTED and (res.result or {}).get("success"):
-                return True, "Restart sent."
+            if res.decision == Decision.EXECUTED:
+                result = res.result or {}
+                if result.get("success"):
+                    return True, "Restart sent."
+                if result.get("stopped"):
+                    # Stop succeeded, start failed -- the container is
+                    # confirmed DOWN, not just "restart didn't happen". Must
+                    # read as urgent, never as a routine/no-op failure.
+                    return False, f"⚠️ STOPPED but failed to restart: {result.get('error', '')}"
+                return False, result.get("error") or "Restart failed."
             if res.decision == Decision.FORBIDDEN:
                 return True, "Blocked: autonomy is paused."
             return False, (res.error or "Restart failed.")
 
         if namespace == "vm" and verb == "start":
             from backend.safety.broker import Decision, execute_action
+            try:
+                vmid = int(obj_id)
+            except (TypeError, ValueError):
+                return False, f"Invalid vmid: {obj_id!r}"
             res = await execute_action(
-                actor="user", kind="hermes_action", target="hermes",
-                payload={"verb": "vm_action", "args": {"action": "start", "vm": str(obj_id)}},
+                actor="user", kind="vm_power", target=str(vmid),
+                payload={"vmid": vmid, "action": "start"},
             )
             if res.decision == Decision.EXECUTED:
                 return True, "Start sent."

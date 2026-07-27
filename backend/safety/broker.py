@@ -141,6 +141,22 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # a human tap for an agent/autonomous actor.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
+    if kind == "vm_power":
+        # Phase 7b of the Hermes decoupling — native, not via Hermes's relay.
+        # Same band Hermes's own vm_action verb already carries
+        # (hermes_actions.py) — starting/stopping/rebooting a VM or LXC is
+        # HIGH, always needs a human tap for an agent/autonomous actor.
+        return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
+
+    if kind in ("unifi_block", "unifi_unblock"):
+        # Phase 7a of the Hermes decoupling — native, not via Hermes's relay.
+        # Same band Hermes's own unifi_block_client/unifi_unblock_client verbs
+        # already carry: HIGH so an agent always needs a human tap. The inverse
+        # is clean (block <-> unblock), but the blast radius includes Brian's
+        # own phone/NEXUS host/tailnet path if the wrong MAC is targeted — a
+        # self-lockout risk an agent must never trigger unsupervised.
+        return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
+
     if kind == "obsidian_task":
         # Check off a vault task — low blast radius, reversible by unchecking.
         return Risk.LOW, Reversibility.REVERSIBLE
@@ -331,11 +347,49 @@ async def _dispatch_unraid_docker(target: str, payload: dict) -> dict:
     """Restart a Docker container on Unraid.
 
     Calls unraid.restart_docker directly from this PC — NOT via Hermes.
+    restart_docker already returns a rich dict ({"success": ...}, optionally
+    with "stopped": True on a stop-succeeded/start-failed half-restart) —
+    surfaced as-is, not re-wrapped, so that state isn't lost.
     """
     from backend.integrations import unraid
 
-    ok = await unraid.restart_docker(payload["container_id"])
-    return {"success": bool(ok)}
+    return await unraid.restart_docker(payload["container_id"])
+
+
+async def _dispatch_vm_power(target: str, payload: dict) -> dict:
+    """Start/reboot/gracefully-shut-down a Proxmox VM or LXC.
+
+    Calls proxmox.set_vm_power directly from this PC — NOT via Hermes.
+    Validates action here (not just inside set_vm_power) so an invalid
+    action is a clean ValueError -> recorded FAILED, never an HTTP call.
+    """
+    from backend.integrations import proxmox
+
+    action = payload.get("action")
+    if action not in ("start", "stop", "reboot"):
+        raise ValueError(f"vm_power: invalid action {action!r} (expected start/stop/reboot)")
+
+    return await proxmox.set_vm_power(payload["vmid"], action)
+
+
+async def _dispatch_unifi_block(target: str, payload: dict) -> dict:
+    """Block a client from the UniFi network by MAC address.
+
+    Calls unifi.block_client directly from this PC — NOT via Hermes.
+    """
+    from backend.integrations import unifi
+
+    return await unifi.block_client(payload["mac"])
+
+
+async def _dispatch_unifi_unblock(target: str, payload: dict) -> dict:
+    """Unblock a client on the UniFi network by MAC address.
+
+    Calls unifi.unblock_client directly from this PC — NOT via Hermes.
+    """
+    from backend.integrations import unifi
+
+    return await unifi.unblock_client(payload["mac"])
 
 
 async def _dispatch_obsidian_task(target: str, payload: dict) -> dict:
@@ -434,6 +488,9 @@ _DISPATCHERS = {
     "hermes_action": _dispatch_hermes_action,
     "channels_record": _dispatch_channels_record,
     "unraid_docker": _dispatch_unraid_docker,
+    "vm_power": _dispatch_vm_power,
+    "unifi_block": _dispatch_unifi_block,
+    "unifi_unblock": _dispatch_unifi_unblock,
     "obsidian_task": _dispatch_obsidian_task,
     "send_notification": _dispatch_send_notification,
     "protonmail_send": _dispatch_protonmail_send,

@@ -216,7 +216,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # duplicate-subject fact-table cleanup has run live for a few days --
     # bump this back to 21 (and re-add "facts_digest" below) only after
     # flipping that default back to True.
-    assert mock_add.call_count == 20
+    assert mock_add.call_count == 22
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -236,11 +236,13 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "vault_backup",
         "watchdog",
         "homelab_watch",
+        "homelab_digest",
         "spend_report",
         "goal_recurrence",
         "brain_organizer",
         "wiki_fragmentation_report",
         "infisical_soak_reminder",
+        "hermes_soak_reminder",
     }
 
 
@@ -260,7 +262,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 20
+    assert mock_add.call_count == 22
 
 
 # ---------------------------------------------------------------------------

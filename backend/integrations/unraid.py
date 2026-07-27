@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 # of the string literal. Callers include an LLM tool-call arg (write_tools.py)
 # with no charset check of its own, so this must be enforced at the sink, not
 # just at one call site.
-_SAFE_CONTAINER_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
+_SAFE_CONTAINER_ID = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 _GQL_QUERY = """
 {
@@ -89,7 +90,12 @@ async def fetch() -> UnraidData:
             containers = gql.get("docker", {}).get("containers", [])
             data.docker_containers = [
                 {
-                    "id": c.get("id", "")[:12],
+                    # Real Unraid container ids are 129-char <hash>:<hash>
+                    # PrefixedIDs -- a [:12] truncation here used to collapse
+                    # every container to an identical shared prefix (fixed
+                    # 2026-07-27, Phase 7c). Telegram callback_data still
+                    # carries the NAME, never this id -- see resolve_container_id.
+                    "id": c.get("id", ""),
                     "name": (c.get("names") or [""])[0].lstrip("/"),
                     "status": c.get("status", ""),
                     "state": c.get("state", ""),
@@ -127,42 +133,101 @@ async def health_check() -> bool:
         return False
 
 
-async def restart_docker(container_id: str) -> bool:
+async def resolve_container_id(name_or_id: str) -> str:
+    """Resolve a container NAME or a real id to the real id.
+
+    Real ids are 129-char '<hash>:<hash>' PrefixedIDs -- past Telegram's
+    64-byte callback_data limit, so callers keep the container NAME in
+    callback_data and only need the real id at the point of dispatch
+    (see homelab_watch.py, telegram_poller.py). If the input already
+    contains ':' (the real id shape) it's passed through as-is; otherwise
+    it's resolved by exact name match against the current container list.
+
+    Raises ValueError on an unsafe/empty input, an unknown name, or an
+    ambiguous name (matches more than one container) -- never guesses.
+    """
+    if not name_or_id or not _SAFE_CONTAINER_ID.match(name_or_id):
+        raise ValueError(f"unsafe or empty container reference: {name_or_id!r}")
+    if ":" in name_or_id:
+        return name_or_id
+
+    data = await fetch()
+    matches = [c for c in data.docker_containers if c.get("name") == name_or_id]
+    if not matches:
+        raise ValueError(f"no container found with name {name_or_id!r}")
+    if len(matches) > 1:
+        raise ValueError(f"ambiguous container name {name_or_id!r}: matches {len(matches)} containers")
+    return matches[0]["id"]
+
+
+async def _docker_mutation(op: str, container_id: str) -> tuple[bool, str]:
+    """Run one docker { <op>(id: ...) { id state } } mutation. Returns
+    (ok, error_message) -- never raises, so restart_docker can distinguish
+    stop-failed from start-failed."""
+    from backend.config import get_settings
+    settings = get_settings()
+    api_key = settings.unraid_api_key
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+    mutation = f'mutation {{ docker {{ {op}(id: "{container_id}") {{ id state }} }} }}'
     try:
-        if not _SAFE_CONTAINER_ID.match(container_id or ""):
-            logger.warning(f"restart_docker: rejected unsafe container_id {container_id!r}")
-            return False
-        from backend.config import get_settings
-        settings = get_settings()
-        api_key = settings.unraid_api_key
-        headers = {"x-api-key": api_key, "Content-Type": "application/json"}
-        mutation = f'mutation {{ restartContainer(id: "{container_id}") {{ success }} }}'
-        async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:  # nosec B501
             resp = await client.post(
                 f"https://{settings.unraid_host}/graphql",
                 json={"query": mutation},
                 headers=headers,
             )
             if resp.status_code != 200:
-                return False
-            # GraphQL returns HTTP 200 even on a mutation failure (an "errors"
-            # array, or data.restartContainer.success=false) — status_code alone
-            # can't tell a real restart from a rejected one.
-            try:
-                body = resp.json()
-            except Exception:
-                body = None
-            if isinstance(body, dict):
-                if body.get("errors"):
-                    return False
-                data = body.get("data") or {}
-                container = data.get("restartContainer") if isinstance(data, dict) else None
-                if isinstance(container, dict) and "success" in container:
-                    if not container["success"]:
-                        return False
-            # Force the next dashboard poll to show the container's new state
-            # instead of the cached pre-restart snapshot.
-            fetch.invalidate()
-            return True
-    except Exception:
-        return False
+                return False, f"HTTP {resp.status_code}"
+            body = resp.json()
+            if body.get("errors"):
+                return False, str(body["errors"])
+            return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+async def restart_docker(name_or_id: str) -> dict:
+    """Restart a Docker container: resolve, stop, poll until actually
+    stopped (up to ~5s), then start.
+
+    No `restartContainer` mutation exists in Unraid's GraphQL schema
+    (confirmed live 2026-07-27) -- this is genuinely two separate calls, so
+    a stop that succeeds followed by a start that fails leaves the
+    container DOWN, not merely 'not restarted'. That state must never look
+    like a plain, recoverable failure to a caller.
+
+    Returns:
+      {"success": True} on a clean restart.
+      {"success": False, "error": ...} if resolution or the stop call
+        itself failed -- the container is presumed untouched.
+      {"success": False, "stopped": True, "error": ...} if stop succeeded
+        but start then failed -- the container is confirmed DOWN; callers
+        must surface this as urgent, not routine.
+    """
+    try:
+        container_id = await resolve_container_id(name_or_id)
+    except ValueError as e:
+        logger.warning(f"restart_docker: {e}")
+        return {"success": False, "error": str(e)}
+
+    ok, err = await _docker_mutation("stop", container_id)
+    if not ok:
+        return {"success": False, "error": f"stop failed: {err}"}
+
+    # Poll for the container to actually report stopped -- starting it again
+    # while it's still mid-stop is the likely failure mode of firing start
+    # immediately. Each iteration invalidates the cache so it isn't reading
+    # the same 30s-stale snapshot five times in a row.
+    for _ in range(5):
+        fetch.invalidate()
+        data = await fetch()
+        c = next((c for c in data.docker_containers if c.get("id") == container_id), None)
+        if c and (c.get("state") or "").upper() != "RUNNING":
+            break
+        await asyncio.sleep(1)
+
+    ok, err = await _docker_mutation("start", container_id)
+    fetch.invalidate()
+    if not ok:
+        return {"success": False, "stopped": True, "error": f"stopped but failed to restart: {err}"}
+    return {"success": True}

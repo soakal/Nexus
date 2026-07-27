@@ -63,6 +63,7 @@ async def fetch() -> ProxmoxData:
                         "name": r.get("name", ""),
                         "status": r.get("status", "unknown"),
                         "type": rtype,
+                        "node": r.get("node"),
                     })
                 elif rtype == "storage":
                     data.storage_used_gb += float(r.get("disk", 0)) / _BYTES_PER_GIB
@@ -95,6 +96,60 @@ async def health_check() -> bool:
             return resp.status_code == 200 and bool(resp.json().get("data"))
     except Exception:
         return False
+
+
+_POWER_OPS = {"start": "start", "reboot": "reboot", "stop": "shutdown"}
+
+
+async def set_vm_power(vmid: int, action: str) -> dict:
+    """Start/reboot/gracefully-shut-down a Proxmox VM or LXC.
+
+    Phase 7b of the Hermes decoupling -- native, not via Hermes's relay.
+    Resolves vmid against fetch() to get both `node` and `type` (qemu vs
+    lxc) rather than assuming either, since the API path differs:
+    /nodes/{node}/qemu/{vmid}/... vs /nodes/{node}/lxc/{vmid}/....
+
+    `action="stop"` deliberately maps to Proxmox's graceful `shutdown` op,
+    not the raw power-pull `stop` op -- that harsher operation is not
+    exposed here on purpose.
+
+    Raises ValueError for an unknown vmid or action (before any HTTP call),
+    RuntimeError on a non-2xx response -- same never-guess discipline as
+    fetch_updates()/fetch_backups().
+    """
+    if action not in _POWER_OPS:
+        raise ValueError(f"unknown vm power action: {action!r} (expected one of {sorted(_POWER_OPS)})")
+
+    from backend.config import get_settings
+    settings = get_settings()
+    token = settings.proxmox_token
+    if not token:
+        raise RuntimeError("Proxmox unavailable: PROXMOX_TOKEN not configured")
+
+    data = await fetch()
+    vm = next((v for v in data.vms if v.get("vmid") == vmid), None)
+    if vm is None:
+        raise ValueError(f"unknown Proxmox vmid: {vmid!r}")
+    node = vm.get("node")
+    vm_type = vm.get("type")
+    if not node or vm_type not in ("qemu", "lxc"):
+        raise RuntimeError(f"Proxmox vmid {vmid} has no usable node/type: {vm!r}")
+
+    op = _POWER_OPS[action]
+    url = f"{settings.proxmox_host}/api2/json/nodes/{node}/{vm_type}/{vmid}/status/{op}"
+    headers = {"Authorization": token}
+
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:  # nosec B501 — Proxmox self-signed cert
+            resp = await client.post(url, headers=headers)
+            resp.raise_for_status()
+            result = resp.json()
+    except Exception as e:
+        logger.warning(f"Proxmox set_vm_power failed (vmid={vmid}, action={action}): {e}")
+        raise RuntimeError(f"Proxmox power action failed: {e}") from e
+
+    fetch.invalidate()
+    return result
 
 
 @async_ttl_cache(900, falsy_ttl=60)
