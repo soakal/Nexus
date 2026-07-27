@@ -121,7 +121,10 @@ def _parse_github_url(text: str):
     """Extract owner/repo from a GitHub URL or 'owner/repo' string."""
     m = re.search(r"github\.com/([^/\s]+)/([^/\s]+)", text)
     if m:
-        return m.group(1), m.group(2).rstrip(".git")
+        repo = m.group(2)
+        if repo.endswith(".git"):
+            repo = repo[: -len(".git")]
+        return m.group(1), repo
     m2 = re.match(r"([a-zA-Z0-9_-]+)/([a-zA-Z0-9_.-]+)", text.strip())
     if m2:
         return m2.group(1), m2.group(2)
