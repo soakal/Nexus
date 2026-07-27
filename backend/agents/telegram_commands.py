@@ -1,4 +1,10 @@
-"""Telegram bot command handlers — Phase 2a (chat + read-only status commands).
+"""Telegram bot command handlers.
+
+Phase 2a: chat + read-only status commands. Phase 2b (this build): memory
+(/remember /facts /forget), goals/tasks (/goals /task /tasks), /digest,
+runtime per-kind notify muting (/mute /unmute /muted), and voice-message
+transcription (wired in telegram_poller.py, dispatches through this same
+module once transcribed).
 
 Used by telegram_poller.py for every non-callback inbound message. Bare text
 (no leading "/") is treated as a chat message — matches how Hermes's bot
@@ -6,10 +12,10 @@ behaved, so there's no new habit to learn; /nx is kept as an explicit alias
 for the same handler. Every handler is wrapped by dispatch() so one handler's
 exception can never kill the poll loop.
 
-Deliberately NOT built here (see the Phase 2 plan): /model (no NEXUS
-equivalent — see plan fork F1), /remember /facts /forget /research (need
-their own design decisions, Phase 2b), and the background alert watcher
-(Phase 2c, not a command at all).
+Deliberately NOT built here: /model (no NEXUS equivalent — its model tiers
+are .env-configured, not chat-switchable) and the background homelab alert
+watcher (VM/docker/garage/doorbell — Phase 2c, not a command at all, not yet
+scoped).
 """
 import logging
 from collections.abc import Awaitable, Callable
@@ -171,6 +177,134 @@ async def _cmd_briefing(args: str, msg: dict) -> str:
     return content or "No briefing yet — the daily briefing hasn't run."
 
 
+async def _cmd_remember(args: str, msg: dict) -> str:
+    """Free-text -> the same Haiku fact-extractor chat()/briefing() already
+    use (source='telegram'), not a strict subject|value format — consistent
+    with the rest of NEXUS, at the cost of being non-deterministic (it can
+    extract zero, one, or several facts from one message)."""
+    from backend.agents import facts
+
+    text = args.strip()
+    if not text:
+        return "Usage: /remember <something to remember>"
+    await facts.extract_and_store(text, conversation_id=None, source="telegram")
+    return "Noted — check /facts to see what I picked up (extraction isn't always 1:1 with what you typed)."
+
+
+async def _cmd_facts(args: str, msg: dict) -> str:
+    import asyncio
+    from backend.agents import facts
+
+    rows = await asyncio.to_thread(facts._db_list_facts_for_audit)
+    if not rows:
+        return "No facts stored yet."
+    lines = [f"#{r['id']} {r['subject']}: {r['predicate']} {r['value']} ({r['confidence']:.1f})" for r in rows[:30]]
+    if len(rows) > 30:
+        lines.append(f"...and {len(rows) - 30} more.")
+    return "\n".join(lines)
+
+
+async def _cmd_forget(args: str, msg: dict) -> str:
+    from backend.agents import facts
+
+    try:
+        fact_id = int(args.strip())
+    except ValueError:
+        return "Usage: /forget <fact id> — see /facts for ids"
+    ok = await facts.dismiss_fact(fact_id)
+    return f"Forgot fact #{fact_id}." if ok else f"No fact #{fact_id} found."
+
+
+async def _cmd_goals(args: str, msg: dict) -> str:
+    import asyncio
+    from backend.agents import goals as goals_agent
+
+    rows = await asyncio.to_thread(goals_agent._db_list_goals, None, 20)
+    if not rows:
+        return "No goals yet."
+    return "\n".join(f"#{g['id']} [{g['status']}] {g['title']}" for g in rows)
+
+
+async def _cmd_task(args: str, msg: dict) -> str:
+    """Durable orchestrator task — the /research successor. No auto-emailed
+    report (protonmail_send is IRREVERSIBLE and hard-forbidden to non-user
+    actors, so that would need its own separate design decision); check
+    /tasks or the Tasks page for progress instead."""
+    import asyncio
+
+    prompt = args.strip()
+    if not prompt:
+        return "Usage: /task <what you want done>"
+
+    def _create() -> int:
+        from sqlmodel import Session
+        from backend.database import Task, engine
+        with Session(engine) as session:
+            task = Task(prompt=prompt, status="pending")
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            return task.id
+
+    task_id = await asyncio.to_thread(_create)
+    from backend.agents.worker_pool import get_pool
+    await get_pool().enqueue(task_id)
+    return f"Task #{task_id} queued. Check /tasks or the Tasks page for progress."
+
+
+async def _cmd_tasks(args: str, msg: dict) -> str:
+    import asyncio
+
+    def _list():
+        from sqlmodel import Session, select
+        from backend.database import Task, engine
+        with Session(engine) as session:
+            rows = session.exec(select(Task).order_by(Task.created_at.desc()).limit(10)).all()
+            return [(t.id, t.status, t.prompt) for t in rows]
+
+    rows = await asyncio.to_thread(_list)
+    if not rows:
+        return "No tasks yet."
+    return "\n".join(f"#{tid} [{status}] {prompt[:60]}" for tid, status, prompt in rows)
+
+
+async def _cmd_digest(args: str, msg: dict) -> str:
+    from backend.agents.digest import build_autonomy_digest
+    return await build_autonomy_digest()
+
+
+async def _cmd_mute(args: str, msg: dict) -> str:
+    import asyncio
+    from backend.safety import governor
+
+    kind = args.strip()
+    if not kind:
+        return "Usage: /mute <kind> — e.g. /mute budget_warn. See /muted for what's currently muted."
+    await asyncio.to_thread(governor.add_muted_notify_kind, kind)
+    return f"Muted notifications of kind '{kind}'."
+
+
+async def _cmd_unmute(args: str, msg: dict) -> str:
+    import asyncio
+    from backend.safety import governor
+
+    kind = args.strip()
+    if not kind:
+        return "Usage: /unmute <kind>"
+    await asyncio.to_thread(governor.remove_muted_notify_kind, kind)
+    return f"Unmuted '{kind}'."
+
+
+async def _cmd_muted(args: str, msg: dict) -> str:
+    import asyncio
+    from backend.safety import governor
+
+    kinds = await asyncio.to_thread(governor.get_muted_notify_kinds)
+    if not kinds:
+        return "Nothing muted."
+    return "Muted: " + ", ".join(sorted(kinds))
+
+
 COMMANDS: dict[str, tuple[Handler, str]] = {
     "nx": (_cmd_chat, "Ask NEXUS anything"),
     "help": (_cmd_help, "List commands"),
@@ -181,6 +315,16 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "spend": (_cmd_spend, "Today's AI spend vs budget"),
     "vms": (_cmd_vms, "Proxmox VM/LXC list"),
     "briefing": (_cmd_briefing, "Latest morning briefing"),
+    "remember": (_cmd_remember, "Save a fact"),
+    "facts": (_cmd_facts, "List stored facts"),
+    "forget": (_cmd_forget, "Delete a fact by id"),
+    "goals": (_cmd_goals, "List recent goals"),
+    "task": (_cmd_task, "Queue a durable task"),
+    "tasks": (_cmd_tasks, "List recent tasks"),
+    "digest": (_cmd_digest, "Today's autonomy digest"),
+    "mute": (_cmd_mute, "Silence a notification kind"),
+    "unmute": (_cmd_unmute, "Un-silence a notification kind"),
+    "muted": (_cmd_muted, "List muted notification kinds"),
 }
 
 

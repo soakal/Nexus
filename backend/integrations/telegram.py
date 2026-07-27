@@ -190,6 +190,27 @@ async def set_my_commands(commands: list[dict]) -> bool:
         return False
 
 
+async def get_file_bytes(file_id: str, *, max_bytes: int = 20 * 1024 * 1024) -> bytes:
+    """getFile -> download from the FILE endpoint. Telegram uses a DIFFERENT
+    base path for file downloads than every other Bot API call:
+    /file/bot<token>/<file_path>, not /bot<token>/<method>. Size-capped.
+    Raises on failure — caller (voice transcription) handles it."""
+    from backend.config import get_settings
+    token = get_settings().telegram_bot_token
+
+    resp = await _call("getFile", {"file_id": file_id}, timeout=15)
+    resp.raise_for_status()
+    file_path = resp.json()["result"]["file_path"]
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        file_resp = await client.get(f"{_API}/file/bot{token}/{file_path}")
+        file_resp.raise_for_status()
+        content = file_resp.content
+        if len(content) > max_bytes:
+            raise ValueError(f"Telegram file too large: {len(content)} bytes > {max_bytes} cap")
+        return content
+
+
 async def get_updates(offset: int | None, *, timeout: int, allowed_updates: list[str]) -> list[dict]:
     """Long-poll getUpdates. Raises TelegramConflict on 409 (another consumer
     is polling this bot), httpx.HTTPStatusError on other non-2xx, or a

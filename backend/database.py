@@ -297,6 +297,11 @@ class SystemState(SQLModel, table=True):
     # restart so a multi-turn Telegram conversation doesn't silently reset.
     # /clear sets this back to None to start a fresh Conversation.
     telegram_conversation_id: int | None = Field(default=None)
+    # Runtime per-kind notify mute (Telegram /mute /unmute /muted, Phase 2b).
+    # CSV, same singleton-row idiom as policy_auto_allow_kinds. Distinct from
+    # the static Settings.phone_suppressed_kinds (.env, requires a restart) —
+    # this is Brian's own on-the-fly "stop pinging me about X" control.
+    muted_notify_kinds: str | None = Field(default=None)
 
 
 # Agent/LLM trace observability (council w-observability). One row per
@@ -524,6 +529,7 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "policy_auto_allow_kinds", "TEXT")
     _safe_add_column("systemstate", "policy_forbid_kinds", "TEXT")
     _safe_add_column("systemstate", "telegram_conversation_id", "INTEGER")
+    _safe_add_column("systemstate", "muted_notify_kinds", "TEXT")
 
 
 def _ensure_system_state():

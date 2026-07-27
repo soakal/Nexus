@@ -127,21 +127,79 @@ def _handle_unknown_message(msg: dict) -> None:
     )
 
 
+async def _transcribe_voice(msg: dict) -> str | None:
+    """Downloads a Telegram voice message and transcribes it (Whisper, same
+    engine backend/agents/voice.py already uses elsewhere). Returns None
+    (never raises) on any failure — the caller then silently drops the
+    message, same as any other non-actionable inbound update.
+
+    Note: voice.transcribe() is not itself offloaded to a thread — a long
+    clip blocks the event loop for the duration of transcription. That's a
+    pre-existing characteristic of voice.py (unchanged here, other callers
+    already accept it), not something new to this wiring."""
+    voice = msg.get("voice") or {}
+    file_id = voice.get("file_id")
+    if not file_id:
+        return None
+    import os
+    import tempfile
+    try:
+        audio_bytes = await telegram.get_file_bytes(file_id)
+        fd, path = tempfile.mkstemp(suffix=".oga")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(audio_bytes)
+            from backend.agents import voice as voice_mod
+            return await voice_mod.transcribe(path)
+        finally:
+            # Guarded: on Windows a transient external handle-holder (Defender,
+            # the indexer) can make an unlink of a just-written file raise
+            # PermissionError. Unguarded, that exception in `finally` would
+            # supersede a SUCCESSFUL transcribe() return — silently discarding
+            # a paid/expensive transcript. Matches the existing guarded-unlink
+            # pattern in backend/api/voice.py.
+            try:
+                os.unlink(path)
+            except OSError as e:
+                logger.warning(f"Failed to remove temp voice file {path} (ignored): {e}")
+    except Exception as e:
+        logger.warning(f"Telegram voice transcription failed: {e}")
+        return None
+
+
 async def _handle_message(msg: dict) -> None:
-    """Authorized -> command/chat dispatch, fire-and-forget + semaphore-gated
-    so a slow chat() call never blocks getUpdates or a button tap.
+    """Authorized -> command/chat dispatch (text, or a transcribed voice
+    message), fire-and-forget + semaphore-gated so a slow chat() or
+    transcription call never blocks getUpdates or a button tap.
     Unauthorized -> log only, no reply (module docstring explains why)."""
     chat_id = (msg.get("chat") or {}).get("id")
     if not _authorized(chat_id):
         _handle_unknown_message(msg)
         return
 
-    text = msg.get("text")
-    if not text:
-        return  # non-text message (photo, sticker, voice, ...) — not handled in Phase 2a
+    has_text = bool(msg.get("text"))
+    has_voice = bool(msg.get("voice"))
+    if not has_text and not has_voice:
+        return  # non-text, non-voice message (photo, sticker, ...) — not handled
 
     async def _run():
         async with _message_semaphore:
+            text = msg.get("text")
+            if not text and has_voice:
+                text = await _transcribe_voice(msg)
+                if not text:
+                    # A failed transcription must still reply — silence here
+                    # is indistinguishable from the bot being down. (Every
+                    # OTHER inbound path, including an unknown command,
+                    # answers.)
+                    chat_id = (msg.get("chat") or {}).get("id")
+                    await telegram.send_reply(
+                        "Sorry, I couldn't transcribe that voice message.",
+                        chat_id=chat_id,
+                    )
+                    return
+            if not text:
+                return
             from backend.agents import telegram_commands
             await telegram_commands.dispatch(text, msg)
 

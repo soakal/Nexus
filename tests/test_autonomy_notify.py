@@ -128,6 +128,71 @@ async def test_notify_phone_best_effort_on_hermes_error():
 
 
 # ---------------------------------------------------------------------------
+# Phase 2b — runtime per-kind mute (Telegram /mute), distinct from the
+# static .env-configured phone_suppressed_kinds
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_notify_phone_respects_runtime_mute():
+    hermes_notify_mock = AsyncMock(return_value=True)
+    with patch("backend.config.get_settings") as mock_settings, \
+         patch("backend.integrations.telegram.notify", hermes_notify_mock), \
+         patch("backend.safety.governor.get_muted_notify_kinds", return_value={"budget_warn"}):
+        s = MagicMock()
+        s.phone_notifications_enabled = True
+        s.phone_suppressed_kinds = set()
+        s.app_base_url = ""
+        mock_settings.return_value = s
+
+        from backend.events import notify_phone
+        result = await notify_phone("over budget", kind="budget_warn")
+
+    assert result is False
+    hermes_notify_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_phone_mute_db_failure_still_sends():
+    """A DB hiccup reading muted_notify_kinds must degrade to 'not muted',
+    never to a silently dropped alert — this gates auth_burst/contract_breach/
+    budget_warn/needs_confirm, the pages documented as un-suppressible."""
+    hermes_notify_mock = AsyncMock(return_value=True)
+    with patch("backend.config.get_settings") as mock_settings, \
+         patch("backend.integrations.telegram.notify", hermes_notify_mock), \
+         patch("backend.safety.governor.get_muted_notify_kinds", side_effect=Exception("database is locked")):
+        s = MagicMock()
+        s.phone_notifications_enabled = True
+        s.phone_suppressed_kinds = set()
+        s.app_base_url = ""
+        mock_settings.return_value = s
+
+        from backend.events import notify_phone
+        result = await notify_phone("40 auth failures from one client", kind="auth_burst")
+
+    assert result is True
+    hermes_notify_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_notify_phone_unmuted_kind_still_sends():
+    hermes_notify_mock = AsyncMock(return_value=True)
+    with patch("backend.config.get_settings") as mock_settings, \
+         patch("backend.integrations.telegram.notify", hermes_notify_mock), \
+         patch("backend.safety.governor.get_muted_notify_kinds", return_value={"budget_warn"}):
+        s = MagicMock()
+        s.phone_notifications_enabled = True
+        s.phone_suppressed_kinds = set()
+        s.app_base_url = ""
+        mock_settings.return_value = s
+
+        from backend.events import notify_phone
+        result = await notify_phone("goal proposed", kind="goal_proposed")
+
+    assert result is True
+    hermes_notify_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # Test 4a: broker needs_confirm fires a phone alert
 # Test 4b: EXECUTED action does NOT call notify_phone
 # ---------------------------------------------------------------------------

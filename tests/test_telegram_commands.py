@@ -216,3 +216,168 @@ async def test_cmd_help_lists_all_commands():
     reply = await telegram_commands._cmd_help("", _msg("/help"))
     for name in telegram_commands.COMMANDS:
         assert f"/{name}" in reply
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — /remember, /facts, /forget
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cmd_remember_calls_extract_and_store():
+    with patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract:
+        reply = await telegram_commands._cmd_remember("my wifi password is hunter2", _msg("/remember ..."))
+
+    mock_extract.assert_awaited_once_with("my wifi password is hunter2", conversation_id=None, source="telegram")
+    assert "/facts" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_empty_args_does_not_call_extract():
+    with patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract:
+        reply = await telegram_commands._cmd_remember("   ", _msg("/remember"))
+
+    mock_extract.assert_not_called()
+    assert "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_facts_lists_stored_facts():
+    rows = [{"id": 1, "subject": "wifi", "predicate": "password", "value": "hunter2", "confidence": 0.9}]
+    with patch("backend.agents.facts._db_list_facts_for_audit", return_value=rows):
+        reply = await telegram_commands._cmd_facts("", _msg("/facts"))
+    assert "#1" in reply
+    assert "wifi" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_facts_empty():
+    with patch("backend.agents.facts._db_list_facts_for_audit", return_value=[]):
+        reply = await telegram_commands._cmd_facts("", _msg("/facts"))
+    assert "No facts" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_forget_dismisses_fact():
+    with patch("backend.agents.facts.dismiss_fact", new_callable=AsyncMock, return_value=True) as mock_dismiss:
+        reply = await telegram_commands._cmd_forget("7", _msg("/forget 7"))
+    mock_dismiss.assert_awaited_once_with(7)
+    assert "Forgot" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_forget_not_found():
+    with patch("backend.agents.facts.dismiss_fact", new_callable=AsyncMock, return_value=False):
+        reply = await telegram_commands._cmd_forget("999", _msg("/forget 999"))
+    assert "No fact" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_forget_invalid_id():
+    reply = await telegram_commands._cmd_forget("abc", _msg("/forget abc"))
+    assert "Usage" in reply
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — /goals, /task, /tasks, /digest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cmd_goals_lists_goals():
+    rows = [{"id": 3, "status": "proposed", "title": "Archive old recordings"}]
+    with patch("backend.agents.goals._db_list_goals", return_value=rows):
+        reply = await telegram_commands._cmd_goals("", _msg("/goals"))
+    assert "#3" in reply
+    assert "Archive old recordings" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_task_creates_and_enqueues():
+    row = MagicMock(id=99)
+    session = MagicMock()
+    session.refresh = MagicMock(side_effect=lambda t: None)
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=session)
+    cm.__exit__ = MagicMock(return_value=False)
+
+    pool = MagicMock()
+    pool.enqueue = AsyncMock()
+
+    def _fake_session_ctor(*a, **kw):
+        return cm
+
+    with patch("backend.database.engine"), \
+         patch("sqlmodel.Session", side_effect=_fake_session_ctor), \
+         patch("backend.database.Task", return_value=row), \
+         patch("backend.agents.worker_pool.get_pool", return_value=pool):
+        reply = await telegram_commands._cmd_task("clean up docker images", _msg("/task ..."))
+
+    pool.enqueue.assert_awaited_once_with(99)
+    assert "#99" in reply
+    assert "queued" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_task_empty_args():
+    reply = await telegram_commands._cmd_task("   ", _msg("/task"))
+    assert "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_tasks_lists_recent():
+    session = MagicMock()
+    session.exec.return_value.all.return_value = [MagicMock(id=1, status="running", prompt="do the thing")]
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=session)
+    cm.__exit__ = MagicMock(return_value=False)
+    with patch("backend.database.engine"), patch("sqlmodel.Session", return_value=cm):
+        reply = await telegram_commands._cmd_tasks("", _msg("/tasks"))
+    assert "#1" in reply
+    assert "do the thing" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_digest_calls_build_autonomy_digest():
+    with patch("backend.agents.digest.build_autonomy_digest", new_callable=AsyncMock, return_value="Digest text"):
+        reply = await telegram_commands._cmd_digest("", _msg("/digest"))
+    assert reply == "Digest text"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — /mute, /unmute, /muted
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cmd_mute_adds_kind():
+    with patch("backend.safety.governor.add_muted_notify_kind") as mock_add:
+        reply = await telegram_commands._cmd_mute("budget_warn", _msg("/mute budget_warn"))
+    mock_add.assert_called_once_with("budget_warn")
+    assert "budget_warn" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_mute_empty_args():
+    reply = await telegram_commands._cmd_mute("", _msg("/mute"))
+    assert "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_unmute_removes_kind():
+    with patch("backend.safety.governor.remove_muted_notify_kind") as mock_remove:
+        reply = await telegram_commands._cmd_unmute("budget_warn", _msg("/unmute budget_warn"))
+    mock_remove.assert_called_once_with("budget_warn")
+    assert "budget_warn" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_muted_lists_kinds():
+    with patch("backend.safety.governor.get_muted_notify_kinds", return_value={"budget_warn", "goal_proposed"}):
+        reply = await telegram_commands._cmd_muted("", _msg("/muted"))
+    assert "budget_warn" in reply
+    assert "goal_proposed" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_muted_empty():
+    with patch("backend.safety.governor.get_muted_notify_kinds", return_value=set()):
+        reply = await telegram_commands._cmd_muted("", _msg("/muted"))
+    assert "Nothing muted" in reply

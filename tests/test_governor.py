@@ -804,3 +804,40 @@ def test_claim_auth_burst_creates_missing_system_state_row():
         from backend.safety import governor
         paged = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
         assert paged == ["1.2.3.4"]
+
+
+# ---------------------------------------------------------------------------
+# Telegram Phase 2 — conversation-id persistence + per-kind mute (CSV, same
+# singleton-row idiom as auth_burst_alert_sources/policy_auto_allow_kinds)
+# ---------------------------------------------------------------------------
+
+def test_telegram_conversation_id_roundtrip(eng):
+    from backend.safety import governor
+    assert governor.get_telegram_conversation_id() is None
+    governor.set_telegram_conversation_id(42)
+    assert governor.get_telegram_conversation_id() == 42
+    governor.set_telegram_conversation_id(None)
+    assert governor.get_telegram_conversation_id() is None
+
+
+def test_muted_notify_kinds_roundtrip(eng):
+    from backend.safety import governor
+    assert governor.get_muted_notify_kinds() == set()
+    governor.add_muted_notify_kind("budget_warn")
+    governor.add_muted_notify_kind("goal_proposed")
+    assert governor.get_muted_notify_kinds() == {"budget_warn", "goal_proposed"}
+    governor.remove_muted_notify_kind("budget_warn")
+    assert governor.get_muted_notify_kinds() == {"goal_proposed"}
+
+
+def test_muted_notify_kinds_add_idempotent(eng):
+    from backend.safety import governor
+    governor.add_muted_notify_kind("budget_warn")
+    governor.add_muted_notify_kind("budget_warn")
+    assert governor.get_muted_notify_kinds() == {"budget_warn"}
+
+
+def test_muted_notify_kinds_remove_missing_is_noop(eng):
+    from backend.safety import governor
+    governor.remove_muted_notify_kind("never_muted")  # must not raise
+    assert governor.get_muted_notify_kinds() == set()

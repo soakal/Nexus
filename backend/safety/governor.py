@@ -215,6 +215,28 @@ def set_telegram_conversation_id(conversation_id: int | None) -> None:
         session.commit()
 
 
+def get_muted_notify_kinds() -> set[str]:
+    """Sync. Runtime per-kind notify mute (Telegram /mute), distinct from the
+    static Settings.phone_suppressed_kinds. Empty set if unset."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            return set()
+        return {k for k in (row.muted_notify_kinds or "").split(",") if k}
+
+
+def add_muted_notify_kind(kind: str) -> None:
+    _add_csv_kind("muted_notify_kinds", kind)
+
+
+def remove_muted_notify_kind(kind: str) -> None:
+    _remove_csv_kind("muted_notify_kinds", kind)
+
+
 def add_auto_allow_kind(kind: str) -> None:
     """Promote a kind to auto-allow for agent/autonomous actors (sync).
     Called ONLY by the broker's policy_promote dispatcher, which is itself

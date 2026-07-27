@@ -39,6 +39,20 @@ async def notify_phone(
         suppressed = getattr(settings, "phone_suppressed_kinds", set())
         if kind in suppressed:
             return False
+        # Runtime per-kind mute (Telegram /mute), distinct from the static
+        # .env-configured phone_suppressed_kinds above. Own try/except: a DB
+        # hiccup here must degrade to "not muted", never to "alert dropped" —
+        # this gates auth_burst/contract_breach/budget_warn/needs_confirm,
+        # exactly the pages documented elsewhere as un-suppressible.
+        import asyncio
+        from backend.safety import governor
+        try:
+            muted = await asyncio.to_thread(governor.get_muted_notify_kinds)
+        except Exception as e:
+            logger.warning(f"Reading muted_notify_kinds failed (treating as unmuted): {e}")
+            muted = set()
+        if kind in muted:
+            return False
         # Append deep-link when a base URL is configured.
         base = str(getattr(settings, "app_base_url", "") or "").strip().rstrip("/")
         parse_mode = None

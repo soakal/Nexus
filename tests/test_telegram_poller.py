@@ -520,3 +520,99 @@ async def test_run_poller_registers_command_menu():
         await telegram_poller.run_poller(stop)
 
     mock_set_cmds.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b — voice messages
+# ---------------------------------------------------------------------------
+
+def _voice_msg(chat_id=12345, file_id="voice-file-1"):
+    return {"chat": {"id": chat_id}, "voice": {"file_id": file_id, "duration": 3}, "date": 1234567890}
+
+
+@pytest.mark.asyncio
+async def test_transcribe_voice_downloads_and_transcribes():
+    with patch("backend.integrations.telegram.get_file_bytes", new_callable=AsyncMock, return_value=b"audio-bytes") as mock_get_file, \
+         patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="what's the garage status") as mock_transcribe:
+        result = await telegram_poller._transcribe_voice(_voice_msg())
+
+    assert result == "what's the garage status"
+    mock_get_file.assert_awaited_once_with("voice-file-1")
+    mock_transcribe.assert_awaited_once()
+    # the temp file path passed to transcribe() must have been cleaned up
+    import os
+    temp_path = mock_transcribe.await_args.args[0]
+    assert not os.path.exists(temp_path)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_voice_missing_file_id_returns_none():
+    msg = {"chat": {"id": 12345}, "voice": {}, "date": 1234567890}
+    result = await telegram_poller._transcribe_voice(msg)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_transcribe_voice_survives_unlink_failure():
+    """A successful transcript must not be discarded because deleting the temp
+    file failed afterward (Windows can transiently hold a handle on a
+    just-written file — an unguarded finally: os.unlink() would supersede a
+    successful return with the unlink's own exception)."""
+    with patch("backend.integrations.telegram.get_file_bytes", new_callable=AsyncMock, return_value=b"audio-bytes"), \
+         patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="turn off the garage light"), \
+         patch("os.unlink", side_effect=PermissionError("file in use")):
+        result = await telegram_poller._transcribe_voice(_voice_msg())
+
+    assert result == "turn off the garage light"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_voice_download_failure_returns_none_never_raises():
+    with patch("backend.integrations.telegram.get_file_bytes", new_callable=AsyncMock, side_effect=RuntimeError("network down")):
+        result = await telegram_poller._transcribe_voice(_voice_msg())
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_authorized_voice_message_transcribes_and_dispatches():
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_poller._transcribe_voice", new_callable=AsyncMock, return_value="is the garage open") as mock_transcribe, \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_voice_msg()))
+
+    mock_transcribe.assert_awaited_once()
+    mock_dispatch.assert_awaited_once()
+    assert mock_dispatch.await_args.args[0] == "is the garage open"
+
+
+@pytest.mark.asyncio
+async def test_voice_transcription_failure_does_not_dispatch_but_still_replies():
+    """Silence on a failed transcription would be indistinguishable from the
+    bot being down — every other inbound path (even an unknown command)
+    replies, so this must too."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_poller._transcribe_voice", new_callable=AsyncMock, return_value=None), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch, \
+         patch("backend.integrations.telegram.send_reply", new_callable=AsyncMock, return_value=True) as mock_reply:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_voice_msg()))
+
+    mock_dispatch.assert_not_called()
+    mock_reply.assert_awaited_once()
+    assert "couldn't transcribe" in mock_reply.await_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_voice_message_never_transcribes():
+    """Transcription costs real compute (Whisper) — must not run for a
+    stranger's voice message any more than a stranger's text message."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "99999"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_poller._transcribe_voice", new_callable=AsyncMock) as mock_transcribe:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_voice_msg(chat_id=12345)))
+
+    mock_transcribe.assert_not_called()

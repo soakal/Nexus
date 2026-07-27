@@ -345,3 +345,51 @@ def test_delivery_queue_health_never_raises_on_db_error():
         "dead_lettered_count": 0,
         "secret_present": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# get_file_bytes — Phase 2b voice message download
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_file_bytes_downloads_content():
+    getfile_resp = MagicMock(status_code=200)
+    getfile_resp.raise_for_status = MagicMock()
+    getfile_resp.json.return_value = {"result": {"file_path": "voice/file_1.oga"}}
+
+    download_resp = MagicMock(status_code=200, content=b"fake-audio-bytes")
+    download_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value.post = AsyncMock(return_value=getfile_resp)
+    mock_client.__aenter__.return_value.get = AsyncMock(return_value=download_resp)
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = mock_client
+        content = await telegram.get_file_bytes("file_id_123")
+
+    assert content == b"fake-audio-bytes"
+    # Telegram file downloads use a DIFFERENT base path than every other Bot
+    # API call: /file/bot<token>/..., not /bot<token>/<method>.
+    get_call_args = mock_client.__aenter__.return_value.get.call_args
+    assert "/file/bot" in get_call_args.args[0]
+    assert "voice/file_1.oga" in get_call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_get_file_bytes_raises_when_too_large():
+    getfile_resp = MagicMock(status_code=200)
+    getfile_resp.raise_for_status = MagicMock()
+    getfile_resp.json.return_value = {"result": {"file_path": "voice/file_1.oga"}}
+
+    download_resp = MagicMock(status_code=200, content=b"x" * 100)
+    download_resp.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value.post = AsyncMock(return_value=getfile_resp)
+    mock_client.__aenter__.return_value.get = AsyncMock(return_value=download_resp)
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = mock_client
+        with pytest.raises(ValueError, match="too large"):
+            await telegram.get_file_bytes("file_id_123", max_bytes=50)
