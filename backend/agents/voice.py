@@ -1,7 +1,38 @@
 import asyncio
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_ffmpeg_on_path() -> None:
+    """Local whisper shells out to ffmpeg to decode audio. start.ps1 launches
+    the backend via Start-Process, which on Windows can go through
+    ShellExecute and inherit the LOGON session's cached PATH rather than the
+    launching shell's live-refreshed one — so an ffmpeg installed (e.g. via
+    winget) after that session's PATH was cached stays invisible to NEXUS
+    until a full sign-out/restart. Reads the REAL current Machine+User PATH
+    straight from the registry and merges it in. Cheap, idempotent
+    (no-ops once ffmpeg already resolves), Windows-only, never raises."""
+    import shutil
+    if shutil.which("ffmpeg") or os.name != "nt":
+        return
+    try:
+        import winreg
+        paths = [os.environ.get("PATH", "")]
+        for root, subkey in (
+            (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+            (winreg.HKEY_CURRENT_USER, r"Environment"),
+        ):
+            try:
+                with winreg.OpenKey(root, subkey) as key:
+                    value, _ = winreg.QueryValueEx(key, "Path")
+                    paths.append(value)
+            except OSError:
+                continue
+        os.environ["PATH"] = ";".join(p for p in paths if p)
+    except Exception as e:
+        logger.warning(f"_ensure_ffmpeg_on_path failed (ignored): {e}")
 
 
 async def transcribe(audio_path: str) -> str:
@@ -19,6 +50,7 @@ async def transcribe(audio_path: str) -> str:
             resp = client.audio.transcriptions.create(model="whisper-1", file=f)
         return resp.text
     else:
+        _ensure_ffmpeg_on_path()
         import whisper
         model = whisper.load_model(settings.whisper_model)
         result = model.transcribe(audio_path)
