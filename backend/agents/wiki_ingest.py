@@ -627,8 +627,8 @@ def _parse_json_array(raw: str) -> list:
             parsed = json.loads(raw[start:end])
             if isinstance(parsed, list):
                 return parsed
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"model returned an unparseable JSON array: {e}")
     return []
 
 

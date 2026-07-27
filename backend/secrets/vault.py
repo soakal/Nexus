@@ -75,8 +75,10 @@ def set_secret(key: str, value: str) -> None:
     try:
         from backend.backup import backup_vault
         backup_vault()
-    except Exception:
-        pass  # backup failure must never break a secret save
+    except Exception as e:
+        # A backup failure must never break a secret save, but an unbacked-up
+        # vault is a silent data-loss risk if it stays unnoticed.
+        logger.warning(f"vault backup after saving '{key}' failed: {e}")
 
 def delete_secret(key: str) -> None:
     vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}

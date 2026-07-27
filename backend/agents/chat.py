@@ -500,8 +500,8 @@ MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "se
                         try:
                             _ctx_parsed = json.loads(_b_ctx)
                             _briefing_inject += f"\n\n[BRIEFING RAW CONTEXT]:\n{json.dumps(_ctx_parsed, indent=2)}"
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"chat: briefing context_json unparseable, injecting summary only: {e}")
                     memory_block = (memory_block + _briefing_inject) if memory_block else _briefing_inject.lstrip("\n\n")
 
                 memory_inject = (memory_block + "\n\n") if memory_block else ""
@@ -599,8 +599,8 @@ If no entity matches, return:
                                 service = pick.get("service")
                                 value = pick.get("value")
                                 option = pick.get("option")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"chat: HA entity pick unparseable, asking user to clarify: {e}")
 
                         if not entity_id or not service:
                             reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\", \"set the thermostat to 72\", or \"disable the away automation\"."
@@ -760,8 +760,8 @@ If they're saving something from the conversation, use the relevant prior assist
                         content = nd.get("content") or user_message
                 except BudgetExceeded:
                     raise  # budget brake reaches the outer handler
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat: note title/body extraction failed, using defaults: {e}")
 
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M")
                 body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
@@ -865,8 +865,8 @@ limit: how many emails they want, default 5, max 10."""
                         limit = min(int(qd.get("limit") or 5), 10)
                 except BudgetExceeded:
                     raise
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat: mail query extraction failed, using defaults: {e}")
 
                 try:
                     if mode == "read":
@@ -944,8 +944,8 @@ If a recipient, subject, or body is missing/unclear, return an empty string for 
                         mail_body = (sd.get("body") or "").strip()
                 except BudgetExceeded:
                     raise
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat: mail send extraction failed, recipients/body may be empty: {e}")
 
                 import re as _re
                 recipients = [

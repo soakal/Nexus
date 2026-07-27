@@ -308,8 +308,8 @@ def spend_report(days: int = 7) -> dict:
     try:
         from backend.config import get_settings
         prices_verified_flag = bool(getattr(get_settings(), "prices_verified", False))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"spend_report: prices_verified unreadable, reporting False: {e}")
 
     try:
         from sqlmodel import Session, func, select

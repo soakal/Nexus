@@ -1,11 +1,14 @@
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, select
 
 from backend.auth import require_api_key
 from backend.database import ActionLog, TaskOutcome, get_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -235,14 +238,23 @@ async def pause_autonomy(_=Depends(require_api_key)):
     from backend import events
 
     await asyncio.to_thread(governor.set_autonomy, False)
+    scheduler_error = None
     try:
         from backend.scheduler import scheduler
         if getattr(scheduler, "running", False):
             scheduler.pause()
-    except Exception:
-        pass
+    except Exception as e:
+        # The autonomy flag is already off (agent/autonomous dispatch is blocked),
+        # but a scheduler that refused to pause keeps firing jobs — the caller
+        # must be able to see that rather than read an unqualified success.
+        scheduler_error = str(e)
+        logger.error(f"kill switch: scheduler.pause() failed: {e}", exc_info=True)
     await events.publish("autonomy", {"enabled": False})
-    return {"autonomy_enabled": False, "scheduler_running": _scheduler_running()}
+    return {
+        "autonomy_enabled": False,
+        "scheduler_running": _scheduler_running(),
+        "scheduler_error": scheduler_error,
+    }
 
 
 @router.post("/resume")
@@ -252,14 +264,20 @@ async def resume_autonomy(_=Depends(require_api_key)):
     from backend import events
 
     await asyncio.to_thread(governor.set_autonomy, True)
+    scheduler_error = None
     try:
         from backend.scheduler import scheduler
         if getattr(scheduler, "running", False):
             scheduler.resume()
-    except Exception:
-        pass
+    except Exception as e:
+        scheduler_error = str(e)
+        logger.error(f"resume: scheduler.resume() failed: {e}", exc_info=True)
     await events.publish("autonomy", {"enabled": True})
-    return {"autonomy_enabled": True, "scheduler_running": _scheduler_running()}
+    return {
+        "autonomy_enabled": True,
+        "scheduler_running": _scheduler_running(),
+        "scheduler_error": scheduler_error,
+    }
 
 
 @router.get("/status")
@@ -279,8 +297,9 @@ async def safety_status(_=Depends(require_api_key)):
             **queue_health,
             "enabled": get_settings().phone_notifications_enabled,
         }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"safety status: notify-channel health unavailable: {e}")
+        notify_channel = {"error": str(e)}
 
     return {
         "autonomy_enabled": state["autonomy_enabled"],

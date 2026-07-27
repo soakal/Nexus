@@ -59,8 +59,9 @@ async def lifespan(app: FastAPI):
                 "Cost caps may be inaccurate until rates are field-validated against "
                 "Anthropic billing."
             )
-    except Exception:
-        pass  # vault not ready yet — warning will appear once vault is unlocked
+    except Exception as e:
+        # vault not ready yet — warning will appear once vault is unlocked
+        logger.debug(f"boot: prices_verified check skipped: {e}")
 
     # Tasks left "running"/"pending" from a dead process are NOT force-failed —
     # the worker pool re-enqueues them on start() so durable execution resumes.
@@ -152,33 +153,37 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    # Every component is stopped independently and a failure never aborts the
+    # rest of the shutdown — but it IS logged: a leaked Brain-Organizer child
+    # process or a scheduler that refused to shut down is exactly the kind of
+    # thing that only shows up as "the next boot behaves strangely".
     try:
         if _bo_proc[0] is not None:
             _bo_proc[0].terminate()
             _bo_proc[0].wait(timeout=5)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"shutdown: brain-organizer subprocess did not terminate cleanly: {e}")
     try:
         from backend.scheduler import scheduler
         if scheduler.running:
             scheduler.shutdown()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"shutdown: scheduler shutdown failed: {e}")
     try:
         from backend.agents.memo_watcher import stop_watcher
         await stop_watcher()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"shutdown: memo watcher stop failed: {e}")
     try:
         from backend.agents.worker_pool import get_pool
         await get_pool().stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"shutdown: worker pool stop failed: {e}")
     try:
         from backend.agents import telegram_poller
         await telegram_poller.stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"shutdown: telegram poller stop failed: {e}")
 
 
 app = FastAPI(title="NEXUS Agentic OS", version="1.0.0", lifespan=lifespan)

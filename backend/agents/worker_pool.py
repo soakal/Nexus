@@ -159,8 +159,8 @@ def _finalize_failed(task_id: int, reason: str) -> None:
                 duration_ms=0,
             ))
             session.commit()
-        except Exception:  # pragma: no cover - best effort
-            pass
+        except Exception as e:  # pragma: no cover - best effort
+            logger.warning(f"task {task_id}: failed to write AgentRun failure row: {e}")
 
 
 # --- pool ------------------------------------------------------------------
@@ -196,9 +196,11 @@ class TaskWorkerPool:
                     asyncio.gather(*self._workers, return_exceptions=True), timeout=10
                 )
             except asyncio.TimeoutError:
-                pass
-            except Exception:  # noqa: BLE001
-                pass
+                logger.warning(
+                    "worker pool: workers did not exit within 10s of stop() — abandoning them"
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"worker pool: error awaiting worker shutdown: {e}")
         self._workers.clear()
         self._inflight.clear()
         self._started = False
@@ -292,8 +294,13 @@ class TaskWorkerPool:
                     logger.warning(f"Task {task_id} failed in worker {worker_id}: {e}")
                     try:
                         await asyncio.to_thread(_finalize_failed, task_id, str(e))
-                    except Exception:
-                        pass
+                    except Exception as fin_err:
+                        # The task stays in a non-terminal status — the boot
+                        # requeue will pick it up again, so this must be visible.
+                        logger.error(
+                            f"Task {task_id}: could not finalize as failed: {fin_err}",
+                            exc_info=True,
+                        )
             except asyncio.CancelledError:
                 # Worker itself is being shut down.
                 raise

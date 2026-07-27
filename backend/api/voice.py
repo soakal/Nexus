@@ -1,9 +1,12 @@
+import logging
 import os
 import tempfile
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from backend.auth import require_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -26,8 +29,8 @@ async def upload_voice(file: UploadFile = File(...), _=Depends(require_api_key))
     finally:
         try:
             os.unlink(tmp_path)
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"voice upload: temp file {tmp_path} not removed: {e}")
 
 
 @router.post("/transcribe")
@@ -47,5 +50,5 @@ async def transcribe_voice(file: UploadFile = File(...), _=Depends(require_api_k
     finally:
         try:
             os.unlink(tmp_path)
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"voice transcribe: temp file {tmp_path} not removed: {e}")

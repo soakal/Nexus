@@ -8,12 +8,15 @@ Deliberately kept here: NEXUS still asks Hermes to execute action-relay verbs
 hermes_actions.py's allowlist) via Hermes's own SSH/Proxmox access, which
 NEXUS does not have.
 """
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
 
 from backend.cache import async_ttl_cache
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,7 +32,8 @@ async def get_status() -> HermesStatus:
     settings = get_settings()
     try:
         headers = {"X-Webhook-Secret": settings.hermes_webhook_secret}
-    except Exception:
+    except Exception as e:
+        logger.warning(f"hermes status: webhook secret unavailable, probing unauthenticated: {e}")
         headers = {}
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -39,8 +43,9 @@ async def get_status() -> HermesStatus:
                 last_seen_str = data.get("last_seen")
                 last_seen = datetime.fromisoformat(last_seen_str) if last_seen_str else None
                 return HermesStatus(alive=True, last_seen=last_seen, pending_actions=data.get("pending_actions", 0))
-    except Exception:
-        pass
+            logger.warning(f"hermes status: HTTP {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"hermes status probe failed: {e}")
     return HermesStatus(alive=False)
 
 
@@ -90,8 +95,9 @@ async def relay_action(message: str, idempotency_key: str | None = None) -> dict
     headers = {"Content-Type": "application/json"}
     try:
         headers["X-Webhook-Secret"] = settings.hermes_webhook_secret
-    except Exception:
-        pass
+    except Exception as e:
+        # Hermes will reject an unsigned action — log why before we send it.
+        logger.warning(f"relay_action: webhook secret unavailable: {e}")
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
     try:
@@ -103,7 +109,8 @@ async def relay_action(message: str, idempotency_key: str | None = None) -> dict
                 return {"ok": False, "response": f"Hermes returned HTTP {resp.status_code}.", "intent": None}
             try:
                 data = resp.json()
-            except Exception:
+            except Exception as e:
+                logger.warning(f"relay_action: Hermes returned a non-JSON 200 body: {e}")
                 return {"ok": True, "response": "(Hermes returned a non-JSON response.)", "intent": None}
             return {
                 "ok": _ok_from_action_json(data),
@@ -111,6 +118,7 @@ async def relay_action(message: str, idempotency_key: str | None = None) -> dict
                 "intent": data.get("intent"),
             }
     except Exception as e:
+        logger.warning(f"relay_action transport failure: {e}")
         return {"ok": False, "response": f"Hermes is not reachable right now: {e}", "intent": None}
 
 
@@ -120,14 +128,16 @@ async def relay(message: str) -> str:
     headers = {"Content-Type": "application/json"}
     try:
         headers["X-Webhook-Secret"] = settings.hermes_webhook_secret
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"relay: webhook secret unavailable: {e}")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(f"{settings.hermes_host}/hermes/action", json={"message": message}, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
                 return data.get("response") or "(Hermes returned no response.)"
+            logger.warning(f"relay: Hermes returned HTTP {resp.status_code}")
             return f"Hermes returned HTTP {resp.status_code}."
     except Exception as e:
+        logger.warning(f"relay transport failure: {e}")
         return f"Hermes is not reachable right now: {e}"

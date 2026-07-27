@@ -777,8 +777,8 @@ def _summarize_outcome(title: str, raw_result: str | None) -> str:
                     v = data.get(key)
                     if isinstance(v, str) and v.strip():
                         return " ".join(v.split())[:300]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"goal outcome summary: unparseable raw result, using title: {e}")
     return f"completed: {title}"[:300]
 
 

@@ -492,6 +492,8 @@ async def run_postmortem(*, since: str | None = None) -> dict:
                 f"NEXUS logs — this session was not verified.",
                 kind="council_postmortem",
             )
-        except Exception:
-            pass
+        except Exception as notify_err:
+            # Both the post-mortem AND its page failed — nothing would reach the
+            # phone at all, so the log is the only remaining signal.
+            logger.error(f"council post-mortem failure page not delivered: {notify_err}")
         return {"ok": False, "skipped": str(e), "notified": notified}

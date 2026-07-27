@@ -276,8 +276,9 @@ def _record_spend(model: str, resp, label: str, task_id=None) -> None:
                 raw_ws = getattr(stu, "web_search_requests", 0)
                 if isinstance(raw_ws, (int, float, str)):
                     cost += int(raw_ws or 0) * _WEB_SEARCH_USD_PER_SEARCH
-        except Exception:
-            pass  # search metering is best-effort on top of best-effort
+        except Exception as e:
+            # search metering is best-effort on top of best-effort
+            logger.debug(f"web-search cost not metered: {e}")
 
         from sqlmodel import Session
 
@@ -346,8 +347,9 @@ def _record_trace_span(
                     cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
                     tokens_in, tokens_out = input_tokens, output_tokens
                     cost_usd = _compute_cost(name, input_tokens, output_tokens, cache_creation, cache_read)
-                except (TypeError, ValueError):
-                    pass  # unparseable usage -- span still recorded, sans tokens/cost
+                except (TypeError, ValueError) as e:
+                    # unparseable usage -- span still recorded, sans tokens/cost
+                    logger.debug(f"trace span: unparseable usage, tokens/cost omitted: {e}")
 
         from sqlmodel import Session
 

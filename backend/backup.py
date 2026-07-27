@@ -49,8 +49,8 @@ def _mount_unc(unc_path: str, settings) -> None:
                         user = (cred.get("user") or "").strip()
                     if not pw:
                         pw = (cred.get("password") or "").strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"vault backup: unraid credentials unreadable: {e}")
 
         if not pw:
             return  # nothing to authenticate with
@@ -159,16 +159,16 @@ def backup_vault() -> dict:
                     attrs = ctypes.windll.kernel32.GetFileAttributesW(str(p))
                     if attrs != -1 and (attrs & 0x2):
                         ctypes.windll.kernel32.SetFileAttributesW(str(p), attrs & ~0x2)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("vault backup: could not clear Hidden on %s: %s", p, e)
 
         # Prune history to _HISTORY_KEEP most recent entries
         entries = sorted(history.iterdir(), key=lambda p: p.name)
         for old in entries[:-_HISTORY_KEEP]:
             try:
                 shutil.rmtree(old)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("vault backup: could not prune old backup %s: %s", old, e)
 
         logger.info("Vault backed up to %s (%s)", dest, ts)
         return {"ok": True, "dest": str(dest), "error": None}

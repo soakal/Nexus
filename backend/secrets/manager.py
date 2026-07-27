@@ -39,10 +39,16 @@ def _backend():
 
 def get_secret(key: str, fallback_env: bool = True) -> str:
     backend = _backend()
+    last_error: Exception | None = None
     try:
         return backend.get_secret(key)
-    except (KeyError, RuntimeError):
-        pass
+    except (KeyError, RuntimeError) as e:
+        # A RuntimeError here is a backend FAILURE (unreachable Infisical, bad
+        # machine-identity creds, undecryptable vault) — not a missing key. It
+        # must not vanish into an indistinguishable "not found" at the end.
+        last_error = e
+        if isinstance(e, RuntimeError):
+            logger.warning(f"secret backend '{backend.__name__}' failed for '{key}': {e}")
 
     if backend.__name__.endswith("infisical_client"):
         from . import vault
@@ -50,12 +56,14 @@ def get_secret(key: str, fallback_env: bool = True) -> str:
             value = vault.get_secret(key)
             logger.warning(f"secret '{key}' served from legacy vault fallback")
             return value
-        except (KeyError, RuntimeError):
-            pass
+        except (KeyError, RuntimeError) as e:
+            last_error = e
+            if isinstance(e, RuntimeError):
+                logger.warning(f"legacy vault fallback failed for '{key}': {e}")
 
     if fallback_env and key in os.environ:
         return os.environ[key]
-    raise KeyError(f"Secret '{key}' not found in any backend")
+    raise KeyError(f"Secret '{key}' not found in any backend") from last_error
 
 
 def set_secret(key: str, value: str) -> None:

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -6,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.auth import require_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -48,6 +51,10 @@ async def brain_organizer_status(_=Depends(require_api_key)):
     succeeded = 0
     failed = 0
     last_run = None
+    # A corrupt/unreadable state file would otherwise render as a confident
+    # "0 succeeded, 0 failed, never ran" on the dashboard — the same number an
+    # idle-but-healthy organiser produces. Surface it instead.
+    errors: list[str] = []
 
     if _PROCESSED.exists():
         try:
@@ -60,16 +67,18 @@ async def brain_organizer_status(_=Depends(require_api_key)):
                     succeeded += 1
                 if ts and (last_run is None or ts > last_run):
                     last_run = ts
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"brain organizer: unreadable {_PROCESSED.name}: {e}")
+            errors.append(f"processed.json unreadable: {e}")
 
     pending = 0
     if _CONFIG.exists():
         try:
             config = json.loads(_CONFIG.read_text(encoding="utf-8"))
             pending = _count_pending(config)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"brain organizer: pending count unavailable: {e}")
+            errors.append(f"pending count unavailable: {e}")
 
     log_tail: list[str] = []
     if _LOG.exists():
@@ -80,8 +89,9 @@ async def brain_organizer_status(_=Depends(require_api_key)):
                 ln for ln in lines[-20:]
                 if any(tag in ln for tag in ("[INFO]", "[WARNING]", "[ERROR]"))
             ][-5:]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"brain organizer: unreadable log file: {e}")
+            errors.append(f"log unreadable: {e}")
 
     return {
         "last_run": last_run,
@@ -90,6 +100,7 @@ async def brain_organizer_status(_=Depends(require_api_key)):
         "pending": pending,
         "running": running,
         "log_tail": log_tail,
+        "errors": errors,
     }
 
 
@@ -131,12 +142,13 @@ async def brain_organizer_run(_=Depends(require_api_key)):
         ]:
             try:
                 val = getattr(s, attr, None)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"brain organizer: setting '{attr}' unreadable, not passed to child: {e}")
                 val = None
             if val:
                 env[var] = str(val)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"brain organizer: spawning without config env vars: {e}")
 
     proc = subprocess.Popen(
         [str(python_exe), str(script)],

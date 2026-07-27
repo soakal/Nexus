@@ -14,9 +14,12 @@ tracked sources and the per-source history are capped. An unbounded dict here
 would let the storm we are trying to detect exhaust memory instead.
 """
 
+import logging
 import threading
 import time
 from collections import Counter, deque
+
+logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 MAX_SOURCES = 64  # distinct client identities tracked; oldest-touched evicted
@@ -41,8 +44,10 @@ def record_failure(source: str, path: str, *, now: float | None = None) -> None:
                 del _STATE[oldest_source]
             bucket = _STATE.setdefault(source, deque(maxlen=MAX_EVENTS_PER_SOURCE))
             bucket.append((now, path))
-    except Exception:
-        pass
+    except Exception as e:
+        # Never raises (this runs on the pre-auth 401 path), but a burst
+        # detector that silently stops recording is worse than a noisy one.
+        logger.warning(f"authfail: failed to record 401 from {source!r}: {e}")
 
 
 def recent(window_s: float, *, now: float | None = None) -> dict[str, dict]:

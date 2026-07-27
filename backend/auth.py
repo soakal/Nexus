@@ -1,9 +1,12 @@
 import hmac
 import html
+import logging
 import re
 
 from fastapi import HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
 
@@ -76,8 +79,8 @@ async def require_api_key(
         try:
             from backend.safety import authfail
             authfail.record_failure(_client_source(request), _client_path(request))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"401 burst counter not updated: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",

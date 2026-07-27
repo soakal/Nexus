@@ -110,8 +110,10 @@ async def send_message(
                 {"text": str(b["text"]), "callback_data": str(b["callback_data"])}
                 for b in buttons
             ]]}
-        except Exception:
-            pass  # malformed buttons never block the text
+        except Exception as e:
+            # malformed buttons never block the text, but a message that silently
+            # loses its confirm/reject buttons is unanswerable on the phone
+            logger.warning(f"telegram: malformed buttons dropped, sending text only: {e}")
     return await _call("sendMessage", params)
 
 

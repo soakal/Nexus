@@ -10,8 +10,11 @@ Every dispatch returns a compact string for the LLM and NEVER raises.
 import contextvars
 import hashlib
 import json
+import logging
 
 from backend.agents.tools import ReadTool, tool_specs, dispatcher_map, planner_tool_block
+
+logger = logging.getLogger(__name__)
 
 MAX_WRITE_RESULT_CHARS = 600
 
@@ -31,8 +34,10 @@ def set_write_context(task_id, step_index):
 def reset_write_context(token):
     try:
         _write_ctx.reset(token)
-    except Exception:
-        pass
+    except Exception as e:
+        # A leaked context binding would give the NEXT step a stale
+        # idempotency identity, so this must not vanish.
+        logger.warning(f"write context not reset: {e}")
 
 
 def _idem_key_for(tool_name: str, args: dict):
