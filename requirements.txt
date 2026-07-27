@@ -1,6 +1,6 @@
 fastapi==0.139.2
 uvicorn[standard]==0.32.0
-pydantic==2.9.2
+pydantic==2.13.4  # >=2.11 required by mcp 1.28.x
 pydantic-settings==2.6.0
 sqlmodel==0.0.22
 httpx==0.27.2
