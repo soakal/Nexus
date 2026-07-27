@@ -661,6 +661,35 @@ async def _publish_action(
     })
 
 
+async def _record_breaker_outcome(actor, kind: str, success: bool) -> None:
+    """Feed one dispatch outcome to the agent/autonomous circuit breaker.
+
+    No-op for a `user` actor (the breaker only ever gates non-human actors).
+    A failure that trips the breaker pages once via notify_phone; a success
+    resets the failure streak and never notifies.
+    """
+    if actor not in (Actor.AGENT, Actor.AUTONOMOUS):
+        return
+
+    from backend.config import get_settings
+    from backend.safety import throttle
+
+    cfg = get_settings()
+    tripped = throttle.record_result(
+        kind, success,
+        failure_threshold=cfg.breaker_failure_threshold,
+        window_s=cfg.verb_throttle_window_s,
+        cooldown_s=cfg.breaker_cooldown_s,
+    )
+    if tripped:
+        from backend import events
+        await events.notify_phone(
+            f"NEXUS circuit breaker TRIPPED for '{kind}' after repeated failures"
+            f" — auto-paused {cfg.breaker_cooldown_s}s.",
+            kind="circuit_breaker",
+        )
+
+
 async def execute_action(
     actor,
     kind: str,
@@ -904,24 +933,8 @@ async def execute_action(
             actor, kind, target, Decision.FAILED, risk, reversibility, log_id,
             judge_verdict, judge_reason,
         )
-        # Record outcome for agent/autonomous circuit breaker (no dispatcher = failure).
-        if actor in (Actor.AGENT, Actor.AUTONOMOUS):
-            from backend.safety import throttle as _throttle
-            from backend.config import get_settings as _gs
-            _cfg = _gs()
-            _tripped = _throttle.record_result(
-                kind, False,
-                failure_threshold=_cfg.breaker_failure_threshold,
-                window_s=_cfg.verb_throttle_window_s,
-                cooldown_s=_cfg.breaker_cooldown_s,
-            )
-            if _tripped:
-                from backend import events as _events
-                await _events.notify_phone(
-                    f"NEXUS circuit breaker TRIPPED for '{kind}' after repeated failures"
-                    f" — auto-paused {_cfg.breaker_cooldown_s}s.",
-                    kind="circuit_breaker",
-                )
+        # No dispatcher = failure, as far as the circuit breaker is concerned.
+        await _record_breaker_outcome(actor, kind, False)
         return ActionResult(
             decision=Decision.FAILED,
             risk=risk,
@@ -948,24 +961,7 @@ async def execute_action(
             actor, kind, target, Decision.FAILED, risk, reversibility, log_id,
             judge_verdict, judge_reason,
         )
-        # Record outcome for agent/autonomous circuit breaker.
-        if actor in (Actor.AGENT, Actor.AUTONOMOUS):
-            from backend.safety import throttle as _throttle
-            from backend.config import get_settings as _gs
-            _cfg = _gs()
-            _tripped = _throttle.record_result(
-                kind, False,
-                failure_threshold=_cfg.breaker_failure_threshold,
-                window_s=_cfg.verb_throttle_window_s,
-                cooldown_s=_cfg.breaker_cooldown_s,
-            )
-            if _tripped:
-                from backend import events as _events
-                await _events.notify_phone(
-                    f"NEXUS circuit breaker TRIPPED for '{kind}' after repeated failures"
-                    f" — auto-paused {_cfg.breaker_cooldown_s}s.",
-                    kind="circuit_breaker",
-                )
+        await _record_breaker_outcome(actor, kind, False)
         return ActionResult(
             decision=Decision.FAILED,
             risk=risk,
@@ -981,17 +977,8 @@ async def execute_action(
         actor, kind, target, Decision.EXECUTED, risk, reversibility, log_id,
         judge_verdict, judge_reason,
     )
-    # Record outcome for agent/autonomous circuit breaker (success resets failure streak).
-    if actor in (Actor.AGENT, Actor.AUTONOMOUS):
-        from backend.safety import throttle as _throttle
-        from backend.config import get_settings as _gs
-        _cfg = _gs()
-        _throttle.record_result(
-            kind, True,
-            failure_threshold=_cfg.breaker_failure_threshold,
-            window_s=_cfg.verb_throttle_window_s,
-            cooldown_s=_cfg.breaker_cooldown_s,
-        )
+    # Success resets the failure streak.
+    await _record_breaker_outcome(actor, kind, True)
     return ActionResult(
         decision=Decision.EXECUTED,
         risk=risk,

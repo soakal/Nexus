@@ -49,12 +49,10 @@ def _db_set_last_digest_at(ts: datetime) -> bool:
     re-select and re-digest the same facts (safe, but worth surfacing)."""
     try:
         from sqlmodel import Session
-        from backend.database import SystemState, engine
+        from backend.database import engine, get_or_create_system_state
 
         with Session(engine) as session:
-            row = session.get(SystemState, 1)
-            if row is None:
-                row = SystemState(id=1)
+            row = get_or_create_system_state(session)
             row.last_facts_digest_at = ts
             session.add(row)
             session.commit()

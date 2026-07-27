@@ -7,6 +7,13 @@ from datetime import datetime
 
 from cryptography.fernet import Fernet
 
+from backend.secrets.credentials import (
+    build_credential_index,
+    collect_credential,
+    cred_key,
+    cred_prefix,
+)
+
 logger = logging.getLogger(__name__)
 
 VAULT_PATH = pathlib.Path("nexus.vault")
@@ -90,49 +97,26 @@ def list_keys() -> list:
 
 # ── Credential helpers (namespaced cred:<service>:<field> keys) ──────────────
 
-def _cred_prefix(service: str) -> str:
-    return f"cred:{service}:"
-
-
 def list_credentials() -> dict:
     """Return {service: {host, user, port, has_password}} — never includes password values."""
     vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}
-    result: dict = {}
-    for raw_key in vault:
-        if not raw_key.startswith("cred:"):
-            continue
-        parts = raw_key.split(":", 2)
-        if len(parts) != 3:
-            continue
-        _, service, field = parts
-        if service not in result:
-            result[service] = {"host": None, "user": None, "port": None, "has_password": False}
-        if field == "password":
-            result[service]["has_password"] = True
-        elif field in ("host", "user", "port"):
-            result[service][field] = _load_fernet().decrypt(vault[raw_key].encode()).decode()
-    return result
+    return build_credential_index(
+        vault, lambda raw_key: _load_fernet().decrypt(vault[raw_key].encode()).decode()
+    )
 
 
 def set_credential(service: str, field: str, value: str) -> None:
-    set_secret(f"cred:{service}:{field}", value)
+    set_secret(cred_key(service, field), value)
 
 
 def get_credential(service: str) -> dict:
     """Server-side only — returns password in plain text. Never send over API."""
-    keys = {"host", "user", "password", "port"}
-    result = {}
-    for field in keys:
-        try:
-            result[field] = get_secret(f"cred:{service}:{field}")
-        except KeyError:
-            result[field] = None
-    return result
+    return collect_credential(service, get_secret)
 
 
 def delete_credential(service: str) -> None:
     vault = json.loads(VAULT_PATH.read_text()) if VAULT_PATH.exists() else {}
-    prefix = _cred_prefix(service)
+    prefix = cred_prefix(service)
     to_delete = [k for k in vault if k.startswith(prefix)]
     for k in to_delete:
         vault.pop(k)

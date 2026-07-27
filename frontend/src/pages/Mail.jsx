@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { api } from '../lib/api'
+import { usePoll } from '../lib/usePoll'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusPill from '../components/StatusPill'
@@ -43,16 +44,8 @@ export default function Mail() {
       .catch(() => setInboxError(true))
   }, [])
 
-  useEffect(() => {
-    loadInbox()
-    const onVis = () => { if (!document.hidden) loadInbox() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [loadInbox])
+  // No interval — the inbox refreshes on mount and whenever the tab comes back.
+  usePoll(loadInbox, 0)
 
   const recipients = to.split(',').map(r => r.trim()).filter(Boolean)
   const recipientsValid = recipients.length > 0 && recipients.every(r => EMAIL_RE.test(r))

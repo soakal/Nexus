@@ -31,6 +31,15 @@ from datetime import datetime, timezone
 
 import httpx
 
+from backend.secrets.credentials import (
+    CRED_FIELDS,
+    CRED_PREFIX,
+    build_credential_index,
+    collect_credential,
+    cred_key,
+    parse_cred_key,
+)
+
 logger = logging.getLogger(__name__)
 
 _SERVICE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -97,16 +106,16 @@ def _secret_path_to_vault_key(secret_path: str, secret_key: str):
         return secret_key
     parts = [p for p in secret_path.split("/") if p]
     if len(parts) == 2 and parts[0] == "creds":
-        return f"cred:{parts[1]}:{secret_key.lower()}"
+        return cred_key(parts[1], secret_key.lower())
     return None  # outside our known structure — ignore
 
 
 def _vault_key_to_path_and_name(key: str):
-    if key.startswith("cred:"):
-        parts = key.split(":", 2)
-        if len(parts) != 3:
+    if key.startswith(CRED_PREFIX):
+        parsed = parse_cred_key(key)
+        if parsed is None:
             raise ValueError(f"Malformed credential key: {key!r}")
-        _, service, field = parts
+        service, field = parsed
         service = service.lower()
         if not _SERVICE_NAME_RE.match(service):
             raise ValueError(f"Invalid credential service name: {service!r}")
@@ -270,43 +279,27 @@ def read_meta() -> dict:
 
 # ── Credential helpers (namespaced cred:<service>:<field> keys) ──────────────
 
+def _cached(raw_key: str):
+    with _lock:
+        return _cache.get(raw_key)
+
+
 def list_credentials() -> dict:
     """Return {service: {host, user, port, has_password}} — never includes password values."""
     with _lock:
         keys = list(_cache.keys())
-    result: dict = {}
-    for raw_key in keys:
-        if not raw_key.startswith("cred:"):
-            continue
-        parts = raw_key.split(":", 2)
-        if len(parts) != 3:
-            continue
-        _, service, field = parts
-        if service not in result:
-            result[service] = {"host": None, "user": None, "port": None, "has_password": False}
-        if field == "password":
-            result[service]["has_password"] = True
-        elif field in ("host", "user", "port"):
-            with _lock:
-                result[service][field] = _cache.get(raw_key)
-    return result
+    return build_credential_index(keys, _cached)
 
 
 def set_credential(service: str, field: str, value: str) -> None:
-    set_secret(f"cred:{service}:{field}", value)
+    set_secret(cred_key(service, field), value)
 
 
 def get_credential(service: str) -> dict:
     """Server-side only — returns password in plain text. Never send over API."""
-    result = {}
-    for field in ("host", "user", "password", "port"):
-        try:
-            result[field] = get_secret(f"cred:{service}:{field}")
-        except KeyError:
-            result[field] = None
-    return result
+    return collect_credential(service, get_secret)
 
 
 def delete_credential(service: str) -> None:
-    for field in ("host", "user", "password", "port"):
-        delete_secret(f"cred:{service}:{field}")
+    for field in CRED_FIELDS:
+        delete_secret(cred_key(service, field))

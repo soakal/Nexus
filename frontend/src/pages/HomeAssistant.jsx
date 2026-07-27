@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, API_BASE } from '../lib/api'
+import { usePoll } from '../lib/usePoll'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusDot from '../components/StatusDot'
@@ -506,18 +507,7 @@ export default function HomeAssistant() {
     try { await api.post('/ha/reload-cloud'); await load() } catch {} finally { setReloading(false) }
   }
 
-  useEffect(() => {
-    load()
-    const id = setInterval(load, 10000)
-    const onVis = () => { if (!document.hidden) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      clearInterval(id)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [load])
+  usePoll(load, 10000)
 
   const callService = useCallback(async (entity, service, serviceData, optimistic) => {
     const domain = domainOf(entity.entity_id)

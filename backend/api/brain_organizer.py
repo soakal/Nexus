@@ -1,18 +1,18 @@
 import json
-import os
 import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend import brain_organizer_module as bo
 from backend.auth import require_api_key
 
 router = APIRouter()
 
-_MODULE_DIR = Path(__file__).parent.parent.parent / "modules" / "brain-organizer"
-_PROCESSED = _MODULE_DIR / "processed.json"
-_LOG = _MODULE_DIR / "logs" / "organizer.log"
-_CONFIG = _MODULE_DIR / "config.json"
+_MODULE_DIR = bo.MODULE_DIR
+_PROCESSED = bo.PROCESSED_JSON
+_LOG = bo.LOG_FILE
+_CONFIG = bo.CONFIG_JSON
 _running: list = [None]  # mutable slot tracking a Run Now subprocess
 
 
@@ -115,33 +115,13 @@ async def brain_organizer_run(_=Depends(require_api_key)):
     if _running[0] is not None and _running[0].poll() is None:
         raise HTTPException(status_code=409, detail="Brain Organizer is already running")
 
-    python_exe = _MODULE_DIR / "venv" / "Scripts" / "python.exe"
-    script = _MODULE_DIR / "brain_organizer.py"
-    if not python_exe.exists() or not script.exists():
+    if not bo.is_installed():
         raise HTTPException(status_code=503, detail="Brain Organizer module not found")
 
-    env = os.environ.copy()
-    try:
-        from backend.config import get_settings
-        s = get_settings()
-        for attr, var in [
-            ("anthropic_api_key", "ANTHROPIC_API_KEY"),
-            ("openrouter_api_key", "OPENROUTER_API_KEY"),
-            ("hermes_host", "HERMES_HOST"),
-        ]:
-            try:
-                val = getattr(s, attr, None)
-            except Exception:
-                val = None
-            if val:
-                env[var] = str(val)
-    except Exception:
-        pass
-
     proc = subprocess.Popen(
-        [str(python_exe), str(script)],
-        cwd=str(_MODULE_DIR),
-        env=env,
+        [str(bo.PYTHON_EXE), str(bo.ORGANIZER_SCRIPT)],
+        cwd=str(bo.MODULE_DIR),
+        env=bo.subprocess_env(),
     )
     _running[0] = proc
     return {"started": True, "pid": proc.pid}

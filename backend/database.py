@@ -521,6 +521,23 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "policy_forbid_kinds", "TEXT")
 
 
+def get_or_create_system_state(session) -> "SystemState":
+    """Return the singleton SystemState row (id=1) on `session`, creating it first
+    if it doesn't exist yet.
+
+    A freshly created row is committed and refreshed before returning, so callers
+    that read a column (budget cap, alert watermark) see the schema defaults rather
+    than a pending in-memory object. Callers that write commit again themselves.
+    """
+    row = session.get(SystemState, 1)
+    if row is None:
+        row = SystemState(id=1)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+    return row
+
+
 def _ensure_system_state():
     """Idempotently seed the single SystemState row (id=1).
 

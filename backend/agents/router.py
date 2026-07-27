@@ -77,10 +77,9 @@ def reset_span_stack_context(token) -> None:
 
 
 def open_trace(kind: str, label: str, task_id: int | None = None) -> int | None:
-    """Open an AgentTrace row for a traced single-shot entry point (chat/briefing/
-    proposer/voice). Generic counterpart to orchestrator._open_trace (which stays
-    hardcoded to kind='orchestrator' and untouched) -- parameterized by kind/label/
-    task_id so every remaining entry point can share this one helper.
+    """Open an AgentTrace row for any traced entry point (chat/briefing/proposer/
+    voice, and the orchestrator via its `_open_trace` binding) -- parameterized by
+    kind/label/task_id so every entry point shares this one helper.
 
     Best-effort: any failure is logged and swallowed, returning None so the
     caller simply runs untraced (set_trace_context(None) is a safe no-op — see

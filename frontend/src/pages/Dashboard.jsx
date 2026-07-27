@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
+import { usePoll } from '../lib/usePoll'
 import { fmtTime } from '../lib/parseUTC'
 import BrainOrganizerCard from '../components/BrainOrganizerCard'
 import Card from '../components/Card'
@@ -42,18 +43,7 @@ export default function Dashboard() {
     api.protonmail.inbox().then(d => { setMail(d); setMailError(false) }).catch(() => { setMail(null); setMailError(true) })
   }, [])
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 15000)
-    const onVis = () => { if (!document.hidden) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [load])
+  usePoll(load, 15000)
 
   const runBriefing = async () => {
     setBriefingLoading(true)

@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { api } from '../lib/api'
+import { usePoll } from '../lib/usePoll'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import ScreenHeader from '../components/ScreenHeader'
@@ -77,18 +78,7 @@ export default function Today() {
     })
   }, [briefing])
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 120000)
-    const onVis = () => { if (!document.hidden) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [load])
+  usePoll(load, 120000)
 
   const calendarLines = data?.calendar
     ? data.calendar.split('\n')

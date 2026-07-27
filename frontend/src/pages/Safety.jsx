@@ -1,35 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { api, wsLogsUrl, wsLogsProtocols } from '../lib/api'
+import { fmtPct, fmtUsd, relativeTime } from '../lib/format'
+import { usePoll } from '../lib/usePoll'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusDot from '../components/StatusDot'
 import ScreenHeader from '../components/ScreenHeader'
 import PrimaryButton from '../components/PrimaryButton'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function fmtUsd(n) {
-  if (n === null || n === undefined) return '$—'
-  const v = Number(n)
-  return v < 1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`
-}
-
-function fmtPct(n) {
-  if (n === null || n === undefined) return '—%'
-  return `${Number(n).toFixed(1)}%`
-}
-
-function relativeTime(isoStr) {
-  if (!isoStr) return ''
-  const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000)
-  if (diff < 5) return 'just now'
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
-}
 
 // ---------------------------------------------------------------------------
 // Tone + Badge helpers
@@ -294,18 +271,7 @@ export default function Safety() {
     setEvents(prev => (prev.length === 0 ? seeded : prev))
   }, [actions])
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 10000)
-    const onVis = () => { if (!document.hidden) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [load])
+  usePoll(load, 10000)
 
   // ---------------------------------------------------------------------------
   // WebSocket — live event feed

@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { api } from '../lib/api'
 import { parseUTC } from '../lib/parseUTC'
+import { usePoll } from '../lib/usePoll'
 import RecordingCard from '../components/RecordingCard'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
@@ -26,26 +27,20 @@ export default function Media() {
   const [scheduling, setScheduling] = useState({})
   const unmountedRef = useRef(false)
 
-  const load = () => {
+  const load = useCallback(() => {
+    if (unmountedRef.current) return
     api.channels.get().then(d => {
       if (!unmountedRef.current) setData(d)
     }).catch(() => {})
-  }
+  }, [])
 
+  // `schedule` below reads this ref to drop a late response after unmount.
   useEffect(() => {
     unmountedRef.current = false
-    load()
-    const timer = setInterval(load, 30000)
-    const onVis = () => { if (!document.hidden && !unmountedRef.current) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      unmountedRef.current = true
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
+    return () => { unmountedRef.current = true }
   }, [])
+
+  usePoll(load, 30000)
 
   const schedule = async (programId) => {
     setScheduling(prev => ({ ...prev, [programId]: 'scheduling' }))

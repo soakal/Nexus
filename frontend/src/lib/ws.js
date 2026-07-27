@@ -45,43 +45,33 @@ function reconnect() {
   }
 }
 
-export function connectWS(onMessage) {
-  listeners.add(onMessage)
+function isLive() {
+  return !!socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
+}
 
-  // If a socket is already open or connecting, reuse it
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-    return () => {
-      listeners.delete(onMessage)
-      if (listeners.size === 0) {
-        if (reconnectTimer !== null) {
-          clearTimeout(reconnectTimer)
-          reconnectTimer = null
-        }
-        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-          socket.close()
-        }
-      }
-    }
-  }
-
-  // Clear any pending reconnect timer before opening a fresh socket
+function clearReconnectTimer() {
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+}
 
-  reconnect()
+export function connectWS(onMessage) {
+  listeners.add(onMessage)
 
+  // Reuse an already open/connecting socket; otherwise clear any pending
+  // reconnect timer before opening a fresh one.
+  if (!isLive()) {
+    clearReconnectTimer()
+    reconnect()
+  }
+
+  // Unsubscribe: the last listener out closes the socket.
   return () => {
     listeners.delete(onMessage)
     if (listeners.size === 0) {
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer)
-        reconnectTimer = null
-      }
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        socket.close()
-      }
+      clearReconnectTimer()
+      if (isLive()) socket.close()
     }
   }
 }

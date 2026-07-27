@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../lib/api'
+import { durationMs, fmtMs, fmtUsd, relativeTime } from '../lib/format'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import ScreenHeader from '../components/ScreenHeader'
@@ -7,45 +8,6 @@ import ScreenHeader from '../components/ScreenHeader'
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// NEXUS stamps trace/span timestamps as naive UTC (datetime.utcnow().isoformat(),
-// no trailing 'Z') — parse with the same '+Z' convention used elsewhere
-// (Safety.jsx daysSince/ActionLog), or a bare new Date(iso) reads as local
-// time and skews relative age / duration by the UTC offset.
-function toMs(iso) {
-  if (!iso) return null
-  const t = new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()
-  return Number.isNaN(t) ? null : t
-}
-
-function relativeTime(iso) {
-  const t = toMs(iso)
-  if (t === null) return ''
-  const diff = Math.floor((Date.now() - t) / 1000)
-  if (diff < 5) return 'just now'
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
-}
-
-function fmtMs(ms) {
-  if (ms === null || ms === undefined) return '—'
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`
-}
-
-function traceDurationMs(startedAt, endedAt) {
-  const s = toMs(startedAt)
-  const e = toMs(endedAt)
-  if (s === null || e === null) return null
-  return e - s
-}
-
-function fmtUsd(n) {
-  if (n === null || n === undefined) return null
-  const v = Number(n)
-  return v < 1 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`
-}
 
 const toneStatus = (s) => {
   if (!s) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
@@ -187,7 +149,7 @@ export default function Traces() {
                     {t.label || `trace #${t.id}`}
                   </span>
                   <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace", flex: 'none' }}>
-                    {fmtMs(traceDurationMs(t.started_at, t.ended_at))}
+                    {fmtMs(durationMs(t.started_at, t.ended_at))}
                   </span>
                   <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
                     {relativeTime(t.started_at)}
@@ -225,9 +187,9 @@ export default function Traces() {
                               {s.tokens_in ?? 0}in / {s.tokens_out ?? 0}out
                             </span>
                           )}
-                          {fmtUsd(s.cost_usd) && (
+                          {fmtUsd(s.cost_usd, null) && (
                             <span style={{ fontSize: '11px', color: 'var(--accent)' }}>
-                              {fmtUsd(s.cost_usd)}
+                              {fmtUsd(s.cost_usd, null)}
                             </span>
                           )}
                           {s.error && (

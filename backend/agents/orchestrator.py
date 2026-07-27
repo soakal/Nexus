@@ -520,51 +520,23 @@ def _finalize_task(task_id: int, status: str, result_json: str | None) -> None:
 def _open_trace(task_id: int, label: str) -> int | None:
     """Open an AgentTrace row (kind='orchestrator') for a durable run_task call.
 
-    Best-effort: any failure is logged and swallowed, returning None so the
-    caller simply runs untraced (set_trace_context(None) is a safe no-op —
+    Thin binding of the shared router.open_trace helper to this module's fixed
+    kind. Best-effort: any failure is logged and swallowed, returning None so
+    the caller simply runs untraced (set_trace_context(None) is a safe no-op —
     see router._record_trace_span). A trace-bookkeeping problem must never
     block task execution.
     """
-    try:
-        from sqlmodel import Session
+    from backend.agents.router import open_trace
 
-        from backend.database import AgentTrace, engine
-
-        with Session(engine) as session:
-            trace = AgentTrace(
-                kind="orchestrator",
-                label=label[:200],
-                task_id=task_id,
-                status="running",
-            )
-            session.add(trace)
-            session.commit()
-            session.refresh(trace)
-            return trace.id
-    except Exception as e:
-        logger.warning(f"_open_trace failed (non-fatal): {e}")
-        return None
+    return open_trace("orchestrator", label, task_id=task_id)
 
 
 def _close_trace(trace_id: int | None, status: str, error: str | None = None) -> None:
     """Close an AgentTrace row opened by _open_trace. No-op when trace_id is
     None (open failed, or never attempted). Best-effort — never raises."""
-    if trace_id is None:
-        return
-    try:
-        from sqlmodel import Session
+    from backend.agents.router import close_trace
 
-        from backend.database import AgentTrace, engine
-
-        with Session(engine) as session:
-            t = session.get(AgentTrace, trace_id)
-            if t:
-                t.status = status
-                t.ended_at = datetime.utcnow()
-                t.error = error
-                session.commit()
-    except Exception as e:
-        logger.warning(f"_close_trace failed (non-fatal): {e}")
+    close_trace(trace_id, status, error)
 
 
 def _record_agent_run(task_id: int, prompt: str, output: str, success: bool, elapsed_ms: int) -> None:

@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { api } from '../lib/api'
+import { usePoll } from '../lib/usePoll'
 import AreaChart from '../components/AreaChart'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
@@ -19,18 +20,7 @@ export default function Uptime() {
     api.sources.status().then(setLiveStatus).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 30000)
-    const onVis = () => { if (!document.hidden) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [load])
+  usePoll(load, 30000)
 
   // Map speedtest history for AreaChart
   const downloadChartData = speedtest?.data?.map(h => ({ value: h.download_mbps })) || []

@@ -155,13 +155,10 @@ def _add_csv_kind(column: str, kind: str) -> None:
     adding an already-present kind is a no-op, not a duplicate."""
     from sqlmodel import Session
 
-    from backend.database import SystemState, engine
+    from backend.database import engine, get_or_create_system_state
 
     with Session(engine) as session:
-        row = session.get(SystemState, 1)
-        if row is None:
-            row = SystemState(id=1)
-            session.add(row)
+        row = get_or_create_system_state(session)
         current = {k for k in (getattr(row, column) or "").split(",") if k}
         current.add(kind)
         setattr(row, column, ",".join(sorted(current)))
@@ -226,13 +223,10 @@ def set_autonomy(enabled: bool) -> None:
     """Flip the global kill switch on the SystemState row (sync)."""
     from sqlmodel import Session
 
-    from backend.database import SystemState, engine
+    from backend.database import engine, get_or_create_system_state
 
     with Session(engine) as session:
-        row = session.get(SystemState, 1)
-        if row is None:
-            row = SystemState(id=1)
-            session.add(row)
+        row = get_or_create_system_state(session)
         row.autonomy_enabled = bool(enabled)
         row.updated_at = datetime.utcnow()
         session.commit()
@@ -242,13 +236,10 @@ def set_budgets(daily: float | None = None, per_task: float | None = None) -> No
     """Update the runtime budget caps on the SystemState row (sync)."""
     from sqlmodel import Session
 
-    from backend.database import SystemState, engine
+    from backend.database import engine, get_or_create_system_state
 
     with Session(engine) as session:
-        row = session.get(SystemState, 1)
-        if row is None:
-            row = SystemState(id=1)
-            session.add(row)
+        row = get_or_create_system_state(session)
         if daily is not None:
             row.daily_budget_usd = float(daily)
         if per_task is not None:
@@ -424,15 +415,10 @@ def budget_warning_due(threshold_pct: float) -> tuple[bool, float, float]:
         threshold_pct = 0.80
 
     from sqlmodel import Session
-    from backend.database import SystemState, engine
+    from backend.database import engine, get_or_create_system_state
 
     with Session(engine) as session:
-        row = session.get(SystemState, 1)
-        if row is None:
-            row = SystemState(id=1)
-            session.add(row)
-            session.commit()
-            session.refresh(row)
+        row = get_or_create_system_state(session)
 
         cap = float(row.daily_budget_usd)
         spend = today_spend_usd()
@@ -476,15 +462,10 @@ def claim_auth_burst_alert(
     SystemState row id=1 if it doesn't exist yet, same as budget_warning_due.
     """
     from sqlmodel import Session
-    from backend.database import SystemState, engine
+    from backend.database import engine, get_or_create_system_state
 
     with Session(engine) as session:
-        row = session.get(SystemState, 1)
-        if row is None:
-            row = SystemState(id=1)
-            session.add(row)
-            session.commit()
-            session.refresh(row)
+        row = get_or_create_system_state(session)
 
         tracked = {s for s in (row.auth_burst_alert_sources or "").split(",") if s}
         new = over_threshold - tracked

@@ -125,10 +125,10 @@ async def lifespan(app: FastAPI):
             # Brain Organizer MCP server — optional, only starts if the module is installed
             try:
                 import subprocess
-                from pathlib import Path
-                _bo_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
-                _bo_py = _bo_dir / "venv" / "Scripts" / "python.exe"
-                _bo_srv = _bo_dir / "mcp_server.py"
+
+                from backend import brain_organizer_module as bo
+                _bo_py = bo.PYTHON_EXE
+                _bo_srv = bo.MCP_SERVER_SCRIPT
                 if _bo_py.exists() and _bo_srv.exists():
                     try:
                         _bo_token = settings.brain_mcp_write_token
@@ -136,7 +136,7 @@ async def lifespan(app: FastAPI):
                         _bo_token = None  # vault hiccup -> spawn token-less (remote writes stay disabled)
                     _bo_proc[0] = subprocess.Popen(
                         [str(_bo_py), str(_bo_srv)],
-                        cwd=str(_bo_dir),
+                        cwd=str(bo.MODULE_DIR),
                         env=_brain_mcp_spawn_env(_bo_token),
                     )
                     logger.info(f"Brain Organizer MCP server started (PID {_bo_proc[0].pid})")

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { parseUTC } from '../lib/parseUTC'
+import { relativeTime } from '../lib/format'
 import { connectWS } from '../lib/ws'
 import StatusDot from './StatusDot'
 
@@ -18,17 +18,6 @@ function toneKey(status) {
   if (status === 'pending') return 'pending'
   if (status === 'stopped' || status === 'cancelled') return 'stopped'
   return 'pending'
-}
-
-function relativeTime(s) {
-  if (!s) return ''
-  const d = parseUTC(s)
-  if (isNaN(d.getTime())) return ''
-  const diff = Math.floor((Date.now() - d.getTime()) / 1000)
-  if (diff < 60) return 'just now'
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
 }
 
 function parsePlan(task) {

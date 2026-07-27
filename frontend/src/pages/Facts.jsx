@@ -1,24 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { api } from '../lib/api'
+import { relativeTime } from '../lib/format'
+import { usePoll } from '../lib/usePoll'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import ScreenHeader from '../components/ScreenHeader'
 import PrimaryButton from '../components/PrimaryButton'
 import TextInput from '../components/TextInput'
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function relativeTime(isoStr) {
-  if (!isoStr) return ''
-  const diff = Math.floor((Date.now() - new Date(isoStr + 'Z').getTime()) / 1000)
-  if (diff < 5) return 'just now'
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
-}
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -38,18 +26,7 @@ export default function Facts() {
     api.facts.list().then(setFacts).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 10000)
-    const onVis = () => { if (!document.hidden) load() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', onVis)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', onVis)
-    }
-  }, [load])
+  usePoll(load, 10000)
 
   // ---------------------------------------------------------------------------
   // Handlers

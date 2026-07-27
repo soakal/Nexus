@@ -79,34 +79,43 @@ def _local_today() -> datetime:
 # SYNC DB helpers — call only via asyncio.to_thread
 # ---------------------------------------------------------------------------
 
+def _select_active_facts() -> list:
+    """Fetch the active (superseded_by IS NULL AND dismissed_at IS NULL) Fact rows.
+
+    Opens and closes its own Session, so the returned rows are detached — read
+    their columns eagerly, as both callers do.
+    """
+    from sqlmodel import Session, select
+
+    from backend.database import Fact, engine
+
+    with Session(engine) as session:
+        stmt = (
+            select(Fact)
+            .where(Fact.superseded_by == None)  # noqa: E711
+            .where(Fact.dismissed_at == None)   # noqa: E711
+        )
+        return list(session.exec(stmt).all())
+
+
 def _db_active_facts() -> list[dict]:
     """Return all active (superseded_by IS NULL AND dismissed_at IS NULL) facts as plain dicts.
 
     Opens its own Session; never raises (returns [] on any error).
     """
     try:
-        from sqlmodel import Session, select
-        from backend.database import Fact, engine
-
-        with Session(engine) as session:
-            stmt = (
-                select(Fact)
-                .where(Fact.superseded_by == None)  # noqa: E711
-                .where(Fact.dismissed_at == None)   # noqa: E711
-            )
-            rows = session.exec(stmt).all()
-            return [
-                {
-                    "id": r.id,
-                    "subject": r.subject,
-                    "predicate": r.predicate,
-                    "value": r.value,
-                    "confidence": r.confidence,
-                    "created_at": r.created_at.isoformat(),
-                    "source": r.source,
-                }
-                for r in rows
-            ]
+        return [
+            {
+                "id": r.id,
+                "subject": r.subject,
+                "predicate": r.predicate,
+                "value": r.value,
+                "confidence": r.confidence,
+                "created_at": r.created_at.isoformat(),
+                "source": r.source,
+            }
+            for r in _select_active_facts()
+        ]
     except Exception as exc:
         logger.debug(f"_db_active_facts: error (ignored): {exc}")
         return []
@@ -119,16 +128,7 @@ def _db_list_facts_for_audit() -> list[dict]:
     Sorted: newest / highest effective_confidence first.
     Opens its own Session; raises on DB errors (caller wraps in to_thread).
     """
-    from sqlmodel import Session, select
-    from backend.database import Fact, engine
-
-    with Session(engine) as session:
-        stmt = (
-            select(Fact)
-            .where(Fact.superseded_by == None)  # noqa: E711
-            .where(Fact.dismissed_at == None)   # noqa: E711
-        )
-        rows = session.exec(stmt).all()
+    rows = _select_active_facts()
 
     now = datetime.utcnow()
     result = []
@@ -254,36 +254,8 @@ def _db_upsert_fact(
 
         now = datetime.utcnow()
 
-        if existing is not None:
-            if existing.value.strip().lower() == val_stripped.lower():
-                # REINFORCE — same value, bump confidence
-                existing.confidence = min(1.0, existing.confidence + CONFIRM_BUMP)
-                existing.last_seen_at = now
-                existing.updated_at = now
-                session.add(existing)
-                session.commit()
-            else:
-                # SUPERSEDE — new value for same predicate
-                new_fact = Fact(
-                    subject=subject.strip(),
-                    predicate=predicate.strip(),
-                    value=val_stripped,
-                    confidence=float(confidence),
-                    source=source,
-                    conversation_id=conversation_id,
-                    created_at=now,
-                    updated_at=now,
-                    last_seen_at=now,
-                )
-                session.add(new_fact)
-                session.flush()  # get new_fact.id
-                existing.superseded_by = new_fact.id
-                existing.updated_at = now
-                session.add(existing)
-                session.commit()
-        else:
-            # INSERT — brand new fact
-            new_fact = Fact(
+        def _new_fact() -> "Fact":
+            return Fact(
                 subject=subject.strip(),
                 predicate=predicate.strip(),
                 value=val_stripped,
@@ -294,7 +266,27 @@ def _db_upsert_fact(
                 updated_at=now,
                 last_seen_at=now,
             )
-            session.add(new_fact)
+
+        if existing is not None:
+            if existing.value.strip().lower() == val_stripped.lower():
+                # REINFORCE — same value, bump confidence
+                existing.confidence = min(1.0, existing.confidence + CONFIRM_BUMP)
+                existing.last_seen_at = now
+                existing.updated_at = now
+                session.add(existing)
+                session.commit()
+            else:
+                # SUPERSEDE — new value for same predicate
+                new_fact = _new_fact()
+                session.add(new_fact)
+                session.flush()  # get new_fact.id
+                existing.superseded_by = new_fact.id
+                existing.updated_at = now
+                session.add(existing)
+                session.commit()
+        else:
+            # INSERT — brand new fact
+            session.add(_new_fact())
             session.commit()
 
 
