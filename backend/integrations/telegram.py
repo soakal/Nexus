@@ -179,6 +179,31 @@ async def send_chat_action(action: str = "typing", *, chat_id: str | None = None
         return False
 
 
+async def send_photo(photo: bytes, *, caption: str | None = None, chat_id: str | None = None) -> bool:
+    """Multipart sendPhoto — the one Bot API call _call() can't carry (JSON
+    body vs. file upload). Never raises."""
+    from backend.config import get_settings
+    try:
+        token = get_settings().telegram_bot_token
+        target_chat = chat_id if chat_id is not None else get_settings().telegram_chat_id
+        data = {"chat_id": str(target_chat)}
+        if caption:
+            data["caption"] = caption[:1024]
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{_API}/bot{token}/sendPhoto",
+                data=data,
+                files={"photo": ("image.jpg", photo, "image/jpeg")},
+            )
+        if resp.status_code != 200:
+            logger.warning(f"sendPhoto failed: HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"sendPhoto failed: {e}")
+        return False
+
+
 async def set_my_commands(commands: list[dict]) -> bool:
     """commands: [{"command": "status", "description": "..."}, ...] -> the "/"
     autocomplete menu. Called once at poller start. Never raises."""

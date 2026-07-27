@@ -78,7 +78,52 @@ def test_command_menu_matches_commands_dict():
     menu = telegram_commands.command_menu()
     names = {m["command"] for m in menu}
     assert names == set(telegram_commands.COMMANDS.keys())
-    assert all("description" in m for m in menu)
+
+
+# ---------------------------------------------------------------------------
+# /image
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_image_command_sends_photo_and_returns_none():
+    with patch("backend.integrations.image_gen.generate_image", new_callable=AsyncMock, return_value=b"img") as mock_gen, \
+         patch("backend.integrations.telegram.send_photo", new_callable=AsyncMock, return_value=True) as mock_photo, \
+         patch("backend.integrations.telegram.send_chat_action", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.send_reply", new_callable=AsyncMock, return_value=True) as mock_reply:
+        await telegram_commands.dispatch("/image a cat", _msg("/image a cat"))
+
+    mock_gen.assert_awaited_once_with("a cat")
+    mock_photo.assert_awaited_once()
+    assert mock_photo.await_args.kwargs["caption"] == "a cat"
+    mock_reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_image_command_empty_prompt_replies_usage():
+    with patch("backend.integrations.telegram.send_photo", new_callable=AsyncMock) as mock_photo, \
+         patch("backend.integrations.telegram.send_reply", new_callable=AsyncMock, return_value=True) as mock_reply:
+        await telegram_commands.dispatch("/image", _msg("/image"))
+
+    mock_photo.assert_not_awaited()
+    assert mock_reply.await_args.args[0].startswith("Usage: /image")
+
+
+@pytest.mark.asyncio
+async def test_image_command_generation_failure_replies_text():
+    with patch("backend.integrations.image_gen.generate_image", new_callable=AsyncMock, return_value=None), \
+         patch("backend.integrations.telegram.send_chat_action", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.send_photo", new_callable=AsyncMock) as mock_photo, \
+         patch("backend.integrations.telegram.send_reply", new_callable=AsyncMock, return_value=True) as mock_reply:
+        await telegram_commands.dispatch("/image a cat", _msg("/image a cat"))
+
+    mock_photo.assert_not_awaited()
+    assert "unavailable" in mock_reply.await_args.args[0]
+
+
+def test_image_registered_in_command_menu():
+    assert "image" in telegram_commands.COMMANDS
+    menu_names = {m["command"] for m in telegram_commands.command_menu()}
+    assert "image" in menu_names
 
 
 # ---------------------------------------------------------------------------

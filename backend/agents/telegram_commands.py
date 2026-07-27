@@ -308,6 +308,27 @@ async def _cmd_muted(args: str, msg: dict) -> str:
     return "Muted: " + ", ".join(sorted(kinds))
 
 
+async def _cmd_image(args: str, msg: dict) -> str | None:
+    """Generates via Pollinations.ai and sends the photo directly, returning
+    None (dispatch()'s existing 'handler already replied' convention) —
+    keeps Handler/dispatch() untouched rather than adding a photo-reply type."""
+    from backend.integrations import image_gen
+
+    prompt = args.strip()
+    if not prompt:
+        return "Usage: /image <prompt> — e.g. /image a neon cyberpunk cat"
+
+    await telegram.send_chat_action("upload_photo", chat_id=_chat_id(msg))
+    img = await image_gen.generate_image(prompt)
+    if img is None:
+        return "Image generation is unavailable right now — try again in a minute."
+
+    ok = await telegram.send_photo(img, caption=prompt[:200], chat_id=_chat_id(msg))
+    if not ok:
+        return "Generated the image but Telegram rejected the upload."
+    return None
+
+
 COMMANDS: dict[str, tuple[Handler, str]] = {
     "nx": (_cmd_chat, "Ask NEXUS anything"),
     "help": (_cmd_help, "List commands"),
@@ -328,6 +349,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "mute": (_cmd_mute, "Silence a notification kind"),
     "unmute": (_cmd_unmute, "Un-silence a notification kind"),
     "muted": (_cmd_muted, "List muted notification kinds"),
+    "image": (_cmd_image, "Generate an image from a prompt"),
 }
 
 
