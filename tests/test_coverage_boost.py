@@ -214,9 +214,9 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         setup_scheduler("07:30", "America/New_York")
     # facts_digest_enabled defaults to False (see backend/config.py) until the
     # duplicate-subject fact-table cleanup has run live for a few days --
-    # bump this back to 20 (and re-add "facts_digest" below) only after
+    # bump this back to 21 (and re-add "facts_digest" below) only after
     # flipping that default back to True.
-    assert mock_add.call_count == 19
+    assert mock_add.call_count == 20
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -235,6 +235,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "db_backup",
         "vault_backup",
         "watchdog",
+        "homelab_watch",
         "spend_report",
         "goal_recurrence",
         "brain_organizer",
@@ -248,7 +249,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     (see backend/agents/watchdog.py::run_watchdog) rather than registering its
     own scheduler job — matches the same choice already made for
     check_budget_warning. If a future change moves it to its own job, this
-    test and test_setup_scheduler_adds_jobs's call_count==19 must both be
+    test and test_setup_scheduler_adds_jobs's call_count==20 must both be
     updated together, deliberately."""
     from datetime import datetime
     import backend.scheduler as sched_mod
@@ -259,7 +260,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 19
+    assert mock_add.call_count == 20
 
 
 # ---------------------------------------------------------------------------

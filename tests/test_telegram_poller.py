@@ -696,3 +696,110 @@ async def test_unauthorized_voice_message_never_transcribes():
         await _run_and_await_created_tasks(telegram_poller._handle_message(_voice_msg(chat_id=12345)))
 
     mock_transcribe.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c — docker/vm callback namespaces (homelab alert action buttons)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_docker_restart_dispatches_via_broker_with_user_actor():
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                           reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                           log_id=1, result={"success": True})
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=result) as mock_exec, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("docker:restart:plex"))
+
+    mock_exec.assert_awaited_once_with(
+        actor="user", kind="unraid_docker", target="plex",
+        payload={"container_id": "plex"},
+    )
+    assert "✓" in mock_edit.await_args.args[2]
+    assert "Restart sent." in mock_edit.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_docker_restart_failure_alerts_and_keeps_buttons():
+    """decision==EXECUTED but result.success==False is a FAILED restart, not a
+    success — the exact gap the ✓/✗ icon logic must not paper over."""
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                           reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                           log_id=1, result={"success": False})
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=result), \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("docker:restart:plex"))
+
+    assert mock_answer.await_args.kwargs.get("show_alert") is True
+    mock_edit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_vm_start_dispatches_via_hermes_action_bridge():
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                           reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                           log_id=1, result={"ok": True})
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=result) as mock_exec, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("vm:start:101"))
+
+    mock_exec.assert_awaited_once_with(
+        actor="user", kind="hermes_action", target="hermes",
+        payload={"verb": "vm_action", "args": {"action": "start", "vm": "101"}},
+    )
+    assert "✓" in mock_edit.await_args.args[2]
+
+    # The mock above proves the CALL shape; this proves that shape is actually
+    # a VALID vm_action invocation against the real allowlist spec (required
+    # args, enum values) -- a payload matching the mock's literal but wrong
+    # against build_command (e.g. a swapped key, an int vm) would pass the
+    # assertion above yet fail for real against Hermes.
+    from backend.safety import hermes_actions
+    payload = mock_exec.await_args.kwargs["payload"]
+    assert hermes_actions.build_command(payload["verb"], payload["args"]) == "start 101"
+
+
+@pytest.mark.asyncio
+async def test_docker_and_vm_callbacks_unauthorized_chat_never_dispatches():
+    """The authorization gate must cover the new namespaces exactly like the
+    existing goal/safety ones — checked BEFORE execute_action is ever awaited."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "99999"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer:
+        await telegram_poller.handle_callback(_cq("docker:restart:plex", chat_id=12345))
+        await telegram_poller.handle_callback(_cq("vm:start:101", chat_id=12345))
+
+    mock_exec.assert_not_called()
+    assert mock_answer.await_count == 2
+    for call in mock_answer.await_args_list:
+        assert call.args[1:] == ("Not authorized",) or call.kwargs.get("show_alert") is True
+
+
+@pytest.mark.asyncio
+async def test_goal_approve_int_coercion_still_enforced():
+    """Regression: only goal/safety ids coerce to int — docker/vm ids must not
+    accidentally lose that guard for their own namespace."""
+    with patch("backend.agents.goals.approve", new_callable=AsyncMock) as mock_approve, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer:
+        await telegram_poller.handle_callback(_cq("goal:approve:abc"))
+
+    mock_approve.assert_not_called()
+    mock_answer.assert_awaited_once_with("cq1", "Invalid id.", show_alert=True)
+
+
+@pytest.mark.asyncio
+async def test_unknown_namespace_still_non_definitive():
+    with patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("bogus:x:1"))
+
+    assert mock_answer.await_args.kwargs.get("show_alert") is True
+    mock_edit.assert_not_called()

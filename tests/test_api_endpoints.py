@@ -473,6 +473,24 @@ def test_hermes_trigger_requires_auth(app_client):
     assert resp.status_code == 401
 
 
+def test_hermes_trigger_council_postmortem(app_client, auth_headers):
+    """Council-loop's run-loop.ps1 POSTs here at driver exit (Phase 2c hookup)
+    -- pins the parameter plumbing that POST depends on: 'since' must reach
+    run_postmortem unchanged."""
+    with patch("backend.agents.council_postmortem.run_postmortem", new_callable=AsyncMock) as mock_pm:
+        mock_pm.return_value = {"ok": True, "findings": []}
+        resp = app_client.post(
+            "/api/trigger",
+            json={"task_name": "council_postmortem", "parameters": {"since": "2026-07-27T00:00:00Z"}},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["result"] == {"ok": True, "findings": []}
+        mock_pm.assert_awaited_once_with(since="2026-07-27T00:00:00Z")
+
+
 # ---------------------------------------------------------------------------
 # Safety: Hermes capabilities (pure read of the structured-verb allowlist)
 # ---------------------------------------------------------------------------

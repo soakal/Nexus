@@ -259,6 +259,14 @@ async def _watchdog():
         logger.error(f"Watchdog job error: {e}")
 
 
+async def _homelab_watch():
+    try:
+        from backend.agents.homelab_watch import run_homelab_watch
+        await run_homelab_watch()
+    except Exception as e:
+        logger.error(f"Homelab watch job error: {e}")
+
+
 async def _spend_report():
     try:
         from backend.agents.digest import send_spend_report
@@ -489,6 +497,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Scheduler stall watchdog enabled: runs every 5 minutes")
+    if getattr(s, "homelab_watch_enabled", True):
+        scheduler.add_job(
+            _homelab_watch,
+            IntervalTrigger(seconds=60),
+            id="homelab_watch",
+            replace_existing=True,
+        )
+        logger.info("Homelab watcher enabled: runs every 60 seconds")
     if getattr(s, "spend_report_enabled", False):
         report_time = getattr(s, "spend_report_time", "08:00")
         try:

@@ -318,6 +318,19 @@ class Settings(BaseSettings):
     # their own idempotency already covers replay.
     telegram_command_max_age_s: int = 300
 
+    # Phase 2c homelab watcher (backend/agents/homelab_watch.py) — the NEXUS-
+    # native port of Hermes's watcher.py 60s loop, so alerts keep firing even
+    # if Hermes's bot process is ever stopped. Interval is hardcoded at 60s in
+    # scheduler.py (matches retry_deliveries/record_uptime); only thresholds
+    # are tunable here. 45C matches Hermes's DISK_TEMP_WARN; 30 min matches
+    # its garage-open rule. Explicitly NOT built: doorbell/camera (declined by
+    # Brian) and NEXUS's own liveness check (a process can't monitor its own
+    # death — needs external monitoring).
+    homelab_watch_enabled: bool = True
+    homelab_disk_temp_warn_c: int = 45
+    homelab_garage_entity_id: str = "cover.garage_door_garage_door"
+    homelab_garage_open_minutes: int = 30
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:

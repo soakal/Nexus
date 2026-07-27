@@ -94,6 +94,7 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         FieldContract("storage_total_gb", (int, float), "positive", consumer="briefing.py:245"),
         FieldContract("docker_containers", (list,), "type",
                        consumer="briefing.py:246, Dashboard.jsx:369"),
+        FieldContract("disk_health", (list,), "type", consumer="homelab_watch.py:check_disk_temps"),
         FieldContract("cpu_pct", (int, float), "is_default", default=0.0,
                        consumer="tools.py:142 (reads a field fetch() never assigns)"),
         FieldContract("ram_pct", (int, float), "is_default", default=0.0,

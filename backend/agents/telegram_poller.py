@@ -52,8 +52,14 @@ _message_semaphore = asyncio.Semaphore(1)
 # Every task is added here and removed via its own done-callback.
 _message_tasks: set[asyncio.Task] = set()
 
+# goal/safety ids are ActionLog/Goal primary keys (int). docker/vm ids are a
+# container NAME and a Proxmox vmid string, respectively — only the DB-keyed
+# namespaces coerce to int.
+_INT_ID_NAMESPACES = frozenset({"goal", "safety"})
+_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart"})
 
-async def _dispatch(namespace: str, verb: str, obj_id: int) -> tuple[bool, str]:
+
+async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool, str]:
     """Returns (definitive, human_result). definitive=False means an internal/
     dispatch error -> alert popup, KEEP the buttons (parity with Hermes's
     transport-error handling)."""
@@ -95,6 +101,34 @@ async def _dispatch(namespace: str, verb: str, obj_id: int) -> tuple[bool, str]:
                 "rejected": "Rejected.",
             }
             return True, mapping.get(status, status)
+
+        if namespace == "docker" and verb == "restart":
+            from backend.safety.broker import Decision, execute_action
+            res = await execute_action(
+                actor="user", kind="unraid_docker", target=str(obj_id),
+                payload={"container_id": str(obj_id)},
+            )
+            # _dispatch_unraid_docker does NOT raise on a failed restart (unlike
+            # _dispatch_hermes_action) -- it returns {"success": False} and the
+            # broker still records EXECUTED. Success must be read off the
+            # result, not the decision, or a failed restart would show ✓.
+            if res.decision == Decision.EXECUTED and (res.result or {}).get("success"):
+                return True, "Restart sent."
+            if res.decision == Decision.FORBIDDEN:
+                return True, "Blocked: autonomy is paused."
+            return False, (res.error or "Restart failed.")
+
+        if namespace == "vm" and verb == "start":
+            from backend.safety.broker import Decision, execute_action
+            res = await execute_action(
+                actor="user", kind="hermes_action", target="hermes",
+                payload={"verb": "vm_action", "args": {"action": "start", "vm": str(obj_id)}},
+            )
+            if res.decision == Decision.EXECUTED:
+                return True, "Start sent."
+            if res.decision == Decision.FORBIDDEN:
+                return True, "Blocked: autonomy is paused."
+            return False, (res.error or "Start failed.")
 
         return False, f"Unknown namespace: {namespace}"
     except Exception as e:
@@ -259,11 +293,14 @@ async def handle_callback(cq: dict) -> None:
         await telegram.answer_callback_query(cq_id)
         return
     namespace, verb, obj_id_str = parts
-    try:
-        obj_id = int(obj_id_str)
-    except ValueError:
-        await telegram.answer_callback_query(cq_id, "Invalid id.", show_alert=True)
-        return
+    if namespace in _INT_ID_NAMESPACES:
+        try:
+            obj_id = int(obj_id_str)
+        except ValueError:
+            await telegram.answer_callback_query(cq_id, "Invalid id.", show_alert=True)
+            return
+    else:
+        obj_id = obj_id_str
 
     definitive, result = await _dispatch(namespace, verb, obj_id)
 
@@ -273,7 +310,7 @@ async def handle_callback(cq: dict) -> None:
         return
 
     await telegram.answer_callback_query(cq_id)
-    icon = "✓" if verb in ("approve", "confirm") else "✗"
+    icon = "✓" if verb in _AFFIRMATIVE_VERBS else "✗"
     if chat_id is not None and message_id is not None:
         await telegram.edit_message_text(chat_id, message_id, f"{original_text}\n\n{icon} {result}")
 
