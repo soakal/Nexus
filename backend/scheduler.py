@@ -306,8 +306,10 @@ async def _run_brain_organizer():
             logger.warning("Brain Organizer module not found — skipping run")
             return
         # Inherit the current environment then inject secrets from the NEXUS vault.
-        # This ensures ANTHROPIC_API_KEY, OPENROUTER_API_KEY, and HERMES_HOST reach
-        # the subprocess even when the parent process does not export them by default.
+        # This ensures ANTHROPIC_API_KEY, OPENROUTER_API_KEY, and the Telegram
+        # notify secrets reach the subprocess even when the parent process does
+        # not export them by default. Sourced from the vault (not the module's
+        # own .env) so the bot token never needs a second on-disk copy.
         env = os.environ.copy()
         try:
             from backend.config import get_settings
@@ -315,7 +317,8 @@ async def _run_brain_organizer():
             for attr, var in [
                 ("anthropic_api_key", "ANTHROPIC_API_KEY"),
                 ("openrouter_api_key", "OPENROUTER_API_KEY"),
-                ("hermes_host", "HERMES_HOST"),
+                ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
+                ("telegram_chat_id", "TELEGRAM_CHAT_ID"),
             ]:
                 try:
                     val = getattr(s, attr, None)

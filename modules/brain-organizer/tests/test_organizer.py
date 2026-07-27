@@ -655,36 +655,41 @@ def test_detect_topics_strips_plain_code_fences(
 
 
 # ---------------------------------------------------------------------------
-# Hermes notification
+# Telegram notification
 # ---------------------------------------------------------------------------
 
-def test_hermes_notification_sent(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
-    tmp_config["hermes_host"] = "http://hermes.local:5000"
-    http_client = MagicMock()
-    bo.send_hermes_notification(tmp_config, "Test message", http_client=http_client)
-    http_client.post.assert_called_once()
-    call_args = http_client.post.call_args
-    assert "notify" in call_args.args[0]
-    assert call_args.kwargs["json"]["message"] == "Test message"
-
-
-def test_hermes_notification_skipped_when_host_is_placeholder(
+def test_telegram_notification_sent(
     tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("HERMES_HOST", raising=False)
-    tmp_config["hermes_host"] = "http://HERMES_HOST_HERE"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     http_client = MagicMock()
-    bo.send_hermes_notification(tmp_config, "Test", http_client=http_client)
+    bo.send_telegram_notification(tmp_config, "Test message", http_client=http_client)
+    http_client.post.assert_called_once()
+    call_args = http_client.post.call_args
+    assert "test-token" in call_args.args[0]
+    assert "sendMessage" in call_args.args[0]
+    assert call_args.kwargs["json"]["chat_id"] == "12345"
+    assert call_args.kwargs["json"]["text"] == "Test message"
+
+
+def test_telegram_notification_skipped_when_token_missing(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    http_client = MagicMock()
+    bo.send_telegram_notification(tmp_config, "Test", http_client=http_client)
     http_client.post.assert_not_called()
 
 
-def test_hermes_notification_skipped_when_host_empty(
+def test_telegram_notification_skipped_when_chat_id_missing(
     tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("HERMES_HOST", raising=False)
-    tmp_config["hermes_host"] = ""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     http_client = MagicMock()
-    bo.send_hermes_notification(tmp_config, "Test", http_client=http_client)
+    bo.send_telegram_notification(tmp_config, "Test", http_client=http_client)
     http_client.post.assert_not_called()
 
 

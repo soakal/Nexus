@@ -2,7 +2,7 @@
 Brain Organizer — main processing script.
 
 Reads raw intake files from vault/raw/, uses Claude AI to detect topics and
-synthesize wiki files, then cleans up and reports via Hermes.
+synthesize wiki files, then cleans up and reports via NEXUS's own Telegram bot.
 
 Usage:
     python brain_organizer.py
@@ -1029,7 +1029,7 @@ def synthesize_wiki(
             # silent unchanged-content return here made the note's new
             # information vanish -- no error, no retry, ledger recorded a
             # success. Raising sends this through the normal failure path
-            # instead: raw file kept, attempt counted, Hermes notified, clean
+            # instead: raw file kept, attempt counted, Telegram notified, clean
             # retry next run.
             raise ValueError(
                 f"Large-page splice failed for '{topic}': {exc} — refusing to write, "
@@ -1136,37 +1136,36 @@ def synthesize_wiki(
 
 
 # ---------------------------------------------------------------------------
-# Hermes notifications
+# Telegram notifications (NEXUS's own bot — moved off the old Hermes relay
+# 2026-07-27; this module never routed through backend/events.py's
+# notify_phone, so Phase 1's Telegram migration didn't touch it until now)
 # ---------------------------------------------------------------------------
 
-def _get_hermes_host(config: dict[str, Any]) -> str:
-    host = os.environ.get("HERMES_HOST") or config.get("hermes_host", "")
-    return "" if host == "http://HERMES_HOST_HERE" else host
-
-
-def send_hermes_notification(
+def send_telegram_notification(
     config: dict[str, Any],
     message: str,
     priority: str = "normal",
     *,
     http_client: httpx.Client | None = None,
 ) -> None:
-    host = _get_hermes_host(config)
-    if not host:
-        logging.getLogger("brain_organizer").debug("Hermes host not configured — skipping notification")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        logging.getLogger("brain_organizer").debug(
+            "TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured — skipping notification"
+        )
         return
 
-    secret = os.environ.get("HERMES_WEBHOOK_SECRET", "")
-    headers = {"X-Webhook-Secret": secret} if secret else {}
-    payload = {"message": message, "priority": priority}
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message}
     try:
         if http_client is not None:
-            http_client.post(f"{host}/hermes/notify", json=payload, headers=headers)
+            http_client.post(url, json=payload)
         else:
             with httpx.Client(timeout=10.0) as c:
-                c.post(f"{host}/hermes/notify", json=payload, headers=headers)
+                c.post(url, json=payload)
     except Exception as exc:
-        logging.getLogger("brain_organizer").warning("Hermes notification failed: %s", exc)
+        logging.getLogger("brain_organizer").warning("Telegram notification failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1501,7 +1500,7 @@ def run(
             # Failures save immediately, unbatched: "attempts" must be
             # accurate for the max_file_attempts permanent-skip cap to work.
             _flush_processed(force=True)
-        send_hermes_notification(
+        send_telegram_notification(
             config,
             f"🧠 Brain Organizer — ⚠️ Error\nFile: {fp.name}\nError: {exc}",
             priority="high",
@@ -1534,7 +1533,7 @@ def run(
                 logger.error("API hard-capped — aborting run: %s", exc)
                 if not aborted.is_set():
                     aborted.set()
-                    send_hermes_notification(
+                    send_telegram_notification(
                         config,
                         f"🧠 Brain Organizer — API capped, run aborted.\n{exc}",
                         priority="high",
@@ -1569,7 +1568,7 @@ def run(
         if failed_count:
             summary += f"\n⚠️ Failed: {failed_count}"
         logger.info(summary)
-        send_hermes_notification(config, summary, http_client=_http_client)
+        send_telegram_notification(config, summary, http_client=_http_client)
 
     return 1 if failed_count else 0
 

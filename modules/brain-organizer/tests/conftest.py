@@ -23,16 +23,18 @@ def _make_message(text: str, stop_reason: str = "end_turn") -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def _no_real_secrets_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """brain_organizer.py calls load_dotenv() at import time, pulling the real
-    HERMES_HOST/HERMES_WEBHOOK_SECRET/API keys from modules/brain-organizer/.env
-    into os.environ for the whole test process. _get_hermes_host() checks the
-    env var BEFORE tmp_config's "hermes_host" -- so without this, any
+    """brain_organizer.py calls load_dotenv() at import time, pulling real
+    secrets from modules/brain-organizer/.env into os.environ for the whole
+    test process. send_telegram_notification() reads TELEGRAM_BOT_TOKEN/
+    TELEGRAM_CHAT_ID straight from the environment -- so without this, any
     failure-path test (e.g. test_raw_file_kept_on_failure) fires a REAL POST
-    to the real Hermes host, which relays to real Telegram. Confirmed: this is
-    what produced the "note.md"/"bad.md" Telegram spam. Strip them for every
-    test, unconditionally.
+    to the real Telegram bot. This is the exact same class of bug that
+    previously produced the "note.md"/"bad.md" Telegram spam via a leaked
+    HERMES_HOST/HERMES_WEBHOOK_SECRET (now retired) -- the new Telegram
+    secrets get the identical treatment. Strip them for every test,
+    unconditionally.
     """
-    for var in ("HERMES_HOST", "HERMES_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
+    for var in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -64,7 +66,6 @@ def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
         "sonnet_model": "claude-sonnet-4-6",
         "sonnet_max_tokens": 8192,
         "max_file_chars": 50000,
-        "hermes_host": "",
         "api_provider": "anthropic",
         "max_file_attempts": 5,
         "mcp_write_token": "",

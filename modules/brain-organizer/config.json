@@ -19,7 +19,6 @@
   "large_page_threshold_chars": 20000,
   "route_max_tokens": 1024,
   "max_parallel_files": 4,
-  "hermes_host": "http://HERMES_HOST_HERE",
   "api_provider": "anthropic",
   "max_file_attempts": 2,
   "mcp_write_token": ""
