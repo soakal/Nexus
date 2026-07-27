@@ -179,6 +179,24 @@ async def test_poll_once_advances_offset_and_dispatches():
 
 
 @pytest.mark.asyncio
+async def test_poll_once_requests_both_callback_and_message_updates():
+    """Pins the actual allowed_updates list — dropping 'message' would
+    silently kill every text/voice command with zero other test failures,
+    since every other poll_once test mocks get_updates' return value rather
+    than asserting what was requested."""
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 300
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[]) as mock_get_updates:
+        await telegram_poller.poll_once(None)
+
+    allowed = mock_get_updates.await_args.kwargs["allowed_updates"]
+    assert "callback_query" in allowed
+    assert "message" in allowed
+
+
+@pytest.mark.asyncio
 async def test_poll_once_logs_unknown_message():
     updates = [{"update_id": 5, "message": {"chat": {"id": 999}}}]
     with patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=updates):
@@ -584,6 +602,68 @@ async def test_authorized_voice_message_transcribes_and_dispatches():
 
     mock_transcribe.assert_awaited_once()
     mock_dispatch.assert_awaited_once()
+    assert mock_dispatch.await_args.args[0] == "is the garage open"
+
+
+# ---------------------------------------------------------------------------
+# _match_voice_command — spoken command names must not fall through to chat()
+#
+# Real incident this guards against: saying "mute" (meaning the /mute
+# notification command) transcribed closely enough to a real device name
+# that chat()'s HOME_CONTROL branch turned on a real switch instead, with
+# zero confirmation (actor="user" is always-allowed). Voice can't produce a
+# literal "/", so without this, NO spoken command name is ever safe.
+# ---------------------------------------------------------------------------
+
+def test_match_voice_command_bare_command_name():
+    assert telegram_poller._match_voice_command("mute") == "/mute"
+
+
+def test_match_voice_command_case_insensitive_and_strips_punctuation():
+    assert telegram_poller._match_voice_command("Mute.") == "/mute"
+    assert telegram_poller._match_voice_command("STATUS") == "/status"
+
+
+def test_match_voice_command_with_args():
+    assert telegram_poller._match_voice_command("mute budget warn") == "/mute budget warn"
+
+
+def test_match_voice_command_non_command_text_returns_none():
+    assert telegram_poller._match_voice_command("what's the weather today") is None
+    assert telegram_poller._match_voice_command("turn off the garage light") is None
+
+
+def test_match_voice_command_empty_returns_none():
+    assert telegram_poller._match_voice_command("") is None
+    assert telegram_poller._match_voice_command("   ") is None
+
+
+@pytest.mark.asyncio
+async def test_voice_saying_bare_command_name_dispatches_as_real_command():
+    """The actual incident, reproduced: transcript 'mute' must dispatch as
+    the /mute command, never as bare chat text."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_poller._transcribe_voice", new_callable=AsyncMock, return_value="mute"), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_voice_msg()))
+
+    mock_dispatch.assert_awaited_once()
+    assert mock_dispatch.await_args.args[0] == "/mute"
+
+
+@pytest.mark.asyncio
+async def test_voice_saying_conversational_text_still_reaches_chat():
+    """Non-command speech must be unaffected — only an exact leading command
+    name gets rewritten."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_poller._transcribe_voice", new_callable=AsyncMock, return_value="is the garage open"), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_voice_msg()))
+
     assert mock_dispatch.await_args.args[0] == "is the garage open"
 
 

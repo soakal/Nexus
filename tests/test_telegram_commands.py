@@ -361,6 +361,21 @@ async def test_cmd_mute_empty_args():
 
 
 @pytest.mark.asyncio
+async def test_cmd_mute_rejects_never_mutable_kind():
+    """The real safety guard, not mocked away — governor.add_muted_notify_kind
+    genuinely raises for a safety-critical kind (before ever touching the DB),
+    and the reply must surface that rejection, not claim success."""
+    reply = await telegram_commands._cmd_mute("auth_burst", _msg("/mute auth_burst"))
+    assert "cannot be muted" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_mute_rejects_comma():
+    reply = await telegram_commands._cmd_mute("budget_warn,goal_proposed", _msg("/mute ..."))
+    assert "comma" in reply.lower()
+
+
+@pytest.mark.asyncio
 async def test_cmd_unmute_removes_kind():
     with patch("backend.safety.governor.remove_muted_notify_kind") as mock_remove:
         reply = await telegram_commands._cmd_unmute("budget_warn", _msg("/unmute budget_warn"))

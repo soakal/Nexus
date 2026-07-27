@@ -393,3 +393,33 @@ async def test_get_file_bytes_raises_when_too_large():
         mock_client_cls.return_value = mock_client
         with pytest.raises(ValueError, match="too large"):
             await telegram.get_file_bytes("file_id_123", max_bytes=50)
+
+
+# ---------------------------------------------------------------------------
+# _queue_delivery — real body, not mocked away
+#
+# Every other test in this file patches _queue_delivery itself to observe
+# WHETHER it was called; none exercise its actual body (session.add +
+# commit). A regression there (e.g. a typo'd field name) would make
+# deliver_pending()/notify() look like they're queuing correctly while
+# silently writing nothing — the "looks queued but isn't" failure mode.
+# ---------------------------------------------------------------------------
+
+def test_queue_delivery_writes_a_real_row():
+    import json
+    from sqlmodel import Session, SQLModel, create_engine, select
+    from sqlmodel.pool import StaticPool
+    import backend.database  # noqa: F401 — register PendingDelivery on metadata
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+
+    with patch("backend.database.engine", eng):
+        telegram._queue_delivery({"content": "test alert"}, "notify")
+
+    from backend.database import PendingDelivery
+    with Session(eng) as session:
+        rows = session.exec(select(PendingDelivery)).all()
+        assert len(rows) == 1
+        assert rows[0].delivery_type == "notify"
+        assert json.loads(rows[0].payload_json) == {"content": "test alert"}

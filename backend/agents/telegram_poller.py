@@ -167,6 +167,28 @@ async def _transcribe_voice(msg: dict) -> str | None:
         return None
 
 
+def _match_voice_command(text: str) -> str | None:
+    """Voice can't naturally produce a leading '/', so a spoken command name
+    (e.g. "mute", "status") would otherwise ALWAYS fall through to bare-text
+    chat() — which dispatches HOME_CONTROL as actor="user" (always-allowed,
+    no confirm). Proven live: saying "mute" (meaning the /mute notification
+    command) got heard closely enough to a real device name that chat()
+    turned on a real switch instead. If the transcript's first word is a
+    known command name, treat it as that command (with the rest as args) —
+    same as typing '/name args' would. Returns the rewritten '/name args'
+    string, or None if the transcript doesn't start with a known command."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    parts = stripped.split(maxsplit=1)
+    first = parts[0].lower().strip(".,!?")
+    from backend.agents import telegram_commands
+    if first not in telegram_commands.COMMANDS:
+        return None
+    rest = f" {parts[1]}" if len(parts) > 1 else ""
+    return f"/{first}{rest}"
+
+
 async def _handle_message(msg: dict) -> None:
     """Authorized -> command/chat dispatch (text, or a transcribed voice
     message), fire-and-forget + semaphore-gated so a slow chat() or
@@ -198,6 +220,13 @@ async def _handle_message(msg: dict) -> None:
                         chat_id=chat_id,
                     )
                     return
+                # A spoken command name ("mute", "status", ...) rewrites to
+                # '/name args' so it dispatches as the real command instead
+                # of falling through to chat() — see _match_voice_command's
+                # docstring for why this matters.
+                as_command = _match_voice_command(text)
+                if as_command:
+                    text = as_command
             if not text:
                 return
             from backend.agents import telegram_commands

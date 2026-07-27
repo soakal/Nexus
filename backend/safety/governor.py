@@ -229,7 +229,25 @@ def get_muted_notify_kinds() -> set[str]:
         return {k for k in (row.muted_notify_kinds or "").split(",") if k}
 
 
+# Notify kinds that must never be mutable via /mute — documented elsewhere
+# (events.py, CLAUDE.md) as un-suppressible pages. A DB-hiccup fail-safe
+# (events.py defaults to "not muted" on a read error) means nothing if a
+# single SUCCESSFUL /mute call can silence one of these outright, with no
+# TTL — indistinguishable from a harmless typo'd kind that "did nothing".
+# Mirrors broker.py's _NEVER_PROMOTABLE floor on a different CSV column.
+_NEVER_MUTABLE_NOTIFY_KINDS = frozenset({"auth_burst", "contract_breach", "budget_warn", "needs_confirm"})
+
+
 def add_muted_notify_kind(kind: str) -> None:
+    """Raises ValueError for a comma (would silently mute MULTIPLE kinds
+    through the shared CSV helper — the same trap broker.py's
+    _dispatch_policy_promote already guards against on a different CSV
+    column; that guard didn't carry over when this column was added) or a
+    kind in _NEVER_MUTABLE_NOTIFY_KINDS."""
+    if "," in kind:
+        raise ValueError(f"mute kind {kind!r} must not contain a comma")
+    if kind in _NEVER_MUTABLE_NOTIFY_KINDS:
+        raise ValueError(f"'{kind}' is a safety-critical alert kind and cannot be muted")
     _add_csv_kind("muted_notify_kinds", kind)
 
 

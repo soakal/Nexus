@@ -280,7 +280,10 @@ async def _cmd_mute(args: str, msg: dict) -> str:
     kind = args.strip()
     if not kind:
         return "Usage: /mute <kind> — e.g. /mute budget_warn. See /muted for what's currently muted."
-    await asyncio.to_thread(governor.add_muted_notify_kind, kind)
+    try:
+        await asyncio.to_thread(governor.add_muted_notify_kind, kind)
+    except ValueError as e:
+        return str(e)
     return f"Muted notifications of kind '{kind}'."
 
 

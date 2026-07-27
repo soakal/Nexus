@@ -823,21 +823,40 @@ def test_telegram_conversation_id_roundtrip(eng):
 def test_muted_notify_kinds_roundtrip(eng):
     from backend.safety import governor
     assert governor.get_muted_notify_kinds() == set()
-    governor.add_muted_notify_kind("budget_warn")
+    governor.add_muted_notify_kind("auto_approved")
     governor.add_muted_notify_kind("goal_proposed")
-    assert governor.get_muted_notify_kinds() == {"budget_warn", "goal_proposed"}
-    governor.remove_muted_notify_kind("budget_warn")
+    assert governor.get_muted_notify_kinds() == {"auto_approved", "goal_proposed"}
+    governor.remove_muted_notify_kind("auto_approved")
     assert governor.get_muted_notify_kinds() == {"goal_proposed"}
 
 
 def test_muted_notify_kinds_add_idempotent(eng):
     from backend.safety import governor
-    governor.add_muted_notify_kind("budget_warn")
-    governor.add_muted_notify_kind("budget_warn")
-    assert governor.get_muted_notify_kinds() == {"budget_warn"}
+    governor.add_muted_notify_kind("auto_approved")
+    governor.add_muted_notify_kind("auto_approved")
+    assert governor.get_muted_notify_kinds() == {"auto_approved"}
 
 
 def test_muted_notify_kinds_remove_missing_is_noop(eng):
     from backend.safety import governor
     governor.remove_muted_notify_kind("never_muted")  # must not raise
+
+
+def test_add_muted_notify_kind_rejects_comma(eng):
+    """The same comma-in-CSV trap broker.py's _dispatch_policy_promote already
+    guards against on a different CSV column — a comma here would silently
+    mute MULTIPLE kinds through the shared _add_csv_kind helper while the
+    caller (and the Telegram reply) only ever names one."""
+    from backend.safety import governor
+    with pytest.raises(ValueError):
+        governor.add_muted_notify_kind("auth_burst,needs_confirm")
+    assert governor.get_muted_notify_kinds() == set()
+
+
+@pytest.mark.parametrize("kind", ["auth_burst", "contract_breach", "budget_warn", "needs_confirm"])
+def test_add_muted_notify_kind_rejects_never_mutable(eng, kind):
+    from backend.safety import governor
+    with pytest.raises(ValueError):
+        governor.add_muted_notify_kind(kind)
+    assert kind not in governor.get_muted_notify_kinds()
     assert governor.get_muted_notify_kinds() == set()

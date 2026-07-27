@@ -66,6 +66,24 @@ async def test_unraid_fetch_multiple_data_disks():
 
 
 @pytest.mark.asyncio
+async def test_unraid_gql_query_requests_parities_field():
+    """Pins the actual query string sent to Unraid — without this, the
+    parsing-level tests above would all keep passing even if `parities` were
+    accidentally removed from the query again (proven: that's exactly what
+    happened for the entire life of this integration until the contract
+    canary caught it — the parsing code was 'correct' against a shape the
+    query never actually requested)."""
+    data = {"array": {"state": "started", "disks": [], "parities": []}, "docker": {"containers": []}}
+    with patch("httpx.AsyncClient") as mock_cls:
+        client = _post_client(_gql_response(data))
+        mock_cls.return_value = client
+        from backend.integrations.unraid import fetch
+        await fetch()
+        sent_query = client.__aenter__.return_value.post.call_args.kwargs["json"]["query"]
+        assert "parities" in sent_query
+
+
+@pytest.mark.asyncio
 async def test_unraid_fetch_parity_status_from_parities_field():
     """Regression guard: Unraid's real GraphQL schema puts parity drives in
     their own top-level `array.parities` list, never inside `disks` — a
