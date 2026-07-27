@@ -187,6 +187,34 @@ def _remove_csv_kind(column: str, kind: str) -> None:
         session.commit()
 
 
+def get_telegram_conversation_id() -> int | None:
+    """Sync. None if unset or the row doesn't exist yet — a fresh Conversation
+    is created on the next chat() call either way."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        return row.telegram_conversation_id if row else None
+
+
+def set_telegram_conversation_id(conversation_id: int | None) -> None:
+    """Sync. Creates row 1 if missing (mirrors _add_csv_kind's pattern)."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+        row.telegram_conversation_id = conversation_id
+        row.updated_at = datetime.utcnow()
+        session.commit()
+
+
 def add_auto_allow_kind(kind: str) -> None:
     """Promote a kind to auto-allow for agent/autonomous actors (sync).
     Called ONLY by the broker's policy_promote dispatcher, which is itself

@@ -293,6 +293,10 @@ class SystemState(SQLModel, table=True):
     # unlike auto_allow, which always requires a human confirm). Always wins
     # over auto_allow if a kind somehow ends up in both.
     policy_forbid_kinds: str | None = Field(default=None)
+    # NEXUS Telegram bot's persistent chat() conversation — survives a NEXUS
+    # restart so a multi-turn Telegram conversation doesn't silently reset.
+    # /clear sets this back to None to start a fresh Conversation.
+    telegram_conversation_id: int | None = Field(default=None)
 
 
 # Agent/LLM trace observability (council w-observability). One row per
@@ -519,6 +523,7 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "auth_burst_alert_at", "TIMESTAMP")
     _safe_add_column("systemstate", "policy_auto_allow_kinds", "TEXT")
     _safe_add_column("systemstate", "policy_forbid_kinds", "TEXT")
+    _safe_add_column("systemstate", "telegram_conversation_id", "INTEGER")
 
 
 def _ensure_system_state():

@@ -265,3 +265,258 @@ async def test_start_creates_task_when_configured():
         task = telegram_poller.start()
         assert task is not None
         await telegram_poller.stop()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2a — text message handling
+# ---------------------------------------------------------------------------
+
+def _msg(text, chat_id=12345, date=None):
+    import time
+    return {"chat": {"id": chat_id}, "text": text, "date": date if date is not None else time.time()}
+
+
+async def _run_and_await_created_tasks(coro):
+    """Runs `coro`, then awaits any asyncio.create_task()'d work it spawned
+    (telegram_poller._handle_message fires-and-forgets), so fire-and-forget
+    dispatch is deterministic in tests instead of a bare asyncio.sleep(0)."""
+    created = []
+    orig_create_task = asyncio.create_task
+
+    def _capture(c, *a, **kw):
+        t = orig_create_task(c, *a, **kw)
+        created.append(t)
+        return t
+
+    with patch("backend.agents.telegram_poller.asyncio.create_task", side_effect=_capture):
+        await coro
+    for t in created:
+        await t
+
+
+@pytest.mark.asyncio
+async def test_authorized_message_dispatches_to_commands():
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_msg("hello")))
+
+    mock_dispatch.assert_awaited_once()
+    assert mock_dispatch.await_args.args[0] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_message_gets_no_reply():
+    """The security-critical asymmetry: an unauthorized MESSAGE gets NOTHING
+    sent back, only a log line — replying would confirm the bot is live to a
+    stranger and (since bare text reaches chat()'s always-allowed HOME_CONTROL
+    path) a reply-then-ignore gap here would be a real hole, not cosmetic."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "99999"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch, \
+         patch("backend.integrations.telegram.send_reply", new_callable=AsyncMock) as mock_reply, \
+         patch("backend.integrations.telegram.send_message", new_callable=AsyncMock) as mock_send:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_msg("hello", chat_id=12345)))
+
+    mock_dispatch.assert_not_called()
+    mock_reply.assert_not_called()
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_chat_id_fails_closed_for_messages_too():
+    settings = MagicMock()
+    type(settings).telegram_chat_id = property(lambda self: (_ for _ in ()).throw(KeyError("TELEGRAM_CHAT_ID")))
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch, \
+         patch("backend.integrations.telegram.send_reply", new_callable=AsyncMock) as mock_reply:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(_msg("hello")))
+
+    mock_dispatch.assert_not_called()
+    mock_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_text_message_from_authorized_chat_is_ignored():
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    msg = {"chat": {"id": 12345}, "date": 1234567890, "sticker": {"file_id": "abc"}}
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_commands.dispatch", new_callable=AsyncMock) as mock_dispatch:
+        await _run_and_await_created_tasks(telegram_poller._handle_message(msg))
+
+    mock_dispatch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# poll_once — replay-age guard
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_poll_once_drops_stale_message():
+    import time
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 300
+    stale_update = {"update_id": 10, "message": _msg("old", date=time.time() - 999)}
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[stale_update]), \
+         patch("backend.agents.telegram_poller._handle_message", new_callable=AsyncMock) as mock_handle:
+        new_offset = await telegram_poller.poll_once(None)
+
+    mock_handle.assert_not_called()
+    assert new_offset == 11  # offset still advances so it isn't redelivered forever
+
+
+@pytest.mark.asyncio
+async def test_poll_once_processes_fresh_message():
+    import time
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 300
+    fresh_update = {"update_id": 11, "message": _msg("new", date=time.time())}
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[fresh_update]), \
+         patch("backend.agents.telegram_poller._handle_message", new_callable=AsyncMock) as mock_handle:
+        new_offset = await telegram_poller.poll_once(None)
+
+    mock_handle.assert_awaited_once()
+    assert new_offset == 12
+
+
+@pytest.mark.asyncio
+async def test_poll_once_never_age_filters_callbacks():
+    import time
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 1  # aggressively short
+    cq_update = {"update_id": 20, "callback_query": _cq("goal:approve:1")}
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[cq_update]), \
+         patch("backend.agents.telegram_poller.handle_callback", new_callable=AsyncMock) as mock_handle:
+        await telegram_poller.poll_once(None)
+
+    mock_handle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_poll_once_missing_date_fails_closed():
+    """A missing 'date' field must be treated as stale (dropped), not as
+    'now' — defaulting to fresh would fail OPEN, exactly what this guard
+    exists to prevent."""
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 300
+    update = {"update_id": 30, "message": {"chat": {"id": 12345}, "text": "hi"}}  # no "date" key
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[update]), \
+         patch("backend.agents.telegram_poller._handle_message", new_callable=AsyncMock) as mock_handle:
+        new_offset = await telegram_poller.poll_once(None)
+
+    mock_handle.assert_not_called()
+    assert new_offset == 31  # offset still advances — never refetched forever
+
+
+@pytest.mark.asyncio
+async def test_poll_once_null_date_fails_closed():
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 300
+    update = {"update_id": 31, "message": {"chat": {"id": 12345}, "text": "hi", "date": None}}
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[update]), \
+         patch("backend.agents.telegram_poller._handle_message", new_callable=AsyncMock) as mock_handle:
+        new_offset = await telegram_poller.poll_once(None)
+
+    mock_handle.assert_not_called()
+    assert new_offset == 32
+
+
+@pytest.mark.asyncio
+async def test_poll_once_malformed_update_does_not_wedge_batch():
+    """One update raising mid-processing must not lose the offset advance or
+    stop the rest of the batch from being processed."""
+    import time
+    settings = MagicMock()
+    settings.telegram_poll_timeout_s = 25
+    settings.telegram_command_max_age_s = 300
+    bad_update = {"update_id": 40, "message": {"chat": {"id": 12345}, "text": "bad", "date": time.time()}}
+    good_update = {"update_id": 41, "message": {"chat": {"id": 12345}, "text": "good", "date": time.time()}}
+
+    async def _handle_side_effect(msg):
+        if msg["text"] == "bad":
+            raise RuntimeError("boom")
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.telegram.get_updates", new_callable=AsyncMock, return_value=[bad_update, good_update]), \
+         patch("backend.agents.telegram_poller._handle_message", side_effect=_handle_side_effect) as mock_handle:
+        new_offset = await telegram_poller.poll_once(None)
+
+    assert new_offset == 42  # both updates' offsets accounted for
+    assert mock_handle.call_count == 2  # the bad one didn't stop the good one from running
+
+
+# ---------------------------------------------------------------------------
+# Task reference retention (asyncio.create_task GC bug regression)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_message_task_is_tracked_until_done():
+    """asyncio.create_task() only holds a weak reference — a dropped task can
+    be garbage-collected mid-run. _handle_message must keep a strong
+    reference in _message_tasks until the task completes."""
+    settings = MagicMock()
+    settings.telegram_chat_id = "12345"
+    release = asyncio.Event()
+
+    async def _slow_dispatch(text, msg):
+        await release.wait()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.telegram_commands.dispatch", side_effect=_slow_dispatch):
+        await telegram_poller._handle_message(_msg("hello"))
+        await asyncio.sleep(0)  # let the task start and reach the await point
+        assert len(telegram_poller._message_tasks) == 1
+
+        release.set()
+        # drain: wait for the tracked task to finish and self-remove
+        for t in list(telegram_poller._message_tasks):
+            await t
+
+    assert len(telegram_poller._message_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_inflight_message_tasks():
+    async def _never_finishes():
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(_never_finishes())
+    telegram_poller._message_tasks.add(task)
+    try:
+        await telegram_poller.stop()
+        assert task.cancelled() or task.cancelling() > 0
+    finally:
+        task.cancel()
+        telegram_poller._message_tasks.discard(task)
+
+
+# ---------------------------------------------------------------------------
+# run_poller — registers the "/" command menu once at start
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_run_poller_registers_command_menu():
+    stop = asyncio.Event()
+
+    async def _fake_poll_once(offset):
+        stop.set()
+        return offset
+
+    with patch("backend.agents.telegram_poller.poll_once", side_effect=_fake_poll_once), \
+         patch("backend.integrations.telegram.set_my_commands", new_callable=AsyncMock, return_value=True) as mock_set_cmds:
+        await telegram_poller.run_poller(stop)
+
+    mock_set_cmds.assert_awaited_once()

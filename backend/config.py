@@ -312,6 +312,11 @@ class Settings(BaseSettings):
     telegram_poll_enabled: bool = True
     telegram_poll_timeout_s: int = 25
     calendar_days_ahead: int = 7
+    # Phase 2a — text commands/chat. A message older than this (Telegram
+    # replays up to 24h of un-acked updates after a NEXUS restart) is dropped
+    # rather than re-executed as a command. Buttons are never age-filtered —
+    # their own idempotency already covers replay.
+    telegram_command_max_age_s: int = 300
 
     # Secret properties via vault (lazy)
     @property

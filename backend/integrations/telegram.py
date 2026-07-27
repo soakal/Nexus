@@ -146,6 +146,50 @@ async def edit_message_text(chat_id, message_id: int, text: str) -> bool:
         return False
 
 
+async def send_reply(text: str, *, chat_id: str | None = None, parse_mode: str | None = None) -> bool:
+    """Chunked command/chat reply. Deliberately does NOT queue into
+    PendingDelivery on failure (unlike notify()) — a command reply is only
+    meaningful right now; replaying it an hour later is confusing noise, not
+    resilience. Returns True only if every chunk sent. Never raises."""
+    chunks = chunk_text(text)
+    if not chunks:
+        return True
+    try:
+        for chunk in chunks:
+            resp = await send_message(chunk, parse_mode=parse_mode, chat_id=chat_id)
+            if resp.status_code != 200:
+                logger.warning(f"Telegram reply chunk failed: HTTP {resp.status_code}: {resp.text[:200]}")
+                return False
+        return True
+    except Exception as e:
+        logger.warning(f"Telegram reply failed: {e}")
+        return False
+
+
+async def send_chat_action(action: str = "typing", *, chat_id: str | None = None) -> bool:
+    """Best-effort 'typing...' indicator. Telegram auto-expires it after ~5s —
+    fired once per command, no refresh loop. Never raises."""
+    from backend.config import get_settings
+    try:
+        target_chat = chat_id if chat_id is not None else get_settings().telegram_chat_id
+        resp = await _call("sendChatAction", {"chat_id": target_chat, "action": action}, timeout=10)
+        return resp.status_code == 200
+    except Exception as e:
+        logger.debug(f"sendChatAction failed (ignored): {e}")
+        return False
+
+
+async def set_my_commands(commands: list[dict]) -> bool:
+    """commands: [{"command": "status", "description": "..."}, ...] -> the "/"
+    autocomplete menu. Called once at poller start. Never raises."""
+    try:
+        resp = await _call("setMyCommands", {"commands": commands}, timeout=10)
+        return resp.status_code == 200
+    except Exception as e:
+        logger.warning(f"setMyCommands failed (ignored): {e}")
+        return False
+
+
 async def get_updates(offset: int | None, *, timeout: int, allowed_updates: list[str]) -> list[dict]:
     """Long-poll getUpdates. Raises TelegramConflict on 409 (another consumer
     is polling this bot), httpx.HTTPStatusError on other non-2xx, or a
