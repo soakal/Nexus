@@ -66,6 +66,67 @@ async def test_unraid_fetch_multiple_data_disks():
 
 
 @pytest.mark.asyncio
+async def test_unraid_fetch_parity_status_from_parities_field():
+    """Regression guard: Unraid's real GraphQL schema puts parity drives in
+    their own top-level `array.parities` list, never inside `disks` — a
+    `disks[].type == "PARITY"` filter is permanently vacuous against a real
+    server (confirmed via live schema introspection) and left parity_status
+    stuck at its 'unknown' default forever, silently, until the integration
+    contract canary caught it. This must read from `parities`."""
+    data = {
+        "array": {
+            "state": "started",
+            "disks": [
+                {"name": "disk1", "type": "DATA", "size": 2000 * 1048576, "fsUsed": 500 * 1048576},
+            ],
+            "parities": [
+                {"name": "parity", "status": "DISK_OK"},
+            ],
+        },
+        "docker": {"containers": []},
+    }
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch
+        result = await fetch()
+        assert result.parity_status == "disk_ok"
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_parity_status_unknown_when_no_parity_configured():
+    """A genuinely parity-less array (no redundancy) legitimately has no
+    parities entries — must degrade to the 'unknown' default, not raise."""
+    data = {
+        "array": {
+            "state": "started",
+            "disks": [{"name": "disk1", "type": "DATA", "size": 0, "fsUsed": 0}],
+            "parities": [],
+        },
+        "docker": {"containers": []},
+    }
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch
+        result = await fetch()
+        assert result.parity_status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_parity_status_missing_parities_key():
+    """Older/degraded GraphQL responses omitting `parities` entirely must not
+    raise — same graceful-degrade contract as the missing-docker-section case."""
+    data = {
+        "array": {"state": "started", "disks": []},
+        "docker": {"containers": []},
+    }
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch
+        result = await fetch()
+        assert result.parity_status == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_unraid_fetch_http_error_raises():
     """A non-2xx GraphQL response (raise_for_status raises) must RAISE — NOT return
     zero-filled defaults. Zeros look like catastrophic data loss to the briefing/

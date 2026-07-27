@@ -21,6 +21,7 @@ _GQL_QUERY = """
   array {
     state
     disks { name size fsUsed type temp status }
+    parities { name status }
   }
   docker {
     containers { id names state status }
@@ -68,9 +69,15 @@ async def fetch() -> UnraidData:
                 {"name": d["name"], "temp": d.get("temp"), "status": d.get("status", "")}
                 for d in disks
             ]
-            parity_disks = [d for d in disks if d.get("type") == "PARITY"]
-            if parity_disks:
-                data.parity_status = (parity_disks[0].get("status") or "unknown").lower()
+            # Unraid's GraphQL schema puts parity drives in their own top-level
+            # `parities` list, never inside `disks` (confirmed via schema
+            # introspection — no `disks[].type == "PARITY"` entry has ever
+            # existed on a real server; that filter was permanently vacuous
+            # and parity_status silently stuck at its "unknown" default since
+            # this integration was written, until the contract canary caught it).
+            parities = arr.get("parities", [])
+            if parities:
+                data.parity_status = (parities[0].get("status") or "unknown").lower()
 
             # size/fsUsed are in KB
             data_disks = [d for d in disks if d.get("type") == "DATA"]
