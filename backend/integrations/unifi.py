@@ -9,6 +9,7 @@ import httpx
 from sqlmodel import Session, select
 
 from backend.cache import async_ttl_cache
+from backend.integrations.unifi_tls_pinning import build_transport
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ async def _stamgr_cmd(cmd: str, mac: str) -> dict:
     settings = get_settings()
     normalized = _normalize_mac(mac)
 
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501 — UniFi uses self-signed LAN cert
+    async with httpx.AsyncClient(timeout=5, transport=build_transport()) as client:
         headers = await _login(client)
         resp = await client.post(
             f"{settings.unifi_host}/proxy/network/api/s/default/cmd/stamgr",
@@ -124,7 +125,7 @@ async def fetch() -> UniFiData:
     settings = get_settings()
 
     # UniFi uses cookie auth or API key depending on version
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501 — UniFi uses self-signed LAN cert
+    async with httpx.AsyncClient(timeout=5, transport=build_transport()) as client:
         headers = await _login(client)
 
         # Get clients — raise on failure rather than defaulting to 0 clients
@@ -178,7 +179,7 @@ async def health_check() -> bool:
         settings = get_settings()
         password = settings.unifi_password
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501
+        async with httpx.AsyncClient(timeout=5, transport=build_transport()) as client:
             resp = await client.post(
                 f"{settings.unifi_host}/api/auth/login",
                 json={"username": settings.unifi_username, "password": password},

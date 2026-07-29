@@ -408,6 +408,174 @@ def test_raw_post_malformed_authorization_header_rejected(tmp_config: dict[str, 
 
 
 # ---------------------------------------------------------------------------
+# Bearer token auth on GET /wiki, GET /wiki/search, GET /wiki/<topic>
+# (same loopback-exempt gate as POST /raw -- these read raw personal vault
+# content and were previously reachable with zero authentication).
+# ---------------------------------------------------------------------------
+
+def test_wiki_list_requires_token_when_configured(tmp_config: dict[str, Any]) -> None:
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # No token → 401
+    resp = client.get("/wiki", environ_overrides={"REMOTE_ADDR": "203.0.113.9"})
+    assert resp.status_code == 401
+
+    # Wrong token → 401
+    resp = client.get(
+        "/wiki",
+        headers={"Authorization": "Bearer wrong"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
+    assert resp.status_code == 401
+
+    # Correct token → 200
+    resp = client.get(
+        "/wiki",
+        headers={"Authorization": "Bearer secret123"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
+    assert resp.status_code == 200
+
+
+def test_wiki_list_loopback_exempt_when_token_configured(tmp_config: dict[str, Any]) -> None:
+    """Loopback callers never need a token, even when one IS configured."""
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # Default test client REMOTE_ADDR is 127.0.0.1 (loopback) — no Authorization header sent.
+    resp = client.get("/wiki")
+    assert resp.status_code == 200
+
+
+def test_wiki_list_remote_rejected_when_no_token_configured(tmp_config: dict[str, Any]) -> None:
+    """Secure-by-default: an unset token rejects remote reads outright."""
+    tmp_config["mcp_write_token"] = ""
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki", environ_overrides={"REMOTE_ADDR": "192.0.2.10"})
+    assert resp.status_code == 403
+
+
+def test_wiki_search_requires_token_when_configured(
+    tmp_config: dict[str, Any], tmp_vault: Path
+) -> None:
+    seed_wiki(tmp_vault, "NEXUS", "# NEXUS\n\nsome findable content")
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # No token → 401
+    resp = client.get("/wiki/search?q=findable", environ_overrides={"REMOTE_ADDR": "203.0.113.9"})
+    assert resp.status_code == 401
+
+    # Wrong token → 401
+    resp = client.get(
+        "/wiki/search?q=findable",
+        headers={"Authorization": "Bearer wrong"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
+    assert resp.status_code == 401
+
+    # Correct token → 200
+    resp = client.get(
+        "/wiki/search?q=findable",
+        headers={"Authorization": "Bearer secret123"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
+    assert resp.status_code == 200
+
+
+def test_wiki_search_loopback_exempt_when_token_configured(
+    tmp_config: dict[str, Any], tmp_vault: Path
+) -> None:
+    seed_wiki(tmp_vault, "NEXUS", "# NEXUS\n\nsome findable content")
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki/search?q=findable")  # default REMOTE_ADDR is loopback
+    assert resp.status_code == 200
+
+
+def test_wiki_search_remote_rejected_when_no_token_configured(tmp_config: dict[str, Any]) -> None:
+    tmp_config["mcp_write_token"] = ""
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki/search?q=anything", environ_overrides={"REMOTE_ADDR": "192.0.2.10"})
+    assert resp.status_code == 403
+
+
+def test_wiki_read_requires_token_when_configured(
+    tmp_config: dict[str, Any], tmp_vault: Path
+) -> None:
+    seed_wiki(tmp_vault, "NEXUS", "# NEXUS\n\nSecret personal content.")
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # No token → 401, content never leaked in the response body
+    resp = client.get("/wiki/NEXUS", environ_overrides={"REMOTE_ADDR": "203.0.113.9"})
+    assert resp.status_code == 401
+    assert b"Secret personal content" not in resp.data
+
+    # Wrong token → 401
+    resp = client.get(
+        "/wiki/NEXUS",
+        headers={"Authorization": "Bearer wrong"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
+    assert resp.status_code == 401
+
+    # Correct token → 200
+    resp = client.get(
+        "/wiki/NEXUS",
+        headers={"Authorization": "Bearer secret123"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.9"},
+    )
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert "Secret personal content." in data["content"]
+
+
+def test_wiki_read_loopback_exempt_when_token_configured(
+    tmp_config: dict[str, Any], tmp_vault: Path
+) -> None:
+    seed_wiki(tmp_vault, "NEXUS", "# NEXUS\n\ncontent")
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki/NEXUS")  # default REMOTE_ADDR is loopback
+    assert resp.status_code == 200
+
+
+def test_wiki_read_remote_rejected_when_no_token_configured(
+    tmp_config: dict[str, Any], tmp_vault: Path
+) -> None:
+    seed_wiki(tmp_vault, "NEXUS", "# NEXUS\n\ncontent")
+    tmp_config["mcp_write_token"] = ""
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    resp = client.get("/wiki/NEXUS", environ_overrides={"REMOTE_ADDR": "192.0.2.10"})
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # Server binding configuration
 # ---------------------------------------------------------------------------
 

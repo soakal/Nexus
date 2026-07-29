@@ -123,7 +123,7 @@ If a Telegram send fails, payloads are queued in SQLite and retried every 60 sec
 
 ## API Authentication
 
-All API endpoints except `/api/health` and `/api/briefing/latest` require:
+All API endpoints except `/api/health` require:
 ```
 Authorization: Bearer <NEXUS_API_KEY>
 ```

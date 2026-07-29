@@ -149,6 +149,12 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Vault not configured — running in limited mode")
 
+    try:
+        from backend.api.setup import ensure_bootstrap_token
+        ensure_bootstrap_token()
+    except Exception as e:
+        logger.warning(f"Bootstrap token init skipped: {e}")
+
     yield
 
     # Shutdown

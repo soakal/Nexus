@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +21,44 @@ STATE_FILE = DIGEST_DIR / ".relay_state.json"
 _DATED_DIGEST = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 sys.path.insert(0, str(REPO_ROOT))
+
+
+def _pending_digest_branches() -> list[str]:
+    """Best-effort check for `digest/*` branches pushed to origin but not yet
+    merged to master (i.e. a digest PR still awaiting review/merge).
+
+    The digest routine now lands its output on a branch + PR instead of
+    committing straight to master (see DIGEST_INSTRUCTIONS.md) -- without
+    this check, a pending PR and "no digest ran today" both print the exact
+    same "nothing new to relay" line, and the daily Brain/Telegram delivery
+    silently stops with zero signal that anything changed. Uses only `git`,
+    which the .cmd wrapper already requires (it runs `git pull` before this
+    script) -- no new dependency, no new credential. Returns [] on any
+    failure (git missing, no network, unexpected output, etc.) rather than
+    raising; this is a best-effort notice, not a hard requirement.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", "digest/*"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            return []
+        branches = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            ref = parts[-1] if parts else ""
+            if ref.startswith("refs/heads/"):
+                branches.append(ref[len("refs/heads/"):])
+        return branches
+    except Exception:
+        return []
 
 
 def _load_relayed() -> set[str]:
@@ -72,7 +111,16 @@ async def main() -> int:
         if _DATED_DIGEST.match(p.name) and p.name not in relayed
     )
     if not files:
-        print("nothing new to relay")
+        pending = _pending_digest_branches()
+        if pending:
+            print(
+                f"nothing new to relay on master -- but {len(pending)} digest "
+                f"PR(s)/branch(es) pending review/merge: {', '.join(pending)} "
+                "(check GitHub for an open PR before assuming today's digest "
+                "didn't run)"
+            )
+        else:
+            print("nothing new to relay")
         return 0
 
     any_failed = False

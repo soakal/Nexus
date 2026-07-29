@@ -14,6 +14,7 @@ Verifies:
   - Kill switch and TTL are re-checked at confirm time; dispatcher NOT called on refusal.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -277,6 +278,76 @@ async def test_reconfirm_same_row_is_not_confirmable_no_double_dispatch(eng):
 
     logs = _all_logs(eng)
     assert len(logs) == 1, "re-confirm must not create a second row"
+
+
+# ---------------------------------------------------------------------------
+# F10 — genuinely concurrent confirms for the SAME log_id must not both dispatch
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_concurrent_confirm_race_only_one_dispatches(eng):
+    """Two overlapping confirm_action() calls for the SAME log_id — a
+    double-tapped Telegram Confirm button, or a client retry — must not both
+    pass the needs_confirm guard and both dispatch.
+
+    Unlike test_reconfirm_same_row_is_not_confirmable_no_double_dispatch above
+    (which calls confirm_action fully sequentially — the first call has
+    completely finished, including its terminal-decision UPDATE, before the
+    second even starts), this test forces REAL overlap: the dispatcher is made
+    to block mid-flight so a second confirm_action(log_id) call is issued while
+    the first is still in dispatch — i.e. before the first has written its
+    terminal decision. This is exactly the vulnerability window the finding
+    describes (stamp confirmed_at / TTL check / kill-switch re-check / the
+    dispatch await itself, all between the guard and the final UPDATE). Against
+    the pre-fix code the second call would also observe decision==needs_confirm
+    and also invoke the dispatcher, hanging on `release` a second time; the
+    fixed code's atomic claim means the second call sees rowcount==0 and
+    returns not_confirmable immediately, without ever touching the dispatcher.
+    """
+    _seed_state(eng, autonomy=True)
+    log_id = _seed_needs_confirm(eng, actor="agent")
+
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def slow_call_service(*args, **kwargs):
+        dispatch_started.set()
+        await release_dispatch.wait()
+        return {"ok": True}
+
+    with patch(
+        "backend.integrations.homeassistant.call_service",
+        side_effect=slow_call_service,
+    ) as cs:
+        first = asyncio.create_task(confirm_action(log_id))
+
+        # Wait until the first call's dispatch has actually started — its
+        # atomic claim has ALREADY flipped the row out of needs_confirm by
+        # this point, even though the row hasn't reached a terminal decision.
+        await asyncio.wait_for(dispatch_started.wait(), timeout=5)
+
+        # A second, genuinely concurrent confirm while the first is still
+        # in-flight. wait_for guards against a hang if this regresses to the
+        # old vulnerable behavior (it would also call slow_call_service and
+        # block on release_dispatch, which is only set below).
+        status2, res2 = await asyncio.wait_for(confirm_action(log_id), timeout=5)
+
+        release_dispatch.set()
+        status1, res1 = await asyncio.wait_for(first, timeout=5)
+
+    assert {status1, status2} == {"executed", "not_confirmable"}, (
+        "exactly one concurrent confirm must win and dispatch; the other must "
+        "be refused, never both executed"
+    )
+    winner, loser = (res1, res2) if status1 == "executed" else (res2, res1)
+    assert winner is not None and winner.decision == Decision.EXECUTED
+    assert loser is None
+
+    assert cs.await_count == 1, "the dispatcher must fire exactly once across both racers"
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1, "still exactly one ActionLog row — no double insert"
+    assert logs[0].decision == "executed"
 
 
 # ---------------------------------------------------------------------------

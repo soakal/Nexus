@@ -4,10 +4,12 @@ Brain Organizer MCP HTTP Server.
 Exposes the wiki vault for reading and accepts new raw notes via POST.
 Binds to 0.0.0.0 so it is reachable over Tailscale from any device.
 
-POST /raw is loopback-exempt: callers from 127.0.0.1/::1 never need a token.
-Non-loopback (LAN/Tailscale) callers require an Authorization: Bearer <token>
-header matching MCP_WRITE_TOKEN env var (or config mcp_write_token); if no
-token is configured, remote writes are rejected outright (403).
+Every route except GET /health is loopback-exempt: callers from 127.0.0.1/::1
+never need a token. Non-loopback (LAN/Tailscale) callers require an
+Authorization: Bearer <token> header matching MCP_WRITE_TOKEN env var (or
+config mcp_write_token); if no token is configured, remote callers are
+rejected outright (403). This covers POST /raw (writes) and GET /wiki,
+GET /wiki/search, GET /wiki/<topic> (reads of personal vault content) alike.
 
 Usage:
     python mcp_server.py
@@ -177,9 +179,34 @@ def create_app(
     def _raw_folder() -> Path:
         return Path(config["vault_path"]) / config["raw_folder"]
 
-    def _write_token() -> str:
-        """Optional shared secret for POST /raw. Empty string = no auth required."""
+    def _auth_token() -> str:
+        """Optional shared secret gating every non-loopback route except
+        /health (POST /raw and all GET /wiki* reads). Empty string = no
+        auth required for loopback; remote callers are always rejected
+        when empty (see _check_auth)."""
         return os.environ.get("MCP_WRITE_TOKEN") or config.get("mcp_write_token", "")
+
+    def _check_auth() -> tuple[Any, int] | None:
+        """Loopback-exempt bearer-token gate shared by POST /raw and every
+        GET /wiki* read route. Callers from 127.0.0.1/::1 never need a
+        token. Non-loopback (LAN/Tailscale) callers require an
+        Authorization: Bearer <token> header matching the configured
+        token; if no token is configured, remote callers are rejected
+        outright.
+
+        Returns None when the caller may proceed, or a (response, status)
+        tuple the route should return immediately when the caller must be
+        rejected.
+        """
+        if _is_loopback(request.remote_addr):
+            return None
+        token = _auth_token()
+        if not token:
+            return jsonify({"error": "Remote access disabled (no token configured)"}), 403
+        auth_header = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth_header, f"Bearer {token}"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return None
 
     @app.before_request
     def _log_request() -> None:
@@ -194,9 +221,15 @@ def create_app(
 
     # ------------------------------------------------------------------
     # GET /wiki  — list all topics
+    # Loopback-exempt bearer-token gated (same as POST /raw) -- this lists
+    # every personal wiki topic and would otherwise be readable by any
+    # caller that can reach the socket.
     # ------------------------------------------------------------------
     @app.route("/wiki")
     def list_wiki() -> Any:
+        auth_error = _check_auth()
+        if auth_error is not None:
+            return auth_error
         wf = _wiki_folder()
         if not wf.exists():
             return jsonify({"topics": []})
@@ -205,9 +238,14 @@ def create_app(
 
     # ------------------------------------------------------------------
     # GET /wiki/search?q=query  — full-text search across all wiki files
+    # Loopback-exempt bearer-token gated (same as POST /raw) -- search
+    # results include raw matching lines from personal notes.
     # ------------------------------------------------------------------
     @app.route("/wiki/search")
     def search_wiki() -> Any:
+        auth_error = _check_auth()
+        if auth_error is not None:
+            return auth_error
         q = request.args.get("q", "").lower().strip()
         if not q:
             return jsonify({"error": "query parameter 'q' is required"}), 400
@@ -242,9 +280,14 @@ def create_app(
     # ------------------------------------------------------------------
     # GET /wiki/<topic>  — read a specific wiki file
     # Uses the same sanitizer as brain_organizer so topic names always resolve.
+    # Loopback-exempt bearer-token gated (same as POST /raw) -- this is the
+    # full raw markdown content of a personal note.
     # ------------------------------------------------------------------
     @app.route("/wiki/<topic>")
     def read_wiki(topic: str) -> Any:
+        auth_error = _check_auth()
+        if auth_error is not None:
+            return auth_error
         safe = sanitize_topic_name(topic)
         if (not safe) or (safe == "Uncategorized" and topic.strip() != "Uncategorized"):
             return jsonify({"error": "Invalid topic name"}), 400
@@ -273,13 +316,9 @@ def create_app(
     # ------------------------------------------------------------------
     @app.route("/raw", methods=["POST"])
     def post_raw() -> Any:
-        if not _is_loopback(request.remote_addr):
-            token = _write_token()
-            if not token:
-                return jsonify({"error": "Remote writes disabled (no write token configured)"}), 403
-            auth_header = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
-                return jsonify({"error": "Unauthorized"}), 401
+        auth_error = _check_auth()
+        if auth_error is not None:
+            return auth_error
 
         data = request.get_json(silent=True)
         if not data or "content" not in data:

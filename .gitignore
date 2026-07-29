@@ -1,9 +1,16 @@
 # Secrets & vault
 .vault.key
 nexus.vault
+.nexus-setup-token
 .env
 .env.local
 .nexus.pids
+
+# UniFi TLS certificate pin store (TOFU known_hosts, host-specific -- not portable across machines/deployments)
+.unifi_known_hosts.json
+
+# Unraid TLS certificate pin store (TOFU known_hosts, host-specific -- not portable across machines/deployments)
+.unraid_known_hosts.json
 
 # Local backups — contain secrets (.vault.key, nexus.vault); NEVER commit
 backups/

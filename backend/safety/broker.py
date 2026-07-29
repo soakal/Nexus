@@ -29,6 +29,7 @@ terminal row (executed/failed/forbidden) returns the recorded result with
 """
 
 import asyncio
+import html
 import json
 import logging
 from dataclasses import dataclass
@@ -76,6 +77,17 @@ class Decision(str, Enum):
 # confirm that has not yet happened.
 _TERMINAL_DECISIONS = {Decision.EXECUTED.value, Decision.FAILED.value, Decision.FORBIDDEN.value}
 
+# Transient marker `confirm_action` writes to `ActionLog.decision` the instant it
+# WINS the atomic claim below (see `_claim_action_log_for_confirm`), before TTL/
+# kill-switch/dispatch run. It is never a `Decision` enum member and is never
+# returned to a caller as a terminal `ActionResult.decision` — it exists purely
+# so the claim's `UPDATE ... WHERE decision = 'needs_confirm'` has somewhere to
+# move the row OUT of `needs_confirm` atomically, guaranteeing that a second,
+# concurrently-racing `confirm_action(log_id)` call (a double-tapped Telegram
+# button, a client retry, two independent callers) sees zero rows affected and
+# is refused, instead of also passing the guard and also dispatching.
+_DISPATCHING = "dispatching"
+
 
 @dataclass
 class ActionResult:
@@ -115,7 +127,12 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         if domain in _HA_HIGH_DOMAINS:
             return Risk.HIGH, Reversibility.UNKNOWN
         # Any other/missing HA domain — we can't reason about its blast radius.
-        return Risk.MEDIUM, Reversibility.UNKNOWN
+        # Fail closed: treat it the same as the explicit HIGH domains above
+        # (HIGH/UNKNOWN) rather than MEDIUM, which decide() auto-allows for
+        # agent/autonomous actors. An unlisted domain (script.*, automation.*,
+        # media_player, etc.) must land on NEEDS_CONFIRM for a non-user actor,
+        # not silently execute.
+        return Risk.HIGH, Reversibility.UNKNOWN
 
     if kind == "hermes_relay":
         # A relay posts raw natural language straight to a live PRODUCTION bot
@@ -675,6 +692,73 @@ def _get_action_log(log_id: int) -> dict | None:
         }
 
 
+def _claim_action_log_for_confirm(log_id: int) -> dict | None:
+    """Atomically claim a `needs_confirm` row for `confirm_action` (F10 fix).
+
+    A single conditional `UPDATE ... WHERE id = ? AND decision = 'needs_confirm'`
+    is the ONLY guard against a double-confirm race: SQLite serializes writers
+    against a given row, so of any number of concurrent callers racing this
+    statement for the same `log_id`, at most one can ever see its row-count come
+    back as 1 (this UPDATE moves the row to `_DISPATCHING`, so every other
+    concurrent caller's identical `WHERE decision = 'needs_confirm'` clause no
+    longer matches it). This closes the window the OLD code left open: a plain
+    `SELECT`-then-later-`UPDATE` guard checked at the very top of
+    `confirm_action`, with the actual terminal-state UPDATE not landing until
+    AFTER `dispatch` completes — during that whole span (stamp confirmed_at,
+    TTL check, kill-switch re-check via `governor.get_system_state`, the
+    dispatch `await` itself) a second concurrent `confirm_action(log_id)` call
+    could also read `decision == needs_confirm` and also dispatch.
+
+    Returns the freshly-claimed row (same shape as `_get_action_log`, with
+    `decision` reflecting the just-written `_DISPATCHING` value) on a win, or
+    `None` on a loss (another caller already claimed it, or it was never
+    `needs_confirm` to begin with) — the caller falls back to `_get_action_log`
+    to tell `not_found` apart from `not_confirmable` in that case. Sync only —
+    call via `asyncio.to_thread`.
+    """
+    from sqlalchemy import text
+    from sqlmodel import Session
+
+    from backend.database import ActionLog, engine
+
+    with Session(engine) as session:
+        result = session.execute(
+            text(
+                "UPDATE actionlog SET decision = :claimed, updated_at = :now "
+                "WHERE id = :id AND decision = :needs_confirm"
+            ),
+            {
+                "claimed": _DISPATCHING,
+                "now": datetime.utcnow(),
+                "id": log_id,
+                "needs_confirm": Decision.NEEDS_CONFIRM.value,
+            },
+        )
+        session.commit()
+        if result.rowcount != 1:
+            return None
+
+        row = session.get(ActionLog, log_id)
+        if row is None:  # pragma: no cover - defensive, can't happen right after a win
+            return None
+        try:
+            payload = json.loads(row.payload_json)
+        except (TypeError, ValueError):
+            payload = {}
+        return {
+            "id": row.id,
+            "actor": row.actor,
+            "kind": row.kind,
+            "target": row.target,
+            "payload": payload,
+            "decision": row.decision,
+            "risk": row.risk,
+            "reversibility": row.reversibility,
+            "created_at": row.created_at,
+            "idempotency_key": row.idempotency_key,
+        }
+
+
 # ---------------------------------------------------------------------------
 # The chokepoint
 # ---------------------------------------------------------------------------
@@ -840,7 +924,7 @@ async def execute_action(
         if decision == Decision.NEEDS_CONFIRM:
             from backend import events
             await events.notify_phone(
-                f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}).",
+                f"NEXUS needs your approval: {kind} -> {html.escape(target)} (risk {risk.value}).",
                 kind="needs_confirm",
                 buttons=[
                     {"text": "✓ Confirm", "callback_data": f"safety:confirm:{log_id}"},
@@ -928,8 +1012,8 @@ async def execute_action(
                 )
                 from backend import events
                 await events.notify_phone(
-                    f"NEXUS needs your approval: {kind} -> {target} (risk {risk.value}). "
-                    f"Judge: {judge_reason}.",
+                    f"NEXUS needs your approval: {kind} -> {html.escape(target)} (risk {risk.value}). "
+                    f"Judge: {html.escape(judge_reason)}.",
                     kind="needs_confirm",
                     buttons=[
                         {"text": "✓ Confirm", "callback_data": f"safety:confirm:{log_id}"},
@@ -1076,13 +1160,24 @@ async def confirm_action(
     Re-checks the kill switch and TTL at confirm time. Updates the SAME ActionLog
     row in place — no second row is inserted. Never re-raises a dispatch error.
     """
-    # Step 1: fetch the row
-    row = await asyncio.to_thread(_get_action_log, log_id)
+    # Step 1+2: atomically claim the row out of `needs_confirm` (F10 fix). A plain
+    # fetch-then-check here (as this used to be two separate steps) would leave a
+    # window open from here until the terminal-decision UPDATE at the bottom of
+    # this function — during that whole span (stamp confirmed_at, TTL check,
+    # kill-switch re-check, the dispatch await itself) a second concurrent
+    # confirm_action(log_id) call (a double-tapped Telegram button, a client
+    # retry, two independent callers) could also read decision==needs_confirm
+    # and also dispatch. `_claim_action_log_for_confirm` closes that window with
+    # a single conditional UPDATE: only one concurrent caller can ever win it.
+    row = await asyncio.to_thread(_claim_action_log_for_confirm, log_id)
     if row is None:
-        return ("not_found", None)
-
-    # Step 2: must be awaiting confirmation (also blocks double-dispatch of same row)
-    if row["decision"] != Decision.NEEDS_CONFIRM.value:
+        # Either no such row at all, or it exists but wasn't (or is no longer)
+        # needs_confirm — including a row another concurrent caller just won
+        # the claim on. Re-fetch (plain, no claim) purely to tell not_found
+        # apart from not_confirmable; this fetch never mutates anything.
+        existing = await asyncio.to_thread(_get_action_log, log_id)
+        if existing is None:
+            return ("not_found", None)
         return ("not_confirmable", None)
 
     # Step 2b: stamp the human-tap timestamp NOW — before TTL/kill-switch/

@@ -175,7 +175,11 @@ class Settings(BaseSettings):
     # Unraid vault backup — encrypted vault + key copied to a UNC share daily and
     # on every secret save. Leave blank to disable.
     unraid_backup_path: str = r"\\192.168.1.50\Computer Backup\Nexus_backup"
-    unraid_backup_include_key: bool = True   # back up .vault.key alongside nexus.vault
+    # Default OFF: the default SMB destination isn't reliably Windows-ACL-hardenable
+    # from this host, and nexus.vault ciphertext alone is still a useful backup
+    # without shipping the decryption key alongside it. Opt back in only if the
+    # backup destination is independently secured (restricted share ACL, etc).
+    unraid_backup_include_key: bool = False   # back up .vault.key alongside nexus.vault
     # SMB credentials for the backup share — stored in vault as UNRAID_BACKUP_USER / UNRAID_BACKUP_PASSWORD
     # (vault-backed @property methods below; leave vault keys absent if guest/pre-mapped)
 

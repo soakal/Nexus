@@ -225,6 +225,35 @@ async def test_judge_veto_enforce_needs_confirm_notifies_phone(eng, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_judge_veto_reason_html_escaped_in_phone_alert(eng, monkeypatch):
+    """The judge's `reason` is LLM-generated text and its prompt embeds
+    attacker/LLM-influenced content (target/payload) -- a crafted reason must
+    reach the needs_confirm Telegram alert HTML-escaped, not raw, same as
+    `target` above. The raw reason is still what lands in ActionLog.judge_reason
+    -- only the outbound alert text is escaped."""
+    _set_judge_mode(monkeypatch, "enforce")
+    veto_html_json = '{"allow": false, "confidence": 0.9, "reason": "<script>alert(1)</script>"}'
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock, return_value=veto_html_json), \
+         patch("backend.integrations.obsidian.complete_task", new_callable=AsyncMock, return_value=None) as ct, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as np:
+        res = await execute_action(
+            actor=Actor.AGENT, kind="obsidian_task", target="vault",
+            payload={"note_path": "tasks.md", "task_text": "do thing"},
+        )
+    assert res.decision == Decision.NEEDS_CONFIRM
+    ct.assert_not_called()
+    np.assert_awaited_once()
+
+    phone_content = np.await_args.args[0]
+    assert "<script>" not in phone_content
+    assert "&lt;script&gt;" in phone_content
+
+    row = _get_log(eng, res.log_id)
+    assert row.decision == "needs_confirm"
+    assert row.judge_reason == "<script>alert(1)</script>"
+
+
+@pytest.mark.asyncio
 async def test_judge_veto_shadow_dispatches_normally(eng, monkeypatch):
     _set_judge_mode(monkeypatch, "shadow")
     with patch("backend.agents.router.run_model", new_callable=AsyncMock, return_value=_VETO_JSON), \

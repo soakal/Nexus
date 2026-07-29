@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.integrations.unraid_tls_pinning import build_transport
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ async def fetch() -> UnraidData:
     headers = {"x-api-key": api_key, "Content-Type": "application/json"}
 
     data = UnraidData()
-    async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501 — Unraid self-signed cert
+    async with httpx.AsyncClient(timeout=5, transport=build_transport()) as client:
         try:
             resp = await client.post(url, json={"query": _GQL_QUERY}, headers=headers)
             resp.raise_for_status()
@@ -122,7 +123,7 @@ async def health_check() -> bool:
         settings = get_settings()
         api_key = settings.unraid_api_key
         headers = {"x-api-key": api_key, "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=5, verify=False) as client:  # nosec B501
+        async with httpx.AsyncClient(timeout=5, transport=build_transport()) as client:
             resp = await client.post(
                 f"https://{settings.unraid_host}/graphql",
                 json={"query": "{ array { state } }"},
@@ -170,7 +171,7 @@ async def _docker_mutation(op: str, container_id: str) -> tuple[bool, str]:
     headers = {"x-api-key": api_key, "Content-Type": "application/json"}
     mutation = f'mutation {{ docker {{ {op}(id: "{container_id}") {{ id state }} }} }}'
     try:
-        async with httpx.AsyncClient(timeout=10, verify=False) as client:  # nosec B501
+        async with httpx.AsyncClient(timeout=10, transport=build_transport()) as client:
             resp = await client.post(
                 f"https://{settings.unraid_host}/graphql",
                 json={"query": mutation},

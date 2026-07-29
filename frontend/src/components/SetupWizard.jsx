@@ -89,6 +89,7 @@ function SecretInput({ field, value, onChange }) {
 
 export default function SetupWizard() {
   const [anthropicKey, setAnthropicKey] = useState('')
+  const [setupToken, setSetupToken] = useState('')
   const [step, setStep] = useState(0) // 0 = Anthropic, 1..N = STEPS
   const [secrets, setSecrets] = useState({})
   const [error, setError] = useState('')
@@ -106,11 +107,26 @@ export default function SetupWizard() {
     try {
       const res = await fetch(`${API_BASE}/api/setup/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${setupToken.trim()}`,
+        },
         body: JSON.stringify({ anthropic_api_key: anthropicKey.trim(), secrets }),
       })
-      const data = await res.json()
-      if (!res.ok) { setError(data.error || 'Setup failed'); return }
+      let data = {}
+      try { data = await res.json() } catch { /* non-JSON body */ }
+      if (!res.ok) {
+        if (res.status === 401) {
+          setError(
+            data.detail ||
+            'Invalid or missing first-run setup token. Check .nexus-setup-token ' +
+            'in the NEXUS folder (also printed in logs\\backend.err.log).'
+          )
+        } else {
+          setError(data.error || data.detail || 'Setup failed')
+        }
+        return
+      }
       localStorage.setItem('nexus_api_key', data.nexus_api_key)
       setDone(true)
       setTimeout(() => window.location.reload(), 2000)
@@ -172,6 +188,19 @@ export default function SetupWizard() {
                     Your Anthropic key is required. Everything else is optional — skip any step and add it later in Settings.
                   </p>
                   <label style={{ display: 'block', fontSize: '11px', color: '#5d6982', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
+                    FIRST-RUN SETUP TOKEN <span style={{ color: '#fb7185' }}>*</span>
+                  </label>
+                  <div style={{ fontSize: '11px', color: '#465069', marginBottom: '5px' }}>
+                    Printed in the startup banner in <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>logs\backend.err.log</span> (NEXUS's stderr log — check <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.err.log</span>, not <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.log</span>), and saved to <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.nexus-setup-token</span> in the NEXUS folder. It changes every time the backend restarts.
+                  </div>
+                  <TextInput
+                    type="password"
+                    value={setupToken}
+                    onChange={e => { setSetupToken(e.target.value); setError('') }}
+                    placeholder="paste the setup token here"
+                    style={{ width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', boxSizing: 'border-box', marginBottom: '14px' }}
+                  />
+                  <label style={{ display: 'block', fontSize: '11px', color: '#5d6982', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
                     ANTHROPIC API KEY <span style={{ color: '#fb7185' }}>*</span>
                   </label>
                   <TextInput
@@ -180,7 +209,7 @@ export default function SetupWizard() {
                     onChange={e => { setAnthropicKey(e.target.value); setError('') }}
                     placeholder="sk-ant-..."
                     style={{ width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', boxSizing: 'border-box', marginBottom: error ? '8px' : '14px' }}
-                    onKeyDown={e => e.key === 'Enter' && anthropicKey.trim() && setStep(1)}
+                    onKeyDown={e => e.key === 'Enter' && anthropicKey.trim() && setupToken.trim() && setStep(1)}
                   />
                 </>
               )}
@@ -212,7 +241,7 @@ export default function SetupWizard() {
                 )}
 
                 {isAnthropicStep ? (
-                  <PrimaryButton onClick={() => setStep(1)} disabled={!anthropicKey.trim()} style={{ flex: 1 }}>
+                  <PrimaryButton onClick={() => setStep(1)} disabled={!anthropicKey.trim() || !setupToken.trim()} style={{ flex: 1 }}>
                     Continue
                   </PrimaryButton>
                 ) : isLastStep ? (

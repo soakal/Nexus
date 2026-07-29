@@ -14,13 +14,18 @@ KEY_PATH   = pathlib.Path(".vault.key")
 META_PATH  = pathlib.Path("nexus.vault.meta")
 
 
-def secure_key_file() -> None:
-    """Best-effort: restrict .vault.key so only the current user can read it.
+def secure_key_file(path: pathlib.Path | None = None) -> None:
+    """Best-effort: restrict a key/token file so only the current user can read it.
 
-    The key decrypts every secret in the vault, so it must not be world-readable.
-    POSIX -> chmod 0600. Windows -> icacls: drop inherited ACEs and grant only the
-    current user. Never raises — a permissions failure must not block startup."""
-    if not KEY_PATH.exists():
+    Defaults to .vault.key (resolved from the module-level KEY_PATH at call
+    time, not bind time, so tests/callers that monkeypatch KEY_PATH and then
+    call secure_key_file() with no args keep working), which decrypts every
+    secret in the vault and must not be world-readable. POSIX -> chmod 0600.
+    Windows -> icacls: drop inherited ACEs and grant only the current user.
+    Never raises — a permissions failure must not block startup."""
+    if path is None:
+        path = KEY_PATH
+    if not path.exists():
         return
     try:
         if os.name == "nt":
@@ -31,13 +36,13 @@ def secure_key_file() -> None:
             # via HKCU Run key), so this can't lock itself out. If NEXUS ever runs as
             # a Windows service (LocalSystem), add "SYSTEM:F" to the grant list too.
             subprocess.run(
-                ["icacls", str(KEY_PATH), "/inheritance:r", "/grant:r", f"{user}:F"],
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
                 check=False, capture_output=True,
             )
         else:
-            os.chmod(KEY_PATH, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
     except Exception as e:
-        logger.warning(f"Could not harden .vault.key permissions: {e}")
+        logger.warning(f"Could not harden {path} permissions: {e}")
 
 
 def read_meta() -> dict:

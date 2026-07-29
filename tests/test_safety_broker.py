@@ -60,9 +60,50 @@ def test_classify_ha_high_domain():
         assert classify("ha_service", {"domain": d}) == (Risk.HIGH, Reversibility.UNKNOWN)
 
 
-def test_classify_ha_other_or_missing_domain_is_medium():
-    assert classify("ha_service", {"domain": "media_player"}) == (Risk.MEDIUM, Reversibility.UNKNOWN)
-    assert classify("ha_service", {}) == (Risk.MEDIUM, Reversibility.UNKNOWN)
+def test_classify_ha_other_or_missing_domain_is_high():
+    # Fail-closed: an HA domain neither on the LOW nor the HIGH allowlist (or a
+    # missing domain) must classify HIGH, not MEDIUM — MEDIUM is auto-allowed
+    # for agent/autonomous actors by decide(), which would let an LLM-driven
+    # agent toggle an unvetted domain (e.g. automation.*, script.*) with no
+    # human confirmation.
+    assert classify("ha_service", {"domain": "media_player"}) == (Risk.HIGH, Reversibility.UNKNOWN)
+    assert classify("ha_service", {}) == (Risk.HIGH, Reversibility.UNKNOWN)
+
+
+def test_classify_ha_unlisted_domain_like_automation_or_script_is_high():
+    # Regression test for F3: automation/script (and any other unlisted HA
+    # domain) must never fall through to MEDIUM. An agent turning off an
+    # automation (e.g. a security automation) or triggering an arbitrary
+    # script must require human confirmation.
+    assert classify("ha_service", {"domain": "automation"}) == (Risk.HIGH, Reversibility.UNKNOWN)
+    assert classify("ha_service", {"domain": "script"}) == (Risk.HIGH, Reversibility.UNKNOWN)
+
+
+@pytest.mark.parametrize("domain", ["automation", "script"])
+@pytest.mark.parametrize("actor", [Actor.AGENT, Actor.AUTONOMOUS])
+def test_f3_unlisted_ha_domain_needs_confirm_for_agent_and_autonomous(domain, actor):
+    """F3 regression: an unlisted HA domain (e.g. automation.*/script.*) must
+    route decide() to NEEDS_CONFIRM for a non-user actor, not auto-ALLOW.
+
+    Before the fix, classify() returned (Risk.MEDIUM, Reversibility.UNKNOWN)
+    for any domain outside the tiny LOW/HIGH allowlists, and decide()
+    auto-allows MEDIUM risk for agent/autonomous actors — meaning an
+    LLM-driven agent could disable a security automation or trigger an
+    arbitrary pre-configured script with zero human confirmation.
+    """
+    risk, reversibility = classify("ha_service", {"domain": domain})
+    assert risk == Risk.HIGH
+    assert decide(actor, risk, reversibility, confirmed=False) == Decision.NEEDS_CONFIRM
+    # confirmed=True (the human already tapped confirm) still proceeds.
+    assert decide(actor, risk, reversibility, confirmed=True) == Decision.ALLOWED
+
+
+@pytest.mark.parametrize("domain", ["automation", "script", "media_player"])
+def test_f3_unlisted_ha_domain_user_actor_always_allowed(domain):
+    """A direct human (actor=user) action on an unlisted HA domain is still
+    always allowed — the fix only tightens the agent/autonomous gate."""
+    risk, reversibility = classify("ha_service", {"domain": domain})
+    assert decide(Actor.USER, risk, reversibility, confirmed=False) == Decision.ALLOWED
 
 
 def test_classify_hermes_relay_is_high():
@@ -141,6 +182,39 @@ async def test_agent_high_action_needs_confirm_no_dispatch(eng):
     logs = _all_logs(eng)
     assert len(logs) == 1
     assert logs[0].decision == "needs_confirm"
+
+
+@pytest.mark.asyncio
+async def test_needs_confirm_target_html_escaped_in_phone_alert(eng):
+    """A crafted `target` (e.g. an HA entity_id an LLM tool-call filled in --
+    home_control's entity_id only requires a '.', no charset restriction) must
+    reach the needs_confirm Telegram alert HTML-escaped, not raw. notify_phone
+    sends parse_mode="HTML" once app_base_url is configured, so an unescaped
+    '<script>'/'<a href=...>' would render as live markup in a trusted alert.
+
+    Mirrors tests/test_homelab_watch.py::test_docker_name_html_escaped_in_alert_text.
+    """
+    crafted_target = 'lock.<script>alert(1)</script>&<a href="http://evil">tap</a>'
+    with patch("backend.integrations.homeassistant.call_service", new_callable=AsyncMock), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as np:
+        res = await execute_action(
+            actor="agent", kind="ha_service", target=crafted_target,
+            payload={"domain": "lock", "service": "unlock"},
+        )
+    assert res.decision == Decision.NEEDS_CONFIRM
+    np.assert_awaited_once()
+
+    content = np.await_args.args[0]
+    assert "<script>" not in content
+    assert "<a href=" not in content
+    assert "&lt;script&gt;" in content
+    assert "&amp;" in content
+
+    # The raw (unescaped) target is still what's stored in the audit log --
+    # only the outbound alert text is escaped.
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].target == crafted_target
 
 
 @pytest.mark.asyncio

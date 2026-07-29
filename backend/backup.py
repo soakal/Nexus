@@ -25,13 +25,21 @@ _HISTORY_KEEP = 14  # max dated copies retained in history/
 
 
 def _mount_unc(unc_path: str, settings) -> None:
-    """Best-effort: use 'net use' to authenticate the UNC share before copying.
+    """Best-effort: use PowerShell's New-SmbMapping to authenticate the UNC
+    share before copying.
 
     Credential lookup order:
       1. Vault keys UNRAID_BACKUP_USER / UNRAID_BACKUP_PASSWORD (explicit override)
       2. cred:unraid:user / cred:unraid:password (from Credentials & Passwords section)
-    Silently skips if no credentials found or net use is unavailable.
+    Silently skips if no credentials found or PowerShell is unavailable.
+
+    The password is NEVER placed on the child process's argv (a plaintext
+    credential there is visible, for the process's whole lifetime, to any
+    co-resident process/user that can enumerate command lines). Instead the
+    entire mapping script -- including the credentials -- is piped over the
+    child's STDIN to `powershell -NoProfile -NonInteractive -Command -`.
     """
+    pw = ""
     try:
         user = getattr(settings, "unraid_backup_user", "").strip()
         pw = getattr(settings, "unraid_backup_password", "").strip()
@@ -59,16 +67,69 @@ def _mount_unc(unc_path: str, settings) -> None:
         if len(parts) < 2:
             return
         share = f"\\\\{parts[0]}\\{parts[1]}"
+
+        import base64
         import subprocess
-        cmd = ["net", "use", share, pw]
+
+        def _b64(s: str) -> str:
+            # Pure-ASCII by construction (no quote char in the alphabet), so
+            # this also makes script injection impossible without a separate
+            # escaping helper.
+            return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+        share_b64 = _b64(share)
+        pw_b64 = _b64(pw)
+
+        # The ENTIRE script is built as ONE semicolon-joined line -- a
+        # multi-line script piped to `-Command -` can silently truncate
+        # execution after the first network call with no error. Credentials
+        # are base64 on the Python side and decoded INSIDE PowerShell so the
+        # piped text is pure ASCII: Windows PowerShell 5.1 decodes redirected
+        # stdin using the console's OEM code page (not UTF-8), which would
+        # otherwise silently corrupt a non-ASCII credential embedded directly
+        # in the script. The catch block avoids Write-Error, which renders a
+        # full ErrorRecord that echoes the invoking script line (credentials
+        # included) into stderr -- [Console]::Error.WriteLine prints only the
+        # .NET exception's own message text.
+        stmts = [
+            f"$s=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{share_b64}'))",
+            f"$p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{pw_b64}'))",
+        ]
         if user:
-            cmd += [f"/user:{user}"]
-        cmd.append("/persistent:no")
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
+            user_b64 = _b64(user)
+            stmts.append(
+                f"$u=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{user_b64}'))"
+            )
+            stmts.append(
+                "try { New-SmbMapping -RemotePath $s -UserName $u -Password $p "
+                "-Persistent $false -ErrorAction Stop | Out-Null } "
+                "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
+            )
+        else:
+            stmts.append(
+                "try { New-SmbMapping -RemotePath $s -Password $p "
+                "-Persistent $false -ErrorAction Stop | Out-Null } "
+                "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
+            )
+        script = ";".join(stmts)
+
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "-"],
+            input=script.encode("ascii"),
+            capture_output=True,
+            timeout=20,
+        )
         if result.returncode != 0:
-            logger.debug("net use returned %d: %s", result.returncode, result.stderr.decode(errors="replace"))
+            out = result.stdout.decode(errors="replace").replace(pw, "[REDACTED]")
+            err = result.stderr.decode(errors="replace").replace(pw, "[REDACTED]")
+            logger.debug(
+                "SMB mount returned %d: stdout=%s stderr=%s", result.returncode, out, err
+            )
     except Exception as e:
-        logger.debug("net use mount attempt: %s", e)
+        msg = str(e)
+        if pw:
+            msg = msg.replace(pw, "[REDACTED]")
+        logger.debug("SMB mount attempt: %s", msg)
 
 
 def backup_vault() -> dict:
@@ -148,12 +209,18 @@ def backup_vault() -> dict:
         except Exception as e:
             logger.warning("db snapshot for Unraid backup failed (non-fatal): %s", e)
 
-        # Strip Hidden attribute from backup copies so they're visible in Explorer
+        # Strip Hidden attribute from backup copies so they're visible in Explorer.
+        # Exception: the vault key. setup.ps1 deliberately marks the LOCAL
+        # .vault.key Hidden (attrib +H) as an extra obscurity layer -- clearing
+        # it here would make the remote copy MORE discoverable than the local
+        # one, for no functional reason (nothing depends on it being visible).
         if os.name == "nt":
             import stat as _stat
             for p in copied_paths:
                 try:
                     p.chmod(p.stat().st_mode | _stat.S_IRUSR | _stat.S_IWUSR)
+                    if p.name == KEY_PATH.name:
+                        continue
                     # Clear Hidden via ctypes FILE_ATTRIBUTE_HIDDEN (0x2)
                     import ctypes
                     attrs = ctypes.windll.kernel32.GetFileAttributesW(str(p))
