@@ -405,16 +405,17 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
 User message: "{user_message}"
 
 Return exactly:
-{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE|STATUS|MAIL|MAIL_SEND", "reason": "brief reason"}}
+{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR", "reason": "brief reason"}}
 
 HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, open/close/stop a garage door or cover, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
-CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) searching or reading your notes/vault ("search my vault for X", "what do my notes say about X", "find X in my brain") is CHAT — vault is searched automatically. The chat can also search the web.
+CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) searching or reading your notes/vault ("search my vault for X", "what do my notes say about X", "find X in my brain") is CHAT — vault is searched automatically; (3) anything about the user's calendar, schedule, appointments, or when an event is happening is CALENDAR, not CHAT. The chat can also search the web.
 HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
 NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status".
 MAIL = a question about the user's own email/inbox — "any new email?", "unread emails?", "what did X email me about?", "read the email from X", "what's in my inbox". Reading/searching email, not sending.
-MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "send an email to X about ...", "reply to X and tell them ..."."""
+MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "send an email to X about ...", "reply to X and tell them ...".
+CALENDAR = a question about the user's own calendar, schedule, or appointments — "when is my dr appointment?", "what's on my calendar today?", "what do I have this week?", "when is my next meeting?", "am I free Friday?". Reading the calendar only, never creating or changing an event."""
 
         # Fast-path: /status command bypasses haiku classify
         _msg_stripped = user_message.strip()
@@ -440,7 +441,7 @@ MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "se
                 if start >= 0 and end > start:
                     parsed = json.loads(raw_intent[start:end])
                     intent = parsed.get("intent", "CHAT")
-                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS", "MAIL", "MAIL_SEND"):
+                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR"):
                         intent = "CHAT"
             except Exception:
                 intent = "CHAT"
@@ -830,6 +831,60 @@ If they're saving something from the conversation, use the relevant prior assist
                     lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
 
                 reply = "\n".join(lines)
+
+            elif intent == "CALENDAR":
+                from zoneinfo import ZoneInfo
+                from backend.config import get_settings
+                from backend.integrations import calendar
+
+                _tz = ZoneInfo(get_settings().briefing_timezone)
+                _local_now = datetime.now(_tz)
+                calendar_query_prompt = f"""The user is asking about their calendar.
+
+User request: "{user_message}"
+Today's local date: {_local_now.strftime('%Y-%m-%d')} ({_local_now.strftime('%A')})
+
+Return JSON only:
+{{"days_ahead": 30, "keyword": null}}
+
+days_ahead: how far ahead to look, in days. Use 1 for "today", 2 for "today or tomorrow", 7 for "this week", 14 for "the next two weeks", 30 for "this month". If the user is asking WHEN a specific named event is ("when is my dr appointment?"), use 90 — the event may be far out. If unclear, use 30. Never exceed 90.
+keyword: a SHORT distinctive search term (1-2 words) matching the event title, if the user named a specific event — e.g. "dentist", "kaplan", "dr". Prefer the single most distinctive word and drop generic words like "appointment", "meeting", "my". If the user asked about their schedule generally, use null."""
+
+                days_ahead, keyword = 30, None
+                try:
+                    raw_q = await haiku(calendar_query_prompt, label="chat_calendar_query")
+                    qs = raw_q.find("{")
+                    qe = raw_q.rfind("}") + 1
+                    if qs >= 0 and qe > qs:
+                        qd = json.loads(raw_q[qs:qe])
+                        days_ahead = min(int(qd.get("days_ahead") or 30), 90)
+                        keyword = (qd.get("keyword") or "").strip() or None
+                except BudgetExceeded:
+                    raise
+                except Exception:
+                    pass
+
+                try:
+                    data = await calendar.upcoming(days_ahead)
+                    events = data.events
+                    if keyword:
+                        matched = [e for e in events if keyword.lower() in (e.get("summary") or "").lower()]
+                    else:
+                        matched = events
+
+                    if keyword and not matched and events:
+                        reply = (
+                            f"Nothing matching \"{keyword}\" in the next {days_ahead} days. "
+                            f"Here's what is on the calendar:\n" + calendar.format_events(events[:10], days_ahead)
+                        )
+                    elif keyword and matched:
+                        reply = f"Matching \"{keyword}\":\n" + calendar.format_events(matched, days_ahead)
+                    else:
+                        reply = calendar.format_events(matched, days_ahead)
+                except BudgetExceeded:
+                    raise
+                except Exception as e:
+                    reply = f"Calendar is unreachable right now: {e}"
 
             elif intent == "MAIL":
                 from backend.integrations import protonmail

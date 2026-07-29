@@ -264,6 +264,62 @@ async def test_fetch_one_feed_fails_other_still_yields_events():
 
 
 @pytest.mark.asyncio
+async def test_upcoming_honors_wider_window():
+    calendar.fetch.invalidate()
+    today = _today()
+    ical = _vevent("Someday", today + timedelta(days=30))
+    responses = {
+        "https://calendar.google.com/test.ics": ical,
+        "https://p.icloud.com/test.ics": "",
+    }
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = _mock_async_client(responses)
+        data = await calendar.upcoming(60)
+    assert [e["summary"] for e in data.events] == ["Someday"]
+
+
+@pytest.mark.asyncio
+async def test_upcoming_clamps_days_ahead():
+    calendar.fetch.invalidate()
+    today = _today()
+    ical = _vevent("Way out", today + timedelta(days=85))
+    responses = {
+        "https://calendar.google.com/test.ics": ical,
+        "https://p.icloud.com/test.ics": "",
+    }
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = _mock_async_client(responses)
+        data = await calendar.upcoming(10000)  # must clamp to MAX_DAYS_AHEAD, not raise
+    assert [e["summary"] for e in data.events] == ["Way out"]
+
+
+@pytest.mark.asyncio
+async def test_upcoming_does_not_poison_fetch_cache():
+    """Locks the exact bug the naive fix would have shipped: adding a
+    days_ahead parameter directly to fetch() would poison backend/cache.py's
+    argument-blind cache slot, so a wide upcoming() call could leak into the
+    Today page's/briefing's next fetch() within the 120s TTL. Uses the real
+    default calendar_days_ahead=7 (backend/config.py:318) — a 30-day-out
+    event must stay invisible to fetch() even immediately after a 60-day
+    upcoming() call populated a completely different window."""
+    calendar.fetch.invalidate()
+    today = _today()
+    ical = _vevent("Far event", today + timedelta(days=30))
+    responses = {
+        "https://calendar.google.com/test.ics": ical,
+        "https://p.icloud.com/test.ics": "",
+    }
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = _mock_async_client(responses)
+        fetch_before = await calendar.fetch()  # 7-day window, populates the cache
+        await calendar.upcoming(60)  # must NOT overwrite fetch()'s cached 7-day result
+        fetch_after = await calendar.fetch()  # still cached — same call, no new httpx traffic needed
+
+    assert fetch_before.events == []  # 30-day-out event outside the 7-day window
+    assert fetch_after.events == []  # cache untouched by the intervening upcoming() call
+
+
+@pytest.mark.asyncio
 async def test_fetch_raises_when_no_feed_configured(monkeypatch):
     calendar.fetch.invalidate()
 

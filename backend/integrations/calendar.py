@@ -347,15 +347,13 @@ def _format_events(events: list[dict], tz: ZoneInfo, days_ahead: int) -> str:
     return "\n".join(lines)
 
 
-@async_ttl_cache(120)  # matches hermes.get_calendar()'s prior TTL
-async def fetch() -> CalendarData:
+async def _load(days_ahead: int) -> CalendarData:
     """Raises RuntimeError when no feed is configured, or when every configured
     feed fails — never silently returns an empty-looking calendar for either
     case (a genuinely empty calendar is events=[] with feeds_ok > 0)."""
     from backend.config import get_settings
     settings = get_settings()
     tz = ZoneInfo(settings.briefing_timezone)
-    days_ahead = settings.calendar_days_ahead
 
     urls = _ical_urls()
     if not urls:
@@ -368,6 +366,40 @@ async def fetch() -> CalendarData:
     events = _parse_events(ical_text, days_ahead, tz)
     summary = _format_events(events, tz, days_ahead)
     return CalendarData(events=events, summary=summary, feeds_ok=feeds_ok, feeds_total=feeds_total)
+
+
+@async_ttl_cache(120)  # matches hermes.get_calendar()'s prior TTL
+async def fetch() -> CalendarData:
+    """Raises RuntimeError when no feed is configured, or when every configured
+    feed fails — never silently returns an empty-looking calendar for either
+    case (a genuinely empty calendar is events=[] with feeds_ok > 0)."""
+    from backend.config import get_settings
+    return await _load(get_settings().calendar_days_ahead)
+
+
+MAX_DAYS_AHEAD = 90
+
+
+async def upcoming(days_ahead: int) -> CalendarData:
+    """Windowed calendar query for callers that need further out than the
+    fixed `calendar_days_ahead` default (e.g. chat answering "when is my
+    dr appointment"). Deliberately NOT @async_ttl_cache'd: backend/cache.py's
+    cache slot is per-function, not per-argument, so caching here would let
+    one caller's window silently override what fetch()'s fixed-window callers
+    (Today page, briefing, uptime, the contract canary) see for up to 120s."""
+    try:
+        days_ahead = max(1, min(int(days_ahead), MAX_DAYS_AHEAD))
+    except (TypeError, ValueError):
+        days_ahead = 7
+    return await _load(days_ahead)
+
+
+def format_events(events: list[dict], days_ahead: int) -> str:
+    """Public formatting delegate so callers outside this module (chat) don't
+    duplicate the Today:/Tomorrow:/<weekday> house style."""
+    from backend.config import get_settings
+    tz = ZoneInfo(get_settings().briefing_timezone)
+    return _format_events(events, tz, days_ahead)
 
 
 async def health_check() -> bool:
