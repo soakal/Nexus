@@ -19,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DIGEST_DIR = REPO_ROOT / "digests" / "claude-features"
 STATE_FILE = DIGEST_DIR / ".relay_state.json"
 _DATED_DIGEST = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+_DIGEST_BRANCH = re.compile(r"^digest/(\d{4}-\d{2}-\d{2})$")
+_REPO_OWNER = "soakal"
 
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -59,6 +61,139 @@ def _pending_digest_branches() -> list[str]:
         return branches
     except Exception:
         return []
+
+
+def _pr_only_touches(number: int, expected_file: str) -> bool:
+    """True only if PR #`number`'s entire diff is a single added/changed file
+    at `expected_file`.
+
+    This is the actual security boundary, not the branch-name/owner check
+    above: the cloud routine itself processes untrusted web content every
+    run (that's the whole reason it's barred from pushing straight to
+    master -- see DIGEST_INSTRUCTIONS.md). A prompt injection against THAT
+    routine, not against this relay, could in principle steer it into
+    committing something other than the digest file on its own branch. This
+    check means such an injection can only ever poison the digest's prose
+    (already treated as untrusted summary text on its way to Brain/Telegram
+    -- never executed), never actual repo code -- anything else on the
+    branch blocks the auto-merge outright and falls back to the existing
+    manual-review path.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(number), "--json", "files"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        data = json.loads(result.stdout)
+        files = data.get("files")
+        if not isinstance(files, list) or len(files) != 1:
+            return False
+        return files[0].get("path") == expected_file
+    except Exception:
+        return False
+
+
+def _merge_pending_digest_prs() -> list[str]:
+    """Merge any open digest/* PR via the local `gh` CLI before checking for
+    new files to relay.
+
+    The cloud routine is barred from pushing straight to master (see
+    DIGEST_INSTRUCTIONS.md's 2026-07-27 security fix -- it processes
+    untrusted web content every run, so it opens a PR instead of committing
+    directly). This relay already runs locally under Brian's own scheduled
+    task + `gh` auth -- a materially different, trusted boundary -- so it's
+    safe for it to do the merge the cloud agent is deliberately barred from
+    doing itself. Best-effort: any `gh` failure (not installed, not authed,
+    network, merge conflict) is swallowed -- a missed auto-merge just falls
+    back to the existing "pending PR" notice in main().
+
+    Two checks gate every merge, both required (see docstrings): this repo
+    is PUBLIC with no branch protection and no CI, so `gh pr list` returning
+    a stranger's fork PR is a real, not theoretical, input.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "list", "--state", "open",
+                "--json", "number,headRefName,isDraft,isCrossRepository,author,headRepositoryOwner",
+                "--limit", "20",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return []
+        prs = json.loads(result.stdout)
+        if not isinstance(prs, list):
+            return []
+    except Exception:
+        return []
+
+    merged = []
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        branch = pr.get("headRefName") or ""
+        date_match = _DIGEST_BRANCH.match(branch)
+        number = pr.get("number")
+        if not date_match or number is None:
+            continue
+
+        # Reject any fork PR outright -- gh pr list returns every open PR
+        # targeting this repo, including cross-repo PRs whose branch name
+        # an attacker fully controls (e.g. a stranger opening
+        # digest/2026-07-30 from their own fork). Without this, anyone
+        # could get arbitrary code auto-merged onto master and pulled onto
+        # Brian's machine.
+        owner = pr.get("headRepositoryOwner")
+        author = pr.get("author")
+        if pr.get("isCrossRepository"):
+            continue
+        if not isinstance(owner, dict) or owner.get("login") != _REPO_OWNER:
+            continue
+        if not isinstance(author, dict) or author.get("login") != _REPO_OWNER:
+            continue
+
+        expected_file = f"digests/claude-features/{date_match.group(1)}.md"
+        if not _pr_only_touches(number, expected_file):
+            continue
+
+        try:
+            if pr.get("isDraft"):
+                subprocess.run(
+                    ["gh", "pr", "ready", str(number)],
+                    cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+                )
+            merge_result = subprocess.run(
+                ["gh", "pr", "merge", str(number), "--merge", "--delete-branch"],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=60,
+            )
+            if merge_result.returncode == 0:
+                merged.append(branch)
+        except Exception:
+            continue
+
+    if merged:
+        pull_ok = False
+        try:
+            pull = subprocess.run(["git", "pull", "--quiet"], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
+            pull_ok = pull.returncode == 0
+        except Exception:
+            pass
+        if not pull_ok:
+            print(
+                f"WARNING: merged {len(merged)} digest PR(s) but `git pull` "
+                "failed -- today's digest may not relay until the next "
+                "scheduled run pulls it"
+            )
+    return merged
 
 
 def _load_relayed() -> set[str]:
@@ -104,6 +239,10 @@ async def main() -> int:
     if not DIGEST_DIR.exists():
         print("no digests/claude-features/ dir yet — nothing to relay")
         return 0
+
+    merged = _merge_pending_digest_prs()
+    if merged:
+        print(f"auto-merged {len(merged)} digest PR(s): {', '.join(merged)}")
 
     relayed = _load_relayed()
     files = sorted(
