@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
   Tv2, Home, Activity, Bot, ShieldCheck, Brain, Mail as MailIcon,
-  Settings as SettingsIcon, Menu, MoreHorizontal,
+  Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
 import CommandPalette from './components/CommandPalette'
@@ -36,7 +36,7 @@ const NAV = [
   { to: '/mail',     icon: MailIcon,         label: 'Mail',           group: 'SYSTEMS'  },
   { to: '/uptime',   icon: Activity,         label: 'Uptime',         group: 'SYSTEMS'  },
   { to: '/agents',   icon: Bot,              label: 'Agents',         group: 'SYSTEMS'  },
-  { to: '/traces',   icon: Activity,         label: 'Traces',         group: 'SYSTEMS'  },
+  { to: '/traces',   icon: Waypoints,        label: 'Traces',         group: 'SYSTEMS'  },
   { to: '/safety',   icon: ShieldCheck,      label: 'Safety',         group: 'SYSTEMS'  },
   { to: '/facts',    icon: Brain,            label: 'Facts',          group: 'SYSTEMS'  },
   { to: '/settings', icon: SettingsIcon,     label: 'Settings',       group: 'SYSTEMS'  },
