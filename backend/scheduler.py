@@ -171,6 +171,17 @@ async def _ingest_brain_spend():
         logger.error(f"Brain spend ingest error: {e}")
 
 
+async def _secret_fallback_drain():
+    try:
+        import asyncio
+        from backend.secrets import fallback_log
+        n = await asyncio.to_thread(fallback_log.drain)
+        if n:
+            logger.info(f"Secret fallback drain: persisted {n} key(s)")
+    except Exception as e:
+        logger.error(f"Secret fallback drain job error: {e}")
+
+
 async def _step_watchdog():
     try:
         from backend.agents.worker_pool import get_pool
@@ -379,16 +390,67 @@ async def _run_fragmentation_report():
 
 async def _infisical_soak_reminder():
     try:
+        import asyncio
+        import html
         from backend import events
-        await events.notify_phone(
-            "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 days "
-            "since the 2026-07-24 flip). Before green-lighting Phase 6 (retiring "
-            "the Fernet vault), check logs/backend.err.log for 'served from legacy "
-            "vault fallback' warnings. Note: that log resets on every backend "
-            "restart, so it only covers the current run — weigh restarts since "
-            "the flip in your judgment.",
-            kind="soak_reminder",
-        )
+        from backend.secrets import fallback_log
+
+        await asyncio.to_thread(fallback_log.drain)
+        summary = await asyncio.to_thread(fallback_log.summary)
+
+        # "total_events == 0" alone can't tell "genuinely clean" apart from
+        # "the DB read failed" (summary() degrades to total_events=0 plus an
+        # "error" key on any exception -- fallback_log.py's own summary()
+        # docstring) or "events are sitting undrained in the buffer" (the
+        # "pending" field) -- for a feature built specifically because the
+        # old log-based signal was unreliable, silently telling Brian it's
+        # clear when the read itself failed would be the same class of bug
+        # this feature exists to fix. Both degrade to the same cautious
+        # message as the has-events branch, just phrased for "unknown" rather
+        # than "N events".
+        if summary.get("error"):
+            message = (
+                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
+                "days since the 2026-07-24 flip). Could not read the "
+                "SecretFallback table this run — treat the fallback signal as "
+                "UNKNOWN, not clean, before green-lighting Phase 6 (retiring "
+                f"the Fernet vault). Error: {html.escape(str(summary['error']))}"
+            )
+        elif summary.get("pending", 0) > 0:
+            message = (
+                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
+                f"days since the 2026-07-24 flip). {summary.get('total_events', 0)} "
+                "total fallback event(s) recorded so far, plus "
+                f"{summary['pending']} more event(s) buffered but not yet "
+                "drained to the SecretFallback table (drains every 5 min) — "
+                "re-check after the next drain before treating this as final. "
+                "Review before green-lighting Phase 6 (retiring the Fernet vault)."
+            )
+        elif summary.get("total_events", 0) == 0:
+            message = (
+                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
+                "days since the 2026-07-24 flip). Zero legacy-vault fallbacks "
+                "have been recorded since durable tracking began (SecretFallback "
+                "table, DB-backed — not a log file that truncates on every "
+                "restart). Looks clear to green-light Phase 6 (retiring the "
+                "Fernet vault) on that front."
+            )
+        else:
+            top_keys = ", ".join(
+                f"{html.escape(k['secret_key'])} ({k['event_count']}x, last {k['last_at']})"
+                for k in summary.get("keys", [])[:3]
+            )
+            message = (
+                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
+                f"days since the 2026-07-24 flip). {summary.get('key_count', 0)} "
+                f"secret key(s) have fallen back to the legacy vault since "
+                f"durable tracking began, {summary.get('total_events', 0)} total "
+                f"event(s) (DB-backed via the SecretFallback table). Top keys: "
+                f"{top_keys}. Review before green-lighting Phase 6 (retiring the "
+                "Fernet vault)."
+            )
+
+        await events.notify_phone(message, kind="soak_reminder")
         logger.info("Infisical soak reminder sent")
     except Exception as e:
         logger.error(f"Infisical soak reminder job error: {e}")
@@ -441,6 +503,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
         _ingest_brain_spend,
         IntervalTrigger(seconds=300),
         id="brain_spend_ingest",
+        replace_existing=True,
+    )
+    # Unconditional on purpose -- the durability of this audit signal must not
+    # depend on watchdog_enabled or any other unrelated feature flag.
+    scheduler.add_job(
+        _secret_fallback_drain,
+        IntervalTrigger(seconds=300),
+        id="secret_fallback_drain",
         replace_existing=True,
     )
     scheduler.add_job(

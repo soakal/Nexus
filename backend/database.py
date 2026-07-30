@@ -607,6 +607,28 @@ class MailJunkProfile(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Durable signal for the infisical -> legacy vault secret-fallback event
+# (backend/secrets/manager.py::get_secret). One row per secret KEY (aggregate),
+# NOT one row per event: `Settings` secret properties (backend/config.py
+# ~lines 346-473) call get_secret() on every attribute read -- nothing caches
+# them -- so during a sustained Infisical outage the fallback branch could
+# fire thousands of times per hour. An append-only event table would
+# accumulate thousands of byte-identical rows carrying zero extra
+# information; this table is bounded by construction (~20 rows ever, one per
+# secret key), the same hard-bounds reasoning backend/safety/authfail.py
+# applies to its own hot, attacker-reachable path. Holds the key NAME only --
+# the secret VALUE is never stored, logged, or returned anywhere. Created by
+# create_all (new table, no _ensure_ migration shim needed).
+class SecretFallback(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    secret_key: str = Field(unique=True, index=True)
+    backend_from: str = "infisical"
+    backend_to: str = "vault"
+    event_count: int = 0
+    first_at: datetime = Field(default_factory=datetime.utcnow)
+    last_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_processedmail_columns():
     """Idempotently add columns introduced after ProcessedMailId originally
     shipped (2026-07-23, same day — this table already exists in Brian's live

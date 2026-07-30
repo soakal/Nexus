@@ -282,6 +282,13 @@ async def safety_status(_=Depends(require_api_key)):
     except Exception:
         pass
 
+    secret_fallback: dict = {}
+    try:
+        from backend.secrets import fallback_log
+        secret_fallback = await asyncio.to_thread(fallback_log.summary)
+    except Exception:
+        pass
+
     return {
         "autonomy_enabled": state["autonomy_enabled"],
         "today_spend_usd": spend,
@@ -289,6 +296,7 @@ async def safety_status(_=Depends(require_api_key)):
         "per_task_budget_usd": state["per_task_budget_usd"],
         "scheduler_running": _scheduler_running(),
         "notify_channel": notify_channel,
+        "secret_fallback": secret_fallback,
     }
 
 

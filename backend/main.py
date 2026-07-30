@@ -158,6 +158,13 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    # Flush any buffered secret-fallback events before we lose the process —
+    # a normal stop.ps1 restart must not discard up to 300s of audit signal.
+    try:
+        from backend.secrets import fallback_log
+        await asyncio.to_thread(fallback_log.drain)
+    except Exception:
+        pass
     try:
         if _bo_proc[0] is not None:
             _bo_proc[0].terminate()

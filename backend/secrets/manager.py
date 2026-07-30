@@ -7,9 +7,12 @@ secrets_backend = "infisical" | "vault" for testing/rollback.
 get_secret falls back infisical -> legacy vault -> os.environ, matching the
 transition-window design (see plan D6): a key missing from Infisical but
 still present in the not-yet-retired vault keeps working, logged so the
-14-day soak has a concrete signal to watch. Writes are active-backend-only —
-no dual-write, since drift between two stores is worse than re-running the
-one-time migration script.
+14-day soak has a concrete signal to watch. The event is now also persisted
+to the SecretFallback table via backend.secrets.fallback_log, since the log
+file truncates on every restart and can't answer "has this fired since
+2026-07-24?" on its own. Writes are active-backend-only — no dual-write,
+since drift between two stores is worse than re-running the one-time
+migration script.
 """
 import logging
 import os
@@ -49,6 +52,11 @@ def get_secret(key: str, fallback_env: bool = True) -> str:
         try:
             value = vault.get_secret(key)
             logger.warning(f"secret '{key}' served from legacy vault fallback")
+            try:
+                from . import fallback_log
+                fallback_log.record(key)
+            except Exception:
+                pass
             return value
         except (KeyError, RuntimeError):
             pass

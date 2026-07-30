@@ -213,23 +213,14 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     monkeypatch.setattr(sched_mod, "HERMES_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    # Baseline was 22 jobs. +1 "facts_digest" -- facts_digest_enabled flipped
-    # to True 2026-07-29 (see backend/config.py) after the pre-fix duplicate-
-    # subject fact-table noise was cleaned up via
-    # backend/agents/facts_cleanup.py (see tests/test_facts_cleanup.py),
-    # verified against the live nexus.db. If facts_digest_enabled ever goes
-    # back to False, drop this back to 22 (and remove "facts_digest" below)
-    # deliberately, not as a side effect of an unrelated change.
-    #
-    # NOTE: a separate, still-uncommitted SecretFallback feature in this same
-    # working tree (backend/scheduler.py, 2026-07-28) unconditionally adds a
-    # 24th job, "secret_fallback_drain" -- but that feature's own scheduler.py
-    # change isn't part of THIS commit, so this test (as committed here)
-    # correctly reflects only facts_digest's +1. When SecretFallback lands as
-    # its own commit, ITS commit is responsible for bumping this to 24 and
-    # adding "secret_fallback_drain" below -- don't do it here pre-emptively,
-    # or this count silently stops matching the code this commit actually ships.
-    assert mock_add.call_count == 23
+    # Baseline was 22 jobs. +1 "facts_digest" (2026-07-29, see
+    # backend/config.py / backend/agents/facts_cleanup.py) +1
+    # "secret_fallback_drain" (2026-07-28, unconditional -- see
+    # backend/secrets/fallback_log.py -- its durability must not depend on
+    # any feature flag) = 24. Both deltas landed as separate commits; if
+    # either flips back off, drop this count and its id below deliberately,
+    # not as a side effect of an unrelated change.
+    assert mock_add.call_count == 24
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -239,6 +230,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "retry_deliveries",
         "record_uptime",
         "brain_spend_ingest",
+        "secret_fallback_drain",
         "record_speedtest",
         "step_watchdog",
         "goal_proposer",
@@ -265,7 +257,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     (see backend/agents/watchdog.py::run_watchdog) rather than registering its
     own scheduler job — matches the same choice already made for
     check_budget_warning. If a future change moves it to its own job, this
-    test and test_setup_scheduler_adds_jobs's call_count==23 must both be
+    test and test_setup_scheduler_adds_jobs's call_count==24 must both be
     updated together, deliberately."""
     from datetime import datetime
     import backend.scheduler as sched_mod
@@ -277,7 +269,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 23
+    assert mock_add.call_count == 24
 
 
 # ---------------------------------------------------------------------------

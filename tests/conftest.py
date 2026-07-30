@@ -84,6 +84,11 @@ def reset_caches():
         _reset_authfail()
     except Exception:
         pass
+    try:
+        from backend.secrets.fallback_log import reset as _reset_fallback_log
+        _reset_fallback_log()
+    except Exception:
+        pass
     yield
 
 
