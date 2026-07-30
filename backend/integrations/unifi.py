@@ -144,6 +144,43 @@ async def fetch() -> UniFiData:
         wan = next((h for h in health if h.get("subsystem") == "wan"), None)
         uplink_status = ("ok" if wan.get("status") == "ok" else "degraded") if wan else "unknown"
 
+        # Live-verified 2026-07-29: the same `stat/health` response's `wan`
+        # subsystem entry already carries `tx_bytes-r`/`rx_bytes-r` — the
+        # controller's current throughput RATE in bytes/sec (confirmed live
+        # against the real Dream Machine Pro Max; values moved between polls
+        # like a real gauge, not a static counter). No second endpoint needed.
+        # The site-wide `stat/report/5minutes.site` report endpoint was also
+        # tried live and only returns historical rollups (stale/zeroed for
+        # the current window), not a current rate — unsuitable here.
+        # A `wan` entry missing OR null tx/rx values (older controller, or a
+        # momentarily-null gauge reading) degrades to 0.0 -- `.get(key) or 0`,
+        # not `.get(key, 0)`, since an explicit `null` isn't caught by the
+        # dict-default form and `None + None` raises TypeError, which would
+        # wrongly read as a full UniFi outage via the outer exception path.
+        if wan:
+            bandwidth_mbps = round(
+                ((wan.get("tx_bytes-r") or 0) + (wan.get("rx_bytes-r") or 0)) * 8 / 1_000_000, 2
+            )
+        else:
+            bandwidth_mbps = 0.0
+
+        # Active alerts — same "Unraid lesson" as clients/health above: a failed
+        # read must raise, not silently look like "0 alerts" (a false all-clear).
+        # UniFi's `list/alarm` endpoint returns ALL alarms (active + archived)
+        # by convention -- the caller filters, typically via an `archived`
+        # query param or post-filtering `archived`/`archived_time` on each row.
+        # No alarm existed on the real controller during live verification to
+        # confirm the exact field name, so this filters defensively on the
+        # common `archived` boolean (a no-op, not a false-negative, if that key
+        # is absent) rather than trusting an unverified "no archived param =
+        # active-only" assumption. Revisit if a real alarm ever fires and its
+        # shape turns out different. Raw dicts are otherwise kept as-is —
+        # tools.py's consumer renders arbitrary alert values via str(a).
+        alarm_resp = await client.get(f"{settings.unifi_host}/proxy/network/api/s/default/list/alarm", headers=headers)
+        if alarm_resp.status_code != 200:
+            raise Exception(f"UniFi alarms fetch failed: {alarm_resp.status_code}")
+        alerts = [a for a in alarm_resp.json().get("data", []) if not a.get("archived")]
+
     # Check for new devices
     new_devices = []
     with Session(engine) as session:
@@ -164,7 +201,8 @@ async def fetch() -> UniFiData:
     return UniFiData(
         client_count=len(clients),
         uplink_status=uplink_status,
-        bandwidth_mbps=0.0,
+        bandwidth_mbps=bandwidth_mbps,
+        alerts=alerts,
         new_devices=new_devices,
     )
 

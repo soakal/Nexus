@@ -44,6 +44,74 @@ async def test_unraid_fetch():
 
 
 @pytest.mark.asyncio
+async def test_unraid_fetch_populates_cpu_ram_from_metrics():
+    """cpu_pct/ram_pct are wired from the live-verified GraphQL
+    metrics.cpu.percentTotal / metrics.memory.percentTotal fields."""
+    data = {
+        "array": {"state": "started", "disks": []},
+        "docker": {"containers": []},
+        "metrics": {
+            "cpu": {"percentTotal": 12.345},
+            "memory": {"percentTotal": 54.321},
+        },
+    }
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch
+        result = await fetch()
+        assert result.cpu_pct == 12.3
+        assert result.ram_pct == 54.3
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_gql_query_requests_metrics_field():
+    """Pins the query string so cpu/ram can't silently fall out of the
+    request the way `parities` once did (see the sibling parities-pinning
+    test above)."""
+    data = {"array": {"state": "started", "disks": []}, "docker": {"containers": []}}
+    with patch("httpx.AsyncClient") as mock_cls:
+        client = _post_client(_gql_response(data))
+        mock_cls.return_value = client
+        from backend.integrations.unraid import fetch
+        await fetch()
+        sent_query = client.__aenter__.return_value.post.call_args.kwargs["json"]["query"]
+        assert "metrics" in sent_query
+        assert "percentTotal" in sent_query
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_missing_metrics_section_degrades_to_zero():
+    """An older/degraded response omitting `metrics` entirely must not raise --
+    same graceful-degrade contract as the missing-docker-section case."""
+    data = {"array": {"state": "started", "disks": []}, "docker": {"containers": []}}
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch
+        result = await fetch()
+        assert result.cpu_pct == 0.0
+        assert result.ram_pct == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_null_metrics_leaves_degrade_to_zero():
+    """A `metrics` section that's present but whose leaves are explicit GraphQL
+    `null` (not just missing) must not raise -- `.get(key, 0.0)` doesn't catch
+    a `null` value the way `.get(key) or 0.0` does; a regression here would
+    make round(None, 1) blow up and get misreported as a full Unraid outage."""
+    data = {
+        "array": {"state": "started", "disks": []},
+        "docker": {"containers": []},
+        "metrics": {"cpu": {"percentTotal": None}, "memory": {"percentTotal": None}},
+    }
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch
+        result = await fetch()
+        assert result.cpu_pct == 0.0
+        assert result.ram_pct == 0.0
+
+
+@pytest.mark.asyncio
 async def test_unraid_fetch_multiple_data_disks():
     """Storage totals must sum across all DATA-type disks (parity excluded)."""
     data = {

@@ -37,6 +37,12 @@ async def test_unifi_health_check_fail():
         assert await health_check() is False
 
 
+def _alarm_resp(alerts=None, status_code=200):
+    resp = MagicMock(status_code=status_code)
+    resp.json.return_value = {"meta": {"rc": "ok"}, "data": alerts or []}
+    return resp
+
+
 @pytest.mark.asyncio
 async def test_unifi_fetch_clients_and_uplink():
     """fetch returns client count and uplink_status from API responses."""
@@ -62,7 +68,7 @@ async def test_unifi_fetch_clients_and_uplink():
 
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
-        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp])
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp, _alarm_resp()])
         mock_cls.return_value = mock_client
 
         # Set up DB session mock — no known devices
@@ -98,7 +104,7 @@ async def test_unifi_fetch_detects_new_devices():
 
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
-        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp])
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp, _alarm_resp()])
         mock_cls.return_value = mock_client
 
         mock_session = MagicMock()
@@ -184,7 +190,7 @@ async def test_unifi_fetch_uplink_degraded():
 
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
-        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp])
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp, _alarm_resp()])
         mock_cls.return_value = mock_client
 
         mock_session = MagicMock()
@@ -197,6 +203,196 @@ async def test_unifi_fetch_uplink_degraded():
         data = await fetch()
 
     assert data.uplink_status == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_bandwidth_from_wan_rate():
+    """bandwidth_mbps is derived from the wan subsystem's tx_bytes-r/rx_bytes-r
+    (bytes/sec) already present in the stat/health response, converted to Mbps."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {
+        "data": [{"subsystem": "wan", "status": "ok", "tx_bytes-r": 125000, "rx_bytes-r": 125000}]
+    }
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp, _alarm_resp()])
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    # (125000 + 125000) bytes/sec * 8 / 1_000_000 = 2.0 Mbps
+    assert data.bandwidth_mbps == 2.0
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_bandwidth_zero_when_no_wan_entry():
+    """No wan subsystem entry in health data -- degrade to 0.0, don't raise."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {"data": []}
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp, _alarm_resp()])
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    assert data.bandwidth_mbps == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_bandwidth_null_rate_leaves_degrade_to_zero():
+    """A wan entry present but with explicit null tx/rx values (not just
+    missing keys) must not raise -- `.get(key, 0)` doesn't catch a `null`
+    value the way `.get(key) or 0` does; None + None would otherwise blow up
+    and get misreported as a full UniFi outage."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {
+        "data": [{"subsystem": "wan", "status": "ok", "tx_bytes-r": None, "rx_bytes-r": None}]
+    }
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp, _alarm_resp()])
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    assert data.bandwidth_mbps == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_alerts_filters_out_archived():
+    """list/alarm returns ALL alarms by convention, not just active ones --
+    fetch() must filter out anything with archived truthy so a resolved alarm
+    doesn't show up as an active alert forever."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
+    active = {"key": "EVT_WU_Disconnected", "msg": "AP disconnected", "archived": False}
+    resolved = {"key": "EVT_WU_Connected", "msg": "AP reconnected", "archived": True}
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(
+            side_effect=[clients_resp, health_resp, _alarm_resp([active, resolved])]
+        )
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    assert data.alerts == [active]
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_alerts_populated_from_alarm_endpoint():
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
+    alarms = [{"key": "EVT_WU_Disconnected", "msg": "AP disconnected", "time": 1785318278000}]
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(
+            side_effect=[clients_resp, health_resp, _alarm_resp(alarms)]
+        )
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    assert data.alerts == alarms
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_alarm_endpoint_non200_raises():
+    """A failed alarms read must raise, not silently report 0 alerts (the
+    'Unraid lesson' — a false all-clear is worse than a visible failure)."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {"data": []}
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(
+            side_effect=[clients_resp, health_resp, _alarm_resp(status_code=500)]
+        )
+        mock_cls.return_value = mock_client
+
+        from backend.integrations.unifi import fetch
+        with pytest.raises(Exception, match="UniFi alarms fetch failed"):
+            await fetch()
 
 
 def test_unifi_data_defaults():

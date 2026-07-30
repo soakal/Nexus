@@ -95,13 +95,25 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         FieldContract("docker_containers", (list,), "type",
                        consumer="briefing.py:246, Dashboard.jsx:369"),
         FieldContract("disk_health", (list,), "type", consumer="homelab_watch.py:check_disk_temps"),
-        FieldContract("cpu_pct", (int, float), "is_default", default=0.0,
-                       consumer="tools.py:142 (reads a field fetch() never assigns)"),
-        FieldContract("ram_pct", (int, float), "is_default", default=0.0,
-                       consumer="tools.py:142 (reads a field fetch() never assigns)"),
+        # cpu_pct/ram_pct (2026-07-29): fetch() now wires these from live GraphQL
+        # `metrics.cpu.percentTotal`/`metrics.memory.percentTotal` (verified via
+        # __type introspection + a live query against the real server) — no
+        # longer dead defaults, so the "assert it's STILL dead" is_default
+        # contract is gone. They diverge from each other, though: a genuinely
+        # idle CPU can legitimately round to 0.0 (`round(0.04, 1) == 0.0`), so
+        # cpu_pct only gets "type" (real number, nothing stronger claimable).
+        # ram_pct never legitimately reads 0.0 on a running server — same
+        # never-zero discipline as storage_total_gb above and mem_total_gb
+        # elsewhere in this file — so it keeps real breach-detection value via
+        # "positive": a metrics section silently going null again (same class
+        # of regression that left parity_status stuck at its default for
+        # months before the canary caught it) would round to 0.0 and get
+        # missed under "type" alone.
+        FieldContract("cpu_pct", (int, float), "type", consumer="tools.py:142"),
+        FieldContract("ram_pct", (int, float), "positive", consumer="tools.py:142"),
         # mover_running's real reader is briefing.py, NOT tools.py (tools.py's
         # unraid_status tool never reads it) — different from cpu_pct/ram_pct,
-        # which genuinely are dead-field reads. Kept as is_default anyway: the
+        # which WERE dead-field reads until 2026-07-29 above. Kept as is_default: the
         # integration's own fetch() still never assigns it (unraid.py), so
         # briefing.py:243's read of it is itself always the dataclass default
         # until someone wires the assignment up.
@@ -112,10 +124,19 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         FieldContract("client_count", (int,), "positive", consumer="briefing.py:236"),
         FieldContract("uplink_status", (str,), "not_default", default="unknown",
                        consumer="briefing.py:237"),
-        FieldContract("bandwidth_mbps", (int, float), "is_default", default=0.0,
-                       consumer="tools.py:157 (reads a field fetch() never assigns)"),
-        FieldContract("alerts", (list,), "is_default", default=list(),
-                       consumer="tools.py:153 (reads a field fetch() never assigns)"),
+        # bandwidth_mbps/alerts (2026-07-29): fetch() now wires both from the
+        # already-fetched stat/health response's `wan` subsystem (tx_bytes-r +
+        # rx_bytes-r -> Mbps, verified live moving between polls like a real
+        # gauge) and a live GET .../list/alarm call (verified 200 + real
+        # {"data": [...]} shape against the real Dream Machine Pro Max) — no
+        # longer dead defaults. bandwidth_mbps legitimately can be a low
+        # number on a quiet network, so "type" (not "not_default") is correct
+        # — same reasoning as unraid.cpu_pct above (ram_pct is the one
+        # exception that keeps a stronger rule, see above). alerts staying an
+        # empty list is a legitimate healthy state (no active alarms), so
+        # "type" (not "nonempty") is correct there too.
+        FieldContract("bandwidth_mbps", (int, float), "type", consumer="tools.py:157"),
+        FieldContract("alerts", (list,), "type", consumer="tools.py:153"),
     ),
     "proxmox": (
         FieldContract("node", (str,), "nonempty", consumer="proxmox.py:114-116"),

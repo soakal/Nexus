@@ -28,6 +28,10 @@ _GQL_QUERY = """
   docker {
     containers { id names state status }
   }
+  metrics {
+    cpu { percentTotal }
+    memory { percentTotal }
+  }
 }
 """
 
@@ -87,6 +91,28 @@ async def fetch() -> UnraidData:
             used_kb = sum(d.get("fsUsed", 0) for d in data_disks)
             data.storage_total_gb = round(total_kb / 1048576, 1)
             data.storage_used_gb = round(used_kb / 1048576, 1)
+
+            # Live GraphQL introspection (2026-07-29) confirmed `metrics.cpu.percentTotal`
+            # and `metrics.memory.percentTotal` are both real, currently-populated
+            # fields (Query -> Metrics -> CpuUtilization/MemoryUtilization) --
+            # `__schema` is disabled server-side but `__type(name: "Metrics")` isn't.
+            # memory.percentTotal is NOT used/total (that reads ~95% on a healthy box
+            # thanks to Linux's disk-cache-heavy `buffcache`) -- verified live it
+            # matches active/total, i.e. the same "actually in use, excluding
+            # reclaimable cache" convention Unraid's own webGUI shows. Missing/absent
+            # `metrics` degrades to the dataclass default (0.0), same as the existing
+            # missing-`docker`-section tolerance below -- only a transport/HTTP
+            # failure (caught by the outer except) is treated as unavailable.
+            # `.get(key) or 0.0`, not `.get(key, 0.0)` -- GraphQL leaves are
+            # nullable unless declared `!`, so an explicit `null` (not just a
+            # missing key) is a real possibility and `.get(key, default)`
+            # doesn't catch it: `round(None, 1)` raises TypeError, which the
+            # outer except then wrongly reports as a full Unraid outage.
+            metrics = gql.get("metrics") or {}
+            cpu = metrics.get("cpu") or {}
+            mem = metrics.get("memory") or {}
+            data.cpu_pct = round(cpu.get("percentTotal") or 0.0, 1)
+            data.ram_pct = round(mem.get("percentTotal") or 0.0, 1)
 
             containers = gql.get("docker", {}).get("containers", [])
             data.docker_containers = [

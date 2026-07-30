@@ -29,6 +29,7 @@ htmlcov/
 nexus.db
 nexus.db-wal
 nexus.db-shm
+nexus.db.bak*
 
 # Frontend build & deps
 frontend/node_modules/
