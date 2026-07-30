@@ -131,15 +131,18 @@ class Settings(BaseSettings):
     # Weekly Facts -> Brain digest (backend/agents/facts_digest.py). Runs 30 min
     # before brain_organizer's 02:00 nightly fold so the same night's digest
     # note is picked up into Brain/wiki/.
-    # DISABLED BY DEFAULT: the Fact table currently has duplicate-subject
-    # noise (e.g. "Charlie"/"Charlee", multiple spellings of "Unraid") from
-    # before the extraction-prompt fix. A NULL last_facts_digest_at watermark
-    # means the first run digests the ENTIRE fact table as-is, and
-    # brain_organizer (02:00, same night) permanently bakes that into
-    # Brain/wiki/. Re-enable (FACTS_DIGEST_ENABLED=true in .env) only after
-    # the duplicate subjects have been merged/cleaned up and the fixed
-    # extraction has run live for several days.
-    facts_digest_enabled: bool = False
+    # ENABLED 2026-07-29: the pre-fix duplicate-subject noise ("Charlie"/
+    # "Charlee", multiple spellings of "Unraid"/"UniFi"/"Calendar event"/
+    # "On-call schedule") was cleaned up via backend/agents/facts_cleanup.py
+    # (see tests/test_facts_cleanup.py) -- 12 subject renames + 9 predicate-
+    # level merges applied against the live nexus.db (backed up first to
+    # nexus.db.bak-2026-07-29), 125 -> 116 active facts, 33 distinct active
+    # subjects (was 40), verified idempotent (a second run is a no-op) and
+    # non-destructive (total row count unchanged -- SUPERSEDE, never DELETE).
+    # The still-live extraction-prompt fix (facts.py's canonical-key fallback
+    # in _db_upsert_fact) keeps new inserts from re-accumulating this same
+    # noise going forward.
+    facts_digest_enabled: bool = True
     facts_digest_day: str = "sun"      # APScheduler day_of_week value
     facts_digest_time: str = "01:30"   # 24h HH:MM
 

@@ -35,15 +35,18 @@ def _get_system_state(engine):
         return s.get(SystemState, 1)
 
 
-def test_facts_digest_disabled_by_default():
-    """The digest ships DISABLED: the live fact table has pre-fix duplicate-
-    subject noise (Charlie/Charlee, multiple Unraid spellings), and a NULL
-    watermark means the first run would digest the entire table as-is, which
-    brain_organizer's same-night fold would permanently bake into
-    Brain/wiki/. This is the regression guard against a silent re-enable --
-    only flip it back to True once that cleanup has run live for a few days."""
+def test_facts_digest_enabled_by_default():
+    """The digest ships ENABLED (flipped 2026-07-29): the pre-fix duplicate-
+    subject noise (Charlie/Charlee, multiple Unraid/UniFi/Calendar-event/
+    On-call-schedule spellings) was cleaned up via
+    backend/agents/facts_cleanup.py (see tests/test_facts_cleanup.py) and
+    verified against the live nexus.db (backup: nexus.db.bak-2026-07-29).
+    This is the regression guard against a silent, unnoticed flip in either
+    direction -- if this default ever needs to go back to False (e.g. new
+    unreconciled noise is found), update this assertion deliberately, don't
+    just delete it."""
     from backend.config import Settings
-    assert Settings().facts_digest_enabled is False
+    assert Settings().facts_digest_enabled is True
 
 
 # ---------------------------------------------------------------------------
