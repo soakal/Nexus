@@ -18,11 +18,19 @@ watcher (VM/docker/garage/doorbell — Phase 2c, not a command at all, not yet
 scoped).
 """
 import logging
+import re
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 from backend.integrations import telegram
 
 logger = logging.getLogger(__name__)
+
+# Recognized second-token statuses for /resolve — anything else in that
+# position is treated as the start of a free-text note instead (spec
+# §3.2/§2.2-D: "/resolve 12 fixed it" must not become an "invalid_status"
+# error). Deliberately excludes "open" (not a meaningful resolve target).
+_RESOLVE_STATUSES = frozenset({"resolved", "false_positive", "deferred", "needs_follow_up"})
 
 Handler = Callable[[str, dict], Awaitable[str | None]]
 
@@ -329,6 +337,119 @@ async def _cmd_image(args: str, msg: dict) -> str | None:
     return None
 
 
+def _format_age(iso_str: str | None) -> str:
+    """Best-effort "Ns/Nm/Nh/Nd ago" rendering of an ISO timestamp — never
+    raises (a malformed/missing timestamp degrades to "?", matching the
+    defensive-read discipline used throughout this module)."""
+    if not iso_str:
+        return "?"
+    try:
+        then = datetime.fromisoformat(iso_str)
+    except ValueError:
+        return "?"
+    seconds = (datetime.utcnow() - then).total_seconds()
+    if seconds < 60:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = int(minutes // 60)
+    if hours < 24:
+        return f"{hours}h ago"
+    days = int(hours // 24)
+    return f"{days}d ago"
+
+
+async def _cmd_flags(args: str, msg: dict) -> str:
+    """Open + needs_follow_up + deferred-past-due flags — same shape as
+    /goals and /tasks."""
+    from backend.agents import outcomes
+
+    rows = await outcomes.open_flags()
+    if not rows:
+        return "No open flags."
+    return "\n".join(
+        f"#{r['id']} [{r['severity']}] {r['source']}:{r['check']} — "
+        f"{r['summary']} ({_format_age(r['created_at'])})"
+        for r in rows
+    )
+
+
+async def _cmd_resolve(args: str, msg: dict) -> str:
+    """/resolve <id> [status] [note] — default status "resolved" so the
+    common case is bare "/resolve 12". The second token is only treated as a
+    status if it's one of the recognized words; otherwise the whole
+    remainder is a free-text note against the default status (spec
+    §2.2-D/§3.2) — "/resolve 12 fixed it" must not error as invalid_status."""
+    from backend.agents import outcomes
+
+    parts = args.split(maxsplit=1)
+    if not parts:
+        return "Usage: /resolve <id> [status] [note]"
+    try:
+        flag_id = int(parts[0])
+    except ValueError:
+        return "Usage: /resolve <id> [status] [note] — <id> must be a number"
+
+    remainder = parts[1].strip() if len(parts) > 1 else ""
+    status = "resolved"
+    note: str | None = remainder or None
+    if remainder:
+        sub = remainder.split(maxsplit=1)
+        candidate = sub[0].lower()
+        if candidate in _RESOLVE_STATUSES:
+            status = candidate
+            note = sub[1].strip() if len(sub) > 1 else None
+
+    result = await outcomes.resolve_flag(flag_id, status, note=note, by="telegram")
+    mapping = {
+        "not_found": f"Flag #{flag_id} not found.",
+        "already_closed": f"Flag #{flag_id} is already closed.",
+        "invalid_status": f"Invalid status: {status}",
+    }
+    return mapping.get(result, f"Flag #{flag_id} marked {result}.")
+
+
+async def _cmd_defer(args: str, msg: dict) -> str:
+    """/defer <id> <days> [note] -> resolve_flag(id, "deferred", defer_days=days)."""
+    from backend.agents import outcomes
+
+    parts = args.split(maxsplit=2)
+    if len(parts) < 2:
+        return "Usage: /defer <id> <days> [note]"
+    try:
+        flag_id = int(parts[0])
+        days = int(parts[1])
+    except ValueError:
+        return "Usage: /defer <id> <days> [note] — <id> and <days> must be numbers"
+
+    note = parts[2].strip() if len(parts) > 2 else None
+    result = await outcomes.resolve_flag(flag_id, "deferred", note=note, by="telegram", defer_days=days)
+    mapping = {
+        "not_found": f"Flag #{flag_id} not found.",
+        "already_closed": f"Flag #{flag_id} is already closed.",
+    }
+    return mapping.get(result, f"Flag #{flag_id} deferred {days} day(s).")
+
+
+async def _cmd_flag(args: str, msg: dict) -> str:
+    """/flag <text> -> record_flag("manual", <slugified first words>, args,
+    severity="medium"). Lets Brian log his own item into the same store."""
+    from backend.agents import outcomes
+
+    text = args.strip()
+    if not text:
+        return "Usage: /flag <text> — log your own item into the outcome tracker"
+
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    check = "_".join(slug.split("_")[:6]) or "note"
+
+    flag_id = await outcomes.record_flag("manual", check, text, severity="medium")
+    if flag_id is None:
+        return "Not recorded (outcome tracking is disabled)."
+    return f"Flag #{flag_id} recorded."
+
+
 COMMANDS: dict[str, tuple[Handler, str]] = {
     "nx": (_cmd_chat, "Ask NEXUS anything"),
     "help": (_cmd_help, "List commands"),
@@ -350,6 +471,10 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "unmute": (_cmd_unmute, "Un-silence a notification kind"),
     "muted": (_cmd_muted, "List muted notification kinds"),
     "image": (_cmd_image, "Generate an image from a prompt"),
+    "flags": (_cmd_flags, "List open outcome flags"),
+    "resolve": (_cmd_resolve, "Resolve an outcome flag by id"),
+    "defer": (_cmd_defer, "Defer an outcome flag for N days"),
+    "flag": (_cmd_flag, "Log your own item into the outcome tracker"),
 }
 
 

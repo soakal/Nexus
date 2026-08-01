@@ -52,11 +52,11 @@ _message_semaphore = asyncio.Semaphore(1)
 # Every task is added here and removed via its own done-callback.
 _message_tasks: set[asyncio.Task] = set()
 
-# goal/safety ids are ActionLog/Goal primary keys (int). docker/vm ids are a
-# container NAME and a Proxmox vmid string, respectively — only the DB-keyed
-# namespaces coerce to int.
-_INT_ID_NAMESPACES = frozenset({"goal", "safety"})
-_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart"})
+# goal/safety/flag ids are ActionLog/Goal/OutcomeFlag primary keys (int).
+# docker/vm ids are a container NAME and a Proxmox vmid string, respectively —
+# only the DB-keyed namespaces coerce to int.
+_INT_ID_NAMESPACES = frozenset({"goal", "safety", "flag"})
+_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved"})
 
 
 async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool, str]:
@@ -100,6 +100,23 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
                 "failed": "Failed.",
                 "rejected": "Rejected.",
             }
+            return True, mapping.get(status, status)
+
+        if namespace == "flag":
+            from backend.agents import outcomes
+            if verb not in ("resolved", "false_positive", "deferred"):
+                return False, f"Unknown flag verb: {verb}"
+            status = await outcomes.resolve_flag(obj_id, verb, by="telegram")
+            mapping = {
+                "not_found": "Flag not found.",
+                "already_closed": "Already closed.",
+                "resolved": "Marked resolved.",
+                "false_positive": "Marked false alarm.",
+                "deferred": "Deferred.",
+            }
+            # A flag resolve never dispatches anything (no broker call, no
+            # external side effect) -- there is no transport-error case to
+            # keep the buttons for, so every mapped outcome is definitive.
             return True, mapping.get(status, status)
 
         if namespace == "docker" and verb == "restart":

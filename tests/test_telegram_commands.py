@@ -441,3 +441,65 @@ async def test_cmd_muted_empty():
     with patch("backend.safety.governor.get_muted_notify_kinds", return_value=set()):
         reply = await telegram_commands._cmd_muted("", _msg("/muted"))
     assert "Nothing muted" in reply
+
+
+# ---------------------------------------------------------------------------
+# Outcome Tracker rollout step 3 — /flags, /resolve
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cmd_flags_no_open_flags():
+    with patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[]):
+        reply = await telegram_commands._cmd_flags("", _msg("/flags"))
+    assert reply == "No open flags."
+
+
+@pytest.mark.asyncio
+async def test_cmd_resolve_with_status_and_note():
+    with patch("backend.agents.outcomes.resolve_flag", new_callable=AsyncMock, return_value="false_positive") as mock_resolve:
+        reply = await telegram_commands._cmd_resolve("3 false_positive typo", _msg("/resolve 3 false_positive typo"))
+
+    mock_resolve.assert_awaited_once_with(3, "false_positive", note="typo", by="telegram")
+    assert "false_positive" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_flags_lists_each_flag_with_pinned_format():
+    """AC16 (docs/outcome-tracker-spec.md §6, line ~279): '/flags with flags,
+    the reply contains each id.' Also pins the exact render shape from spec
+    §3.2 (line 170) — '#{id} [{severity}] {source}:{check} — {summary}
+    ({age})' — and the _format_age(None) fallback to '?', which a real DB
+    row with a null created_at can hit and must not raise."""
+    from datetime import datetime
+
+    now_iso = datetime.utcnow().isoformat()
+    rows = [
+        {
+            "id": 7,
+            "severity": "high",
+            "source": "homelab_watch",
+            "check": "garage_open",
+            "summary": "Garage door left open 2h",
+            "created_at": now_iso,
+        },
+        {
+            "id": 3,
+            "severity": "medium",
+            "source": "budget_watch",
+            "check": "daily_spend",
+            "summary": "Spend approaching limit",
+            "created_at": None,
+        },
+    ]
+    with patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=rows):
+        reply = await telegram_commands._cmd_flags("", _msg("/flags"))
+
+    lines = reply.split("\n")
+    assert "#7" in reply
+    assert "#3" in reply
+    assert "Garage door left open 2h" in reply
+    assert "Spend approaching limit" in reply
+    # Full-line shape pinned for a normal (non-null created_at) flag.
+    assert "#7 [high] homelab_watch:garage_open — Garage door left open 2h (just now)" in lines
+    # Full-line shape pinned for the created_at=None fallback branch.
+    assert "#3 [medium] budget_watch:daily_spend — Spend approaching limit (?)" in lines

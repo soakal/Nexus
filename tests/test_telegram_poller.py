@@ -95,6 +95,49 @@ async def test_safety_confirm_definitive_statuses_edit_message(status, expected_
 
 
 # ---------------------------------------------------------------------------
+# handle_callback — flag namespace (Outcome Tracker rollout step 3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_flag_resolved_dispatches_and_edits_message():
+    with patch("backend.agents.outcomes.resolve_flag", new_callable=AsyncMock, return_value="resolved") as mock_resolve, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("flag:resolved:1"))
+
+    mock_resolve.assert_awaited_once_with(1, "resolved", by="telegram")
+    mock_answer.assert_awaited_once()
+    mock_edit.assert_awaited_once()
+    edited_text = mock_edit.await_args.args[2]
+    assert "✓" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_flag_wrong_chat_id_rejected():
+    settings = MagicMock()
+    settings.telegram_chat_id = "99999"
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.outcomes.resolve_flag", new_callable=AsyncMock) as mock_resolve, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer:
+        await telegram_poller.handle_callback(_cq("flag:resolved:1", chat_id=12345))
+
+    mock_resolve.assert_not_called()
+    mock_answer.assert_awaited_once_with("cq1", "Not authorized", show_alert=True)
+
+
+@pytest.mark.asyncio
+async def test_flag_non_integer_id_invalid_and_no_dispatch():
+    with patch("backend.agents.outcomes.resolve_flag", new_callable=AsyncMock) as mock_resolve, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("flag:resolved:abc"))
+
+    mock_resolve.assert_not_called()
+    mock_answer.assert_awaited_once_with("cq1", "Invalid id.", show_alert=True)
+    mock_edit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Internal/dispatch error — alert popup, buttons kept (no edit)
 # ---------------------------------------------------------------------------
 
