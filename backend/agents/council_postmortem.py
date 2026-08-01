@@ -79,7 +79,7 @@ def _git(cwd: str, *args: str, timeout: int = 30) -> str:
     """
     result = subprocess.run(
         ["git", "-C", cwd, *args],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
     )
     if result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -91,7 +91,7 @@ def _effective_config(council_root: str) -> dict:
     script = str(Path(council_root) / "scripts" / "council_state.py")
     result = subprocess.run(
         [sys.executable, script, "effective-config"],
-        cwd=council_root, capture_output=True, text=True, timeout=30,
+        cwd=council_root, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(f"council_state.py effective-config failed: {result.stderr.strip()}")

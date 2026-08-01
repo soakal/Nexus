@@ -45,6 +45,8 @@ def _pending_digest_branches() -> list[str]:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         if result.returncode != 0:
@@ -85,6 +87,8 @@ def _pr_only_touches(number: int, expected_file: str) -> bool:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if result.returncode != 0:
@@ -126,6 +130,8 @@ def _merge_pending_digest_prs() -> list[str]:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if result.returncode != 0:
@@ -169,11 +175,11 @@ def _merge_pending_digest_prs() -> list[str]:
             if pr.get("isDraft"):
                 subprocess.run(
                     ["gh", "pr", "ready", str(number)],
-                    cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+                    cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
                 )
             merge_result = subprocess.run(
                 ["gh", "pr", "merge", str(number), "--merge", "--delete-branch"],
-                cwd=REPO_ROOT, capture_output=True, text=True, timeout=60,
+                cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
             )
             if merge_result.returncode == 0:
                 merged.append(branch)
@@ -183,7 +189,7 @@ def _merge_pending_digest_prs() -> list[str]:
     if merged:
         pull_ok = False
         try:
-            pull = subprocess.run(["git", "pull", "--quiet"], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
+            pull = subprocess.run(["git", "pull", "--quiet"], cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             pull_ok = pull.returncode == 0
         except Exception:
             pass

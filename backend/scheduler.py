@@ -9,6 +9,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
 
+# Brain Organizer subprocess failure log: how much of the TAIL of each stream
+# to include (error is at the end of a run, not the start).
+_ORGANIZER_OUTPUT_CHARS = 2000
+
 # One-off: fires once, two days before the 2026-08-07 Infisical soak gate
 # (14-day soak started 2026-07-24). Safe to delete this constant, the
 # _infisical_soak_reminder job, its registration block below, and
@@ -360,10 +364,27 @@ async def _run_brain_organizer():
         result = await asyncio.to_thread(
             subprocess.run,
             [str(python_exe), str(script)],
-            capture_output=True, text=True, cwd=str(module_dir), env=env,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(module_dir), env=env,
         )
         if result.returncode != 0:
-            logger.error(f"Brain Organizer failed (rc={result.returncode}): {result.stderr[:500]}")
+            # brain_organizer.py routes ALL its diagnostics through a
+            # StreamHandler(sys.stdout) -- it never writes to stderr -- so
+            # stdout, not stderr, is where the real failure detail lives.
+            # Log the TAIL of each stream (the error is at the end of a run),
+            # guarded against None (a dead/crashed child can leave a stream
+            # unset even though this specific None case shouldn't occur now
+            # that the encoding/errors kwargs above stop the reader thread
+            # from dying mid-read).
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            stdout_tail = stdout if len(stdout) <= _ORGANIZER_OUTPUT_CHARS else "…" + stdout[-_ORGANIZER_OUTPUT_CHARS:]
+            msg = f"Brain Organizer failed (rc={result.returncode}). stdout (tail): {stdout_tail}"
+            if stderr:
+                stderr_tail = stderr if len(stderr) <= _ORGANIZER_OUTPUT_CHARS else "…" + stderr[-_ORGANIZER_OUTPUT_CHARS:]
+                msg += f" | stderr (tail): {stderr_tail}"
+            msg += " See modules/brain-organizer/logs/organizer.log for full detail."
+            logger.error(msg)
         else:
             logger.info("Brain Organizer run complete")
     except Exception as e:
