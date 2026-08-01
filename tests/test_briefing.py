@@ -294,3 +294,93 @@ async def test_briefing_mail_data_never_reaches_llm_or_fact_extraction():
         # ...and never reaches fact-extraction either (Proton Mail is stripped).
         extracted_text = mock_extract.call_args[0][0]
         assert marker_subject not in extracted_text
+
+
+# ---------------------------------------------------------------------------
+# _record_briefing_flags -- outcome-tracker write path (spec §2.2-C, AC22/AC23)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_record_briefing_flags_dispatches_checks_and_respects_unknown_boundary():
+    """Pins _record_briefing_flags' six-check dispatch: a non-empty signal
+    records the flag (AC22's record half), an 'unknown' Unraid array/parity
+    status is treated as healthy and clears rather than flags (the boundary
+    called out in the diff's own comments), and AdGuard's coerced 'unknown'
+    (raw filtering_enabled=None) neither flags nor clears -- AC23, the
+    2026-07-26 unknown-vs-off fix."""
+    record_mock = AsyncMock(return_value=1)
+    clear_mock = AsyncMock(return_value=0)
+
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[{"entity": "sensor.x", "state": "unavailable"}])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="unknown", parity_status="unknown", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[{"number": 1, "title": "stale"}])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=None)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock,
+               return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.record_flag", record_mock), \
+         patch("backend.agents.outcomes.clear_flag", clear_mock), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        await run_briefing()
+
+    recorded = {(c.args[0], c.args[1]) for c in record_mock.await_args_list}
+    cleared = {(c.args[0], c.args[1]) for c in clear_mock.await_args_list}
+
+    assert ("briefing", "ha_unavailable_entities") in recorded
+    assert ("briefing", "github_stale_prs") in recorded
+    # "unknown" Unraid status is not a breach -- clears, never flags.
+    assert ("briefing", "unraid_array") in cleared
+    assert ("briefing", "unraid_parity") in cleared
+    assert ("briefing", "unraid_array") not in recorded
+    assert ("briefing", "unraid_parity") not in recorded
+    # no new UniFi devices -> clear.
+    assert ("briefing", "unifi_new_devices") in cleared
+    # AdGuard filtering_enabled=None coerces to "unknown" -- neither flags nor clears.
+    assert ("briefing", "adguard_filtering_off") not in recorded
+    assert ("briefing", "adguard_filtering_off") not in cleared
+
+
+@pytest.mark.asyncio
+async def test_record_briefing_flags_db_error_never_blocks_briefing():
+    """The try/except wrapping the _record_briefing_flags() call in
+    run_briefing() must swallow a DB error raised by record_flag rather than
+    let it fail or delay the briefing (diff: the new call-site wrapping)."""
+    record_mock = AsyncMock(side_effect=RuntimeError("db down"))
+
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[{"entity": "sensor.x"}])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock,
+               return_value="## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n## From Your Vault\nOK\n## Today's Focus\nFocus."), \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.record_flag", record_mock), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    # The ha_unavailable_entities check called record_flag and it raised --
+    # proving the outer try/except in run_briefing() is what's swallowing it.
+    assert record_mock.await_count >= 1
+    assert "## Today's Focus" in result

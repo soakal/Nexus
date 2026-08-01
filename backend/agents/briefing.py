@@ -108,6 +108,94 @@ def _build_protonmail_section(unread_result, drafts_result, drafted_ids: set) ->
 
     return "\n".join(lines)
 
+
+# Unraid parity_status values that mean "no parity concern" (a check finished
+# clean or none is running) -- distinct from "unknown" (a read problem, not a
+# breach, same reasoning as check_unraid_array's own status handling). Real
+# values observed are disk_ok/unknown; existing test fixtures use "idle".
+# Kept as its own allowlist constant (not folded into a single "not unknown"
+# check) so a genuinely-bad status (e.g. "failed"/a running check) is never
+# silently swallowed by loosening this set later.
+_UNRAID_PARITY_HEALTHY_STATUSES = {"idle", "disk_ok"}
+
+
+async def _record_briefing_flags(context: dict) -> None:
+    """Deterministic, structured flag write path for the briefing (spec
+    docs/outcome-tracker-spec.md §2.2-C, rollout step 5 of 7). Reads only
+    from the already-built `context` dict -- never re-fetches, never touches
+    the LLM prompt/response, matching _build_protonmail_section's "assembled
+    in Python, never in the prompt" discipline. Records/clears exactly six
+    flags; symmetric clear_flag calls let yesterday's flag (e.g. a stale PR)
+    auto-resolve once the underlying condition clears.
+
+    Write path only this cycle -- no BRIEFING_PROMPT change, no '## Open
+    Items' section, no _UNVERIFIED_FACT_SECTIONS edit, no open_flags/
+    recently_closed wiring into the gather step (all rollout step 6).
+
+    Best-effort: the call site in run_briefing() wraps this whole function in
+    try/except so a DB hiccup can never fail or delay the briefing.
+    outcomes.record_flag already guarantees it NEVER raises itself
+    (backend/agents/outcomes.py); outcomes.clear_flag does not carry that
+    same top-level guard, so it is individually wrapped below, mirroring
+    backend/agents/homelab_watch.py's _clear_flag_safe helper.
+    """
+    from backend.agents import outcomes
+
+    async def _clear(check: str) -> None:
+        try:
+            await outcomes.clear_flag("briefing", check)
+        except Exception as e:
+            logger.warning(f"_record_briefing_flags: clear_flag failed for {check!r} (ignored): {e}")
+
+    ha_alerts = context["home_assistant"]["alerts"] or []
+    if ha_alerts:
+        summary = f"{len(ha_alerts)} Home Assistant alert(s): {'; '.join(str(a) for a in ha_alerts[:5])}"
+        await outcomes.record_flag("briefing", "ha_unavailable_entities", summary[:300])
+    else:
+        await _clear("ha_unavailable_entities")
+
+    array_status = context["unraid"]["array_status"]
+    if array_status not in ("started", "unknown"):
+        summary = f"Unraid array status is '{array_status}' (expected 'started')."
+        await outcomes.record_flag("briefing", "unraid_array", summary[:300])
+    else:
+        await _clear("unraid_array")
+
+    parity_status = context["unraid"]["parity_status"]
+    if parity_status != "unknown" and parity_status not in _UNRAID_PARITY_HEALTHY_STATUSES:
+        summary = f"Unraid parity status is '{parity_status}'."
+        await outcomes.record_flag("briefing", "unraid_parity", summary[:300])
+    else:
+        await _clear("unraid_parity")
+
+    stale_prs = context["github"]["stale_prs"] or []
+    if stale_prs:
+        summary = f"{len(stale_prs)} stale PR(s): {'; '.join(str(p) for p in stale_prs[:5])}"
+        await outcomes.record_flag("briefing", "github_stale_prs", summary[:300])
+    else:
+        await _clear("github_stale_prs")
+
+    new_devices = context["unifi"]["new_devices"] or []
+    if new_devices:
+        summary = f"{len(new_devices)} new UniFi device(s): {'; '.join(str(d) for d in new_devices[:5])}"
+        await outcomes.record_flag("briefing", "unifi_new_devices", summary[:300])
+    else:
+        await _clear("unifi_new_devices")
+
+    # AdGuard: flag only on a confirmed False reading, clear only on a
+    # confirmed True reading. filtering_enabled is coerced to the string
+    # "unknown" above (a real read failure -- see that block's comment) when
+    # the raw value was None; both None and "unknown" must fall through here
+    # untouched (neither flag nor clear) to preserve the 2026-07-26
+    # unknown-vs-off fix -- an `is False`/`is True` check does this for free
+    # since neither matches a bool.
+    filtering_enabled = context["adguard"]["filtering_enabled"]
+    if filtering_enabled is False:
+        await outcomes.record_flag("briefing", "adguard_filtering_off", "AdGuard filtering is OFF.")
+    elif filtering_enabled is True:
+        await _clear("adguard_filtering_off")
+
+
 BRIEFING_PROMPT = """You are Carl, a direct, high-conviction personal AI assistant, briefing a solo power user starting their day.
 Be direct. No filler, no hedging ("try," "hope," "maybe"). Assume high technical literacy. Flag anomalies clearly.
 Never say "as of my last update" or similar hedges — this is live data.
@@ -302,6 +390,16 @@ async def run_briefing() -> str:
         briefing_text = await sonnet(prompt, label="briefing")
         briefing_text = briefing_text + "\n\n" + proton_section
         logger.info("Briefing generated")
+
+        # Best-effort structured flag write path (spec
+        # docs/outcome-tracker-spec.md §2.2-C, rollout step 5) -- write path
+        # only, no prompt/read-path change this cycle. Wrapped so a DB
+        # hiccup can never fail or delay the briefing; see
+        # _record_briefing_flags' own docstring for its internal guards.
+        try:
+            await _record_briefing_flags(context)
+        except Exception as e:
+            logger.warning(f"_record_briefing_flags failed (ignored): {e}")
 
         # Extract durable facts from briefing content (best-effort, never raises).
         # Priority Actions/Inbox are excluded -- see _strip_unverified_sections.
