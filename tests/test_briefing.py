@@ -639,3 +639,127 @@ async def test_open_items_section_uses_fresh_post_record_read_not_stale_gather_r
 
     assert "## Open Items" in result
     assert "MARKER-FRESH-ONLY" in result
+
+
+# ---------------------------------------------------------------------------
+# calibration_line -- spec §4.4 advisory prompt-INPUT line
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_calibration_line_present_in_prompt_with_data():
+    """Spec §4.4: outcomes.calibration_summary(30) is injected into the
+    briefing prompt as one advisory line, formatted like
+    build_autonomy_digest's own calibration line (digest.py:187-208)."""
+    calibration = {"homelab_watch:garage_open": {"open": 6, "false_positive": 2}}
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.calibration_summary", new_callable=AsyncMock, return_value=calibration), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    assert "Flag calibration (30d): homelab_watch:garage_open — 8 raised, 2 false_positive." in prompt_arg
+    # Prompt-input only -- must NOT become a new rendered output section.
+    assert "## Flag calibration" not in result
+
+
+@pytest.mark.asyncio
+async def test_calibration_line_degrades_to_none_on_exception():
+    """AC-equivalent to open_flags/recently_closed's own exception handling:
+    a calibration_summary failure must never block or fail the briefing --
+    it degrades to a harmless '(none)' advisory line."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.calibration_summary", new_callable=AsyncMock, side_effect=RuntimeError("db down")), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    assert "Flag calibration (30d): (none)" in prompt_arg
+    assert "## Today's Focus" in result
+
+
+@pytest.mark.asyncio
+async def test_calibration_line_caps_at_ten_and_follows_recently_closed():
+    """Gap found by the Verifier (same class as test_ac24_known_open_items_
+    prompt_block_caps_at_ten above): _format_calibration_line slices
+    calibration.items()[:cap], but neither of the Engineer's two tests
+    supplies more than one source:check pair, so the cap was never actually
+    exercised. Also pins the Arbiter's STEP requirement that {calibration_line}
+    sits after the RECENTLY CLOSED block (not merely present somewhere in the
+    prompt)."""
+    many_calibration = {
+        f"source{i}:check{i}": {"raised": 1, "false_positive": 0} for i in range(15)
+    }
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.calibration_summary", new_callable=AsyncMock, return_value=many_calibration), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+
+    # Cap: only the first 10 (insertion-order) source:check pairs may appear.
+    for i in range(10):
+        assert f"source{i}:check{i}" in prompt_arg
+    for i in range(10, 15):
+        assert f"source{i}:check{i}" not in prompt_arg
+
+    # Position: calibration_line must follow the RECENTLY CLOSED block and
+    # precede the "Produce a morning brief" section instruction, matching
+    # the Arbiter's STEP placement ("after the RECENTLY CLOSED block").
+    closed_idx = prompt_arg.index("RECENTLY CLOSED")
+    calibration_idx = prompt_arg.index("Flag calibration (30d):")
+    produce_idx = prompt_arg.index("Produce a morning brief")
+    assert closed_idx < calibration_idx < produce_idx

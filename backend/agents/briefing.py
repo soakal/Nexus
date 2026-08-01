@@ -149,6 +149,31 @@ def _build_flag_prompt_block(flags: list, cap: int) -> str:
     return "\n".join(lines) if lines else "(none)"
 
 
+def _format_calibration_line(calibration, cap: int) -> str:
+    """One-line 'Flag calibration (30d): source:check — N raised, M
+    false_positive[, ...].' advisory line for BRIEFING_PROMPT (spec §4.4,
+    the briefing's half of calibration_summary()'s two v1 consumers --
+    the other is digest.build_autonomy_digest, whose exact formatting
+    convention this mirrors). `calibration` is outcomes.calibration_summary's
+    {"source:check": {status: count}} shape, or an Exception/anything else
+    on a gather failure -- both degrade to '(none)', never raise. Capped at
+    `cap` (outcome_flag_briefing_max, same constant the KNOWN OPEN ITEMS/
+    RECENTLY CLOSED blocks already use) source:check pairs to bound prompt
+    growth; each pair itself is one bounded summary line, not a list, so no
+    further per-line truncation is needed."""
+    if not isinstance(calibration, dict) or not calibration:
+        return "Flag calibration (30d): (none)"
+    try:
+        parts = ", ".join(
+            f"{key} — {sum(counts.values())} raised, {counts.get('false_positive', 0)} false_positive"
+            for key, counts in list(calibration.items())[:cap]
+            if isinstance(counts, dict)
+        )
+    except Exception:
+        return "Flag calibration (30d): (none)"
+    return f"Flag calibration (30d): {parts}." if parts else "Flag calibration (30d): (none)"
+
+
 def _format_flag_age(iso_str) -> str:
     """Best-effort 'Ns/Nm/Nh/Nd ago' rendering of an ISO timestamp -- mirrors
     telegram_commands._format_age's convention (kept as a local copy rather
@@ -300,6 +325,8 @@ but do NOT present them as new findings):
 RECENTLY CLOSED (last 48h — the user already handled these; do NOT re-raise):
 {closed_items_block}
 
+{calibration_line}
+
 Produce a morning brief with these exact sections:
 
 ## Priority Actions (max 3)
@@ -388,12 +415,14 @@ async def run_briefing() -> str:
             protonmail.list_recent(mailbox="Drafts", limit=10),
             outcomes.open_flags(),
             outcomes.recently_closed(hours=48),
+            outcomes.calibration_summary(30),
             return_exceptions=True,
         )
 
         (
             ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data,
             proton_unread, proton_drafts, open_flags_result, closed_flags_result,
+            calibration_result,
         ) = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
@@ -410,6 +439,13 @@ async def run_briefing() -> str:
             flag_cap = 10
         open_items_block = _build_flag_prompt_block(open_flags_list, flag_cap)
         closed_items_block = _build_flag_prompt_block(closed_flags_list, flag_cap)
+
+        # Spec §4.4 -- deterministic (no LLM call, AC34) advisory prompt-INPUT
+        # line, not a rendered output section (do NOT add to
+        # _UNVERIFIED_FACT_SECTIONS): degrades to '(none)' on any gather
+        # exception or unexpected shape, same discipline as open/closed above.
+        calibration_dict = calibration_result if isinstance(calibration_result, dict) else {}
+        calibration_line = _format_calibration_line(calibration_dict, flag_cap)
 
         try:
             drafted_ids = await asyncio.to_thread(mail_drafts._db_drafted_email_ids)
@@ -483,6 +519,7 @@ async def run_briefing() -> str:
             json_context=json.dumps(context, indent=2),
             open_items_block=open_items_block,
             closed_items_block=closed_items_block,
+            calibration_line=calibration_line,
             weather_summary=weather_summary,
             blocked_today=safe(ag, "blocked_today", 0),
             blocked_pct=safe(ag, "blocked_pct", 0),
