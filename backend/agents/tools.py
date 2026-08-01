@@ -8,6 +8,13 @@ must go through `backend.safety.broker.execute_action` — they are NOT exposed 
 the autonomous tool-use loop yet (a later tier wires writes in behind the broker
 with policy gating + confirmation). This file must never import the broker.
 
+`open_flags` (docs/outcome-tracker-spec.md §3.4) reads `backend.agents.outcomes`
+only, never the broker, and is likewise read-only. No write tool in v1: a
+`resolve_flag` write tool would let NEXUS close its own outcome-flag loop, which
+destroys the signal the feature exists to capture — explicitly out of scope
+(spec §3.4/§5). If one is ever added it belongs in `write_tools.py` behind a new
+broker kind, not here.
+
 Each tool is a `ReadTool`: a name, a description, an `input_schema`, and an async
 `dispatch(input: dict) -> str` that wraps the underlying integration call in
 try/except and always returns a short string (success summary or
@@ -329,6 +336,26 @@ async def _vault_search(input: dict) -> str:
         return _truncate(f"vault_search unavailable: {e}")
 
 
+async def _open_flags(_input: dict) -> str:
+    """Read-only: open + needs_follow_up + deferred-past-due OutcomeFlag rows
+    (docs/outcome-tracker-spec.md §3.4), newest first. Imports
+    backend.agents.outcomes only -- never the broker."""
+    try:
+        from backend.agents import outcomes
+        flags = await outcomes.open_flags()
+        flags = [f for f in flags if isinstance(f, dict)]
+        if not flags:
+            return "No open flags."
+        lines = [
+            f"#{f.get('id')} [{f.get('severity') or 'medium'}] "
+            f"{f.get('source') or '?'}:{f.get('check') or '?'} — {f.get('summary') or ''}"
+            for f in flags
+        ]
+        return _truncate("\n".join(lines))
+    except Exception as e:
+        return _truncate(f"open_flags unavailable: {e}")
+
+
 async def _web_search(input: dict) -> str:
     query = (input or {}).get("query")
     if not query or not str(query).strip():
@@ -431,6 +458,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Search the user's personal Obsidian knowledge vault. Use for 'my notes', 'my vault', or saved personal knowledge.",
         input_schema=_QUERY_SCHEMA,
         dispatch=_vault_search,
+    ),
+    ReadTool(
+        name="open_flags",
+        description="Read currently open outcome flags (unresolved alerts/issues already raised to the user): id, severity, source:check, summary. READ ONLY — no tool exists here to resolve/close a flag.",
+        input_schema=_NO_ARGS_SCHEMA,
+        dispatch=_open_flags,
     ),
     ReadTool(
         # Renamed from "web_search" to avoid colliding with Anthropic's HOSTED

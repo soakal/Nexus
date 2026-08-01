@@ -238,6 +238,28 @@ async def test_hermes_status_normal_and_raise():
 
 
 @pytest.mark.asyncio
+async def test_open_flags_normal_empty_and_raise():
+    from backend.agents import tools
+
+    flags = [
+        {"id": 3, "severity": "high", "source": "watchdog", "check": "stall:job1", "summary": "scheduler stalled"},
+        {"id": 1, "severity": "medium", "source": "homelab_watch", "check": "garage_open", "summary": "garage open"},
+    ]
+    with patch("backend.agents.outcomes.open_flags", new=AsyncMock(return_value=flags)):
+        out = await tools._open_flags({})
+    assert "#3 [high] watchdog:stall:job1 — scheduler stalled" in out
+    assert "#1 [medium] homelab_watch:garage_open — garage open" in out
+
+    with patch("backend.agents.outcomes.open_flags", new=AsyncMock(return_value=[])):
+        out = await tools._open_flags({})
+    assert out == "No open flags."
+
+    with patch("backend.agents.outcomes.open_flags", new=AsyncMock(side_effect=Exception("boom"))):
+        out = await tools._open_flags({})
+    assert out.startswith("open_flags unavailable:")
+
+
+@pytest.mark.asyncio
 async def test_proxmox_updates_passthrough_and_raise():
     from backend.agents import tools
 
@@ -371,6 +393,7 @@ def test_dispatcher_map_keys_match_registry():
         "adguard_status", "channels_status", "weather", "github_status", "hermes_status",
         "proxmox_updates", "proxmox_backups", "vault_search", "ddg_search",
         "protonmail_inbox", "protonmail_read_email", "protonmail_status",
+        "open_flags",
     }
     assert set(dmap.keys()) == expected
     # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the
