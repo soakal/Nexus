@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, select
 
 from backend.auth import require_api_key
-from backend.database import ActionLog, TaskOutcome, get_session
+from backend.database import ActionLog, OutcomeFlag, TaskOutcome, get_session
 
 router = APIRouter()
 
@@ -105,6 +105,135 @@ async def list_outcomes(
         for r in rows
     ]
 
+
+
+# ---------------------------------------------------------------------------
+# Outcome flag tracker (docs/outcome-tracker-spec.md §3.3 — rollout step 2)
+# ---------------------------------------------------------------------------
+# The Claude-Code-facing close-the-loop path: create/read/resolve flags over
+# REST. Writes delegate entirely to backend.agents.outcomes (dedup/suppression
+# logic lives there, not here). Declared before /flags/{flag_id}/resolve so
+# path matching can't shadow the literal /flags/calibration segment.
+
+@router.get("/flags/calibration")
+async def flags_calibration(days: int = 30, _=Depends(require_api_key)):
+    """Per-source:check counts by status, for flags created in the last
+    `?days=` (default 30). Delegates to outcomes.calibration_summary."""
+    from backend.agents import outcomes
+
+    days = max(1, min(days, 365))
+    return await outcomes.calibration_summary(days)
+
+
+@router.get("/flags")
+async def list_flags(
+    limit: int = 50,
+    status: str | None = None,
+    source: str | None = None,
+    _=Depends(require_api_key),
+    session: Session = Depends(get_session),
+):
+    """Most-recent OutcomeFlag rows, newest first. `?limit=` defaults to 50,
+    capped at 200. Optional `?status=` and `?source=` filters. Mirrors
+    list_actions (pure-read GET on a Depends-injected Session)."""
+    limit = max(1, min(limit, 200))
+    stmt = select(OutcomeFlag)
+    if status is not None:
+        stmt = stmt.where(OutcomeFlag.status == status)
+    if source is not None:
+        stmt = stmt.where(OutcomeFlag.source == source)
+    stmt = stmt.order_by(OutcomeFlag.id.desc()).limit(limit)
+    rows = session.exec(stmt).all()
+
+    return [
+        {
+            "id": r.id,
+            "source": r.source,
+            "check": r.check,
+            "fingerprint": r.fingerprint,
+            "summary": r.summary,
+            "detail": r.detail,
+            "severity": r.severity,
+            "status": r.status,
+            "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+            "resolved_by": r.resolved_by,
+            "resolution_note": r.resolution_note,
+            "deferred_until": r.deferred_until.isoformat() if r.deferred_until else None,
+            "action_log_id": r.action_log_id,
+            "surfaced_count": r.surfaced_count,
+            "last_surfaced_at": r.last_surfaced_at.isoformat() if r.last_surfaced_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/flags")
+async def create_flag(
+    body: dict = Body(...),
+    _=Depends(require_api_key),
+):
+    """Manual create (source="manual"), for Claude Code sessions logging their
+    own observations. Delegates to outcomes.record_flag, which NEVER raises —
+    a suppressed/deduped/disabled call returns id: null, not an error."""
+    from backend.agents import outcomes
+
+    check = body.get("check")
+    summary = body.get("summary")
+    if not check or not summary:
+        raise HTTPException(status_code=400, detail="check and summary are required")
+
+    flag_id = await outcomes.record_flag(
+        "manual",
+        check,
+        summary,
+        detail=body.get("detail"),
+        severity=body.get("severity", "medium"),
+    )
+    return {"id": flag_id}
+
+
+@router.post("/flags/{flag_id}/resolve")
+async def resolve_flag_route(
+    flag_id: int,
+    body: dict = Body(...),
+    _=Depends(require_api_key),
+):
+    """Close (or park) an open/needs_follow_up/deferred flag. Body:
+    {status, note?, defer_days?}. Status codes mirror confirm_action:
+      200  — resolved (applied status in body)
+      404  — flag not found
+      409  — already closed
+      400  — invalid target status
+    """
+    from backend.agents import outcomes
+
+    defer_days = body.get("defer_days")
+    if defer_days is not None:
+        if (
+            isinstance(defer_days, bool)
+            or not isinstance(defer_days, int)
+            or not (1 <= defer_days <= 365)
+        ):
+            raise HTTPException(status_code=400, detail="defer_days must be a positive integer")
+
+    result = await outcomes.resolve_flag(
+        flag_id,
+        body.get("status"),
+        note=body.get("note"),
+        by="api",
+        defer_days=defer_days,
+    )
+
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Flag not found")
+    if result == "already_closed":
+        raise HTTPException(status_code=409, detail="Flag is already closed")
+    if result == "invalid_status":
+        raise HTTPException(status_code=400, detail="Invalid target status")
+
+    return {"id": flag_id, "status": result}
 
 
 @router.get("/hermes-actions")

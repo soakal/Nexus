@@ -506,3 +506,137 @@ def test_hermes_actions_endpoint_lists_verbs(app_client, auth_headers):
     verbs = resp.json()["verbs"]
     assert len(verbs) > 0
     assert any(v["verb"] == "restart_service" for v in verbs)
+
+
+# ---------------------------------------------------------------------------
+# Outcome flag tracker REST routes (docs/outcome-tracker-spec.md §3.3, AC17)
+# ---------------------------------------------------------------------------
+
+def test_flags_endpoints_require_auth(app_client):
+    """AC17: all four Outcome Tracker routes are Bearer-gated -- no key -> 401."""
+    assert app_client.get("/api/safety/flags").status_code == 401
+    assert app_client.get("/api/safety/flags/calibration").status_code == 401
+    assert app_client.post("/api/safety/flags", json={"check": "x", "summary": "y"}).status_code == 401
+    assert app_client.post("/api/safety/flags/1/resolve", json={"status": "resolved"}).status_code == 401
+
+
+def test_flags_full_lifecycle(app_client, auth_headers):
+    """AC17: POST /flags creates a row and returns its id; GET /flags lists it
+    newest-first with the full field shape and honors ?status=; GET
+    /flags/calibration returns 200; POST /flags/{id}/resolve maps
+    200 (resolved) -> 409 (already_closed) -> 404 (not_found) -> 400
+    (invalid_status), matching outcomes.resolve_flag's string-return
+    contract."""
+    create1 = app_client.post(
+        "/api/safety/flags",
+        json={"check": "AC17_lifecycle_1", "summary": "first observation"},
+        headers=auth_headers,
+    )
+    assert create1.status_code == 200
+    id1 = create1.json()["id"]
+    assert id1 is not None
+
+    create2 = app_client.post(
+        "/api/safety/flags",
+        json={"check": "AC17_lifecycle_2", "summary": "second observation"},
+        headers=auth_headers,
+    )
+    assert create2.status_code == 200
+    id2 = create2.json()["id"]
+    assert id2 is not None
+    assert id2 != id1
+
+    # GET /flags: newest first, full shape, source="manual" from the route.
+    listed = app_client.get("/api/safety/flags", headers=auth_headers)
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert isinstance(rows, list)
+    assert rows[0]["id"] == id2  # newest first
+    row2 = rows[0]
+    for key in (
+        "id", "source", "check", "fingerprint", "summary", "detail", "severity",
+        "status", "resolved_at", "resolved_by", "resolution_note", "deferred_until",
+        "action_log_id", "surfaced_count", "last_surfaced_at", "created_at", "updated_at",
+    ):
+        assert key in row2
+    assert row2["source"] == "manual"
+    assert row2["check"] == "AC17_lifecycle_2"
+    assert row2["status"] == "open"
+
+    # ?status= filter narrows to open rows (both still open at this point).
+    filtered = app_client.get("/api/safety/flags?status=open", headers=auth_headers)
+    assert filtered.status_code == 200
+    assert {r["id"] for r in filtered.json()} >= {id1, id2}
+
+    # GET /flags/calibration
+    calib = app_client.get("/api/safety/flags/calibration", headers=auth_headers)
+    assert calib.status_code == 200
+    assert isinstance(calib.json(), dict)
+
+    # POST /flags/{id}/resolve status-mapping sequence.
+    resolved = app_client.post(
+        f"/api/safety/flags/{id1}/resolve", json={"status": "resolved"}, headers=auth_headers,
+    )
+    assert resolved.status_code == 200
+    assert resolved.json() == {"id": id1, "status": "resolved"}
+
+    already_closed = app_client.post(
+        f"/api/safety/flags/{id1}/resolve", json={"status": "resolved"}, headers=auth_headers,
+    )
+    assert already_closed.status_code == 409
+
+    not_found = app_client.post(
+        "/api/safety/flags/999999/resolve", json={"status": "resolved"}, headers=auth_headers,
+    )
+    assert not_found.status_code == 404
+
+    invalid_status = app_client.post(
+        f"/api/safety/flags/{id1}/resolve", json={"status": "bogus_status"}, headers=auth_headers,
+    )
+    assert invalid_status.status_code == 400
+
+
+def test_flags_resolve_deferred_valid_defer_days(app_client, auth_headers):
+    """POST /flags/{id}/resolve status="deferred" with a valid int defer_days
+    resolves 200 and sets OutcomeFlag.deferred_until (outcomes.resolve_flag ->
+    now + timedelta(days=defer_days))."""
+    create = app_client.post(
+        "/api/safety/flags",
+        json={"check": "AC17_defer", "summary": "defer me"},
+        headers=auth_headers,
+    )
+    assert create.status_code == 200
+    flag_id = create.json()["id"]
+
+    deferred = app_client.post(
+        f"/api/safety/flags/{flag_id}/resolve",
+        json={"status": "deferred", "defer_days": 7},
+        headers=auth_headers,
+    )
+    assert deferred.status_code == 200
+    assert deferred.json() == {"id": flag_id, "status": "deferred"}
+
+    listed = app_client.get("/api/safety/flags?status=deferred", headers=auth_headers)
+    assert listed.status_code == 200
+    row = next(r for r in listed.json() if r["id"] == flag_id)
+    assert row["deferred_until"] is not None
+
+
+def test_flags_resolve_deferred_rejects_string_defer_days(app_client, auth_headers):
+    """POST /flags/{id}/resolve status="deferred" with defer_days as a JSON
+    string (e.g. "7") must 400 before it ever reaches outcomes.resolve_flag's
+    `now + timedelta(days=defer_days)` call, not 500."""
+    create = app_client.post(
+        "/api/safety/flags",
+        json={"check": "AC17_defer_bad", "summary": "defer me badly"},
+        headers=auth_headers,
+    )
+    assert create.status_code == 200
+    flag_id = create.json()["id"]
+
+    bad = app_client.post(
+        f"/api/safety/flags/{flag_id}/resolve",
+        json={"status": "deferred", "defer_days": "7"},
+        headers=auth_headers,
+    )
+    assert bad.status_code == 400
