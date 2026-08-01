@@ -269,6 +269,38 @@ def _db_calibration(cutoff: datetime) -> dict:
         return result
 
 
+def _db_active_hint(fingerprint: str) -> dict | None:
+    """The current ACTIVE calibration hint for this fingerprint, or None.
+    Returns a plain dict (never an ORM object — no Session may cross an
+    await boundary, AC33/CAL48's discipline). A hint whose status isn't
+    "active", or whose override_until hasn't lapsed yet (defensive — the
+    nightly recompute job, backend/agents/calibration.py, is the primary
+    owner of that check, but should_page re-checks it directly so a stale
+    row can never gate a page), is treated as "no active hint" so callers
+    need not special-case it. Any DB error (missing table, etc.) propagates
+    to the caller, which fails open (spec §3.2/§3.4)."""
+    from sqlmodel import Session, select
+    from backend.database import CalibrationHint, engine
+
+    with Session(engine) as session:
+        stmt = select(CalibrationHint).where(CalibrationHint.fingerprint == fingerprint)
+        row = session.exec(stmt).first()
+        if row is None or row.status != "active":
+            return None
+        if row.override_until is not None and row.override_until > datetime.utcnow():
+            return None
+        return {
+            "id": row.id,
+            "fingerprint": row.fingerprint,
+            "status": row.status,
+            "verdict_count": row.verdict_count,
+            "false_positive_count": row.false_positive_count,
+            "fp_rate": row.fp_rate,
+            "max_severity": row.max_severity,
+            "reason": row.reason,
+        }
+
+
 def _db_sweep_deferred() -> list[int]:
     """Flip deferred rows whose deferred_until has passed to needs_follow_up.
     Returns the ids flipped."""
@@ -299,7 +331,58 @@ def _db_sweep_deferred() -> list[int]:
 # Public async API
 # ---------------------------------------------------------------------------
 
-async def record_flag(
+async def active_hint(fingerprint: str) -> dict | None:
+    """Hot-path read (spec §3.2): the current ACTIVE calibration hint for
+    `fingerprint`, or None (no hint, hint not active/overridden/expired, an
+    override still in effect, a missing table, or any error). NEVER raises —
+    same contract as record_flag."""
+    try:
+        return await asyncio.to_thread(_db_active_hint, fingerprint)
+    except Exception as e:
+        logger.warning(f"active_hint failed (fingerprint={fingerprint!r}): {e}")
+        return None
+
+
+async def should_page(source: str, check: str, severity: str = "medium") -> tuple[bool, str | None]:
+    """The suppression gate (spec §3.2). Returns (True, None) to page, or
+    (False, reason) to stay quiet.
+
+    Fails open on absolutely everything: a manual source, calibration_enabled
+    =False, calibration_suppression_enabled=False, no active hint row, a
+    severity the high-severity guardrail protects (severity=="high" unless
+    calibration_suppress_high_severity is explicitly True), or any exception
+    -> (True, None). NEVER raises — wrapped in one outer try/except exactly
+    like record_flag."""
+    try:
+        if source == "manual":
+            # A human-entered flag (telegram /flag, POST /flags) is never
+            # auto-suppressed (spec §3.3) — checked before any hint lookup.
+            return True, None
+
+        from backend.config import get_settings
+        settings = get_settings()
+        if not getattr(settings, "calibration_enabled", True):
+            return True, None
+        if not getattr(settings, "calibration_suppression_enabled", False):
+            return True, None
+        if severity == "high" and not getattr(settings, "calibration_suppress_high_severity", False):
+            return True, None
+
+        fingerprint = f"{source}:{check}"
+        hint = await active_hint(fingerprint)
+        if hint is None:
+            return True, None
+
+        reason = hint["reason"] or (
+            f"calibration:{fingerprint} fp_rate={hint['fp_rate']:.2f} n={hint['verdict_count']}"
+        )
+        return False, reason
+    except Exception as e:
+        logger.warning(f"should_page failed (source={source!r}, check={check!r}): {e}")
+        return True, None
+
+
+async def record_flag_ex(
     source: str,
     check: str,
     summary: str,
@@ -307,35 +390,45 @@ async def record_flag(
     detail: str | None = None,
     severity: str = "medium",
     action_log_id: int | None = None,
-) -> int | None:
-    """Record (or re-surface) an observation. Returns the row id (new or the
-    existing open row's), or None if suppressed/disabled/errored.
+) -> dict:
+    """The richer write API (spec §3.2) `record_flag` now wraps. Returns
+    {"id": int | None, "surface": bool, "reason": str | None}.
 
-    NEVER raises — same contract as events.notify_phone. Suppression logic
-    (the actual feature — spec §2.1):
-      1. Existing open|needs_follow_up row for this fingerprint -> bump
-         surfaced_count/last_surfaced_at, return its id. No new row.
-      2. Existing deferred row with deferred_until still in the future ->
-         return None ("deferred means shut up until then").
-      3. Existing false_positive row resolved within the cooldown window ->
-         return None ("stop crying wolf on the same pattern").
+    NEVER raises — same contract as record_flag. Runs record_flag's original
+    four-branch write/dedup logic unchanged, plus the write/page split (spec
+    §3.1): the row is always written (or bumped), but whether the caller
+    should actually page the human is decided separately by `should_page` and
+    returned via `surface`/`reason`:
+      0. Consult should_page() up front. A "no" doesn't stop the write below
+         — it stamps suppressed=True/suppressed_reason on whichever row gets
+         written or bumped, and the return says not to surface it.
+      1. Existing open|needs_follow_up row -> bump surfaced_count, return its
+         id with surface per the gate (never surface=False merely because
+         the row already existed — the callers' own latches already own
+         re-alert suppression, spec §3.2).
+      2. Existing deferred row still within its window -> id=None,
+         surface=False, reason="deferred" (Finding B's page-through fix).
+      3. Existing false_positive row within the cooldown -> id=None,
+         surface=False, reason="false_positive_cooldown" (ditto).
       4. Otherwise INSERT a new open row (IntegrityError from the partial
-         unique index -> re-SELECT the winner and return its id).
+         unique index -> re-SELECT the winner), stamped per the gate.
     """
     try:
         from backend.config import get_settings
         settings = get_settings()
         if not getattr(settings, "outcome_flags_enabled", True):
-            return None
+            return {"id": None, "surface": False, "reason": "outcome_flags_disabled"}
 
         fingerprint = f"{source}:{check}"
         now = datetime.utcnow()
+        page, page_reason = await should_page(source, check, severity)
 
         # Branch 1 — already raised and still open/needs_follow_up.
         active = await asyncio.to_thread(_db_find_active_by_fingerprint, fingerprint)
         if active:
             bumped = await asyncio.to_thread(_db_bump_surfaced, active["id"])
-            return bumped["id"] if bumped else active["id"]
+            flag_id = bumped["id"] if bumped else active["id"]
+            return {"id": flag_id, "surface": page, "reason": None if page else page_reason}
 
         latest = await asyncio.to_thread(_db_latest_by_fingerprint, fingerprint)
         if latest:
@@ -343,13 +436,13 @@ async def record_flag(
             if latest["status"] == "deferred" and latest["deferred_until"]:
                 deferred_until = datetime.fromisoformat(latest["deferred_until"])
                 if now < deferred_until:
-                    return None
+                    return {"id": None, "surface": False, "reason": "deferred"}
             # Branch 3 — false_positive within the cooldown.
             if latest["status"] == "false_positive" and latest["resolved_at"]:
                 resolved_at = datetime.fromisoformat(latest["resolved_at"])
                 cooldown_days = int(getattr(settings, "outcome_flag_false_positive_cooldown_days", 30))
                 if now - resolved_at < timedelta(days=cooldown_days):
-                    return None
+                    return {"id": None, "surface": False, "reason": "false_positive_cooldown"}
 
         # Branch 4 — otherwise, insert a new open row.
         inserted = await asyncio.to_thread(
@@ -364,11 +457,51 @@ async def record_flag(
         )
         if inserted is None:
             winner = await asyncio.to_thread(_db_find_active_by_fingerprint, fingerprint)
-            return winner["id"] if winner else None
-        return inserted["id"]
+            flag_id = winner["id"] if winner else None
+        else:
+            flag_id = inserted["id"]
+
+        if flag_id is not None and not page:
+            await asyncio.to_thread(
+                _db_update_flag, flag_id, suppressed=True, suppressed_reason=page_reason,
+            )
+        return {"id": flag_id, "surface": page, "reason": None if page else page_reason}
     except Exception as e:
-        logger.warning(f"record_flag failed (source={source!r}, check={check!r}): {e}")
-        return None
+        logger.warning(f"record_flag_ex failed (source={source!r}, check={check!r}): {e}")
+        return {"id": None, "surface": True, "reason": None}
+
+
+async def record_flag(
+    source: str,
+    check: str,
+    summary: str,
+    *,
+    detail: str | None = None,
+    severity: str = "medium",
+    action_log_id: int | None = None,
+) -> int | None:
+    """Record (or re-surface) an observation. Returns the row id (new or the
+    existing open row's), or None if suppressed/disabled/errored.
+
+    NEVER raises — same contract as events.notify_phone. Now a thin
+    back-compat wrapper over record_flag_ex (spec §3.2): the four-branch
+    write/dedup semantics below are unchanged, byte-identical, for every
+    existing call site — this signature and its return values are locked by
+    tests/test_outcome_flags.py (CAL51).
+      1. Existing open|needs_follow_up row for this fingerprint -> bump
+         surfaced_count/last_surfaced_at, return its id. No new row.
+      2. Existing deferred row with deferred_until still in the future ->
+         return None ("deferred means shut up until then").
+      3. Existing false_positive row resolved within the cooldown window ->
+         return None ("stop crying wolf on the same pattern").
+      4. Otherwise INSERT a new open row (IntegrityError from the partial
+         unique index -> re-SELECT the winner and return its id).
+    """
+    d = await record_flag_ex(
+        source, check, summary,
+        detail=detail, severity=severity, action_log_id=action_log_id,
+    )
+    return d["id"] if d["surface"] or d["id"] else None
 
 
 async def resolve_flag(
