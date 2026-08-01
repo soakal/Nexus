@@ -116,6 +116,13 @@ async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
             if overdue > grace_s:
                 stalled.append(job.id)
                 if _should_alert(f"sched:{job.id}", cooldown_s):
+                    from backend.agents import outcomes
+                    await outcomes.record_flag(
+                        "watchdog", f"stall:{job.id}",
+                        f"NEXUS scheduler job '{job.id}' is overdue by {int(overdue)}s"
+                        " (possible stall).",
+                        severity="high",
+                    )
                     await events.notify_phone(
                         f"NEXUS scheduler job '{job.id}' is overdue by {int(overdue)}s"
                         " (possible stall).",
@@ -169,6 +176,13 @@ async def check_dead_letters(*, threshold: int, cooldown_s: int) -> int:
                 "notification pipeline likely broken (check TELEGRAM_BOT_TOKEN / Telegram reachability)"
             )
         if rows and await asyncio.to_thread(_should_alert_dead_letters_db, cooldown_s):
+            from backend.agents import outcomes
+            await outcomes.record_flag(
+                "watchdog", "dead_letters",
+                f"NEXUS has {len(rows)} undelivered Telegram message(s) stuck"
+                f" (>= {threshold} retries). Check Telegram reachability.",
+                severity="high",
+            )
             await events.notify_phone(
                 f"NEXUS has {len(rows)} undelivered Telegram message(s) stuck"
                 f" (>= {threshold} retries). Check Telegram reachability.",
@@ -202,6 +216,10 @@ async def check_budget_warning() -> bool:
 
         from backend import events
         pct_used = round(spend / cap * 100) if cap > 0 else 0
+        # Deliberately NOT flagged (spec docs/outcome-tracker-spec.md §2.2-B):
+        # self-clearing on the next calendar-day boundary and already
+        # once-per-day -- an OutcomeFlag row would add nothing here. Do not
+        # "helpfully" add outcomes.record_flag to this check.
         await events.notify_phone(
             f"NEXUS spend warning: ${spend:.2f} of ${cap:.2f} daily LLM budget used "
             f"({pct_used}%). Hard cap stops billed calls at ${cap:.2f}.",
@@ -250,8 +268,14 @@ async def check_auth_failure_burst() -> list[str]:
         paged = await asyncio.to_thread(governor.claim_auth_burst_alert, over, active, float(window_s))
 
         from backend import events
+        from backend.agents import outcomes
         for src in paged:
             logger.error(f"401 burst from {src}: {stats[src]['count']} failures in {window_min} min")
+            await outcomes.record_flag(
+                "watchdog", f"auth_burst:{src}",
+                _format_auth_burst(src, stats[src], window_min),
+                severity="high",
+            )
             await events.notify_phone(_format_auth_burst(src, stats[src], window_min), kind="auth_burst")
 
         return paged
@@ -324,6 +348,12 @@ async def check_integration_contracts() -> list[str]:
             streak = _contract_fail_streak[name]
             if streak >= consecutive_ticks and _should_alert(f"contract:{name}", cooldown_s):
                 logger.error(f"Integration contract breach: '{name}' — {'; '.join(breaches)}")
+                from backend.agents import outcomes
+                await outcomes.record_flag(
+                    "contracts", f"breach:{name}",
+                    _format_contract_breach(name, breaches, streak, window_min, cooldown_s),
+                    severity="high",
+                )
                 await events.notify_phone(
                     _format_contract_breach(name, breaches, streak, window_min, cooldown_s),
                     kind="contract_breach",

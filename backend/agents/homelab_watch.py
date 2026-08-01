@@ -47,17 +47,46 @@ def reset() -> None:
     _garage_open_since = None
 
 
+async def _clear_flag_safe(key: str) -> None:
+    """outcomes.clear_flag wrapped so a DB hiccup can never surface as an
+    unhandled exception out of a check function -- record_flag already
+    guarantees NEVER raises itself (backend/agents/outcomes.py); clear_flag
+    does not carry that same top-level guard, so it lives here instead."""
+    from backend.agents import outcomes
+    try:
+        await outcomes.clear_flag("homelab_watch", key)
+    except Exception as e:
+        logger.warning(f"clear_flag failed for {key!r} (ignored): {e}")
+
+
 async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> bool:
     """Level-triggered latch: fires once when `active` transitions True, clears
-    when it goes False. Returns whether it fired THIS call."""
+    when it goes False. Returns whether it fired THIS call.
+
+    Every falling-edge tick (active=False) unconditionally auto-resolves any
+    open flag for this fingerprint (spec docs/outcome-tracker-spec.md §2.2-A)
+    before the in-memory latch is touched -- a garage that got closed clears
+    its own flag. A rising edge that newly latches records a flag first and
+    threads its id into two Telegram buttons on the alert; a None id (flag
+    tracking disabled/suppressed/errored) degrades to buttons=None.
+    """
     if not active:
+        await _clear_flag_safe(key)
         _active_alerts.discard(key)
         return False
     if key in _active_alerts:
         return False
     _active_alerts.add(key)
+    from backend.agents import outcomes
+    flag_id = await outcomes.record_flag("homelab_watch", key, message)
+    buttons = None
+    if flag_id is not None:
+        buttons = [
+            {"text": "✓ Resolved", "callback_data": f"flag:resolved:{flag_id}"},
+            {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{flag_id}"},
+        ]
     from backend import events
-    await events.notify_phone(message, kind=kind)
+    await events.notify_phone(message, kind=kind, buttons=buttons)
     return True
 
 
@@ -78,6 +107,12 @@ async def check_proxmox_vms() -> list[str]:
         prev = _vm_states.get(vmid)
         if prev == "running" and status != "running":
             name = html.escape(next((vm.get("name") or "" for vm in data.vms if str(vm["vmid"]) == vmid), vmid))
+            from backend.agents import outcomes
+            await outcomes.record_flag(
+                "homelab_watch", f"vm:{vmid}",
+                f"VM/LXC '{name}' (id {vmid}) stopped (was running).",
+                severity="high",
+            )
             from backend import events
             await events.notify_phone(
                 f"NEXUS: VM/LXC '{name}' (id {vmid}) stopped (was running).",
@@ -85,6 +120,8 @@ async def check_proxmox_vms() -> list[str]:
                 buttons=[{"text": "▶ Start", "callback_data": f"vm:start:{vmid}"}],
             )
             fired.append(f"vm:{vmid}")
+        elif prev != "running" and status == "running":
+            await _clear_flag_safe(f"vm:{vmid}")
     _vm_states.clear()
     _vm_states.update(current)
     return fired
@@ -105,6 +142,12 @@ async def check_docker() -> list[str]:
     for name, state in current.items():
         prev = _docker_states.get(name)
         if prev == "RUNNING" and state != "RUNNING":
+            from backend.agents import outcomes
+            await outcomes.record_flag(
+                "homelab_watch", f"docker:{name}",
+                f"Docker container '{html.escape(name)}' stopped.",
+                severity="medium",
+            )
             buttons = None
             if unraid._SAFE_CONTAINER_ID.match(name) and len(f"docker:restart:{name}".encode()) <= 64:
                 buttons = [{"text": "↺ Restart", "callback_data": f"docker:restart:{name}"}]
@@ -115,6 +158,8 @@ async def check_docker() -> list[str]:
                 buttons=buttons,
             )
             fired.append(f"docker:{name}")
+        elif prev != "RUNNING" and state == "RUNNING":
+            await _clear_flag_safe(f"docker:{name}")
     _docker_states.clear()
     _docker_states.update(current)
     return fired

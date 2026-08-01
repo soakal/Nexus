@@ -2,7 +2,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel.pool import StaticPool
 
+import backend.database  # noqa: F401 — register all models (incl. OutcomeFlag) on metadata
 from backend.agents import homelab_watch
 
 
@@ -11,6 +14,16 @@ def _reset():
     homelab_watch.reset()
     yield
     homelab_watch.reset()
+
+
+@pytest.fixture
+def eng(monkeypatch):
+    """In-memory DB engine for outcome-flag write-path tests, matching
+    tests/test_outcome_flags.py's `eng` fixture."""
+    e = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(e)
+    monkeypatch.setattr("backend.database.engine", e)
+    return e
 
 
 def _settings(**overrides):
@@ -306,6 +319,85 @@ async def test_garage_closes_clears_timer_and_rearms():
 
     assert fired == ["garage_open"]
     assert mock_notify.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_garage_edge_alert_records_flag_clears_and_rearms_same_row(eng):
+    """docs/outcome-tracker-spec.md AC18-AC20, driven end-to-end against a real
+    OutcomeFlag table (not a mocked outcomes.record_flag) so status transitions
+    are actually pinned down, not just call args.
+
+    AC18: door open past threshold -> record_flag('homelab_watch','garage_open',...)
+    fires before notify_phone, and notify_phone's buttons carry
+    flag:resolved:{id} / flag:false_positive:{id} for the row it created.
+    AC20: a homelab_watch.reset() (simulated restart) with the condition still
+    active re-fires the in-memory latch (unchanged existing behavior), but
+    record_flag's dedup means the still-open DB row is reused, not duplicated
+    -- exactly one row for the fingerprint. Exercised via _edge_alert directly
+    (the exact function check_garage delegates to) rather than check_garage()
+    a second time, because check_garage's OWN garage-open-timer state
+    (_garage_open_since) is separately wiped by reset() too -- going back
+    through check_garage would re-seed that timer at 0 elapsed and hit an
+    intervening under-threshold tick, which legitimately auto-clears the flag
+    per _edge_alert's documented "every falling-edge tick clears" contract.
+    That is a real, separate behavior of the timer, not what AC20 (scoped to
+    "leaving _active_alerts alone") is pinning down.
+    AC19: the door closing on the next tick auto-resolves that same row via
+    clear_flag, with resolved_by="auto:condition_cleared".
+    """
+    from backend.database import OutcomeFlag
+
+    open_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "open"}]
+    closed_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "closed"}]
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        # AC18 — seed then cross the threshold: latch fires, flag recorded.
+        with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+             patch("time.monotonic", return_value=1000.0):
+            await homelab_watch.check_garage()
+        with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+             patch("time.monotonic", return_value=1000.0 + 31 * 60):
+            fired1 = await homelab_watch.check_garage()
+
+        assert fired1 == ["garage_open"]
+        with Session(eng) as s:
+            rows = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == "homelab_watch:garage_open")).all()
+        assert len(rows) == 1
+        flag_id = rows[0].id
+        assert rows[0].status == "open"
+        assert mock_notify.await_args.kwargs["buttons"] == [
+            {"text": "✓ Resolved", "callback_data": f"flag:resolved:{flag_id}"},
+            {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{flag_id}"},
+        ]
+
+        # AC20 — restart while the condition persists: reset() clears
+        # _active_alerts, so the very next active=True tick re-fires the
+        # latch, but the still-open DB row is reused (no duplicate insert).
+        homelab_watch.reset()
+        fired2 = await homelab_watch._edge_alert(
+            "garage_open", True,
+            "NEXUS: garage door has been open for over 30 minutes.",
+            kind="homelab_garage",
+        )
+
+        assert fired2 is True
+        with Session(eng) as s:
+            rows_after_restart = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == "homelab_watch:garage_open")).all()
+        assert len(rows_after_restart) == 1
+        assert rows_after_restart[0].id == flag_id
+        assert rows_after_restart[0].status == "open"
+        assert mock_notify.await_args.kwargs["buttons"][0]["callback_data"] == f"flag:resolved:{flag_id}"
+
+        # AC19 — door closes: clear_flag auto-resolves that same row.
+        with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(closed_entities)), \
+             patch("time.monotonic", return_value=2000.0 + 32 * 60):
+            await homelab_watch.check_garage()
+
+    with Session(eng) as s:
+        resolved_row = s.get(OutcomeFlag, flag_id)
+    assert resolved_row.status == "resolved"
+    assert resolved_row.resolved_by == "auto:condition_cleared"
 
 
 @pytest.mark.asyncio

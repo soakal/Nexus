@@ -769,6 +769,67 @@ async def test_run_watchdog_includes_contract_breaches_key(eng):
     assert "contract_breaches" in result2
 
 
+# ---------------------------------------------------------------------------
+# Outcome-flag write path (docs/outcome-tracker-spec.md AC21)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ac21_flagging_checks_call_record_flag_budget_warn_does_not(eng):
+    """AC21: each of the four flagging checks (check_scheduler_stalls,
+    check_dead_letters, check_auth_failure_burst, check_integration_contracts)
+    calls record_flag with its documented (source, check) fingerprint before
+    notify_phone; check_budget_warning calls it zero times."""
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import PendingDelivery, SystemState, SpendLog
+    from backend.safety import authfail
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1, daily_budget_usd=25.0))
+        s.add(PendingDelivery(payload_json='{"a":1}', delivery_type="notify", attempts=6))
+        s.add(SpendLog(model="claude-sonnet-4-6", cost_usd=20.0))
+        s.commit()
+
+    now_utc = _utcnow()
+    overdue_job = _fake_job("morning_briefing", now_utc - timedelta(seconds=600))
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [overdue_job])
+
+    authfail.reset()
+    for _ in range(30):
+        authfail.record_failure("1.2.3.4", "/api/ha/entities")
+
+    settings = Settings(
+        watchdog_enabled=True,
+        auth_burst_enabled=True, auth_burst_threshold=25, auth_burst_window_minutes=30,
+        contract_canary_enabled=True, contract_canary_consecutive_ticks=1,
+        budget_warn_enabled=True, budget_warn_pct=0.80,
+    )
+
+    record_flag_mock = AsyncMock(return_value=1)
+    breaching_fetch = AsyncMock(return_value=_FakeWeatherData(condition="Unknown"))
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", breaching_fetch), \
+         patch("backend.agents.outcomes.record_flag", record_flag_mock), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
+        await watchdog.check_scheduler_stalls(grace_s=300, cooldown_s=3600)
+        await watchdog.check_dead_letters(threshold=5, cooldown_s=3600)
+        await watchdog.check_auth_failure_burst()
+        await watchdog.check_integration_contracts()  # consecutive_ticks=1 -> fires this tick
+        await watchdog.check_budget_warning()
+
+    authfail.reset()
+
+    calls = {(c.args[0], c.args[1]) for c in record_flag_mock.await_args_list}
+    assert ("watchdog", "stall:morning_briefing") in calls
+    assert ("watchdog", "dead_letters") in calls
+    assert ("watchdog", "auth_burst:1.2.3.4") in calls
+    assert ("contracts", "breach:weather") in calls
+    assert record_flag_mock.await_count == 4  # check_budget_warning contributed none
+
+
 @pytest.mark.asyncio
 async def test_contract_canary_does_not_bypass_cache():
     from backend.agents import watchdog
