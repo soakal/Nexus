@@ -310,3 +310,76 @@ image bytes or `None` on any failure. New `telegram.send_photo()` is the one Bot
 multipart upload instead of `_call()`'s JSON POST. `_cmd_image` (`telegram_commands.py`) sends the photo
 directly and returns `None` — reuses `dispatch()`'s existing "handler already replied" convention rather
 than changing the `Handler` type/`dispatch()` body for one command.
+
+## Outcome Tracker (2026-08-01)
+NEXUS's own feature proposal (`docs/outcome-tracker-spec.md`, Opus-planned, Council-loop-built across
+7 rollout steps + 2 gap-closure cycles) closes the loop on three previously-silent signal classes —
+homelab edge alerts, watchdog pages, and deterministic briefing observations — none of which flowed
+through the broker's `ActionLog`/confirm-reject audit trail the way broker-dispatched writes already do.
+
+- **Data model:** new `OutcomeFlag` table (`backend/database.py`, created by `create_all`, no migration
+  shim) — `source`/`check`/`fingerprint` (`f"{source}:{check}"`, the dedup key), `summary`/`detail`,
+  `severity` (reuses `ActionLog.risk`/`Goal.risk`'s `low|medium|high` vocabulary), `status`
+  (`open|resolved|deferred|false_positive|needs_follow_up`), resolution/defer/surfaced-count
+  bookkeeping, and an optional `action_log_id` FK for the rare flag that accompanied a broker action.
+  Deliberately NOT an `ActionLog` extension (a briefing observation has no actor/target/decision to
+  attach to) and NOT a `SystemState` CSV field (too many mutable per-item fields, unlike
+  `policy_auto_allow_kinds`/`muted_notify_kinds`). `_ensure_outcomeflag_index()` adds
+  `ux_outcomeflag_open`, a partial unique index (`WHERE status='open' AND fingerprint != ''`) mirroring
+  `ux_goal_fingerprint_active` — the hard backstop against `record_flag()`'s check-then-insert TOCTOU.
+- **Write path (`backend/agents/outcomes.py`):** `record_flag(source, check, summary, ...)` never raises
+  (same contract as `notify_phone`) and applies suppression rules in order: (1) an existing
+  `open`/`needs_follow_up` row with the same fingerprint just bumps `surfaced_count`/`last_surfaced_at`,
+  no new row — "stop re-surfacing things already raised"; (2) an existing `deferred` row with a future
+  `deferred_until` returns `None` — "deferred means shut up until then"; (3) an existing `false_positive`
+  row within `outcome_flag_false_positive_cooldown_days` (default 30) returns `None` — "stop crying wolf
+  on the same pattern"; (4) otherwise inserts (catching the partial-unique-index race the same way
+  `goals.propose()` catches its own). `resolve_flag`/`clear_flag`/`open_flags`/`recently_closed`/
+  `calibration_summary`/`sweep_deferred` round out the public API. No `backend.safety.broker` import, no
+  `Session`/ORM object crosses an `await`, zero LLM calls anywhere in the module.
+- **Five config flags (`backend/config.py`):** `outcome_flags_enabled` (default True — the global
+  rollback lever; `False` makes `record_flag` a no-op and every read path degrade to `(none)`/`[]`),
+  `outcome_flag_sweep_enabled`, `outcome_flag_false_positive_cooldown_days` (30),
+  `outcome_flag_retention_days` (180), `outcome_flag_briefing_max` (10).
+- **REST (`backend/api/safety.py`, Bearer-gated via `Depends(require_api_key)` like every other route in
+  the file):** `GET /api/safety/flags/calibration` (declared FIRST so path matching can't shadow it
+  behind the parameterized `/flags/{flag_id}/resolve` route), `GET /api/safety/flags`
+  (`?status=&source=&limit=`), `POST /api/safety/flags` (manual create, `source="manual"` — this is the
+  Claude-Code-facing path), `POST /api/safety/flags/{flag_id}/resolve`.
+- **Telegram:** new `flag` namespace in `telegram_poller.py`'s `_INT_ID_NAMESPACES` (int-coerced id, same
+  as `goal`/`safety`) — `callback_data` `flag:<resolved|false_positive|deferred>:<id>`, a two-button
+  keyboard (`✓ Resolved`/`✗ False alarm`) matching the `goal:approve/reject` and `safety:confirm/reject`
+  precedent rather than a busier four-button layout. `telegram_commands.py` adds `/flags` (list open,
+  same shape as `/goals`/`/tasks`), `/resolve <id> [status] [note]` (default status `resolved`),
+  `/defer <id> <days> [note]`, `/flag <text>` (manual log into the same store, `source="manual"`).
+- **6th watchdog check:** `watchdog.run_watchdog()`'s 5-minute job gained `check_deferred_flags()` →
+  `outcomes.sweep_deferred()`, flipping past-`deferred_until` rows to `needs_follow_up` and paging once
+  per flag; the job's return dict gained a `deferred_swept` key. Gated by both `watchdog_enabled` and its
+  own `outcome_flag_sweep_enabled` sub-flag — the same "don't couple a durability guarantee to
+  `watchdog_enabled`" concern the `SecretFallback` drain called out, but accepted here since a missed
+  sweep is a late reminder, not lost data (the row persists either way).
+- **Retention:** `backend/agents/backup.py::prune_old_outcome_flags()` deletes closed rows older than
+  `outcome_flag_retention_days`, and NEVER deletes an `open`/`needs_follow_up` row regardless of age —
+  wired into the nightly 03:45 `retention_prune` job alongside `prune_old_uptime_samples`/
+  `prune_old_traces`.
+- **Read paths:** `briefing.py` injects `open_flags()`/`recently_closed(hours=48)` into the prompt as
+  KNOWN OPEN ITEMS / RECENTLY CLOSED blocks (pre-LLM, capped at `outcome_flag_briefing_max`, degrading to
+  `(none)` on any fetch exception) AND appends a deterministic post-LLM `## Open Items` section — added
+  to `_UNVERIFIED_FACT_SECTIONS` so `extract_and_store` never turns a flag summary into a durable, LLM-
+  proposer-visible `Fact`. `chat.py`'s CHAT branch threads `open_flags(limit=10)` into
+  `memory.assemble()`'s new optional `flags_str` param as an `[OPEN ITEMS]` block (existing 3-arg callers
+  unaffected). Write-path call sites: `homelab_watch.py` (6 checks routed through `_edge_alert`'s
+  existing `key` as the fingerprint, `_active_alerts`' in-memory latch deliberately left untouched),
+  `watchdog.py` (4 of its checks flag; `check_budget_warning` deliberately does NOT — it's already
+  self-clearing on a calendar boundary), and `briefing.py::_record_briefing_flags` (structured `context`
+  fields only — `ha_unavailable_entities`/`unraid_array`/`unraid_parity`/`github_stale_prs`/
+  `unifi_new_devices`/`adguard_filtering_off` — never the `## Priority Actions` LLM prose).
+- **§5 scope boundaries, held to exactly:** no LLM classification of outcomes (a human tap or an
+  observable condition-clear only), no auto-suppression beyond the fixed 30-day false-positive cooldown,
+  no parsing of the briefing's `## Priority Actions` LLM prose, **no agent-facing write tool** —
+  `tools.py` gained a read-only `open_flags` `ReadTool` only; a `resolve_flag` write tool would let
+  NEXUS close its own loop and destroy the signal the feature exists to capture, so it stays explicitly
+  out of v1 (noted in `outcomes.py`'s own module docstring, not just this file), no `Flags.jsx`/frontend
+  page (REST + Telegram + briefing/chat cover v1), no Obsidian/Vault write path (SQLite is the query-able
+  store the Vault isn't), the two existing Infisical/Hermes soak-reminder jobs are untouched, and
+  `ActionLog` gets zero new columns/decision values.

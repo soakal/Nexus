@@ -629,17 +629,17 @@ class SecretFallback(SQLModel, table=True):
     last_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-# Outcome Tracker (docs/outcome-tracker-spec.md) — rollout step 1, foundation
-# only. One row per raised-and-tracked observation from homelab_watch/watchdog/
+# Outcome Tracker (docs/outcome-tracker-spec.md) — wired end-to-end as of the
+# 2026-08-01 rollout (see this repo's own CLAUDE.md "Outcome Tracker" section).
+# One row per raised-and-tracked observation from homelab_watch/watchdog/
 # briefing/contracts/manual sources, keyed for dedup by `fingerprint`
 # (f"{source}:{check}") the same way Goal.fingerprint dedups goals. `severity`
 # reuses ActionLog.risk/Goal.risk's low|medium|high vocabulary rather than
 # inventing a new one. New table (create_all only), plus one index shim
 # (_ensure_outcomeflag_index below) for the partial unique "at most one open
 # flag per fingerprint" backstop — see ux_goal_fingerprint_active for the prior
-# art this mirrors. Nothing writes to this table yet in step 1; later rollout
-# steps wire homelab_watch.py/watchdog.py/briefing.py/telegram_*/api/safety.py
-# into backend/agents/outcomes.py.
+# art this mirrors. homelab_watch.py/watchdog.py/briefing.py/telegram_*/
+# api/safety.py all write and read through backend/agents/outcomes.py.
 class OutcomeFlag(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     source: str = Field(index=True)      # homelab_watch | watchdog | briefing | contracts | manual

@@ -1,8 +1,10 @@
-"""Outcome flag tracker (docs/outcome-tracker-spec.md) — rollout step 1: the
-write/dedup/read foundation. NOTHING WRITES YET through any real alerting
-path in this step — homelab_watch.py, watchdog.py, briefing.py, telegram_*,
-tools.py, backup.py, and ActionLog are all untouched (later rollout steps
-2-7 wire this module into those call sites).
+"""Outcome flag tracker (docs/outcome-tracker-spec.md) — the write/dedup/read
+foundation, now wired end-to-end (rollout steps 1-7 complete; see this repo's
+own CLAUDE.md "Outcome Tracker" section for the full call-site map):
+homelab_watch.py, watchdog.py, briefing.py, telegram_poller.py/
+telegram_commands.py, tools.py (read-only), and backup.py all call into this
+module. ActionLog itself remains untouched (no new columns/decision values —
+see spec §5.8) — this module writes only to OutcomeFlag.
 
 Follows the established shape (digest.py, goals.py, facts.py): sync `_db_*`
 helpers open their own Session (re-importing `engine` from backend.database
@@ -12,8 +14,8 @@ asyncio.to_thread. No Session/ORM object ever crosses an await boundary —
 `_db_*` helpers return plain dicts, never SQLModel instances (AC33).
 
 No import of backend.safety.broker or anything from the safety broker/
-websocket layer (AC32) — step 1 is the foundation only, nothing writes yet.
-Zero LLM calls anywhere in this module (AC34).
+websocket layer (AC32) — a deliberate invariant of this module, not a
+step-1-only artifact. Zero LLM calls anywhere in this module (AC34).
 
 Explicitly out of v1 scope (see spec §5): no LLM classification of outcomes,
 no auto-suppression by false-positive rate beyond the fixed cooldown below,
