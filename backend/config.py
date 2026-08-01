@@ -351,6 +351,21 @@ class Settings(BaseSettings):
     outcome_flag_retention_days: int = 180
     outcome_flag_briefing_max: int = 10
 
+    # Calibration Loop (docs/calibration-loop-spec.md), rollout step 1 — the
+    # schema/config foundation only; nothing computes and nothing suppresses
+    # yet. Two master switches on purpose: calibration_enabled ships the
+    # measurement (harmless), calibration_suppression_enabled is THE behavior
+    # change and stays off until Brian has read real numbers from the soak.
+    calibration_enabled: bool = True              # compute hints + /calibration; harmless
+    calibration_suppression_enabled: bool = False # THE behavior change — off for the soak
+    calibration_window_days: int = 30
+    calibration_min_verdicts: int = 5
+    calibration_fp_threshold: float = 0.60
+    calibration_clear_threshold: float = 0.40     # hysteresis floor
+    calibration_hint_max_days: int = 30           # mandatory re-probation
+    calibration_override_days: int = 90           # how long Brian's un-suppress is sticky
+    calibration_suppress_high_severity: bool = False  # THE guardrail — do not flip lightly
+
     # Phase 3 of the Hermes decoupling: a proactive daily homelab-status
     # digest (Proxmox/Unraid/UniFi/AdGuard/Channels DVR/HA/sports), ported
     # from Hermes's own 8am cron (main.py:daily_digest). Scheduled 5 minutes

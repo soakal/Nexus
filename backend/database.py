@@ -658,6 +658,47 @@ class OutcomeFlag(SQLModel, table=True):
     last_surfaced_at: datetime = Field(default_factory=datetime.utcnow)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    suppressed: bool = False              # written by record_flag when a hint gated it
+    suppressed_reason: str | None = None  # "calibration:homelab_watch:garage_open fp_rate=0.71 n=7"
+
+
+# Calibration Loop (docs/calibration-loop-spec.md) §1.3 — a nightly-computed,
+# per-fingerprint snapshot of OutcomeFlag's human verdicts, used to decide
+# whether a rule's Telegram page should be auto-suppressed. Brand new table,
+# no migration shim needed (matches OutcomeFlag/SecretFallback/TaskOutcome):
+# the fingerprint uniqueness is declared on the model and handled by
+# create_all, unlike ux_outcomeflag_open it is unconditional.
+class CalibrationHint(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    fingerprint: str = Field(unique=True, index=True)   # f"{source}:{check}", same key OutcomeFlag uses
+    context_bucket: str = "all"        # v1 always "all" — see §1.4
+    status: str = "active"             # active | expired | overridden_off
+    # --- the frozen evidence that justified the current status ---
+    verdict_count: int = 0             # denominator: human-verdicted rows in window (§2.3)
+    false_positive_count: int = 0      # numerator
+    fp_rate: float = 0.0
+    auto_cleared_count: int = 0        # resolved_by LIKE 'auto:%' — excluded from both, shown in /calibration
+    suppressed_surfacings: int = 0     # sum(surfaced_count) over suppressed rows — "how loud it still is"
+    max_severity: str = "medium"       # highest severity seen in window; gates §3.4
+    window_days: int = 30
+    reason: str = ""                   # human-readable, rendered verbatim by /calibration
+    # --- state machine ---
+    first_active_at: datetime | None = None   # when suppression STARTED (never reset by a recompute)
+    expires_at: datetime | None = None        # mandatory re-probation, §2.5
+    override_by: str | None = None            # "telegram" | "api"
+    override_at: datetime | None = None
+    override_until: datetime | None = None    # nightly job refuses to re-activate before this
+    override_note: str | None = None
+    computed_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+def _ensure_outcomeflag_columns():
+    """Idempotently add the calibration-loop columns to an OutcomeFlag table
+    that predates them. Best-effort — never fatal to startup."""
+    _safe_add_column("outcomeflag", "suppressed", "BOOLEAN DEFAULT 0")
+    _safe_add_column("outcomeflag", "suppressed_reason", "VARCHAR")
 
 
 def _ensure_processedmail_columns():
@@ -696,6 +737,7 @@ def create_db_and_tables():
     _ensure_system_state_columns()
     _ensure_system_state()
     _ensure_processedmail_columns()
+    _ensure_outcomeflag_columns()
     _ensure_outcomeflag_index()
 
 
