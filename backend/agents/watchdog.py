@@ -366,10 +366,67 @@ async def check_integration_contracts() -> list[str]:
         return []
 
 
+def _format_flag_followup(flag_id: int, flag: dict | None) -> str:
+    summary = flag["summary"] if flag else f"flag #{flag_id}"
+    return (
+        f"NEXUS follow-up: deferred flag #{flag_id} is now due — {summary}"
+    )
+
+
+async def check_deferred_flags() -> list[int]:
+    """Sweep deferred OutcomeFlag rows whose deferred_until has passed (rollout
+    step 7, spec §3.5). Pages once per flipped id via notify_phone(kind=
+    "flag_followup") with the same two-button flag:resolved/flag:false_positive
+    keyboard used elsewhere (homelab_watch.py's _edge_alert).
+
+    Gated by settings.outcome_flag_sweep_enabled, independent of
+    watchdog_enabled's own gate on the caller (spec §3.5: a missed sweep is a
+    late reminder, not lost data — the row persists either way).
+
+    Best-effort: any exception returns [] without propagating. Returns the
+    ids flipped this tick (does NOT mutate sweep_deferred()'s own contract —
+    it still returns only ids).
+    """
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "outcome_flag_sweep_enabled", True):
+            return []
+
+        from backend.agents import outcomes
+        ids = await outcomes.sweep_deferred()
+        if not ids:
+            return ids
+
+        # sweep_deferred() only returns ids; look up summaries for the page
+        # text via the existing open_flags() reader (rows just flipped to
+        # needs_follow_up are included in its result) instead of inventing a
+        # new DB query pattern.
+        flags = await outcomes.open_flags(limit=max(50, len(ids)))
+        by_id = {f["id"]: f for f in flags}
+
+        from backend import events
+        for flag_id in ids:
+            buttons = [
+                {"text": "✓ Resolved", "callback_data": f"flag:resolved:{flag_id}"},
+                {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{flag_id}"},
+            ]
+            await events.notify_phone(
+                _format_flag_followup(flag_id, by_id.get(flag_id)),
+                kind="flag_followup",
+                buttons=buttons,
+            )
+
+        return ids
+    except Exception as exc:
+        logger.warning(f"check_deferred_flags error (ignored): {exc}")
+        return []
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all five checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all six checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -387,6 +444,7 @@ async def run_watchdog() -> dict:
         budget_warn_fired = await check_budget_warning()
         auth_bursts = await check_auth_failure_burst()
         contract_breaches = await check_integration_contracts()
+        deferred_swept = await check_deferred_flags()
 
         return {
             "stalled": stalled,
@@ -394,6 +452,7 @@ async def run_watchdog() -> dict:
             "budget_warn_fired": budget_warn_fired,
             "auth_bursts": auth_bursts,
             "contract_breaches": contract_breaches,
+            "deferred_swept": deferred_swept,
         }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
@@ -403,4 +462,5 @@ async def run_watchdog() -> dict:
             "budget_warn_fired": False,
             "auth_bursts": [],
             "contract_breaches": [],
+            "deferred_swept": [],
         }

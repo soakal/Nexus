@@ -124,6 +124,7 @@ async def build_autonomy_digest() -> str:
 
         # Fan-out all DB reads + governor calls concurrently.
         from backend.safety import governor
+        from backend.agents import outcomes
 
         auto_goals_task = asyncio.to_thread(_db_recent_autonomous_goals, since)
         pending_count_task = asyncio.to_thread(_db_pending_confirm_count)
@@ -131,6 +132,7 @@ async def build_autonomy_digest() -> str:
         completed_goals_task = asyncio.to_thread(_db_recent_completed_goals, since)
         spend_task = asyncio.to_thread(governor.today_spend_usd)
         state_task = asyncio.to_thread(governor.get_system_state)
+        calibration_task = outcomes.calibration_summary(30)
 
         results = await asyncio.gather(
             auto_goals_task,
@@ -139,6 +141,7 @@ async def build_autonomy_digest() -> str:
             completed_goals_task,
             spend_task,
             state_task,
+            calibration_task,
             return_exceptions=True,
         )
 
@@ -148,6 +151,7 @@ async def build_autonomy_digest() -> str:
         completed_goals = results[3] if not isinstance(results[3], Exception) else []
         spend = results[4] if not isinstance(results[4], Exception) else 0.0
         state = results[5] if not isinstance(results[5], Exception) else {}
+        calibration = results[6] if not isinstance(results[6], Exception) else {}
 
         autonomy_label = "ENABLED" if state.get("autonomy_enabled", True) else "PAUSED"
         daily_cap = state.get("daily_budget_usd", 25.0)
@@ -180,6 +184,19 @@ async def build_autonomy_digest() -> str:
         else:
             completed_line = "Completed (24h): none"
 
+        # Flag calibration (spec §4.4) — per-source:check raised/false_positive
+        # counts over the last 30 days, one advisory line matching the
+        # Completed (24h) line's style. calibration is {} on an empty table or
+        # on gather's own exception fallback above; both degrade to "none".
+        if calibration:
+            calibration_parts = ", ".join(
+                f"{key} — {sum(counts.values())} raised, {counts.get('false_positive', 0)} false_positive"
+                for key, counts in calibration.items()
+            )
+            calibration_line = f"Flag calibration (30d): {calibration_parts}"
+        else:
+            calibration_line = "Flag calibration (30d): none"
+
         lines = [
             f"NEXUS autonomy digest — {date_str}",
             f"Autonomy: {autonomy_label}",
@@ -188,6 +205,7 @@ async def build_autonomy_digest() -> str:
             f"Awaiting your approval: {pending_count} action(s) + {len(proposed_goals)} proposed goal(s)",
             f"  proposed:{proposed_titles}",
             f"Spend today: ${spend:.2f} / ${daily_cap:.2f}",
+            calibration_line,
         ]
         return "\n".join(lines)
 

@@ -26,7 +26,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 import backend.database  # noqa: F401 — register all models on metadata
@@ -846,3 +846,96 @@ async def test_contract_canary_does_not_bypass_cache():
 
     real_fetch.assert_awaited_once()
     wrapped_original.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# check_deferred_flags / deferred_swept (rollout step 7, spec §3.5, AC29/AC30)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_check_deferred_flags_pages_once_per_flipped_id(eng):
+    """A past-due deferred flag is flipped by sweep_deferred() and paged exactly
+    once via notify_phone(kind="flag_followup") with resolved/false_positive
+    buttons keyed to its id; a future-dated deferred flag is left alone and
+    never paged."""
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import OutcomeFlag
+
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        due = OutcomeFlag(
+            source="homelab_watch", check="garage_open", summary="Garage door open",
+            status="deferred", deferred_until=now - timedelta(minutes=5),
+        )
+        future = OutcomeFlag(
+            source="homelab_watch", check="stale_prs", summary="PR stale",
+            status="deferred", deferred_until=now + timedelta(hours=1),
+        )
+        s.add(due)
+        s.add(future)
+        s.commit()
+        due_id = due.id
+
+    settings = Settings(outcome_flag_sweep_enabled=True)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        ids = await watchdog.check_deferred_flags()
+
+    assert ids == [due_id]
+    notify_mock.assert_awaited_once()
+    call = notify_mock.await_args
+    assert call.kwargs["kind"] == "flag_followup"
+    callback_datas = {b["callback_data"] for b in call.kwargs["buttons"]}
+    assert callback_datas == {f"flag:resolved:{due_id}", f"flag:false_positive:{due_id}"}
+
+    with Session(eng) as s:
+        rows = {r.id: r.status for r in s.exec(select(OutcomeFlag)).all()}
+    assert rows[due_id] == "needs_follow_up"
+
+
+@pytest.mark.asyncio
+async def test_check_deferred_flags_disabled_skips_sweep(eng):
+    """outcome_flag_sweep_enabled=False short-circuits before sweep_deferred()
+    is even called — independent of watchdog_enabled."""
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(outcome_flag_sweep_enabled=False)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.outcomes.sweep_deferred") as sweep_mock, \
+         patch("backend.events.notify_phone", notify_mock):
+        ids = await watchdog.check_deferred_flags()
+
+    assert ids == []
+    sweep_mock.assert_not_called()
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_includes_deferred_swept_key(eng):
+    """run_watchdog's summary dict gains 'deferred_swept' in both the happy
+    path and the outer-exception fallback (AC30)."""
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [])
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch.object(watchdog, "check_deferred_flags", AsyncMock(return_value=[7])), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+    assert result["deferred_swept"] == [7]
+    # Every pre-existing key must still be present alongside the new one.
+    assert {"stalled", "dead_letters", "budget_warn_fired", "auth_bursts", "contract_breaches"} <= result.keys()
+
+    # Also present (as []) in the outer-exception fallback path.
+    with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
+        result2 = await watchdog.run_watchdog()
+    assert result2["deferred_swept"] == []
+    assert {"stalled", "dead_letters", "budget_warn_fired", "auth_bursts", "contract_breaches"} <= result2.keys()

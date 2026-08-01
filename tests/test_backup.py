@@ -341,6 +341,66 @@ def test_prune_old_traces_zero_is_noop(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 4d. prune_old_outcome_flags — closed-only retention pruning (spec AC31)
+# ---------------------------------------------------------------------------
+
+def test_prune_old_outcome_flags_never_deletes_open_or_needs_follow_up(tmp_path, monkeypatch):
+    """Deletes closed (resolved/false_positive) rows older than the cutoff,
+    but an open or needs_follow_up row is kept regardless of age (AC31)."""
+    from sqlmodel import Session
+    from backend.database import OutcomeFlag
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    now = datetime.utcnow()
+    old = now - timedelta(days=200)
+    with Session(engine) as s:
+        s.add(OutcomeFlag(source="x", check="a", summary="old resolved", status="resolved", created_at=old))
+        s.add(OutcomeFlag(source="x", check="b", summary="old false positive", status="false_positive", created_at=old))
+        s.add(OutcomeFlag(source="x", check="c", summary="old but open", status="open", created_at=old))
+        s.add(OutcomeFlag(source="x", check="d", summary="old but needs follow up", status="needs_follow_up", created_at=old))
+        s.add(OutcomeFlag(source="x", check="e", summary="fresh resolved", status="resolved", created_at=now))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.outcome_flag_retention_days = 180
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_outcome_flags
+    count = prune_old_outcome_flags()
+
+    assert count == 2  # only the two old closed rows
+    with Session(engine) as s:
+        remaining = {row.check: row.status for row in s.exec(select(OutcomeFlag)).all()}
+    assert remaining == {"c": "open", "d": "needs_follow_up", "e": "resolved"}
+
+
+def test_prune_old_outcome_flags_zero_is_noop(tmp_path, monkeypatch):
+    from sqlmodel import Session
+    from backend.database import OutcomeFlag
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    old = datetime.utcnow() - timedelta(days=9999)
+    with Session(engine) as s:
+        s.add(OutcomeFlag(source="x", check="a", summary="ancient resolved", status="resolved", created_at=old))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.outcome_flag_retention_days = 0
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_outcome_flags
+    count = prune_old_outcome_flags()
+
+    assert count == 0
+    with Session(engine) as s:
+        assert len(s.exec(select(OutcomeFlag)).all()) == 1, "retention_days=0 must be a no-op"
+
+
+# ---------------------------------------------------------------------------
 # 5. run_backup_job — forced failure alerts via notify_phone
 # ---------------------------------------------------------------------------
 
