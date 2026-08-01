@@ -271,7 +271,7 @@ New file `tests/test_outcome_flags.py` (pytest only, no new framework — matche
 - `AC10` `record_flag` is a no-op returning `None` when `outcome_flags_enabled=False`.
 
 **6.3 Close-the-loop**
-- `AC11` `resolve_flag` returns `"not_found"` for an unknown id, `"already_closed"` for a non-open row, `"invalid_status"` for a status outside the five.
+- `AC11` `resolve_flag` returns `"not_found"` for an unknown id, `"already_closed"` for an already-closed row (status `resolved` or `false_positive`), `"invalid_status"` for a status outside the five. `deferred`/`needs_follow_up` rows are **not** closed and remain resolvable — required by §3.5's sweeper (deferred → needs_follow_up) → Telegram `flag:resolved:<id>` button flow.
 - `AC12` A successful `resolve_flag` sets `resolved_at`, `resolved_by`, `resolution_note`, and `status`, and leaves `created_at`/`summary` untouched.
 - `AC13` (`tests/test_telegram_poller.py`) `handle_callback` with `data="flag:resolved:1"` from the authorized chat calls `outcomes.resolve_flag(1, "resolved", by="telegram")`, answers the callback exactly once, and edits the message with a `✓` prefix.
 - `AC14` (`tests/test_telegram_poller.py`) The same callback from an **unauthorized** `chat.id` calls `resolve_flag` zero times and answers with "Not authorized" — the fail-closed regression guard that file already enforces for `goal:`/`safety:`.

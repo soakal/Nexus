@@ -338,6 +338,19 @@ class Settings(BaseSettings):
     homelab_garage_entity_id: str = "cover.garage_door_garage_door"
     homelab_garage_open_minutes: int = 30
 
+    # Outcome Tracker (docs/outcome-tracker-spec.md), rollout step 1 — the
+    # write/dedup foundation in backend/agents/outcomes.py. Master switch
+    # first: outcome_flags_enabled=False makes record_flag() a no-op and every
+    # read path degrade to (none)/[] (the documented §7.7 rollback). Sweep is
+    # its own sub-flag, matching budget_warn_enabled's precedent (§3.5) so a
+    # missed sweep from watchdog_enabled=False doesn't couple two unrelated
+    # durability guarantees. Cooldown/retention/briefing-max are plain tunables.
+    outcome_flags_enabled: bool = True
+    outcome_flag_sweep_enabled: bool = True
+    outcome_flag_false_positive_cooldown_days: int = 30
+    outcome_flag_retention_days: int = 180
+    outcome_flag_briefing_max: int = 10
+
     # Phase 3 of the Hermes decoupling: a proactive daily homelab-status
     # digest (Proxmox/Unraid/UniFi/AdGuard/Channels DVR/HA/sports), ported
     # from Hermes's own 8am cron (main.py:daily_digest). Scheduled 5 minutes

@@ -629,12 +629,59 @@ class SecretFallback(SQLModel, table=True):
     last_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Outcome Tracker (docs/outcome-tracker-spec.md) — rollout step 1, foundation
+# only. One row per raised-and-tracked observation from homelab_watch/watchdog/
+# briefing/contracts/manual sources, keyed for dedup by `fingerprint`
+# (f"{source}:{check}") the same way Goal.fingerprint dedups goals. `severity`
+# reuses ActionLog.risk/Goal.risk's low|medium|high vocabulary rather than
+# inventing a new one. New table (create_all only), plus one index shim
+# (_ensure_outcomeflag_index below) for the partial unique "at most one open
+# flag per fingerprint" backstop — see ux_goal_fingerprint_active for the prior
+# art this mirrors. Nothing writes to this table yet in step 1; later rollout
+# steps wire homelab_watch.py/watchdog.py/briefing.py/telegram_*/api/safety.py
+# into backend/agents/outcomes.py.
+class OutcomeFlag(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    source: str = Field(index=True)      # homelab_watch | watchdog | briefing | contracts | manual
+    check: str                            # garage_open | stale_prs | ha_alerts | vm:{vmid} | ...
+    fingerprint: str = Field(default="", index=True)   # f"{source}:{check}" — dedup key
+    summary: str                          # one-line human-readable, <=300 chars, plain text
+    detail: str | None = None             # optional longer body / JSON blob
+    severity: str = "medium"              # low | medium | high  (matches ActionLog.risk / Goal.risk)
+    status: str = "open"                  # open | resolved | deferred | false_positive | needs_follow_up
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None        # "telegram" | "api" | "auto:condition_cleared" | "auto:expired"
+    resolution_note: str | None = None
+    deferred_until: datetime | None = None
+    action_log_id: int | None = Field(default=None, index=True)  # set only when a broker action accompanied this flag
+    surfaced_count: int = 1               # incremented each time the source re-observes while still open
+    last_surfaced_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_processedmail_columns():
     """Idempotently add columns introduced after ProcessedMailId originally
     shipped (2026-07-23, same day — this table already exists in Brian's live
     DB from earlier today, so a shim is needed even though the table itself is
     "new"). Best-effort — never fatal to startup."""
     _safe_add_column("processedmailid", "trashed", "BOOLEAN DEFAULT 0")
+
+
+def _ensure_outcomeflag_index():
+    """Partial unique index: at most one OPEN flag per fingerprint. Hard backstop
+    against record_flag()'s check-then-insert TOCTOU, exactly as
+    ux_goal_fingerprint_active backstops goals.propose(). fingerprint != ''
+    excludes directly-constructed test rows, same carve-out."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_outcomeflag_open "
+                "ON outcomeflag(fingerprint) WHERE status = 'open' AND fingerprint != ''"
+            ))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"_ensure_outcomeflag_index create failed: {e}")
 
 
 def create_db_and_tables():
@@ -649,6 +696,7 @@ def create_db_and_tables():
     _ensure_system_state_columns()
     _ensure_system_state()
     _ensure_processedmail_columns()
+    _ensure_outcomeflag_index()
 
 
 def get_session():
