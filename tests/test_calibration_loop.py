@@ -1,21 +1,31 @@
-"""Tests for the Calibration Loop foundation (docs/calibration-loop-spec.md),
-rollout step 1 (§9.5 step 1): the `CalibrationHint` table, the
+"""Tests for the Calibration Loop (docs/calibration-loop-spec.md).
+
+§8.1 (CAL1-CAL4, rollout §9.5 step 1): the `CalibrationHint` table, the
 `_ensure_outcomeflag_columns` shim adding `suppressed`/`suppressed_reason` to
 the live `OutcomeFlag` table, and the nine new `calibration_*` config fields.
 
-Covers CAL1-CAL4 from the spec's §8.1 acceptance criteria. Nothing computes
-and nothing suppresses yet (§9.1/§9.2) — `recompute_hints()`, the gate, and
-CAL5-CAL12 belong to a future cycle (§9.5 step 2), per the spec's own §8.2
-dependency on a function that does not exist until then.
+§8.4 (CAL20-CAL24, also step 1): the read/gate/write trio — outcomes.
+active_hint, outcomes.should_page, and outcomes.record_flag_ex/record_flag's
+back-compat wrapper. Every hint row in this section is constructed directly
+via `_make_hint` (recompute_hints() did not exist yet when this section was
+written) — the gate is tested independent of the aggregation that feeds it.
+
+§8.2/§8.3 (CAL5-CAL19, rollout §9.5 step 2, this cycle):
+`backend.agents.calibration.recompute_hints()` — the §2.3 honest-denominator
+aggregation over real `OutcomeFlag` rows (built via `_make_flag`/
+`_make_verdicts` below) plus the full §2.4/§2.5 persisted state machine
+(activate, hysteresis-clear, mandatory re-probation expiry, override
+stickiness, the CAL18 un-suppress side effect, the CAL19 notify-once-per-
+activation contract). Still nothing pages differently as a result —
+`calibration_suppression_enabled` stays False by default (outcomes.py, prior
+cycle) — recompute_hints() only computes and persists hints.
+
+CAL47-CAL49: calibration.py's own invariants (no broker import, no Session/
+ORM crossing an await, zero LLM calls), mirroring outcomes.py's AC32/AC33 and
+test_spend_report.py's blanket LLM-label guard.
 
 Pattern: in-memory StaticPool engine monkeypatched onto backend.database.engine,
 matching tests/test_outcome_flags.py / tests/test_db_pragma.py.
-
-§8.4's gate tests (CAL20-CAL24) additionally cover the read/gate/write trio
-landed this cycle (§9.5 step 1's remaining half): outcomes.active_hint,
-outcomes.should_page, and outcomes.record_flag_ex/record_flag's back-compat
-wrapper. recompute_hints() still does not exist — every hint row below is
-constructed directly, not computed.
 """
 import asyncio
 from datetime import datetime, timedelta
@@ -364,3 +374,560 @@ def test_record_flag_ex_stamps_suppressed_row_and_returns_surface_false(eng, cal
         outcomes.record_flag("homelab_watch", "new_fingerprint", "bumped observation")
     )
     assert flag_id == result["id"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers for §8.2/§8.3 — build real OutcomeFlag rows for recompute_hints()
+# to scan, rather than hand-constructing CalibrationHint rows directly.
+# ---------------------------------------------------------------------------
+
+def _make_flag(
+    engine, *, fingerprint, source=None, check=None, status="open",
+    resolved_by=None, resolved_at=None, suppressed=False, surfaced_count=1,
+    severity="medium", created_at=None,
+):
+    """Insert one OutcomeFlag row directly. recompute_hints() reads real
+    OutcomeFlag rows, so §8.2/§8.3's tests build the exact row shapes the
+    spec's aggregation rules key off (status, resolved_by, suppressed,
+    surfaced_count, created_at) rather than going through record_flag()'s
+    dedup, which would collapse them into one row. Returns the new row's id."""
+    from backend.database import OutcomeFlag
+
+    if source is None or check is None:
+        source, check = fingerprint.split(":", 1)
+    with Session(engine) as s:
+        row = OutcomeFlag(
+            source=source, check=check, fingerprint=fingerprint,
+            summary="test flag", status=status, resolved_by=resolved_by,
+            resolved_at=resolved_at, suppressed=suppressed,
+            surfaced_count=surfaced_count, severity=severity,
+        )
+        if created_at is not None:
+            row.created_at = created_at
+        s.add(row)
+        s.commit()
+        s.refresh(row)
+        return row.id
+
+
+def _make_verdicts(engine, fingerprint, *, false_positive, resolved, created_at=None):
+    """Insert `false_positive` false_positive rows + `resolved` resolved rows
+    (both resolved_by="telegram", i.e. genuine human verdicts) for
+    `fingerprint` — the minimal shape recompute_hints() needs to produce a
+    given verdict_count/fp_rate."""
+    for _ in range(false_positive):
+        _make_flag(engine, fingerprint=fingerprint, status="false_positive",
+                    resolved_by="telegram", created_at=created_at)
+    for _ in range(resolved):
+        _make_flag(engine, fingerprint=fingerprint, status="resolved",
+                    resolved_by="telegram", created_at=created_at)
+
+
+# ---------------------------------------------------------------------------
+# 8.2 The aggregation — the honest denominator (CAL5-CAL12)
+# ---------------------------------------------------------------------------
+
+def test_cal5_honest_denominator_counts_only_human_verdicts(eng):
+    """CAL5: 6 false_positive + 3 resolved (both resolved_by="telegram") for
+    one fingerprint -> recompute_hints() writes verdict_count=9,
+    false_positive_count=6, fp_rate==pytest.approx(0.667)."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=6, resolved=3)
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is not None
+    assert hint.verdict_count == 9
+    assert hint.false_positive_count == 6
+    assert hint.fp_rate == pytest.approx(0.667, abs=0.001)
+
+
+def test_cal6_auto_cleared_rows_excluded_from_both_numerator_and_denominator(eng):
+    """CAL6: rows with resolved_by="auto:condition_cleared" are counted in
+    auto_cleared_count and excluded from both numerator and denominator —
+    6 FP + 3 auto-cleared yields verdict_count=6, fp_rate==1.0,
+    auto_cleared_count=3 (Finding A's fix)."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    for _ in range(6):
+        _make_flag(eng, fingerprint=fp, status="false_positive", resolved_by="telegram")
+    for _ in range(3):
+        _make_flag(eng, fingerprint=fp, status="resolved", resolved_by="auto:condition_cleared")
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.verdict_count == 6
+    assert hint.fp_rate == 1.0
+    assert hint.auto_cleared_count == 3
+
+
+def test_cal7_open_deferred_needs_follow_up_contribute_to_neither(eng):
+    """CAL7: rows still open, deferred, or needs_follow_up contribute to
+    neither verdict_count nor false_positive_count."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:unraid_temp"
+    _make_flag(eng, fingerprint=fp, status="open")
+    _make_flag(eng, fingerprint=fp, status="deferred")
+    _make_flag(eng, fingerprint=fp, status="needs_follow_up")
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is not None
+    assert hint.verdict_count == 0
+    assert hint.false_positive_count == 0
+
+
+def test_cal8_suppressed_rows_excluded_from_verdict_summed_into_suppressed_surfacings(eng):
+    """CAL8: rows with suppressed=True are excluded from verdict_count and
+    summed into suppressed_surfacings via their surfaced_count."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_flag(eng, fingerprint=fp, status="false_positive", resolved_by="telegram",
+               suppressed=True, surfaced_count=5)
+    _make_flag(eng, fingerprint=fp, status="open", suppressed=True, surfaced_count=12)
+    _make_flag(eng, fingerprint=fp, status="resolved", resolved_by="telegram")
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.verdict_count == 1  # only the one un-suppressed resolved row
+    assert hint.suppressed_surfacings == 17  # 5 + 12
+
+
+def test_cal9_rows_older_than_window_days_are_excluded(eng):
+    """CAL9: rows older than calibration_window_days are excluded — no hint
+    row is created when every row for a fingerprint falls outside the
+    window."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    old = datetime.utcnow() - timedelta(days=45)
+    _make_flag(eng, fingerprint=fp, status="false_positive", resolved_by="telegram", created_at=old)
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is None
+
+
+def test_cal10_manual_missed_rows_excluded_entirely_no_hint_row_created(eng):
+    """CAL10: source="manual", check="missed:foo" rows are excluded entirely
+    — no hint row is created for them (guards §6)."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "manual:missed:water_heater"
+    for _ in range(10):
+        _make_flag(eng, fingerprint=fp, source="manual", check="missed:water_heater",
+                    status="false_positive", resolved_by="telegram")
+
+    result = asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is None
+    assert fp not in result["activated"]
+    assert result["scanned"] == 0
+
+
+def test_cal11_empty_table_returns_zeroed_scanned_and_creates_no_rows(eng):
+    """CAL11: recompute_hints() on an empty table returns
+    {"scanned": 0, ...} and creates no rows."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    result = asyncio.run(calibration.recompute_hints())
+
+    assert result["scanned"] == 0
+    assert result["activated"] == []
+    assert result["expired"] == []
+    assert result["unchanged"] == 0
+    assert result["skipped_override"] == []
+
+    with Session(eng) as s:
+        assert s.exec(select(CalibrationHint)).all() == []
+
+
+def test_cal12_recompute_hints_never_raises_when_db_unavailable(monkeypatch):
+    """CAL12: recompute_hints() never raises: with backend.database.engine
+    patched to raise, it returns a zeroed dict and logs (mirrors AC9's
+    never-raises assertion). A bare engine with no create_all() run against
+    it means the first query genuinely raises "no such table"."""
+    from backend.agents import calibration
+
+    bare = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+    )
+    monkeypatch.setattr("backend.database.engine", bare)
+
+    result = asyncio.run(calibration.recompute_hints())
+
+    assert result == {
+        "scanned": 0, "activated": [], "expired": [], "unchanged": 0, "skipped_override": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8.3 Threshold state machine (CAL13-CAL19)
+# ---------------------------------------------------------------------------
+
+def test_cal13_threshold_crossing_activates_with_state_fields_set(eng):
+    """CAL13: fp_rate=0.70, verdict_count=9 -> hint status="active",
+    first_active_at set, expires_at == first_active_at +
+    calibration_hint_max_days, reason non-empty."""
+    from backend.agents import calibration
+    from backend.config import get_settings
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=7, resolved=3)  # 7/10 == 0.70
+
+    before = datetime.utcnow()
+    asyncio.run(calibration.recompute_hints())
+    after = datetime.utcnow()
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "active"
+    assert hint.verdict_count == 10
+    assert hint.fp_rate == pytest.approx(0.70)
+    assert hint.first_active_at is not None
+    assert before <= hint.first_active_at <= after
+    max_days = get_settings().calibration_hint_max_days
+    assert hint.expires_at == hint.first_active_at + timedelta(days=max_days)
+    assert hint.reason
+
+
+def test_cal14_below_min_verdicts_floor_never_activates(eng):
+    """CAL14: fp_rate=1.0 but verdict_count=3 (< calibration_min_verdicts=5)
+    -> no active hint (Finding A's sample-size guard, tested directly). The
+    row is still written — RISK: CalibrationHint.status defaults to "active"
+    on the model, so a below-threshold/watching row must be stamped
+    "expired" explicitly or step 7's gate would suppress everything."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=3, resolved=0)  # n=3 < min_verdicts=5
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is not None
+    assert hint.status != "active"
+    assert hint.verdict_count == 3
+
+
+def test_cal15_hysteresis_gap_prevents_flapping(eng):
+    """CAL15: an active hint whose rate falls to 0.50 (between clear=0.40
+    and suppress=0.60) stays active; once it drops below 0.40 it flips to
+    expired."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=7, resolved=3)  # 0.70 -> activates
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "active"
+    first_active_at = hint.first_active_at
+
+    # cumulative: FP=10, resolved=10, total=20 -> rate 0.50 (between the two
+    # thresholds).
+    _make_verdicts(eng, fp, false_positive=3, resolved=7)
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "active"
+    assert hint.fp_rate == pytest.approx(0.50)
+    assert hint.first_active_at == first_active_at  # never reset while still active
+
+    # cumulative: FP stays 10, resolved=16, total=26 -> rate ~0.3846 < 0.40.
+    _make_verdicts(eng, fp, false_positive=0, resolved=6)
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "expired"
+    assert hint.fp_rate < 0.40
+
+
+def test_verifier_boundary_values_are_inclusive_to_activate_exclusive_to_clear(eng):
+    """Verifier gap (CAL13/14/15 leave the exact boundary values untested):
+    activation uses `fp_rate >= calibration_fp_threshold` and
+    `verdict_count >= calibration_min_verdicts` (§2.4), so a fingerprint
+    sitting exactly AT n=5/rate=0.60 must activate, not just above it (CAL14
+    only proves n=3 stays inactive, CAL13 only exercises n=10/rate=0.70).
+    Hysteresis clearing uses strict `fp_rate < calibration_clear_threshold`
+    (§2.5a "drops... when fp_rate < 0.40"), so a hint sitting exactly AT
+    fp_rate=0.40 must stay active — CAL15 only tests 0.50 (stays active) and
+    ~0.3846 (expires), skipping the boundary itself, which is exactly where
+    a `<=`-vs-`<` off-by-one would hide."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+
+    # n=5 (== calibration_min_verdicts), fp_rate=3/5=0.60 (== calibration_fp_threshold).
+    # Both floor conditions met at the exact boundary -> must activate.
+    _make_verdicts(eng, fp, false_positive=3, resolved=2)
+    asyncio.run(calibration.recompute_hints())
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.verdict_count == 5
+    assert hint.fp_rate == pytest.approx(0.60)
+    assert hint.status == "active"
+
+    # Cumulative FP=4, resolved=6, total=10 -> fp_rate=0.40 exactly
+    # (== calibration_clear_threshold). Strictly-less-than semantics mean
+    # this must NOT clear.
+    _make_verdicts(eng, fp, false_positive=1, resolved=4)
+    asyncio.run(calibration.recompute_hints())
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.verdict_count == 10
+    assert hint.fp_rate == pytest.approx(0.40)
+    assert hint.status == "active"
+
+    # One more resolved verdict, no new FP: FP=4, resolved=7, total=11 ->
+    # fp_rate=4/11≈0.3636, just below the clear threshold -> must expire.
+    _make_verdicts(eng, fp, false_positive=0, resolved=1)
+    asyncio.run(calibration.recompute_hints())
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.verdict_count == 11
+    assert hint.fp_rate < 0.40
+    assert hint.status == "expired"
+
+
+def test_cal16_mandatory_reprobation_expires_even_at_perfect_fp_rate(eng):
+    """CAL16: an active hint whose expires_at has passed flips to expired on
+    the next recompute even at fp_rate=1.0 — the Finding D guard. Without
+    this, a suppressed rule that never gets re-observed by a human would
+    stay active forever on stale evidence."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=10, resolved=0)  # fp_rate=1.0
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "active"
+
+    # Force the mandatory re-probation window to have already passed.
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+        hint.expires_at = datetime.utcnow() - timedelta(days=1)
+        s.add(hint)
+        s.commit()
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "expired"
+    assert hint.fp_rate == pytest.approx(1.0)
+
+
+def test_cal17_override_until_future_blocks_reactivation(eng):
+    """CAL17: a hint with override_until in the future is not re-activated
+    by a recompute even when every threshold condition is met; it appears
+    in the return dict's skipped_override."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=8, resolved=2)  # fp_rate=0.80, n=10
+
+    with Session(eng) as s:
+        s.add(CalibrationHint(
+            fingerprint=fp, status="overridden_off",
+            override_until=datetime.utcnow() + timedelta(days=30),
+        ))
+        s.commit()
+
+    result = asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "overridden_off"  # untouched by this recompute
+    assert fp in result["skipped_override"]
+    assert fp not in result["activated"]
+
+
+def test_cal18_transition_out_of_active_clears_suppressed_on_open_flag(eng):
+    """CAL18: on any transition out of active, an existing status="open"
+    OutcomeFlag row for that fingerprint has suppressed set back to False
+    and suppressed_reason to None (§2.5's side effect) — otherwise a rule
+    that un-suppresses while its condition is still live would stay
+    invisible in /flags until it happened to re-fire."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint, OutcomeFlag
+
+    fp = "homelab_watch:garage_open"
+    _make_verdicts(eng, fp, false_positive=10, resolved=0)  # fp_rate=1.0 -> activates
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint.status == "active"
+
+    open_id = _make_flag(eng, fingerprint=fp, status="open", suppressed=True)
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, open_id)
+        row.suppressed_reason = "calibration:homelab_watch:garage_open fp_rate=1.00 n=10"
+        s.add(row)
+        s.commit()
+
+    # Force re-probation expiry so this recompute transitions the hint OUT
+    # of active (independent of the rate) -- the transition CAL18 tests.
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+        hint.expires_at = datetime.utcnow() - timedelta(days=1)
+        s.add(hint)
+        s.commit()
+
+    asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+        flag = s.get(OutcomeFlag, open_id)
+    assert hint.status == "expired"
+    assert flag.suppressed is False
+    assert flag.suppressed_reason is None
+
+
+def test_cal19_activation_notifies_once_unchanged_and_expiring_notify_zero(eng, monkeypatch):
+    """CAL19: newly-activated hints fire exactly one
+    events.notify_phone(kind="calibration_suppress") each; an unchanged or
+    expiring hint fires zero."""
+    from backend.agents import calibration
+
+    calls = []
+
+    async def _fake_notify(content, *, kind="autonomy_alert", buttons=None):
+        calls.append((content, kind))
+        return True
+
+    monkeypatch.setattr("backend.events.notify_phone", _fake_notify)
+
+    fp_a = "homelab_watch:garage_open"
+    fp_b = "homelab_watch:unraid_temp"
+    _make_verdicts(eng, fp_a, false_positive=10, resolved=0)  # activates
+    _make_verdicts(eng, fp_b, false_positive=1, resolved=9)   # 0.10 -- never activates
+
+    result = asyncio.run(calibration.recompute_hints())
+
+    assert fp_a in result["activated"]
+    assert fp_b not in result["activated"]
+    assert len(calls) == 1
+    assert calls[0][1] == "calibration_suppress"
+    assert fp_a in calls[0][0]
+
+    # A second recompute with no new data: fp_a stays active (unchanged),
+    # fires zero further notifications.
+    calls.clear()
+    result2 = asyncio.run(calibration.recompute_hints())
+    assert result2["activated"] == []
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# 8.8 Invariants — calibration.py-specific (CAL47-CAL49)
+# ---------------------------------------------------------------------------
+
+def test_cal47_calibration_module_does_not_import_broker():
+    """CAL47: backend/agents/calibration.py does not import
+    backend.safety.broker (grep-style assertion, matching test_tools.py's
+    existing no-broker-import guard and outcomes.py's AC32)."""
+    import inspect
+
+    from backend.agents import calibration
+
+    module_src = inspect.getsource(calibration)
+    import_lines = [
+        ln for ln in module_src.splitlines()
+        if ln.strip().startswith(("import ", "from "))
+    ]
+    for ln in import_lines:
+        assert "broker" not in ln, f"calibration.py imports the broker: {ln!r}"
+        assert "websocket" not in ln, f"calibration.py imports the websocket layer: {ln!r}"
+
+
+def test_cal48_no_session_or_orm_crosses_await_in_calibration():
+    """CAL48: no Session or ORM object crosses an await in calibration.py —
+    every DB helper is sync (def, not async def) and every async wrapper
+    (async def) calls it via asyncio.to_thread (mirrors outcomes.py's AC33
+    source-level check)."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).parent.parent / "backend" / "agents" / "calibration.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+
+    sync_helpers = []
+    async_public = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("_db_"):
+            sync_helpers.append(node.name)
+        if isinstance(node, ast.AsyncFunctionDef) and not node.name.startswith("_"):
+            async_public.append(node)
+
+    assert sync_helpers, "expected at least one sync _db_* helper"
+    assert async_public, "expected at least one public async function"
+
+    src_text = src.read_text(encoding="utf-8")
+    for fn in async_public:
+        fn_src = ast.get_source_segment(src_text, fn) or ""
+        direct_db_calls = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id.startswith("_db_")
+        ]
+        assert not direct_db_calls, (
+            f"{fn.name} calls a _db_* helper directly instead of via "
+            f"asyncio.to_thread: {[n.func.id for n in direct_db_calls]}"
+        )
+        assert "asyncio.to_thread" in fn_src or not any(
+            isinstance(n, ast.Name) and n.id.startswith("_db_") for n in ast.walk(fn)
+        ), f"{fn.name} references a _db_* helper but never calls asyncio.to_thread"
+
+
+def test_cal49_calibration_module_has_zero_llm_calls():
+    """CAL49: tests/test_spend_report.py::test_no_unlabeled_llm_calls_in_agents
+    still passes (it globs backend/agents/*.py, which now includes this
+    file); this test pins the same zero-LLM-calls invariant directly on
+    calibration.py, matching CAL47/CAL48's directness."""
+    import pathlib
+    import re
+
+    src = pathlib.Path(__file__).parent.parent / "backend" / "agents" / "calibration.py"
+    src_text = src.read_text(encoding="utf-8")
+    assert not re.search(r"\b(haiku|sonnet|opus)\s*\(", src_text), (
+        "calibration.py contains an LLM call"
+    )
