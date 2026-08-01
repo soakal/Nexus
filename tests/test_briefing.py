@@ -384,3 +384,258 @@ async def test_record_briefing_flags_db_error_never_blocks_briefing():
     # proving the outer try/except in run_briefing() is what's swallowing it.
     assert record_mock.await_count >= 1
     assert "## Today's Focus" in result
+
+
+# ---------------------------------------------------------------------------
+# Rollout step 6 (read path) -- outcome-tracker prompt injection + deterministic
+# '## Open Items' section. Spec docs/outcome-tracker-spec.md §4.1/§4.2, AC24-26.
+# ---------------------------------------------------------------------------
+
+_STEP6_BRIEFING_TEXT = (
+    "## Priority Actions\nNone\n## Weather\nOK\n## System Health\nOK\n"
+    "## Network Security\nOK\n## GitHub Pulse\nOK\n## Media\nOK\n"
+    "## From Your Vault\nOK\n## Today's Focus\nFocus."
+)
+
+
+@pytest.mark.asyncio
+async def test_ac24_known_open_items_prompt_block_with_flag():
+    """AC24 (present case): with one open flag, the prompt passed to the
+    mocked sonnet contains its summary under the KNOWN OPEN ITEMS header."""
+    open_flag = {
+        "id": 7, "source": "homelab_watch", "check": "garage_open",
+        "severity": "high", "summary": "MARKER-GARAGE-OPEN-9f2",
+        "created_at": "2026-08-01T00:00:00",
+    }
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[open_flag]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    assert "KNOWN OPEN ITEMS" in prompt_arg
+    assert "MARKER-GARAGE-OPEN-9f2" in prompt_arg
+    assert "## Today's Focus" in result
+
+
+@pytest.mark.asyncio
+async def test_ac24_known_open_items_prompt_block_degrades_to_none():
+    """AC24 (empty case): with no open flags, the KNOWN OPEN ITEMS block
+    reads '(none)' and the briefing still succeeds."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    assert "KNOWN OPEN ITEMS" in prompt_arg
+    assert "(none)" in prompt_arg
+    assert "## Today's Focus" in result
+
+
+@pytest.mark.asyncio
+async def test_ac25_open_items_section_present_and_stripped_before_extraction():
+    """AC25: the returned briefing text contains a '## Open Items' section,
+    and _strip_unverified_sections removes it -- so the text passed to
+    extract_and_store contains none of the flag summaries."""
+    open_flag = {
+        "id": 9, "source": "briefing", "check": "github_stale_prs",
+        "severity": "medium", "summary": "MARKER-STALE-PR-Zx81",
+        "created_at": "2026-08-01T00:00:00",
+    }
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT), \
+         patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock) as mock_extract, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[open_flag]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    assert "## Open Items" in result
+    assert "MARKER-STALE-PR-Zx81" in result
+
+    mock_extract.assert_called_once()
+    extracted_text = mock_extract.call_args[0][0]
+    assert "## Open Items" not in extracted_text
+    assert "MARKER-STALE-PR-Zx81" not in extracted_text
+
+
+@pytest.mark.asyncio
+async def test_ac26_open_flags_exception_still_completes_briefing():
+    """AC26: an exception from open_flags (both the gather read and the
+    post-LLM fresh read) degrades to '(none)'/'No open items.' rather than
+    failing or blocking the briefing."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, side_effect=RuntimeError("db down")), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    assert "KNOWN OPEN ITEMS" in prompt_arg
+    assert "(none)" in prompt_arg
+    assert "## Today's Focus" in result
+    assert "## Open Items" in result
+
+
+@pytest.mark.asyncio
+async def test_ac24_known_open_items_prompt_block_caps_at_ten():
+    """Gap found by the Verifier: docs/outcome-tracker-spec.md #167;214 says
+    the KNOWN OPEN ITEMS/RECENTLY CLOSED prompt blocks are 'capped at
+    outcome_flag_briefing_max (default 10) items to bound prompt growth' --
+    _build_flag_prompt_block does this with flags[:cap], but none of the
+    Engineer's AC24-26 tests supply more than one flag, so the cap itself
+    was never exercised. With 15 open flags, only the first 10 (by the
+    open_flags() 'newest first' ordering the list already arrives in) may
+    reach the prompt."""
+    many_flags = [
+        {
+            "id": i, "source": "homelab_watch", "check": "garage_open",
+            "severity": "high", "summary": f"MARKER-FLAG-{i:02d}",
+            "created_at": "2026-08-01T00:00:00",
+        }
+        for i in range(15)
+    ]
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=many_flags), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    # Only the KNOWN OPEN ITEMS block is capped by _build_flag_prompt_block;
+    # isolate it from the rest of the prompt (which also contains the raw
+    # JSON snapshot) before counting markers.
+    known_block = prompt_arg.split("KNOWN OPEN ITEMS")[1].split("RECENTLY CLOSED")[0]
+    present = [f"MARKER-FLAG-{i:02d}" for i in range(15) if f"MARKER-FLAG-{i:02d}" in known_block]
+    assert present == [f"MARKER-FLAG-{i:02d}" for i in range(10)]
+
+
+@pytest.mark.asyncio
+async def test_open_items_section_uses_fresh_post_record_read_not_stale_gather_read():
+    """Gap found by the Verifier: the '## Open Items' section is built from
+    a SECOND, fresh outcomes.open_flags() call made after
+    _record_briefing_flags() -- deliberately not the pre-LLM gather result
+    -- 'so today's newly-recorded flags appear' (briefing.py comment). None
+    of the Engineer's tests give the two open_flags() calls different
+    return values, so this freshness guarantee was never actually pinned:
+    a regression that silently reused the stale pre-LLM list would still
+    pass every existing test. Here the first (gather) call returns no
+    flags and the second (post-record) call returns one, so the KNOWN OPEN
+    ITEMS prompt block must read '(none)' while the deterministic Open
+    Items section must show the newly-recorded flag."""
+    fresh_flag = {
+        "id": 42, "source": "briefing", "check": "garage_open",
+        "severity": "high", "summary": "MARKER-FRESH-ONLY",
+        "created_at": "2026-08-01T00:00:00",
+    }
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, side_effect=[[], [fresh_flag]]), \
+         patch("backend.agents.outcomes.recently_closed", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    known_block = prompt_arg.split("KNOWN OPEN ITEMS")[1].split("RECENTLY CLOSED")[0]
+    assert "(none)" in known_block
+    assert "MARKER-FRESH-ONLY" not in prompt_arg
+
+    assert "## Open Items" in result
+    assert "MARKER-FRESH-ONLY" in result

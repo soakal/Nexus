@@ -86,7 +86,11 @@ async def test_trace_opened_and_closed_ok(eng):
 
         result = await run_briefing()
 
-    assert result == "## Priority Actions\nNone\n\n## Proton Mail\nNothing needing attention."
+    assert result == (
+        "## Priority Actions\nNone\n\n"
+        "## Proton Mail\nNothing needing attention.\n\n"
+        "## Open Items\nNo open items."
+    )
 
     with Session(eng) as s:
         traces = s.exec(select(AgentTrace).where(AgentTrace.kind == "briefing")).all()

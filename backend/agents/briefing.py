@@ -19,8 +19,14 @@ logger = logging.getLogger(__name__)
 # here defensively in case it's ever reintroduced or appears in an old stored
 # briefing. "Proton Mail" is appended AFTER the LLM call (never reaches the
 # prompt at all), but its raw subject lines still must not reach fact
-# extraction, same reasoning.
-_UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox", "Proton Mail")
+# extraction, same reasoning. "Open Items" (rollout step 6,
+# docs/outcome-tracker-spec.md §4.2) is likewise appended AFTER the LLM
+# call, from raw OutcomeFlag summaries -- without this entry,
+# extract_and_store would turn e.g. "garage door has been open for over 30
+# minutes" into a durable 0.9-confidence Fact, which the goal proposer then
+# treats as grounds for an autonomous investigation, the exact incident
+# class this list exists to contain.
+_UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox", "Proton Mail", "Open Items")
 
 
 def _strip_unverified_sections(text: str) -> str:
@@ -109,6 +115,87 @@ def _build_protonmail_section(unread_result, drafts_result, drafted_ids: set) ->
     return "\n".join(lines)
 
 
+def _coerce_flag_list(result) -> list:
+    """Defensive coercion for the two outcome-tracker gather results
+    (rollout step 6, open_flags()/recently_closed()). asyncio.gather's
+    return_exceptions=True already turns a raised exception into the
+    element itself, but several existing briefing tests patch
+    sqlmodel.Session/backend.database.engine with bare MagicMocks -- a
+    non-list leaking through (e.g. a MagicMock) must degrade to [] here too,
+    never reach string formatting below."""
+    if isinstance(result, Exception) or not isinstance(result, list):
+        return []
+    return result
+
+
+def _format_flag_summary_line(flag) -> str:
+    """One-line '- [severity] source:check — summary' rendering for the
+    KNOWN OPEN ITEMS / RECENTLY CLOSED prompt blocks. Never raises --
+    defensive .get() reads only; a non-dict element renders as ''."""
+    if not isinstance(flag, dict):
+        return ""
+    severity = flag.get("severity") or "medium"
+    source = flag.get("source") or "?"
+    check = flag.get("check") or "?"
+    summary = flag.get("summary") or ""
+    return f"- [{severity}] {source}:{check} — {summary}"
+
+
+def _build_flag_prompt_block(flags: list, cap: int) -> str:
+    """Renders a capped list of flag dicts for BRIEFING_PROMPT's KNOWN OPEN
+    ITEMS / RECENTLY CLOSED sections (rollout step 6, spec §4.1). Degrades
+    to '(none)' on an empty or all-invalid input."""
+    lines = [ln for ln in (_format_flag_summary_line(f) for f in flags[:cap]) if ln]
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _format_flag_age(iso_str) -> str:
+    """Best-effort 'Ns/Nm/Nh/Nd ago' rendering of an ISO timestamp -- mirrors
+    telegram_commands._format_age's convention (kept as a local copy rather
+    than a cross-module import of that module's private helper). Never
+    raises -- a malformed/missing timestamp degrades to '?'."""
+    if not iso_str:
+        return "?"
+    try:
+        then = datetime.fromisoformat(iso_str)
+    except (ValueError, TypeError):
+        return "?"
+    seconds = (datetime.utcnow() - then).total_seconds()
+    if seconds < 60:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = int(minutes // 60)
+    if hours < 24:
+        return f"{hours}h ago"
+    days = int(hours // 24)
+    return f"{days}d ago"
+
+
+def _build_open_items_section(flags: list) -> str:
+    """Deterministic, post-LLM '## Open Items' section (rollout step 6, spec
+    §4.2) -- assembled in Python from a fresh outcomes.open_flags() read (or
+    the pre-LLM list on a fresh-read failure), never fed back through the
+    LLM, so it can't hallucinate a resolved item back into existence. Added
+    to _UNVERIFIED_FACT_SECTIONS above so extract_and_store never durably
+    facts-extracts a flag summary. Never raises -- non-dict elements are
+    dropped defensively."""
+    lines = ["## Open Items"]
+    for f in flags:
+        if not isinstance(f, dict):
+            continue
+        severity = f.get("severity") or "medium"
+        source = f.get("source") or "?"
+        check = f.get("check") or "?"
+        summary = f.get("summary") or ""
+        age = _format_flag_age(f.get("created_at"))
+        lines.append(f"- #{f.get('id')} [{severity}] {source}:{check} — {summary} ({age})")
+    if len(lines) == 1:
+        lines.append("No open items.")
+    return "\n".join(lines)
+
+
 # Unraid parity_status values that mean "no parity concern" (a check finished
 # clean or none is running) -- distinct from "unknown" (a read problem, not a
 # breach, same reasoning as check_unraid_array's own status handling). Real
@@ -128,9 +215,12 @@ async def _record_briefing_flags(context: dict) -> None:
     flags; symmetric clear_flag calls let yesterday's flag (e.g. a stale PR)
     auto-resolve once the underlying condition clears.
 
-    Write path only this cycle -- no BRIEFING_PROMPT change, no '## Open
-    Items' section, no _UNVERIFIED_FACT_SECTIONS edit, no open_flags/
-    recently_closed wiring into the gather step (all rollout step 6).
+    This function is itself the write path only (unchanged from rollout step
+    5) -- the read path it feeds (BRIEFING_PROMPT's KNOWN OPEN ITEMS/
+    RECENTLY CLOSED blocks, the '## Open Items' section, the
+    _UNVERIFIED_FACT_SECTIONS entry, and the open_flags/recently_closed
+    gather wiring) was added in rollout step 6; see run_briefing() and
+    _build_open_items_section below.
 
     Best-effort: the call site in run_briefing() wraps this whole function in
     try/except so a DB hiccup can never fail or delay the briefing.
@@ -203,6 +293,13 @@ Never say "as of my last update" or similar hedges — this is live data.
 DATA SNAPSHOT as of {timestamp}:
 {json_context}
 
+KNOWN OPEN ITEMS (already raised with the user — reference them if still relevant,
+but do NOT present them as new findings):
+{open_items_block}
+
+RECENTLY CLOSED (last 48h — the user already handled these; do NOT re-raise):
+{closed_items_block}
+
 Produce a morning brief with these exact sections:
 
 ## Priority Actions (max 3)
@@ -260,7 +357,7 @@ async def run_briefing() -> str:
     )
     from backend.integrations.calendar import get_today_events
     from backend.integrations import protonmail
-    from backend.agents import mail_drafts
+    from backend.agents import mail_drafts, outcomes
 
     logger.info("Running morning briefing")
 
@@ -289,12 +386,30 @@ async def run_briefing() -> str:
             get_today_events(),
             protonmail.list_recent(unread_only=True, limit=25),
             protonmail.list_recent(mailbox="Drafts", limit=10),
+            outcomes.open_flags(),
+            outcomes.recently_closed(hours=48),
             return_exceptions=True,
         )
 
-        ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data, proton_unread, proton_drafts = results
+        (
+            ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data,
+            proton_unread, proton_drafts, open_flags_result, closed_flags_result,
+        ) = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
+
+        # Rollout step 6 read path (spec §4.1) -- both degrade to [] on any
+        # fetch exception or unexpected shape (_coerce_flag_list), never
+        # blocking the rest of the briefing.
+        open_flags_list = _coerce_flag_list(open_flags_result)
+        closed_flags_list = _coerce_flag_list(closed_flags_result)
+        try:
+            from backend.config import get_settings
+            flag_cap = int(getattr(get_settings(), "outcome_flag_briefing_max", 10))
+        except Exception:
+            flag_cap = 10
+        open_items_block = _build_flag_prompt_block(open_flags_list, flag_cap)
+        closed_items_block = _build_flag_prompt_block(closed_flags_list, flag_cap)
 
         try:
             drafted_ids = await asyncio.to_thread(mail_drafts._db_drafted_email_ids)
@@ -366,6 +481,8 @@ async def run_briefing() -> str:
         prompt = BRIEFING_PROMPT.format(
             timestamp=datetime.utcnow().isoformat(),
             json_context=json.dumps(context, indent=2),
+            open_items_block=open_items_block,
+            closed_items_block=closed_items_block,
             weather_summary=weather_summary,
             blocked_today=safe(ag, "blocked_today", 0),
             blocked_pct=safe(ag, "blocked_pct", 0),
@@ -400,6 +517,20 @@ async def run_briefing() -> str:
             await _record_briefing_flags(context)
         except Exception as e:
             logger.warning(f"_record_briefing_flags failed (ignored): {e}")
+
+        # Deterministic '## Open Items' section (rollout step 6, spec §4.2) --
+        # built from a FRESH read, taken after _record_briefing_flags() above,
+        # so today's newly-recorded flags appear. Falls back to the pre-LLM
+        # list on a fresh-read failure rather than silently omitting the
+        # section. Never fed back through the LLM.
+        try:
+            fresh_open_flags = await outcomes.open_flags(limit=flag_cap)
+            if not isinstance(fresh_open_flags, list):
+                fresh_open_flags = open_flags_list
+        except Exception as e:
+            logger.warning(f"open_items section: fresh read failed, using pre-LLM list: {e}")
+            fresh_open_flags = open_flags_list
+        briefing_text = briefing_text + "\n\n" + _build_open_items_section(fresh_open_flags)
 
         # Extract durable facts from briefing content (best-effort, never raises).
         # Priority Actions/Inbox are excluded -- see _strip_unverified_sections.

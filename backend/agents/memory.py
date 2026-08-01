@@ -83,7 +83,7 @@ async def latest_briefing_seed() -> str:
         return ""
 
 
-def assemble(vault_str: str, briefing_str: str, facts_str: str = "") -> str:
+def assemble(vault_str: str, briefing_str: str, facts_str: str = "", flags_str: str = "") -> str:
     """Pure function: build the memory injection block.
 
     Returns "" when all inputs are empty so the caller can skip injection
@@ -92,12 +92,19 @@ def assemble(vault_str: str, briefing_str: str, facts_str: str = "") -> str:
     facts_str is an optional block of durable known facts (Tier 2.3c). When
     present it is appended after the vault notes and briefing with a header
     noting that live data takes precedence on conflict.
+
+    flags_str is an optional block of open outcome-tracker flags (rollout
+    step 6, docs/outcome-tracker-spec.md §4.3) — pre-formatted text the
+    caller builds from outcomes.open_flags(). When present it is appended
+    last with an [OPEN ITEMS] header. Defaults to "" so every existing
+    3-arg (and 2-arg) call site is unaffected.
     """
     vault_str = vault_str or ""
     briefing_str = briefing_str or ""
     facts_str = facts_str or ""
+    flags_str = flags_str or ""
 
-    if not vault_str and not briefing_str and not facts_str:
+    if not vault_str and not briefing_str and not facts_str and not flags_str:
         return ""
 
     parts = ["RELEVANT MEMORY (from your notes + latest briefing — use if helpful, ignore if not):"]
@@ -112,6 +119,11 @@ def assemble(vault_str: str, briefing_str: str, facts_str: str = "") -> str:
             "[KNOWN FACTS] (durable; may be stale — prefer live data above if it conflicts)"
         )
         parts.append(facts_str)
+    if flags_str:
+        parts.append(
+            "[OPEN ITEMS] (flagged to you, not yet closed — reference with the id if the user asks)"
+        )
+        parts.append(flags_str)
 
     return "\n".join(parts)
 

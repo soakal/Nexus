@@ -205,6 +205,24 @@ def _build_snapshot(ha, unraid_d, channels, ag, wx) -> str:
     return "\n".join(lines)
 
 
+def _format_open_flags_for_memory(flags: list) -> str:
+    """Renders outcomes.open_flags() rows into the pre-formatted flags_str
+    memory.assemble() wraps with an [OPEN ITEMS] header (rollout step 6,
+    docs/outcome-tracker-spec.md ยง4.3). Returns "" on an empty/all-invalid
+    input so memory.assemble() skips the section entirely rather than
+    injecting an empty header. Never raises -- defensive .get() reads only."""
+    lines = []
+    for f in flags:
+        if not isinstance(f, dict):
+            continue
+        severity = f.get("severity") or "medium"
+        source = f.get("source") or "?"
+        check = f.get("check") or "?"
+        summary = f.get("summary") or ""
+        lines.append(f"#{f.get('id')} [{severity}] {source}:{check} โ€” {summary}")
+    return "\n".join(lines)
+
+
 def _short_sender(sender: str) -> str:
     """"Name" <addr> or Name <addr> -> Name; anything else returned unchanged."""
     import re
@@ -466,7 +484,7 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments โ
             # 3. Route by intent
             if intent == "CHAT":
                 from backend.integrations import adguard, channels_dvr, homeassistant, unraid, weather
-                from backend.agents import facts, memory
+                from backend.agents import facts, memory, outcomes
 
                 results = await asyncio.gather(
                     homeassistant.fetch(),
@@ -477,9 +495,10 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments โ
                     memory.vault_recall(user_message),
                     memory.latest_briefing_seed(),
                     facts.facts_recall(user_message),
+                    outcomes.open_flags(limit=10),
                     return_exceptions=True,
                 )
-                ha, unraid_d, channels, ag, wx, vault_str, briefing_str, facts_str = results
+                ha, unraid_d, channels, ag, wx, vault_str, briefing_str, facts_str, open_flags_result = results
                 # Coerce any exception results from memory/facts fns to empty string
                 if isinstance(vault_str, Exception):
                     vault_str = ""
@@ -487,9 +506,16 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments โ
                     briefing_str = ""
                 if isinstance(facts_str, Exception):
                     facts_str = ""
+                # outcomes.open_flags() never raises (see backend/agents/outcomes.py),
+                # but return_exceptions=True + defensive coercion mirrors every other
+                # result in this gather (a MagicMock-patched engine in some tests can
+                # otherwise leak a non-list through to string formatting below).
+                if isinstance(open_flags_result, Exception) or not isinstance(open_flags_result, list):
+                    open_flags_result = []
+                flags_str = _format_open_flags_for_memory(open_flags_result)
                 snapshot = _build_snapshot(ha, unraid_d, channels, ag, wx)
 
-                memory_block = memory.assemble(vault_str, briefing_str, facts_str)
+                memory_block = memory.assemble(vault_str, briefing_str, facts_str, flags_str)
 
                 # Feature 3: inject full briefing context for follow-up questions
                 if _recent_briefing and _is_briefing_followup:

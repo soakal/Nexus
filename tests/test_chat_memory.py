@@ -71,6 +71,39 @@ def test_assemble_none_values_treated_as_empty():
     assert "[LATEST BRIEFING]" not in result
 
 
+def test_assemble_all_four_empty_returns_empty_string():
+    """AC27: assemble("", "", "", "") == "" -- adding flags_str must not
+    change the all-empty short-circuit."""
+    from backend.agents.memory import assemble
+    assert assemble("", "", "", "") == ""
+
+
+def test_assemble_only_flags_str_yields_open_items_header():
+    """AC27: with only flags_str set, assemble() returns a block containing
+    the [OPEN ITEMS] header, and existing 3-arg calls are unaffected (see
+    test_assemble_both_present / test_assemble_only_vault etc above, which
+    call assemble() with 2-3 positional args and don't pass flags_str)."""
+    from backend.agents.memory import assemble
+    result = assemble("", "", "", "flag summary text")
+    assert "[OPEN ITEMS]" in result
+    assert "flag summary text" in result
+    assert "[VAULT NOTES]" not in result
+    assert "[LATEST BRIEFING]" not in result
+    assert "[KNOWN FACTS]" not in result
+    assert "RELEVANT MEMORY" in result
+
+
+def test_assemble_existing_three_arg_calls_unchanged():
+    """AC27: existing 3-arg (vault, briefing, facts) call sites behave
+    identically now that a 4th optional flags_str param exists."""
+    from backend.agents.memory import assemble
+    result = assemble("vault notes", "briefing seed", "known fact")
+    assert "[VAULT NOTES]" in result
+    assert "[LATEST BRIEFING]" in result
+    assert "[KNOWN FACTS]" in result
+    assert "[OPEN ITEMS]" not in result
+
+
 # ---------------------------------------------------------------------------
 # 2. vault_recall() — best-effort wrapper
 # ---------------------------------------------------------------------------
