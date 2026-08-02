@@ -66,9 +66,14 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
     Every falling-edge tick (active=False) unconditionally auto-resolves any
     open flag for this fingerprint (spec docs/outcome-tracker-spec.md §2.2-A)
     before the in-memory latch is touched -- a garage that got closed clears
-    its own flag. A rising edge that newly latches records a flag first and
-    threads its id into two Telegram buttons on the alert; a None id (flag
-    tracking disabled/suppressed/errored) degrades to buttons=None.
+    its own flag. A rising edge that newly latches records a flag first via
+    record_flag_ex; when the write/page gate says to surface it, notify_phone
+    fires -- with two Telegram buttons if an id came back, or buttons=None if
+    it didn't (e.g. outcome_flags_enabled=False fails open with id=None,
+    surface=True, matching pre-outcome-tracker behavior). When the gate says
+    not to surface (calibration suppression or dedup), notify_phone is
+    skipped entirely -- the latch still fires (return value below tracks
+    that, not paging) so re-alert suppression stays correct.
     """
     if not active:
         await _clear_flag_safe(key)
@@ -78,15 +83,16 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
         return False
     _active_alerts.add(key)
     from backend.agents import outcomes
-    flag_id = await outcomes.record_flag("homelab_watch", key, message)
-    buttons = None
-    if flag_id is not None:
-        buttons = [
-            {"text": "✓ Resolved", "callback_data": f"flag:resolved:{flag_id}"},
-            {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{flag_id}"},
-        ]
-    from backend import events
-    await events.notify_phone(message, kind=kind, buttons=buttons)
+    d = await outcomes.record_flag_ex("homelab_watch", key, message)
+    if d["surface"]:
+        buttons = None
+        if d["id"] is not None:
+            buttons = [
+                {"text": "✓ Resolved", "callback_data": f"flag:resolved:{d['id']}"},
+                {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{d['id']}"},
+            ]
+        from backend import events
+        await events.notify_phone(message, kind=kind, buttons=buttons)
     return True
 
 
@@ -108,17 +114,18 @@ async def check_proxmox_vms() -> list[str]:
         if prev == "running" and status != "running":
             name = html.escape(next((vm.get("name") or "" for vm in data.vms if str(vm["vmid"]) == vmid), vmid))
             from backend.agents import outcomes
-            await outcomes.record_flag(
+            d = await outcomes.record_flag_ex(
                 "homelab_watch", f"vm:{vmid}",
                 f"VM/LXC '{name}' (id {vmid}) stopped (was running).",
                 severity="high",
             )
-            from backend import events
-            await events.notify_phone(
-                f"NEXUS: VM/LXC '{name}' (id {vmid}) stopped (was running).",
-                kind="homelab_vm_stopped",
-                buttons=[{"text": "▶ Start", "callback_data": f"vm:start:{vmid}"}],
-            )
+            if d["surface"]:
+                from backend import events
+                await events.notify_phone(
+                    f"NEXUS: VM/LXC '{name}' (id {vmid}) stopped (was running).",
+                    kind="homelab_vm_stopped",
+                    buttons=[{"text": "▶ Start", "callback_data": f"vm:start:{vmid}"}],
+                )
             fired.append(f"vm:{vmid}")
         elif prev != "running" and status == "running":
             await _clear_flag_safe(f"vm:{vmid}")
@@ -143,20 +150,21 @@ async def check_docker() -> list[str]:
         prev = _docker_states.get(name)
         if prev == "RUNNING" and state != "RUNNING":
             from backend.agents import outcomes
-            await outcomes.record_flag(
+            d = await outcomes.record_flag_ex(
                 "homelab_watch", f"docker:{name}",
                 f"Docker container '{html.escape(name)}' stopped.",
                 severity="medium",
             )
-            buttons = None
-            if unraid._SAFE_CONTAINER_ID.match(name) and len(f"docker:restart:{name}".encode()) <= 64:
-                buttons = [{"text": "↺ Restart", "callback_data": f"docker:restart:{name}"}]
-            from backend import events
-            await events.notify_phone(
-                f"NEXUS: Docker container '{html.escape(name)}' stopped.",
-                kind="homelab_docker_stopped",
-                buttons=buttons,
-            )
+            if d["surface"]:
+                buttons = None
+                if unraid._SAFE_CONTAINER_ID.match(name) and len(f"docker:restart:{name}".encode()) <= 64:
+                    buttons = [{"text": "↺ Restart", "callback_data": f"docker:restart:{name}"}]
+                from backend import events
+                await events.notify_phone(
+                    f"NEXUS: Docker container '{html.escape(name)}' stopped.",
+                    kind="homelab_docker_stopped",
+                    buttons=buttons,
+                )
             fired.append(f"docker:{name}")
         elif prev != "RUNNING" and state == "RUNNING":
             await _clear_flag_safe(f"docker:{name}")

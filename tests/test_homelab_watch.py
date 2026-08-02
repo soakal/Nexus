@@ -277,7 +277,12 @@ async def test_garage_open_under_threshold_no_alert():
 
 
 @pytest.mark.asyncio
-async def test_garage_open_past_threshold_fires_once():
+async def test_garage_open_past_threshold_fires_once(eng):
+    """Uses the isolated in-memory `eng` fixture (not the real dev nexus.db) --
+    without it, a leftover false_positive row for this exact fingerprint in
+    dev's real db can fall inside the 30-day cooldown and make record_flag_ex
+    correctly suppress paging, which would make this test flaky depending on
+    what the dev db happens to contain rather than what this test sets up."""
     entities = [{"entity_id": "cover.garage_door_garage_door", "state": "open"}]
     with patch("backend.config.get_settings", return_value=_settings()), \
          patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(entities)), \
@@ -296,7 +301,11 @@ async def test_garage_open_past_threshold_fires_once():
 
 
 @pytest.mark.asyncio
-async def test_garage_closes_clears_timer_and_rearms():
+async def test_garage_closes_clears_timer_and_rearms(eng):
+    """Uses the isolated in-memory `eng` fixture -- see
+    test_garage_open_past_threshold_fires_once's docstring for why (a leftover
+    false_positive row in the real dev db for this fingerprint would suppress
+    paging via record_flag_ex's cooldown check, making this flaky)."""
     open_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "open"}]
     closed_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "closed"}]
     with patch("backend.config.get_settings", return_value=_settings()), \
@@ -398,6 +407,160 @@ async def test_garage_edge_alert_records_flag_clears_and_rearms_same_row(eng):
         resolved_row = s.get(OutcomeFlag, flag_id)
     assert resolved_row.status == "resolved"
     assert resolved_row.resolved_by == "auto:condition_cleared"
+
+
+@pytest.mark.asyncio
+async def test_garage_active_hint_suppresses_page_but_still_writes_and_latches(eng):
+    """CAL25/CAL26 (docs/calibration-loop-spec.md 8.5): with an active medium
+    calibration hint for homelab_watch:garage_open, check_garage past
+    threshold still calls record_flag_ex and writes a row -- stamped
+    suppressed=True with a non-empty suppressed_reason -- but calls
+    events.notify_phone zero times (CAL25). The in-memory latch still fires
+    (_active_alerts still contains "garage_open" afterward), so a second tick
+    writes no second row and pages no second time -- suppression must not
+    bypass the latch (CAL26)."""
+    from backend.database import CalibrationHint, OutcomeFlag
+
+    with Session(eng) as s:
+        s.add(CalibrationHint(
+            fingerprint="homelab_watch:garage_open",
+            status="active", verdict_count=20, false_positive_count=20, fp_rate=1.0,
+        ))
+        s.commit()
+
+    open_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "open"}]
+    settings = _settings(
+        calibration_enabled=True, calibration_suppression_enabled=True,
+        calibration_suppress_high_severity=False,
+    )
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        with patch("time.monotonic", return_value=1000.0):
+            await homelab_watch.check_garage()
+        with patch("time.monotonic", return_value=1000.0 + 31 * 60):
+            fired1 = await homelab_watch.check_garage()  # crosses threshold, suppressed
+        with patch("time.monotonic", return_value=1000.0 + 32 * 60):
+            fired2 = await homelab_watch.check_garage()  # second tick, still latched
+
+    assert fired1 == ["garage_open"]
+    assert "garage_open" in homelab_watch._active_alerts  # latch still holds -- CAL26
+    assert fired2 == []
+    mock_notify.assert_not_called()  # CAL25
+
+    with Session(eng) as s:
+        rows = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == "homelab_watch:garage_open")).all()
+    assert len(rows) == 1  # no duplicate row from the second tick -- CAL26
+    assert rows[0].status == "open"
+    assert rows[0].suppressed is True
+    assert rows[0].suppressed_reason
+
+
+@pytest.mark.asyncio
+async def test_garage_fp_cooldown_suppresses_page_then_pages_again_after(eng):
+    """CAL30 (docs/calibration-loop-spec.md 8.5): the existing FP-cooldown
+    branch of record_flag_ex now suppresses the PAGE, not just the row (the
+    Finding B fix) -- reached via check_garage's own call site, not just
+    outcomes.py directly (test_outcome_flags.py's test_ac7_record_flag_false_
+    positive_cooldown pins the row-level dedup only, predates this cycle, and
+    never touches notify_phone). After a human resolves the flag as
+    false_positive, the next check_garage rising edge inside the cooldown
+    window calls notify_phone zero times; past the cooldown it pages again."""
+    from datetime import datetime, timedelta
+
+    from backend.agents import outcomes
+    from backend.database import OutcomeFlag
+
+    settings = _settings(outcome_flag_false_positive_cooldown_days=7)
+    open_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "open"}]
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        with patch("time.monotonic", return_value=1000.0):
+            await homelab_watch.check_garage()
+        with patch("time.monotonic", return_value=1000.0 + 31 * 60):
+            fired1 = await homelab_watch.check_garage()  # rising edge, pages once
+
+    assert fired1 == ["garage_open"]
+    mock_notify.assert_awaited_once()
+
+    with Session(eng) as s:
+        row = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == "homelab_watch:garage_open")).one()
+        flag_id = row.id
+
+    assert await outcomes.resolve_flag(flag_id, "false_positive") == "false_positive"
+    homelab_watch.reset()  # simulate a fresh rising edge, same technique as AC20's test
+
+    # Still inside the 7-day cooldown -> notify_phone is NOT called this time.
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify2:
+        with patch("time.monotonic", return_value=1000.0):
+            await homelab_watch.check_garage()
+        with patch("time.monotonic", return_value=1000.0 + 31 * 60):
+            fired2 = await homelab_watch.check_garage()
+
+    assert fired2 == ["garage_open"]  # the latch still fires...
+    mock_notify2.assert_not_called()  # ...but the page is suppressed by the cooldown -- CAL30
+
+    # Backdate the resolution past the cooldown window.
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, flag_id)
+        row.resolved_at = datetime.utcnow() - timedelta(days=8)
+        s.add(row)
+        s.commit()
+    homelab_watch.reset()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify3:
+        with patch("time.monotonic", return_value=1000.0):
+            await homelab_watch.check_garage()
+        with patch("time.monotonic", return_value=1000.0 + 31 * 60):
+            fired3 = await homelab_watch.check_garage()
+
+    assert fired3 == ["garage_open"]
+    mock_notify3.assert_awaited_once()  # cooldown lapsed -> pages again
+
+
+@pytest.mark.asyncio
+async def test_outcome_flags_disabled_fails_open_still_pages(eng):
+    """Cycle 7 regression (Realist finding): record_flag_ex's outcome_flags_
+    enabled=False branch must return surface=True (fail open), matching the
+    pre-outcome-tracker rollback guarantee (docs/outcome-tracker-spec.md §7.7,
+    docs/calibration-loop-spec.md §9.7) that alerts and briefings behave
+    exactly as before when the tracker is disabled. Covers both call-site
+    shapes: _edge_alert (garage, id-less) and the direct record_flag_ex call
+    in check_proxmox_vms (severity=high, also id-less here since id stays
+    None in this branch) -- both must still call notify_phone with
+    buttons=None, not be silently swallowed by `if d["surface"]:`."""
+    settings = _settings(outcome_flags_enabled=False)
+
+    open_entities = [{"entity_id": "cover.garage_door_garage_door", "state": "open"}]
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data(open_entities)), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        with patch("time.monotonic", return_value=1000.0):
+            await homelab_watch.check_garage()
+        with patch("time.monotonic", return_value=1000.0 + 31 * 60):
+            fired = await homelab_watch.check_garage()
+
+    assert fired == ["garage_open"]
+    mock_notify.assert_awaited_once()
+    assert mock_notify.await_args.kwargs["buttons"] is None
+
+    data_running = _proxmox_data([{"vmid": 101, "name": "plex-lxc", "status": "running", "type": "lxc"}])
+    data_stopped = _proxmox_data([{"vmid": 101, "name": "plex-lxc", "status": "stopped", "type": "lxc"}])
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, side_effect=[data_running, data_stopped]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify_vm:
+        await homelab_watch.check_proxmox_vms()  # seed: running
+        fired_vm = await homelab_watch.check_proxmox_vms()  # transition, stopped
+
+    assert fired_vm == ["vm:101"]
+    mock_notify_vm.assert_awaited_once()
+    assert mock_notify_vm.await_args.kwargs["buttons"] == [{"text": "▶ Start", "callback_data": "vm:start:101"}]
 
 
 @pytest.mark.asyncio

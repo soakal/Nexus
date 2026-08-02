@@ -417,7 +417,11 @@ async def record_flag_ex(
         from backend.config import get_settings
         settings = get_settings()
         if not getattr(settings, "outcome_flags_enabled", True):
-            return {"id": None, "surface": False, "reason": "outcome_flags_disabled"}
+            # Fail open (same contract as should_page): with the tracker off,
+            # paging must behave exactly as it did before record_flag_ex
+            # existed -- id stays None so record_flag's back-compat wrapper
+            # still returns None, but surface=True so callers still page.
+            return {"id": None, "surface": True, "reason": "outcome_flags_disabled"}
 
         fingerprint = f"{source}:{check}"
         now = datetime.utcnow()
