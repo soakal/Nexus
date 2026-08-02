@@ -893,7 +893,7 @@ def detect_topics(
 # Wiki synthesis (Sonnet)
 # ---------------------------------------------------------------------------
 
-_WIKILINK_PAT = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
+_WIKILINK_PAT = re.compile(r"(?<!\!)\[\[([^\]|#]+)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]")
 
 
 def _defuse_unknown_wikilinks(
@@ -922,8 +922,9 @@ def _defuse_unknown_wikilinks(
 
     def _replace(m: "re.Match[str]") -> str:
         target = m.group(1).strip()
-        alias = m.group(2)
-        display = (alias or target).strip()
+        heading = m.group(2)
+        alias = m.group(3)
+        display = alias.strip() if alias else target + (f"#{heading}" if heading else "")
         if target in known_titles:
             return m.group(0)
         if find_similar_page(target, catalog) is not None:

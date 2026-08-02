@@ -602,6 +602,19 @@ def test_defuse_unknown_wikilinks_allows_self_reference() -> None:
     assert result == text
 
 
+def test_defuse_unknown_wikilinks_leaves_embed_untouched() -> None:
+    text = "See ![[diagram.png]] above for the layout."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", [])
+    assert result == text
+    assert "![[diagram.png]]" in result
+
+
+def test_defuse_unknown_wikilinks_preserves_heading_fragment() -> None:
+    text = "See [[project_version_scheme#Rollout]] for details."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", [])
+    assert result == "See `project_version_scheme#Rollout` for details."
+
+
 def test_synthesize_wiki_defuses_hallucinated_link_in_create_branch(tmp_config: dict[str, Any]) -> None:
     catalog = [{"title": "NEXUS", "filename": "NEXUS.md", "path_str": "x", "headers": "", "summary": "NEXUS stuff"}]
     client = MagicMock()
