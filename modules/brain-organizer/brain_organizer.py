@@ -739,6 +739,7 @@ def route_topics(
         return [("Uncategorized", wiki_folder / "Uncategorized.md", True)]
 
     # Build numbered catalog block (capped at config limit, already sorted by title)
+    router_catalog_ranking: bool = config.get("router_catalog_ranking", True)
     max_in_prompt: int = config.get("catalog_max_pages_in_prompt", 60)
     catalog_pages = catalog[:max_in_prompt]
     catalog_lines: list[str] = []
@@ -752,6 +753,21 @@ def route_topics(
             line = f"{i}. {title}. {summary}"
         catalog_lines.append(line)
     catalog_block = "\n".join(catalog_lines)
+
+    # §4.4: append a full title-only index of every remaining page so no page
+    # is structurally unroutable behind the alphabetical-truncation window.
+    # Gated by router_catalog_ranking so the flag off preserves today's
+    # alphabetical-truncation prompt byte-for-byte.
+    if router_catalog_ranking:
+        remaining_pages = catalog[max_in_prompt:]
+        if remaining_pages:
+            index_lines = [
+                f"{page['title']} ({Path(page['filename']).stem})"
+                for page in remaining_pages
+            ]
+            catalog_block += (
+                "\n\nALL OTHER PAGES (title — file):\n" + "\n".join(index_lines)
+            )
 
     # System prompt folded into user message (see docstring)
     system_text = (
@@ -801,11 +817,41 @@ def route_topics(
         logger.warning("route_topics: empty/missing 'routes' key — using Uncategorized fallback")
         return _uncategorized_fallback()
 
-    # Build lookup: first entry wins on duplicate titles
+    # Build lookups: first entry wins on duplicate titles/stems.
     by_title: dict[str, dict[str, Any]] = {}
+    by_title_ci: dict[str, dict[str, Any]] = {}
+    by_stem: dict[str, dict[str, Any]] = {}
+    by_stem_ci: dict[str, dict[str, Any]] = {}
     for p in catalog:
         if p["title"] not in by_title:
             by_title[p["title"]] = p
+        if p["title"].lower() not in by_title_ci:
+            by_title_ci[p["title"].lower()] = p
+        filename = p.get("filename")
+        if filename:
+            stem = Path(filename).stem
+            if stem not in by_stem:
+                by_stem[stem] = p
+            if stem.lower() not in by_stem_ci:
+                by_stem_ci[stem.lower()] = p
+
+    def _resolve_existing(title: str) -> dict[str, Any] | None:
+        """§4.5 ordered tolerant lookup: exact title -> exact filename stem ->
+        case-insensitive title -> case-insensitive stem. Gated by
+        router_catalog_ranking since §4.4 is what first exposes filename
+        stems to the router menu.
+        """
+        if title in by_title:
+            return by_title[title]
+        if not router_catalog_ranking:
+            return None
+        if title in by_stem:
+            return by_stem[title]
+        if title.lower() in by_title_ci:
+            return by_title_ci[title.lower()]
+        if title.lower() in by_stem_ci:
+            return by_stem_ci[title.lower()]
+        return None
 
     result: list[tuple[str, Path, bool]] = []
     seen_paths: set[str] = set()
@@ -819,8 +865,8 @@ def route_topics(
             continue
 
         if match_type == "existing":
-            if title in by_title:
-                entry = by_title[title]
+            entry = _resolve_existing(title)
+            if entry is not None:
                 wiki_path = Path(entry["path_str"])
                 path_key = str(wiki_path)
                 if path_key not in seen_paths:

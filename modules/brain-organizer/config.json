@@ -15,6 +15,7 @@
   "max_file_chars": 50000,
   "catalog_summary_chars": 300,
   "catalog_max_pages_in_prompt": 60,
+  "router_catalog_ranking": true,
   "new_page_similarity_threshold": 0.82,
   "large_page_threshold_chars": 20000,
   "route_max_tokens": 1024,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -294,6 +295,114 @@ def test_route_topics_rejects_session_shaped_new_title(
     title, path, is_new = routes[0]
     assert title == "Uncategorized"
     assert path.name == "Uncategorized.md"
+
+
+def _catalog_entry(title: str, filename_stem: str) -> dict[str, Any]:
+    return {
+        "title": title,
+        "filename": f"{filename_stem}.md",
+        "path_str": f"/vault/wiki/{filename_stem}.md",
+        "headers": "",
+        "summary": "",
+    }
+
+
+def test_route_topics_index_covers_pages_beyond_rich_block(
+    tmp_config: dict[str, Any],
+) -> None:
+    """§4.4 / spec criteria 16-18: pages beyond the alphabetical-truncation
+    window must still surface somewhere in the prompt (via the appended
+    'ALL OTHER PAGES' index), while the rich numbered block stays exactly
+    catalog_max_pages_in_prompt entries — unchanged truncation count."""
+    rich = [_catalog_entry(f"Rich Page {i}", f"rich-page-{i}") for i in range(3)]
+    far = [_catalog_entry(f"Far Page {i}", f"far-page-{i}") for i in range(5)]
+    catalog = rich + far  # simulates a catalog far larger than the prompt window
+    cfg = dict(tmp_config, catalog_max_pages_in_prompt=3)
+
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        '{"routes": [{"match": "new", "title": "Something Brand New"}]}'
+    )
+    bo.route_topics("some content", catalog, cfg, client)
+
+    prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "ALL OTHER PAGES" in prompt
+
+    rich_block = prompt.split("\n\nALL OTHER PAGES")[0]
+    numbered_entries = re.findall(r"(?m)^\d+\. ", rich_block)
+    # criterion 18: rich numbered block unchanged at exactly max_in_prompt entries
+    assert len(numbered_entries) == 3
+
+    # criteria 16/17: a page far outside the rich block (last of 8, well beyond
+    # the top-3 window) must still have its title appear in the prompt, via the
+    # "Title (filename-stem)" index line, no summary.
+    assert "Far Page 4 (far-page-4)" in prompt
+    # and every catalog title (rich + far) appears somewhere in the combined prompt
+    for entry in catalog:
+        assert entry["title"] in prompt
+
+
+def test_route_topics_router_catalog_ranking_off_is_byte_identical(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Spec criterion 20: with router_catalog_ranking=False the prompt must be
+    byte-identical to the pre-change alphabetical-only prompt — i.e. exactly
+    the flag-on prompt with the appended index block spliced back out, and
+    nothing else different."""
+    rich = [_catalog_entry(f"Rich Page {i}", f"rich-page-{i}") for i in range(3)]
+    far = [_catalog_entry(f"Far Page {i}", f"far-page-{i}") for i in range(2)]
+    catalog = rich + far
+    cfg_on = dict(tmp_config, catalog_max_pages_in_prompt=3, router_catalog_ranking=True)
+    cfg_off = dict(tmp_config, catalog_max_pages_in_prompt=3, router_catalog_ranking=False)
+
+    routes_response = '{"routes": [{"match": "new", "title": "Something Brand New"}]}'
+
+    client_on = MagicMock()
+    client_on.messages.create.return_value = make_message(routes_response)
+    bo.route_topics("some content", catalog, cfg_on, client_on)
+    prompt_on = client_on.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    client_off = MagicMock()
+    client_off.messages.create.return_value = make_message(routes_response)
+    bo.route_topics("some content", catalog, cfg_off, client_off)
+    prompt_off = client_off.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    assert "ALL OTHER PAGES" in prompt_on
+    assert "ALL OTHER PAGES" not in prompt_off
+
+    idx_start = prompt_on.index("\n\nALL OTHER PAGES")
+    idx_end = prompt_on.index("\n\nNOTE TO ROUTE:")
+    reconstructed_off = prompt_on[:idx_start] + prompt_on[idx_end:]
+    assert reconstructed_off == prompt_off
+
+
+@pytest.mark.parametrize("llm_title", [
+    "Bug-Fixes",  # exact filename stem, not the stored title
+    "bug fixes",  # case-insensitive title
+    "bug-fixes",  # case-insensitive stem
+])
+def test_route_topics_resolve_existing_tolerant_matching(
+    tmp_config: dict[str, Any], caplog: pytest.LogCaptureFixture, llm_title: str,
+) -> None:
+    """§4.5 / spec criterion 19: an 'existing' route whose title doesn't
+    exactly match the catalog's stored title casing/form must still resolve
+    to the real page via _resolve_existing's tolerant lookup order, with no
+    hallucination warning logged."""
+    catalog = [_catalog_entry("Bug Fixes", "Bug-Fixes")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        json.dumps({"routes": [{"match": "existing", "title": llm_title}]})
+    )
+
+    with caplog.at_level(logging.WARNING):
+        routes = bo.route_topics("some content", catalog, tmp_config, client)
+
+    assert len(routes) == 1
+    title, path, is_new = routes[0]
+    assert title == "Bug Fixes"
+    assert is_new is False
+    assert path == Path(catalog[0]["path_str"])
+    assert "hallucinated" not in caplog.text
 
 
 def test_daily_note_route_creates_canonical_date_page(tmp_path: Path) -> None:

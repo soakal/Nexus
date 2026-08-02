@@ -69,6 +69,7 @@ def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
         "api_provider": "anthropic",
         "max_file_attempts": 5,
         "mcp_write_token": "",
+        "router_catalog_ranking": True,
     }
 
 
