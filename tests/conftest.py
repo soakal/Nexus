@@ -4,6 +4,8 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
+from sqlmodel import SQLModel, create_engine
+
 # Set test env before any imports
 os.environ.setdefault("HASS_HOST", "http://localhost:8123")
 os.environ.setdefault("UNIFI_HOST", "https://localhost")
@@ -34,6 +36,43 @@ MOCK_SECRETS = {
     "GOOGLE_CALENDAR_ICAL_URL": "https://calendar.google.com/test.ics",
     "APPLE_CALENDAR_ICAL_URL": "https://p.icloud.com/test.ics",
 }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_test_database(tmp_path_factory):
+    """Repoint backend.database's engine/DB_PATH at a throwaway session-scoped
+    temp-file SQLite DB before any test runs, so no pytest run can ever write
+    into the live repo-root nexus.db (backend/database.py's DB_PATH is
+    cwd-relative -- a plain `pytest` invocation from the repo root was writing
+    real rows, e.g. leaked OutcomeFlag rows, into Brian's production DB).
+
+    Session-scoped so it applies once, first, before the earliest test's own
+    fixtures run. The ubiquitous per-test pattern used across the suite --
+    `monkeypatch.setattr("backend.database.engine", <own StaticPool/tmp_path
+    engine>)` (and the `file_db`/`env` fixtures that also set `DB_PATH`) --
+    still wins for the duration of its own test: monkeypatch restores whatever
+    value was live when it patched, i.e. THIS session's temp engine, never the
+    original live one, so nothing here fights those existing fixtures.
+    """
+    import backend.database as db
+
+    db_path = tmp_path_factory.mktemp("nexus_test_db") / "test_nexus.db"
+    test_engine = create_engine(
+        f"sqlite:///{db_path}",
+        echo=False,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    SQLModel.metadata.create_all(test_engine)
+
+    original_engine = db.engine
+    original_db_path = db.DB_PATH
+    db.engine = test_engine
+    db.DB_PATH = db_path
+
+    yield
+
+    db.engine = original_engine
+    db.DB_PATH = original_db_path
 
 
 @pytest.fixture(autouse=True)
