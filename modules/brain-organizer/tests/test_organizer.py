@@ -563,6 +563,35 @@ def test_wiki_synthesis_uses_sonnet_max_tokens(tmp_config: dict[str, Any]) -> No
     assert client.messages.create.call_args.kwargs["max_tokens"] == 4096
 
 
+def test_wiki_create_branch_related_links_use_stem_alias(tmp_config: dict[str, Any]) -> None:
+    """Spec #1 crit 9: CREATE-branch related-page wikilinks render as
+    [[stem|title]] (Obsidian resolves by filename, not title), omit the alias
+    when stem == title, and degrade to the bare [[title]] form when a catalog
+    entry has no "filename" key at all -- rather than KeyError.
+    """
+    catalog = [
+        {"title": "Bug Fixes", "filename": "Bug-Fixes.md", "path_str": "x", "headers": "", "summary": ""},
+        {"title": "NEXUS", "filename": "NEXUS.md", "path_str": "x", "headers": "", "summary": ""},
+        {"title": "Old Notes", "path_str": "x", "headers": "", "summary": ""},  # no filename key
+    ]
+    client = MagicMock()
+    client.messages.create.return_value = make_message("# New Topic\n\nBody.")
+    bo.synthesize_wiki("New Topic", "content", "", tmp_config, client, catalog=catalog)
+    prompt_sent = client.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    # (a) stem != title -> aliased link, hyphenated stem before the "|"
+    assert "[[Bug-Fixes|Bug Fixes]]" in prompt_sent
+    assert "[[Bug Fixes]]" not in prompt_sent
+
+    # (b) stem == title -> alias omitted (not [[NEXUS|NEXUS]])
+    assert "[[NEXUS]]" in prompt_sent
+    assert "[[NEXUS|NEXUS]]" not in prompt_sent
+
+    # (c) missing "filename" key -> degrades to the old bare-title form, no
+    # KeyError raised by synthesize_wiki
+    assert "[[Old Notes]]" in prompt_sent
+
+
 # ---------------------------------------------------------------------------
 # _defuse_unknown_wikilinks -- prevents Haiku/Sonnet from wikilinking things
 # that aren't real vault pages (e.g. Claude Code memory-file names mentioned

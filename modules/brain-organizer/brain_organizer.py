@@ -1218,19 +1218,31 @@ def synthesize_wiki(
                 ratio = difflib.SequenceMatcher(
                     None, norm_topic, _normalize_title(entry["title"])
                 ).ratio()
-                scored.append((ratio, entry["title"]))
+                # Filename-less catalog entries (title-only, seen in the wild)
+                # degrade to the title as its own stem -- same as today's
+                # [[title]] form -- rather than KeyError.
+                filename = entry.get("filename")
+                stem = Path(filename).stem if filename else entry["title"]
+                scored.append((ratio, entry["title"], stem))
             scored.sort(reverse=True)
-            top5 = [t for _, t in scored[:5] if _ > 0.0]
+            top5 = [(t, s) for r, t, s in scored[:5] if r > 0.0]
             if top5:
+                def _related_link(title: str, stem: str) -> str:
+                    # Obsidian resolves by filename, not title -- link to the
+                    # hyphenated stem and alias back to the display title so
+                    # the model doesn't need to guess/rewrite it later.
+                    return f"[[{stem}]]" if stem == title else f"[[{stem}|{title}]]"
+
                 related_block = (
                     "Related pages in this wiki: "
-                    + ", ".join(f"[[{t}]]" for t in top5)
+                    + ", ".join(_related_link(t, s) for t, s in top5)
                     + ".\n"
                     "Use [[wikilinks]] ONLY for titles from this exact list -- do not "
                     "wikilink anything else, even if it looks like it should be a page "
                     "(e.g. a tool name, a file name, or something else the source "
-                    "material mentions). If in doubt, use plain text instead. "
-                    "Do not duplicate content from those pages.\n\n"
+                    "material mentions). If in doubt, use plain text instead. Use the "
+                    "exact link text shown, including the hyphenated target before "
+                    "the |. Do not duplicate content from those pages.\n\n"
                 )
 
         prompt = (
