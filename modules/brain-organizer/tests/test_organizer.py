@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -361,6 +362,143 @@ def test_daily_note_route_reuses_existing_daily_log_catalog_entry(tmp_path: Path
     )
 
     assert routes == [("Daily-Log", wiki_folder / "Daily-Log.md", False)]
+
+
+
+# ---------------------------------------------------------------------------
+# _extract_page_entry (BOM-safe decode) / build_wiki_catalog (parser_version)
+# ---------------------------------------------------------------------------
+
+def test_extract_page_entry_strips_bom_from_title(tmp_path: Path) -> None:
+    """A BOM-prefixed .md file (utf-8-sig decode) must not leak the BOM
+    character into the extracted title."""
+    f = tmp_path / "page.md"
+    f.write_bytes(b"\xef\xbb\xbf# My Title\n\nSome body text.\n")
+
+    entry = bo._extract_page_entry(f)
+
+    assert entry["title"] == "My Title"
+    assert "﻿" not in entry["title"]
+
+
+def test_extract_page_entry_bom_less_file_parses_unchanged(tmp_path: Path) -> None:
+    """The common (no-BOM) case must parse identically to before the
+    utf-8-sig change -- title, headers, and summary all as documented."""
+    f = tmp_path / "page.md"
+    f.write_text(
+        "# My Title\n\nSome body text.\n\n## Header One\n", encoding="utf-8"
+    )
+
+    entry = bo._extract_page_entry(f)
+
+    assert entry["title"] == "My Title"
+    assert entry["headers"] == "Header One"
+    assert entry["summary"] == "Some body text."
+
+
+def test_build_wiki_catalog_missing_parser_version_forces_full_reparse(
+    tmp_path: Path,
+) -> None:
+    """A pre-upgrade cache with no 'parser_version' key must be treated as a
+    full cache miss -- every page is re-parsed, not reused verbatim."""
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    page = wiki_folder / "Alpha.md"
+    page.write_text("# Alpha\n\nOriginal body.\n", encoding="utf-8")
+
+    meta_folder.mkdir()
+    cache_path = meta_folder / "wiki-catalog.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "built_at": datetime.now(UTC).isoformat(),
+                # deliberately no "parser_version" key
+                "pages": [{
+                    "title": "Alpha", "filename": "Alpha.md",
+                    "path_str": str(page), "headers": "",
+                    "summary": "STALE CACHED SUMMARY",
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
+
+    assert len(pages) == 1
+    assert pages[0]["summary"] == "Original body."
+
+
+def test_build_wiki_catalog_mismatched_parser_version_forces_full_reparse(
+    tmp_path: Path,
+) -> None:
+    """A cache stamped with an older/different parser_version must also be
+    treated as a full cache miss."""
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    page = wiki_folder / "Alpha.md"
+    page.write_text("# Alpha\n\nOriginal body.\n", encoding="utf-8")
+
+    meta_folder.mkdir()
+    cache_path = meta_folder / "wiki-catalog.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "built_at": datetime.now(UTC).isoformat(),
+                "parser_version": bo._CATALOG_PARSER_VERSION - 1,
+                "pages": [{
+                    "title": "Alpha", "filename": "Alpha.md",
+                    "path_str": str(page), "headers": "",
+                    "summary": "STALE CACHED SUMMARY",
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
+
+    assert len(pages) == 1
+    assert pages[0]["summary"] == "Original body."
+
+
+def test_build_wiki_catalog_matching_parser_version_hits_fast_path(
+    tmp_path: Path,
+) -> None:
+    """Regression check: a cache with a matching parser_version and
+    unchanged mtimes must still reuse the cached entry (no re-parse)."""
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    page = wiki_folder / "Alpha.md"
+    page.write_text("# Alpha\n\nOriginal body.\n", encoding="utf-8")
+
+    meta_folder.mkdir()
+    cache_path = meta_folder / "wiki-catalog.json"
+    # built_at must be >= the page's mtime for the fast path's mtime check
+    # (f.stat().st_mtime <= built_at_ts) to pass.
+    future_built_at = datetime.now(UTC) + timedelta(days=1)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "built_at": future_built_at.isoformat(),
+                "parser_version": bo._CATALOG_PARSER_VERSION,
+                "pages": [{
+                    "title": "Alpha", "filename": "Alpha.md",
+                    "path_str": str(page), "headers": "",
+                    "summary": "CACHED SUMMARY SHOULD BE REUSED",
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
+
+    assert len(pages) == 1
+    assert pages[0]["summary"] == "CACHED SUMMARY SHOULD BE REUSED"
 
 
 def test_process_file_skips_llm_route_for_daily_note(

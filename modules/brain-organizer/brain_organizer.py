@@ -280,7 +280,7 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
 
     Keys: title, filename, path_str, headers, summary.
     """
-    text = f.read_text(encoding="utf-8")
+    text = f.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
 
     # --- title: first line starting with exactly one "#" ---
@@ -336,6 +336,12 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
 # Wiki catalog builder (incremental, cached in _meta/wiki-catalog.json)
 # ---------------------------------------------------------------------------
 
+# Bump whenever _extract_page_entry's output shape or parsing changes — a
+# missing/mismatched version in the cached wiki-catalog.json forces a full
+# re-parse of every page instead of silently reusing stale entries.
+_CATALOG_PARSER_VERSION = 2
+
+
 def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, Any]]:
     """Build (or incrementally refresh) a catalog of all wiki pages.
 
@@ -352,9 +358,16 @@ def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, A
             try:
                 with open(cache_path, encoding="utf-8") as fh:
                     cache = json.load(fh)
-                built_at_dt = datetime.fromisoformat(cache.get("built_at", ""))
-                built_at_ts = built_at_dt.timestamp()
-                cached_by_filename = {p["filename"]: p for p in cache.get("pages", [])}
+                if cache.get("parser_version") != _CATALOG_PARSER_VERSION:
+                    # Missing or mismatched parser version — treat as a full
+                    # cache miss so every page is re-parsed with the current
+                    # _extract_page_entry logic (see _CATALOG_PARSER_VERSION).
+                    built_at_ts = 0.0
+                    cached_by_filename = {}
+                else:
+                    built_at_dt = datetime.fromisoformat(cache.get("built_at", ""))
+                    built_at_ts = built_at_dt.timestamp()
+                    cached_by_filename = {p["filename"]: p for p in cache.get("pages", [])}
             except Exception:
                 built_at_ts = 0.0
                 cached_by_filename = {}
@@ -378,7 +391,11 @@ def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, A
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(
-                    {"built_at": datetime.now(UTC).isoformat(), "pages": pages},
+                    {
+                        "built_at": datetime.now(UTC).isoformat(),
+                        "parser_version": _CATALOG_PARSER_VERSION,
+                        "pages": pages,
+                    },
                     fh, indent=2, ensure_ascii=False,
                 )
             os.replace(tmp, cache_path)
