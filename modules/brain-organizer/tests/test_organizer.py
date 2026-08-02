@@ -1288,6 +1288,51 @@ def test_large_page_splice_failure_raises_instead_of_dropping_content(
             bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
 
 
+def test_large_page_splice_defuses_hallucinated_link_in_spliced_chunk(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Defect D (spec #1 crit 10/11): branch-5b previously returned spliced
+    content before _defuse_unknown_wikilinks ever ran, so a large-page merge
+    kept whatever raw [[links]] the model emitted, broken or not. Mirrors
+    test_synthesize_wiki_defuses_hallucinated_link_in_create_branch above,
+    but forces the large-page splice branch instead of the create branch.
+    """
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    catalog = [{"title": "NEXUS", "filename": "NEXUS.md", "path_str": "x", "headers": "", "summary": "NEXUS stuff"}]
+    existing = "# Topic\n\n## Existing\n\n" + ("x" * 50)
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        "## Existing\n\nSee [[NEXUS]] and also [[project_version_scheme]] for context."
+    )
+    result = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client, catalog=catalog)
+    assert "[[NEXUS]]" in result
+    assert "[[project_version_scheme]]" not in result
+    assert "`project_version_scheme`" in result
+
+
+def test_large_page_splice_replaces_matching_section_despite_header_wikilink_normalization(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Header-line-contains-a-wikilink edge case (flagged during review): the
+    splice loop must extract header_line BEFORE _defuse_unknown_wikilinks
+    runs. If it extracted it after, a header referencing a catalog page in a
+    different case ("[[nexus]]") would be rewritten to a display-preserving
+    alias ("[[NEXUS|nexus]]") before the section-match regex ever saw it,
+    while existing_content's copy stayed literal -- so the two would no
+    longer match and the section would be silently duplicated (appended as
+    new) instead of replaced in place.
+    """
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    catalog = [{"title": "NEXUS", "filename": "NEXUS.md", "path_str": "x", "headers": "", "summary": "NEXUS stuff"}]
+    existing = "# Topic\n\n## [[nexus]] Notes\n\noldbody\n" + ("x" * 50)
+    client = MagicMock()
+    client.messages.create.return_value = make_message("## [[nexus]] Notes\n\nnewbody")
+    result = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client, catalog=catalog)
+    assert result.count("## ") == 1  # section replaced in place, not duplicated
+    assert "oldbody" not in result
+    assert "newbody" in result
+
+
 # ---------------------------------------------------------------------------
 # Empty / suspiciously-short synthesis result guard
 # ---------------------------------------------------------------------------

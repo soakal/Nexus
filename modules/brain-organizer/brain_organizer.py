@@ -1132,8 +1132,22 @@ def synthesize_wiki(
                 chunk = chunk.rstrip()
                 if not chunk:
                     continue
-                # Extract the header line (first line of the chunk)
+                # Extract the header line (first line of the chunk) BEFORE
+                # normalization -- the section-match regex below is built from
+                # this header and must match the identical, un-normalized
+                # header already present in existing_content. Extracting it
+                # after normalization could rewrite a wikilink inside the
+                # header itself, causing the regex to miss the existing
+                # section and append a duplicate instead of replacing it.
                 header_line = chunk.splitlines()[0].rstrip()
+                # Normalize wikilinks in this spliced chunk the same way the
+                # 5a/5c path does at the bottom of this function -- branch-5b
+                # previously returned before that normalizer ever ran, so
+                # large-page diffs kept whatever raw [[links]] the model
+                # emitted, broken or not.
+                chunk = _defuse_unknown_wikilinks(
+                    chunk, topic, catalog, threshold=config.get("new_page_similarity_threshold", 0.82)
+                )
                 # Find and replace the matching section in the existing content,
                 # or append if not present.
                 # A section spans from its ## header to the next ## header (or EOF).
