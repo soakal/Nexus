@@ -70,6 +70,16 @@ def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
         "max_file_attempts": 5,
         "mcp_write_token": "",
         "router_catalog_ranking": True,
+        # Pin sequential processing: the vast majority of these tests write a
+        # single raw file and assert on a specific mock side_effect call
+        # order. validate_config() now fills an absent max_parallel_files
+        # from _CONFIG_DEFAULTS (4, matching production) for any config that
+        # omits it -- without this explicit pin, every run() call in this
+        # fixture's tests would silently switch from the historical implicit
+        # sequential default (1) to a 4-worker ThreadPoolExecutor. Tests that
+        # deliberately exercise the parallel path already override this key
+        # themselves (see test_run_parallel_path_processes_multiple_files et al).
+        "max_parallel_files": 1,
     }
 
 

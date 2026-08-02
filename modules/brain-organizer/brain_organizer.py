@@ -66,6 +66,114 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
         return json.load(fh)
 
 
+# Keys with no default that must be present -- the pipeline cannot locate the
+# vault or call an API without every one of these.
+_CONFIG_REQUIRED: tuple[str, ...] = (
+    "vault_path",
+    "raw_folder",
+    "wiki_folder",
+    "meta_folder",
+    "backup_folder",
+    "logs_folder",
+    "processed_file",
+    "haiku_model",
+    "sonnet_model",
+)
+
+# Every optional key brain_organizer.py reads, in one place, with the value
+# that matches the real config.json -- not whatever inline literal a given
+# config.get(...) call site historically hardcoded (see F4/§4.2: three of
+# those literals had already drifted from production's actual config).
+_CONFIG_DEFAULTS: dict[str, Any] = {
+    "daily_folder": "wiki\\daily",
+    "mcp_port": 8765,
+    "mcp_host": "0.0.0.0",  # nosec B104 — intentional for Tailscale access, matches mcp_server.py
+    "mcp_write_token": "",  # nosec B105 -- default matches mcp_server.py, empty means no auth configured
+    "sonnet_max_tokens": 16384,
+    "max_file_chars": 50000,
+    "catalog_summary_chars": 300,
+    "catalog_max_pages_in_prompt": 60,
+    "router_catalog_ranking": True,
+    "new_page_similarity_threshold": 0.82,
+    "large_page_threshold_chars": 20000,
+    "route_max_tokens": 1024,
+    "max_parallel_files": 4,
+    "api_provider": "anthropic",
+    "max_file_attempts": 2,
+    "backup_retention_days": 30,
+}
+
+# Numeric keys with a meaningful valid range, beyond "must be the right type".
+_CONFIG_RANGES: dict[str, tuple[float, float]] = {
+    "new_page_similarity_threshold": (0.0, 1.0),
+    "mcp_port": (1, 65535),
+}
+
+
+def validate_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Validate a loaded config dict and merge in defaults for absent optional keys.
+
+    - Missing required key -> raise ValueError naming it. A pipeline that
+      cannot find the vault must not run.
+    - Unknown key (not required, not in _CONFIG_DEFAULTS) -> log one WARNING
+      naming it and keep going. Never raise -- Brian must be able to
+      hand-annotate the file, and this is also how a typo'd key (e.g.
+      catalog_max_pages_in_promt) gets surfaced instead of silently no-oping.
+    - Wrong type or out-of-range numeric value for a known optional key ->
+      raise ValueError.
+    - Absent optional key -> filled from _CONFIG_DEFAULTS.
+
+    Returns a new merged dict; does not mutate the input.
+    """
+    logger = logging.getLogger("brain_organizer")
+
+    for key in _CONFIG_REQUIRED:
+        if key not in config:
+            raise ValueError(f"brain_organizer config is missing required key: {key!r}")
+
+    known_keys = set(_CONFIG_REQUIRED) | set(_CONFIG_DEFAULTS)
+    for key in config:
+        if key not in known_keys:
+            logger.warning(
+                "brain_organizer config: unknown key %r (typo, or a key nothing reads)", key
+            )
+
+    merged: dict[str, Any] = dict(config)
+    for key, default in _CONFIG_DEFAULTS.items():
+        if key not in merged:
+            merged[key] = default
+            continue
+
+        value = merged[key]
+        expected_type = type(default)
+        if expected_type is bool:
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"brain_organizer config key {key!r} must be a bool, got {type(value).__name__}"
+                )
+        elif expected_type in (int, float):
+            # bool is a subclass of int -- exclude it explicitly so True/False
+            # can't silently pass for a numeric key.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"brain_organizer config key {key!r} must be numeric, got {type(value).__name__}"
+                )
+        elif not isinstance(value, expected_type):
+            raise ValueError(
+                f"brain_organizer config key {key!r} must be a {expected_type.__name__}, "
+                f"got {type(value).__name__}"
+            )
+
+        if key in _CONFIG_RANGES:
+            lo, hi = _CONFIG_RANGES[key]
+            if not (lo <= value <= hi):
+                raise ValueError(
+                    f"brain_organizer config key {key!r}={value!r} is out of range [{lo}, {hi}]"
+                )
+
+    return merged
+
+
 def setup_logging(config: dict[str, Any]) -> logging.Logger:
     logs_folder = Path(config["logs_folder"])
     logs_folder.mkdir(parents=True, exist_ok=True)
@@ -1653,7 +1761,7 @@ def run(
     _config: dict[str, Any] | None = None,
 ) -> int:
     """Run the organizer. Returns 0 on full success, 1 if any file failed."""
-    config = _config if _config is not None else load_config(config_path)
+    config = validate_config(_config if _config is not None else load_config(config_path))
     logger = setup_logging(config)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")

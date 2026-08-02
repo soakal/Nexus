@@ -1626,3 +1626,98 @@ def test_setup_logging_attaches_rotating_file_handler_with_size_limit(
             h.close()
         root.handlers = saved_handlers
         root.setLevel(saved_level)
+
+
+# ---------------------------------------------------------------------------
+# validate_config (spec #2 SS4.3 F4, acceptance criteria 19-24)
+# ---------------------------------------------------------------------------
+
+def test_validate_config_raises_naming_missing_required_key(tmp_config: dict[str, Any]) -> None:
+    del tmp_config["vault_path"]
+    with pytest.raises(ValueError, match="vault_path"):
+        bo.validate_config(tmp_config)
+
+
+def test_validate_config_unknown_key_logs_warning_and_does_not_raise(
+    tmp_config: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    tmp_config["catalog_max_pages_in_promt"] = 60  # typo'd key
+    with caplog.at_level(logging.WARNING, logger="brain_organizer"):
+        merged = bo.validate_config(tmp_config)
+    assert "catalog_max_pages_in_promt" in caplog.text
+    assert merged["catalog_max_pages_in_promt"] == 60
+
+
+def test_validate_config_wrong_type_on_known_optional_key_raises(tmp_config: dict[str, Any]) -> None:
+    tmp_config["max_file_chars"] = "not-a-number"
+    with pytest.raises(ValueError, match="max_file_chars"):
+        bo.validate_config(tmp_config)
+
+
+def test_validate_config_out_of_range_numeric_raises(tmp_config: dict[str, Any]) -> None:
+    tmp_config["new_page_similarity_threshold"] = 1.5
+    with pytest.raises(ValueError, match="new_page_similarity_threshold"):
+        bo.validate_config(tmp_config)
+
+
+def test_validate_config_fills_absent_optional_keys_from_defaults(tmp_config: dict[str, Any]) -> None:
+    assert "backup_retention_days" not in tmp_config
+    assert "large_page_threshold_chars" not in tmp_config
+    merged = bo.validate_config(tmp_config)
+    assert merged["backup_retention_days"] == 30
+    assert merged["large_page_threshold_chars"] == 20000
+
+
+def test_validate_config_does_not_mutate_input(tmp_config: dict[str, Any]) -> None:
+    original = dict(tmp_config)
+    bo.validate_config(tmp_config)
+    assert tmp_config == original
+
+
+def test_validate_config_defaults_match_real_config_json_values() -> None:
+    """Regression for the F4 drift: three inline literals (large_page_threshold_chars,
+    sonnet_max_tokens, max_file_attempts) had gone stale relative to config.json.
+
+    This asserts against _CONFIG_DEFAULTS directly, NOT against
+    validate_config(real_config)'s merged output -- real_config.json supplies
+    all three of these keys itself, so a merged-output assertion is vacuous:
+    the config's own value always wins over the default regardless of what
+    the default is, and would still pass even if _CONFIG_DEFAULTS reverted to
+    the old stale literals (sonnet_max_tokens=8192, large_page_threshold_chars
+    =35000, max_file_attempts=5). Checking _CONFIG_DEFAULTS itself is what
+    actually pins the default in place.
+    """
+    config_path = Path(__file__).parent.parent / "config.json"
+    with config_path.open(encoding="utf-8") as fh:
+        real_config = json.load(fh)
+
+    assert bo._CONFIG_DEFAULTS["large_page_threshold_chars"] == real_config["large_page_threshold_chars"] == 20000
+    assert bo._CONFIG_DEFAULTS["sonnet_max_tokens"] == real_config["sonnet_max_tokens"] == 16384
+    assert bo._CONFIG_DEFAULTS["max_file_attempts"] == real_config["max_file_attempts"] == 2
+
+
+def test_validate_config_real_config_json_keys_and_defaults_do_not_drift() -> None:
+    """Spec SS4.3 criterion 24: bidirectional drift test.
+
+    Every key in the real config.json must be covered by _CONFIG_REQUIRED or
+    _CONFIG_DEFAULTS (otherwise validate_config would silently warn about a
+    key that IS actually read, or a shipped key would go unvalidated) --
+    and every key in _CONFIG_DEFAULTS must actually appear in config.json
+    (otherwise a default is silently covering a key that was never actually
+    shipped in production, which is exactly how backup_retention_days and
+    daily_folder drifted this cycle without anything catching it)."""
+    config_path = Path(__file__).parent.parent / "config.json"
+    with config_path.open(encoding="utf-8") as fh:
+        real_config = json.load(fh)
+
+    known_keys = set(bo._CONFIG_REQUIRED) | set(bo._CONFIG_DEFAULTS)
+
+    missing_from_known = set(real_config) - known_keys
+    assert not missing_from_known, (
+        f"config.json has keys not in _CONFIG_REQUIRED/_CONFIG_DEFAULTS: {missing_from_known}"
+    )
+
+    defaults_never_shipped = set(bo._CONFIG_DEFAULTS) - set(real_config)
+    assert not defaults_never_shipped, (
+        f"_CONFIG_DEFAULTS has keys never present in config.json: {defaults_never_shipped}"
+    )
