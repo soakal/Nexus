@@ -777,8 +777,15 @@ async def test_run_watchdog_includes_contract_breaches_key(eng):
 async def test_ac21_flagging_checks_call_record_flag_budget_warn_does_not(eng):
     """AC21: each of the four flagging checks (check_scheduler_stalls,
     check_dead_letters, check_auth_failure_burst, check_integration_contracts)
-    calls record_flag with its documented (source, check) fingerprint before
-    notify_phone; check_budget_warning calls it zero times."""
+    calls record_flag_ex with its documented (source, check) fingerprint
+    before notify_phone; check_budget_warning calls it zero times.
+
+    Updated for the record_flag -> record_flag_ex conversion (mirrors cycle
+    7's homelab_watch.py precedent, commit 224a402): the mock now patches
+    record_flag_ex directly (the four call sites no longer go through the
+    record_flag back-compat wrapper) and returns a surface=True dict so the
+    `if d["surface"]:` gate still lets notify_phone fire, matching this
+    test's pre-existing, unrelated-to-CAL28/29 behavior."""
     from backend.agents import watchdog
     from backend.config import Settings
     from backend.database import PendingDelivery, SystemState, SpendLog
@@ -805,14 +812,14 @@ async def test_ac21_flagging_checks_call_record_flag_budget_warn_does_not(eng):
         budget_warn_enabled=True, budget_warn_pct=0.80,
     )
 
-    record_flag_mock = AsyncMock(return_value=1)
+    record_flag_ex_mock = AsyncMock(return_value={"id": 1, "surface": True, "reason": None})
     breaching_fetch = AsyncMock(return_value=_FakeWeatherData(condition="Unknown"))
 
     with patch("backend.config.get_settings", return_value=settings), \
          patch("backend.scheduler.scheduler", fake_scheduler), \
          patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
          patch("backend.integrations.weather.fetch", breaching_fetch), \
-         patch("backend.agents.outcomes.record_flag", record_flag_mock), \
+         patch("backend.agents.outcomes.record_flag_ex", record_flag_ex_mock), \
          patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
         await watchdog.check_scheduler_stalls(grace_s=300, cooldown_s=3600)
         await watchdog.check_dead_letters(threshold=5, cooldown_s=3600)
@@ -822,12 +829,98 @@ async def test_ac21_flagging_checks_call_record_flag_budget_warn_does_not(eng):
 
     authfail.reset()
 
-    calls = {(c.args[0], c.args[1]) for c in record_flag_mock.await_args_list}
+    calls = {(c.args[0], c.args[1]) for c in record_flag_ex_mock.await_args_list}
     assert ("watchdog", "stall:morning_briefing") in calls
     assert ("watchdog", "dead_letters") in calls
     assert ("watchdog", "auth_burst:1.2.3.4") in calls
     assert ("contracts", "breach:weather") in calls
-    assert record_flag_mock.await_count == 4  # check_budget_warning contributed none
+    assert record_flag_ex_mock.await_count == 4  # check_budget_warning contributed none
+
+
+@pytest.mark.asyncio
+async def test_cal28_dead_letters_high_severity_hint_still_pages_by_default(eng):
+    """CAL28 (docs/calibration-loop-spec.md 8.5): with an active, 100%-FP
+    calibration hint for watchdog:dead_letters and calibration_suppression_
+    enabled=True, the shipped DEFAULT calibration_suppress_high_severity=
+    False means check_dead_letters's severity="high" record_flag_ex call
+    still returns surface=True -- the row is written (suppressed=False) and
+    events.notify_phone still fires. The high-severity guardrail exists so a
+    single active hint can never silently blind a high-severity page unless
+    an operator explicitly opts in (CAL29 covers the opt-in)."""
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import CalibrationHint, OutcomeFlag, PendingDelivery, SystemState
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1))
+        s.add(PendingDelivery(payload_json='{"a":1}', delivery_type="notify", attempts=6))
+        s.add(CalibrationHint(
+            fingerprint="watchdog:dead_letters",
+            status="active", verdict_count=20, false_positive_count=20, fp_rate=1.0,
+        ))
+        s.commit()
+
+    settings = Settings(
+        calibration_enabled=True, calibration_suppression_enabled=True,
+        calibration_suppress_high_severity=False,  # shipped default
+    )
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        count = await watchdog.check_dead_letters(threshold=5, cooldown_s=3600)
+
+    assert count == 1
+    notify_mock.assert_awaited_once()  # CAL28 -- still pages through the active hint
+
+    with Session(eng) as s:
+        row = s.exec(
+            select(OutcomeFlag).where(OutcomeFlag.fingerprint == "watchdog:dead_letters")
+        ).one()
+    assert row.suppressed is False
+
+
+@pytest.mark.asyncio
+async def test_cal29_dead_letters_high_severity_hint_suppressed_when_opted_in(eng):
+    """CAL29: the same active hint as CAL28, but with
+    calibration_suppress_high_severity explicitly set True (opt-in) -- now
+    check_dead_letters's record_flag_ex call returns surface=False, so
+    events.notify_phone is NOT called, while the OutcomeFlag row is still
+    written and stamped suppressed=True with a non-empty suppressed_reason
+    (the write/page split, spec docs/outcome-tracker-spec.md §3.1, is
+    preserved through the record_flag -> record_flag_ex conversion)."""
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import CalibrationHint, OutcomeFlag, PendingDelivery, SystemState
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1))
+        s.add(PendingDelivery(payload_json='{"a":1}', delivery_type="notify", attempts=6))
+        s.add(CalibrationHint(
+            fingerprint="watchdog:dead_letters",
+            status="active", verdict_count=20, false_positive_count=20, fp_rate=1.0,
+        ))
+        s.commit()
+
+    settings = Settings(
+        calibration_enabled=True, calibration_suppression_enabled=True,
+        calibration_suppress_high_severity=True,  # explicit opt-in
+    )
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        count = await watchdog.check_dead_letters(threshold=5, cooldown_s=3600)
+
+    assert count == 1
+    notify_mock.assert_not_called()  # CAL29 -- page suppressed by opt-in guardrail
+
+    with Session(eng) as s:
+        row = s.exec(
+            select(OutcomeFlag).where(OutcomeFlag.fingerprint == "watchdog:dead_letters")
+        ).one()
+    assert row.suppressed is True
+    assert row.suppressed_reason
 
 
 @pytest.mark.asyncio

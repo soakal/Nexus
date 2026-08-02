@@ -117,17 +117,18 @@ async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
                 stalled.append(job.id)
                 if _should_alert(f"sched:{job.id}", cooldown_s):
                     from backend.agents import outcomes
-                    await outcomes.record_flag(
+                    d = await outcomes.record_flag_ex(
                         "watchdog", f"stall:{job.id}",
                         f"NEXUS scheduler job '{job.id}' is overdue by {int(overdue)}s"
                         " (possible stall).",
                         severity="high",
                     )
-                    await events.notify_phone(
-                        f"NEXUS scheduler job '{job.id}' is overdue by {int(overdue)}s"
-                        " (possible stall).",
-                        kind="scheduler_stall",
-                    )
+                    if d["surface"]:
+                        await events.notify_phone(
+                            f"NEXUS scheduler job '{job.id}' is overdue by {int(overdue)}s"
+                            " (possible stall).",
+                            kind="scheduler_stall",
+                        )
 
         return stalled
     except Exception as exc:
@@ -177,17 +178,18 @@ async def check_dead_letters(*, threshold: int, cooldown_s: int) -> int:
             )
         if rows and await asyncio.to_thread(_should_alert_dead_letters_db, cooldown_s):
             from backend.agents import outcomes
-            await outcomes.record_flag(
+            d = await outcomes.record_flag_ex(
                 "watchdog", "dead_letters",
                 f"NEXUS has {len(rows)} undelivered Telegram message(s) stuck"
                 f" (>= {threshold} retries). Check Telegram reachability.",
                 severity="high",
             )
-            await events.notify_phone(
-                f"NEXUS has {len(rows)} undelivered Telegram message(s) stuck"
-                f" (>= {threshold} retries). Check Telegram reachability.",
-                kind="dead_letter",
-            )
+            if d["surface"]:
+                await events.notify_phone(
+                    f"NEXUS has {len(rows)} undelivered Telegram message(s) stuck"
+                    f" (>= {threshold} retries). Check Telegram reachability.",
+                    kind="dead_letter",
+                )
         return len(rows)
     except Exception as exc:
         logger.warning(f"check_dead_letters error (ignored): {exc}")
@@ -271,12 +273,13 @@ async def check_auth_failure_burst() -> list[str]:
         from backend.agents import outcomes
         for src in paged:
             logger.error(f"401 burst from {src}: {stats[src]['count']} failures in {window_min} min")
-            await outcomes.record_flag(
+            d = await outcomes.record_flag_ex(
                 "watchdog", f"auth_burst:{src}",
                 _format_auth_burst(src, stats[src], window_min),
                 severity="high",
             )
-            await events.notify_phone(_format_auth_burst(src, stats[src], window_min), kind="auth_burst")
+            if d["surface"]:
+                await events.notify_phone(_format_auth_burst(src, stats[src], window_min), kind="auth_burst")
 
         return paged
     except Exception as exc:
@@ -349,15 +352,16 @@ async def check_integration_contracts() -> list[str]:
             if streak >= consecutive_ticks and _should_alert(f"contract:{name}", cooldown_s):
                 logger.error(f"Integration contract breach: '{name}' — {'; '.join(breaches)}")
                 from backend.agents import outcomes
-                await outcomes.record_flag(
+                d = await outcomes.record_flag_ex(
                     "contracts", f"breach:{name}",
                     _format_contract_breach(name, breaches, streak, window_min, cooldown_s),
                     severity="high",
                 )
-                await events.notify_phone(
-                    _format_contract_breach(name, breaches, streak, window_min, cooldown_s),
-                    kind="contract_breach",
-                )
+                if d["surface"]:
+                    await events.notify_phone(
+                        _format_contract_breach(name, breaches, streak, window_min, cooldown_s),
+                        kind="contract_breach",
+                    )
                 paged.append(name)
 
         return paged
