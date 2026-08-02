@@ -587,6 +587,7 @@ def _call_api(
 _DAILY_NOTE_STEM_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}[a-z]?$", re.IGNORECASE)
 _DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
 _DATE_IN_STEM_PAT = re.compile(r"\d{4}-\d{2}-\d{2}")
+_EVENT_NOTE_PREFIX_PAT = re.compile(r"^event-[a-z0-9]+(?:-[a-z0-9]+)*?-", re.IGNORECASE)
 
 # A proposed page title that names a session LOG rather than a topic: contains
 # a hyphenated UUID, a standalone session/save token, or starts with a full
@@ -620,16 +621,17 @@ def _is_daily_note(stem: str) -> bool:
 
     A pure date stem (optionally suffixed, e.g. "2026-07-24a") always
     counts. A "daily"/"briefing"-named file only counts if it ALSO contains
-    a date or the known event-source prefix "event-hermes-" (e.g.
-    "event-hermes-hermes-daily-digest-20260724T120009Z", whose timestamp has
-    no hyphens so _DATE_IN_STEM_PAT alone would miss it) -- otherwise a
+    a date or a generalized event-source prefix ("event-<source>-", e.g.
+    "event-hermes-hermes-daily-digest-20260724T120009Z" or
+    "event-nexus-nexus-daily-digest-20260802T120508Z", whose timestamps have
+    no hyphens so _DATE_IN_STEM_PAT alone would miss them) -- otherwise a
     genuinely topical file that happens to have "daily" in its name (e.g.
     "Daily-Driver-Setup.md") would get hijacked into the daily-note path.
     """
     if _DAILY_NOTE_STEM_PAT.match(stem):
         return True
     if _DAILY_NOTE_NAME_PAT.search(stem):
-        return bool(_DATE_IN_STEM_PAT.search(stem)) or stem.startswith("event-hermes-")
+        return bool(_DATE_IN_STEM_PAT.search(stem)) or bool(_EVENT_NOTE_PREFIX_PAT.match(stem))
     return False
 
 

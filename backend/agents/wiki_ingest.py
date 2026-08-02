@@ -48,6 +48,7 @@ _NOISE_TOKENS = ("session", "save", "note", "notes", "log", "draft")
 _DAILY_NOTE_STEM_PAT = re.compile(r"^\d{4}-\d{2}-\d{2}[a-z]?$", re.IGNORECASE)
 _DAILY_NOTE_NAME_PAT = re.compile(r"briefing|daily", re.IGNORECASE)
 _DATE_IN_STEM_PAT = re.compile(r"\d{4}-\d{2}-\d{2}")
+_EVENT_NOTE_PREFIX_PAT = re.compile(r"^event-[a-z0-9]+(?:-[a-z0-9]+)*?-", re.IGNORECASE)
 
 # The daily "Claude features digest" automation drops a file named
 # claude-features-digest-YYYY-MM-DD.md into Brain/raw/ (the vault's ingest
@@ -83,15 +84,15 @@ def _is_daily_note(stem: str) -> bool:
     into the relevant topic pages like any other session note.
 
     A pure date stem always counts. A "daily"/"briefing"-named file only
-    counts if it ALSO contains a date or the known event-source prefix
-    "event-hermes-" -- otherwise a genuinely topical file that happens to
+    counts if it ALSO contains a date or a generalized event-source prefix
+    ("event-<source>-") -- otherwise a genuinely topical file that happens to
     have "daily" in its name (e.g. "Daily-Driver-Setup.md") would get
     hijacked into the daily-note path.
     """
     if _DAILY_NOTE_STEM_PAT.match(stem):
         return True
     if _DAILY_NOTE_NAME_PAT.search(stem):
-        return bool(_DATE_IN_STEM_PAT.search(stem)) or stem.startswith("event-hermes-")
+        return bool(_DATE_IN_STEM_PAT.search(stem)) or bool(_EVENT_NOTE_PREFIX_PAT.match(stem))
     return False
 
 

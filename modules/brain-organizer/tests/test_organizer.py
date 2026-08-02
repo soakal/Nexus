@@ -181,7 +181,8 @@ def test_topic_detection_uses_haiku_model(tmp_config: dict[str, Any]) -> None:
     "2026-07-08b",
     "Morning-Briefing-2026-06-28",
     "Daily-Operations-Log-2026-07-02",
-    "event-hermes-hermes-daily-digest-20260724T120009Z",  # no-hyphen timestamp; needs the event-hermes- carve-out
+    "event-hermes-hermes-daily-digest-20260724T120009Z",  # no-hyphen timestamp; needs the event-hermes- carve-out (regression, spec criterion 2)
+    "event-nexus-nexus-daily-digest-20260802T120508Z",  # NEXUS's own emitter; the actual F1 fix (spec criterion 1)
 ])
 def test_is_daily_note_matches_dated_and_briefing_stems(stem: str) -> None:
     assert bo._is_daily_note(stem) is True
@@ -192,6 +193,8 @@ def test_is_daily_note_matches_dated_and_briefing_stems(stem: str) -> None:
     "nexus-session-2026-06-25b-ha-cover-lock-fix",
     "Daily-Driver-Setup",  # "daily" substring, no date, not a hermes event -- must NOT be hijacked
     "Briefing-Template",
+    "event-council-loop-run-complete-20260802T070438Z",  # no daily/briefing token (spec criterion 3)
+    "event-nexus-goal-completed-20260802T142558Z",  # no daily/briefing token (spec criterion 4)
 ])
 def test_is_daily_note_rejects_non_daily_stems(stem: str) -> None:
     assert bo._is_daily_note(stem) is False

@@ -6,6 +6,7 @@ embedded base64 PNGs extracted to disk, original moved to processed/ — with NO
 Haiku call and NO summarization.
 """
 
+import ast
 import base64
 import json
 from pathlib import Path
@@ -309,3 +310,81 @@ async def test_blank_alt_uses_counter_filename(vault):
     written = (wiki / "blank-alt.md").read_text(encoding="utf-8")
     assert "![[image_1.png]]" in written
     assert (wiki / "image_1.png").exists()
+
+
+# ---------------------------------------------------------------------------
+# _is_daily_note drift guard (robustness spec §8.3, criterion 58)
+#
+# brain_organizer.py runs in its own venv (modules/brain-organizer/venv);
+# wiki_ingest.py runs in NEXUS's. A shared import across venvs isn't
+# available, so this hand-copied twin can only be kept honest by comparing
+# source text directly. This is exactly the mechanism that would have caught
+# F1 at edit time (the "event-hermes-" literal was generalized in one file
+# and left stale in the other).
+# ---------------------------------------------------------------------------
+
+_ORGANIZER_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "modules"
+    / "brain-organizer"
+    / "brain_organizer.py"
+)
+_INGEST_PATH = Path(__file__).resolve().parent.parent / "backend" / "agents" / "wiki_ingest.py"
+
+_MIRRORED_PATTERN_NAMES = (
+    "_DAILY_NOTE_STEM_PAT",
+    "_DAILY_NOTE_NAME_PAT",
+    "_DATE_IN_STEM_PAT",
+    "_EVENT_NOTE_PREFIX_PAT",
+)
+
+
+def _module_assignment_source(source: str, name: str) -> str:
+    """Return the normalized source of the top-level `name = ...` assignment."""
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.unparse(node.value)
+    raise AssertionError(f"module-level assignment {name!r} not found")
+
+
+def _function_body_source(source: str, name: str) -> str:
+    """Return the normalized source of a top-level function's body, with its
+    docstring stripped (the two files' docstrings intentionally cross-
+    reference each other by differing file path, so they must NOT be part
+    of the equality check -- only the executable logic must match)."""
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                body = body[1:]
+            return "\n".join(ast.unparse(stmt) for stmt in body)
+    raise AssertionError(f"top-level function {name!r} not found")
+
+
+def test_daily_note_guard_stays_in_sync_with_brain_organizer_mirror() -> None:
+    organizer_src = _ORGANIZER_PATH.read_text(encoding="utf-8")
+    ingest_src = _INGEST_PATH.read_text(encoding="utf-8")
+
+    for pat_name in _MIRRORED_PATTERN_NAMES:
+        organizer_pat = _module_assignment_source(organizer_src, pat_name)
+        ingest_pat = _module_assignment_source(ingest_src, pat_name)
+        assert organizer_pat == ingest_pat, (
+            f"{pat_name} diverged between brain_organizer.py and wiki_ingest.py -- "
+            "the daily-note guard is a hand-copied mirror; both must change together"
+        )
+
+    organizer_body = _function_body_source(organizer_src, "_is_daily_note")
+    ingest_body = _function_body_source(ingest_src, "_is_daily_note")
+    assert organizer_body == ingest_body, (
+        "_is_daily_note body diverged between brain_organizer.py and wiki_ingest.py -- "
+        "the daily-note guard is a hand-copied mirror; both must change together"
+    )
