@@ -79,6 +79,10 @@ def test_scan_raw_folder_ignores_non_md_txt(tmp_vault: Path, tmp_config: dict[st
 def test_scan_raw_folder_retries_failed_file_under_max_attempts(
     tmp_vault: Path, tmp_config: dict[str, Any]
 ) -> None:
+    # tmp_config's max_file_attempts now comes from _CONFIG_DEFAULTS (2, matching
+    # production) -- explicitly raise it here so "attempts=2" is genuinely
+    # UNDER the cap, which is the behavior this test names and exercises.
+    tmp_config["max_file_attempts"] = 5
     f = write_raw(tmp_vault, "bad.md", "Content")
     sha = bo.compute_sha256(f)
     processed = {sha: {"filename": "bad.md", "status": "failed", "attempts": 2}}
@@ -659,6 +663,31 @@ def test_build_wiki_catalog_matching_parser_version_hits_fast_path(
 
     assert len(pages) == 1
     assert pages[0]["summary"] == "CACHED SUMMARY SHOULD BE REUSED"
+
+
+def test_build_wiki_catalog_respects_summary_chars_bound(tmp_path: Path) -> None:
+    """spec #2 criterion 25: build_wiki_catalog must thread its summary_chars
+    param through to _extract_page_entry (not silently use the 300-char
+    default) -- both bounding the produced summary AND actually truncating
+    prose that would otherwise be longer, so this isn't vacuously true of
+    short input."""
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    meta_folder.mkdir()
+    long_body = "word " * 200  # far longer than either bound below
+    (wiki_folder / "Alpha.md").write_text(
+        f"# Alpha\n\n{long_body}\n", encoding="utf-8"
+    )
+
+    default_pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
+    # Force a full re-parse (bypass the mtime-cache fast path) for the bounded call.
+    (meta_folder / "wiki-catalog.json").unlink()
+    bounded_pages = bo.build_wiki_catalog(wiki_folder, meta_folder, summary_chars=20)
+
+    assert len(default_pages[0]["summary"]) > 20
+    assert len(bounded_pages[0]["summary"]) <= 20
+    assert bounded_pages[0]["summary"] == default_pages[0]["summary"][:20]
 
 
 def test_process_file_skips_llm_route_for_daily_note(
@@ -1661,8 +1690,11 @@ def test_validate_config_out_of_range_numeric_raises(tmp_config: dict[str, Any])
 
 
 def test_validate_config_fills_absent_optional_keys_from_defaults(tmp_config: dict[str, Any]) -> None:
-    assert "backup_retention_days" not in tmp_config
-    assert "large_page_threshold_chars" not in tmp_config
+    # tmp_config is now derived from _CONFIG_DEFAULTS, so these keys are
+    # present by construction -- delete them here to simulate the
+    # absent-key case this test actually exercises.
+    del tmp_config["backup_retention_days"]
+    del tmp_config["large_page_threshold_chars"]
     merged = bo.validate_config(tmp_config)
     assert merged["backup_retention_days"] == 30
     assert merged["large_page_threshold_chars"] == 20000

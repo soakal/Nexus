@@ -283,7 +283,7 @@ def scan_raw_folder(
 ) -> list[tuple[Path, str]]:
     raw_folder = Path(config["vault_path"]) / config["raw_folder"]
     raw_folder.mkdir(parents=True, exist_ok=True)
-    max_attempts: int = config.get("max_file_attempts", 5)
+    max_attempts: int = config["max_file_attempts"]
     logger = logging.getLogger("brain_organizer")
 
     backup_folder = Path(config["vault_path"]) / config["backup_folder"]
@@ -451,7 +451,9 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
 _CATALOG_PARSER_VERSION = 2
 
 
-def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, Any]]:
+def build_wiki_catalog(
+    wiki_folder: Path, meta_folder: Path, summary_chars: int = 300
+) -> list[dict[str, Any]]:
     """Build (or incrementally refresh) a catalog of all wiki pages.
 
     Returns a list of entry dicts (title, filename, path_str, headers, summary),
@@ -487,7 +489,7 @@ def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, A
                 if f.name in cached_by_filename and f.stat().st_mtime <= built_at_ts:
                     pages.append(cached_by_filename[f.name])
                 else:
-                    pages.append(_extract_page_entry(f))
+                    pages.append(_extract_page_entry(f, summary_chars))
             except Exception as exc:
                 logger.warning("catalog: skipping %s: %s", f.name, exc)
                 continue
@@ -911,8 +913,8 @@ def route_topics(
         return [("Uncategorized", wiki_folder / "Uncategorized.md", True)]
 
     # Build numbered catalog block (capped at config limit).
-    router_catalog_ranking: bool = config.get("router_catalog_ranking", True)
-    max_in_prompt: int = config.get("catalog_max_pages_in_prompt", 60)
+    router_catalog_ranking: bool = config["router_catalog_ranking"]
+    max_in_prompt: int = config["catalog_max_pages_in_prompt"]
     # §4.3: with the flag on, the rich window is chosen by lexical relevance
     # to `content`, not alphabet/insertion order. Flag off keeps today's
     # alphabetical-truncation slice byte-for-byte.
@@ -976,7 +978,7 @@ def route_topics(
     text, _ = _call_api(
         config["haiku_model"],
         [{"role": "user", "content": full_prompt}],
-        config.get("route_max_tokens", 1024),
+        config["route_max_tokens"],
         config,
         client,
     )
@@ -1068,7 +1070,7 @@ def route_topics(
                 )
                 continue
             similar = find_similar_page(
-                title, catalog, config.get("new_page_similarity_threshold", 0.82)
+                title, catalog, config["new_page_similarity_threshold"]
             )
             if similar is not None:
                 logger.info(
@@ -1110,7 +1112,7 @@ def detect_topics(
     """
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     meta_folder = Path(config["vault_path"]) / config["meta_folder"]
-    catalog = build_wiki_catalog(wiki_folder, meta_folder)
+    catalog = build_wiki_catalog(wiki_folder, meta_folder, config["catalog_summary_chars"])
 
     routes = route_topics(content, catalog, config, client)
     return [title for (title, _path, _is_new) in routes]
@@ -1278,8 +1280,8 @@ def synthesize_wiki(
         catalog:       Full page list. Used in the CREATE branch (5c) to compute
             related-page wikilink suggestions.
     """
-    max_chars: int = config.get("max_file_chars", 50000)
-    large_threshold: int = config.get("large_page_threshold_chars", 35000)
+    max_chars: int = config["max_file_chars"]
+    large_threshold: int = config["large_page_threshold_chars"]
 
     is_merge = bool(existing_content)
     is_large = is_merge and len(existing_content) > large_threshold
@@ -1326,7 +1328,7 @@ def synthesize_wiki(
         )
 
         logger = logging.getLogger("brain_organizer")
-        max_tokens: int = config.get("sonnet_max_tokens", 8192)
+        max_tokens: int = config["sonnet_max_tokens"]
         text, stop_reason = _call_api(
             config["sonnet_model"],
             [{"role": "user", "content": prompt}],
@@ -1373,7 +1375,7 @@ def synthesize_wiki(
                 # large-page diffs kept whatever raw [[links]] the model
                 # emitted, broken or not.
                 chunk = _defuse_unknown_wikilinks(
-                    chunk, topic, catalog, threshold=config.get("new_page_similarity_threshold", 0.82)
+                    chunk, topic, catalog, threshold=config["new_page_similarity_threshold"]
                 )
                 # Find and replace the matching section in the existing content,
                 # or append if not present.
@@ -1486,7 +1488,7 @@ def synthesize_wiki(
         )
 
     # 8192 tokens gives room for large wiki merges; still check for truncation.
-    max_tokens = config.get("sonnet_max_tokens", 8192)
+    max_tokens = config["sonnet_max_tokens"]
     text, stop_reason = _call_api(
         config["sonnet_model"],
         [{"role": "user", "content": prompt}],
@@ -1516,7 +1518,7 @@ def synthesize_wiki(
         )
 
     text = _defuse_unknown_wikilinks(
-        text, topic, catalog, threshold=config.get("new_page_similarity_threshold", 0.82)
+        text, topic, catalog, threshold=config["new_page_similarity_threshold"]
     )
     return text
 
@@ -1591,7 +1593,7 @@ def process_file(
 
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
     wiki_folder.mkdir(parents=True, exist_ok=True)
-    daily_folder = Path(config["vault_path"]) / config.get("daily_folder", "wiki/daily")
+    daily_folder = Path(config["vault_path"]) / config["daily_folder"]
     daily_folder.mkdir(parents=True, exist_ok=True)
 
     if _routes is not None:
@@ -1644,7 +1646,7 @@ def process_file(
         # against fresh content (prevents same-run duplicate creation).
         try:
             refreshed = _extract_page_entry(
-                wiki_file, config.get("catalog_summary_chars", 300)
+                wiki_file, config["catalog_summary_chars"]
             )
             def _do_catalog_update():
                 replaced = False
@@ -1739,7 +1741,7 @@ def _prune_old_backups(config: dict[str, Any], logger: logging.Logger) -> None:
     backup_folder = Path(config["vault_path"]) / config["backup_folder"]
     if not backup_folder.exists():
         return
-    retention_days: int = config.get("backup_retention_days", 30)
+    retention_days: int = config["backup_retention_days"]
     cutoff = time.time() - retention_days * 86400
     pruned = 0
     for f in backup_folder.iterdir():
@@ -1782,10 +1784,10 @@ def run(
     # Build catalog ONCE after the empty-check so we don't pay the disk scan
     # cost on runs that have nothing to do.
     wiki_folder = Path(config["vault_path"]) / config["wiki_folder"]
-    daily_folder = Path(config["vault_path"]) / config.get("daily_folder", "wiki/daily")
+    daily_folder = Path(config["vault_path"]) / config["daily_folder"]
     daily_folder.mkdir(parents=True, exist_ok=True)
     meta_folder = Path(config["vault_path"]) / config["meta_folder"]
-    catalog = build_wiki_catalog(wiki_folder, meta_folder)
+    catalog = build_wiki_catalog(wiki_folder, meta_folder, config["catalog_summary_chars"])
     if not catalog and any(wiki_folder.glob("*.md")):
         # build_wiki_catalog only returns [] on a legitimately empty
         # wiki_folder or on its own catastrophic except-path (logged as
@@ -1827,7 +1829,7 @@ def run(
     # through ThreadPoolExecutor, but with one worker processing one group at
     # a time it's observably sequential (same ordering, same behavior) --
     # one implementation to keep correct instead of two.
-    max_workers = max(1, config.get("max_parallel_files", 1))
+    max_workers = max(1, config["max_parallel_files"])
 
     catalog_lock = threading.Lock()
     registry_lock = threading.Lock()

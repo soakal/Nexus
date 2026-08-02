@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from mcp_server import create_app
 
 # ---------------------------------------------------------------------------
@@ -589,3 +590,13 @@ def test_create_app_accepts_custom_config(tmp_config: dict[str, Any]) -> None:
     tmp_config["mcp_port"] = 9999
     app = create_app(config=tmp_config)
     assert app is not None
+
+
+def test_create_app_raises_on_config_missing_required_key(tmp_config: dict[str, Any]) -> None:
+    """spec #2 criterion 26/mcp_server tail: create_app() must call
+    validate_config() before serving -- a config missing a required key
+    (e.g. vault_path) must raise instead of silently constructing an app
+    that will fail later, mid-request, at some unrelated line."""
+    del tmp_config["vault_path"]
+    with pytest.raises(ValueError, match="vault_path"):
+        create_app(config=tmp_config)

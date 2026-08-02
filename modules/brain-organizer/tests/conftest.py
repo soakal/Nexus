@@ -12,6 +12,8 @@ from anthropic.types import TextBlock
 # Make the module root importable regardless of where pytest is invoked from
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import brain_organizer as bo  # noqa: E402 -- must follow the sys.path insert above
+
 
 def _make_message(text: str, stop_reason: str = "end_turn") -> MagicMock:
     """Build a mock anthropic.Message with a real TextBlock so isinstance checks pass."""
@@ -50,35 +52,34 @@ def tmp_vault(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
-    """Config dict pointing at tmp_vault with isolated log and processed paths."""
+    """Config dict derived from _CONFIG_DEFAULTS -- the same defaults
+    production's validate_config() fills in -- plus the required-key path
+    overrides that point everything at the isolated tmp vault/log/processed
+    locations. This is deliberate (spec #2 criterion 27): a test fixture
+    built from hand-picked literals can silently drift from production's
+    real thresholds (that drift is exactly what F4 found), whereas deriving
+    from _CONFIG_DEFAULTS means a test can never exercise a different value
+    than production without saying so explicitly.
+    """
     return {
+        **bo._CONFIG_DEFAULTS,
         "vault_path": str(tmp_vault),
         "raw_folder": "raw",
         "wiki_folder": "wiki",
-        "daily_folder": "wiki/daily",
         "backup_folder": "raw/backups",
         "meta_folder": "_meta",
         "logs_folder": str(tmp_path / "logs"),
         "processed_file": str(tmp_path / "processed.json"),
-        "mcp_port": 8765,
-        "mcp_host": "0.0.0.0",
         "haiku_model": "claude-haiku-4-5-20251001",
         "sonnet_model": "claude-sonnet-4-6",
-        "sonnet_max_tokens": 8192,
-        "max_file_chars": 50000,
-        "api_provider": "anthropic",
-        "max_file_attempts": 5,
-        "mcp_write_token": "",
-        "router_catalog_ranking": True,
         # Pin sequential processing: the vast majority of these tests write a
         # single raw file and assert on a specific mock side_effect call
-        # order. validate_config() now fills an absent max_parallel_files
-        # from _CONFIG_DEFAULTS (4, matching production) for any config that
-        # omits it -- without this explicit pin, every run() call in this
-        # fixture's tests would silently switch from the historical implicit
-        # sequential default (1) to a 4-worker ThreadPoolExecutor. Tests that
-        # deliberately exercise the parallel path already override this key
-        # themselves (see test_run_parallel_path_processes_multiple_files et al).
+        # order -- without this explicit pin, every run() call in this
+        # fixture's tests would use _CONFIG_DEFAULTS's production value (4,
+        # a multi-worker ThreadPoolExecutor) instead of the historical
+        # implicit sequential default. Tests that deliberately exercise the
+        # parallel path already override this key themselves (see
+        # test_run_parallel_path_processes_multiple_files et al).
         "max_parallel_files": 1,
     }
 

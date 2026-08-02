@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from brain_organizer import sanitize_topic_name
+from brain_organizer import sanitize_topic_name, validate_config
 from flask import Flask, jsonify, request
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -165,6 +165,7 @@ def create_app(
 ) -> Flask:
     if config is None:
         config = load_config(config_path)
+    config = validate_config(config)
 
     _setup_logging(config)
     logger = logging.getLogger("mcp_server")
