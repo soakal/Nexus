@@ -2,6 +2,8 @@ import json
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.pool import StaticPool
 
 from backend.agents.briefing import (
     _strip_unverified_sections,
@@ -643,6 +645,69 @@ async def test_open_items_section_uses_fresh_post_record_read_not_stale_gather_r
 
     assert "## Open Items" in result
     assert "MARKER-FRESH-ONLY" in result
+
+
+@pytest.mark.asyncio
+async def test_cal33_open_items_excludes_suppressed_flag_end_to_end(monkeypatch):
+    """CAL33 (docs/outcome-tracker-spec.md's suppressed-flag filter,
+    backend/agents/outcomes.py's _db_open_flags `include_suppressed` gate):
+    with one status=open/suppressed=False row and one status=open/
+    suppressed=True row in a REAL in-memory DB (backend.database.engine
+    patched, not outcomes.open_flags itself -- handing a literal list
+    straight to the formatters would bypass the filter under test), driving
+    the real run_briefing() path must omit the suppressed row's summary from
+    both the KNOWN OPEN ITEMS prompt block (briefing.py:482,
+    _build_flag_prompt_block) and the '## Open Items' section
+    (briefing.py:613, _build_open_items_section), while including the
+    unsuppressed row's summary in both."""
+    from backend.database import OutcomeFlag
+
+    eng = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        s.add(OutcomeFlag(
+            source="homelab_watch", check="garage_open",
+            fingerprint="homelab_watch:garage_open",
+            summary="MARKER-CAL33-VISIBLE-4d2", severity="high", status="open",
+            suppressed=False,
+        ))
+        s.add(OutcomeFlag(
+            source="watchdog", check="dead_letters",
+            fingerprint="watchdog:dead_letters",
+            summary="MARKER-CAL33-HIDDEN-8e6", severity="medium", status="open",
+            suppressed=True,
+        ))
+        s.commit()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=MagicMock(array_status="started", parity_status="idle", mover_running=False, storage_used_gb=0, storage_total_gb=0, docker_containers=[])), \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock, return_value=MagicMock(open_tasks=[])), \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock, return_value=MagicMock(open_prs=[], assigned_issues=[], stale_prs=[])), \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock, return_value=MagicMock(summary="Clear", high_f=75.0, low_f=60.0)), \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock, return_value=MagicMock(recording_now=[], upcoming=[], storage_used_gb=0, storage_total_gb=0)), \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock, return_value=MagicMock(queries_today=0, blocked_today=0, blocked_pct=0, filtering_enabled=True)), \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value=_STEP6_BRIEFING_TEXT) as mock_sonnet, \
+         patch("backend.agents.facts.extract_and_store", new_callable=AsyncMock), \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()):
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt_arg = mock_sonnet.call_args[0][0]
+    known_block = prompt_arg.split("KNOWN OPEN ITEMS")[1].split("RECENTLY CLOSED")[0]
+    assert "MARKER-CAL33-VISIBLE-4d2" in known_block
+    assert "MARKER-CAL33-HIDDEN-8e6" not in known_block
+
+    assert "MARKER-CAL33-VISIBLE-4d2" in result
+    assert "MARKER-CAL33-HIDDEN-8e6" not in result
 
 
 # ---------------------------------------------------------------------------

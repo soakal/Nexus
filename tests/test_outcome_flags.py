@@ -503,6 +503,75 @@ async def test_ac28_calibration_summary_groups_by_source_check(eng):
     assert summary["watchdog:dead_letters"] == {"resolved": 1}
 
 
+@pytest.mark.asyncio
+async def test_cal32_open_flags_excludes_suppressed_by_default_and_includes_on_opt_in(monkeypatch):
+    """CAL32 (docs/calibration-loop-spec.md §8): open_flags() omits a
+    suppressed=True row by default and includes it when
+    include_suppressed=True is passed explicitly. Also pins the falsiness
+    handling `_db_open_flags` relies on instead of an `is False` check: a row
+    whose `suppressed` column reads back as NULL must NOT be excluded by the
+    default call — `not row.suppressed` treats None the same as False.
+
+    Uses a hand-built table (mirrors test_cal3's legacy-table technique in
+    test_calibration_loop.py) rather than the shared `eng`/
+    SQLModel.metadata.create_all() fixture: that fixture declares `suppressed`
+    NOT NULL (OutcomeFlag.suppressed: bool = False), which would make a NULL
+    row impossible to construct at all. The real
+    `_ensure_outcomeflag_columns()` shim adds the column via a plain
+    `ALTER TABLE ... ADD COLUMN suppressed BOOLEAN` with no NOT NULL
+    constraint, so a genuinely-NULL row is a real reachable shape in
+    production, not a wrong test.
+    """
+    e = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    monkeypatch.setattr("backend.database.engine", e)
+
+    with e.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE outcomeflag ("
+            "id INTEGER PRIMARY KEY, source TEXT, \"check\" TEXT, fingerprint TEXT, "
+            "summary TEXT, detail TEXT, severity TEXT, status TEXT, "
+            "resolved_at TEXT, resolved_by TEXT, resolution_note TEXT, "
+            "deferred_until TEXT, action_log_id INTEGER, surfaced_count INTEGER, "
+            "last_surfaced_at TEXT, created_at TEXT, updated_at TEXT, "
+            "suppressed BOOLEAN, suppressed_reason TEXT)"
+        ))
+        now = "2026-08-01T00:00:00"
+        conn.execute(text(
+            "INSERT INTO outcomeflag (id, source, \"check\", fingerprint, summary, "
+            "severity, status, surfaced_count, last_surfaced_at, created_at, updated_at, suppressed) "
+            "VALUES (1, 'homelab_watch', 'garage_open', 'homelab_watch:garage_open', "
+            "'garage left open', 'medium', 'open', 1, :now, :now, :now, 0)"
+        ).bindparams(now=now))
+        conn.execute(text(
+            "INSERT INTO outcomeflag (id, source, \"check\", fingerprint, summary, "
+            "severity, status, surfaced_count, last_surfaced_at, created_at, updated_at, suppressed) "
+            "VALUES (2, 'watchdog', 'dead_letters', 'watchdog:dead_letters', "
+            "'dead letters piling up', 'medium', 'open', 1, :now, :now, :now, 1)"
+        ).bindparams(now=now))
+        # suppressed deliberately omitted -> column reads back NULL.
+        conn.execute(text(
+            "INSERT INTO outcomeflag (id, source, \"check\", fingerprint, summary, "
+            "severity, status, surfaced_count, last_surfaced_at, created_at, updated_at) "
+            "VALUES (3, 'briefing', 'stale_prs', 'briefing:stale_prs', "
+            "'stale PRs piling up', 'medium', 'open', 1, :now, :now, :now)"
+        ).bindparams(now=now))
+        conn.commit()
+
+    with e.connect() as conn:
+        row = conn.execute(text("SELECT suppressed FROM outcomeflag WHERE id = 3")).fetchone()
+    assert row[0] is None
+
+    from backend.agents import outcomes
+
+    default_ids = {f["id"] for f in await outcomes.open_flags()}
+    assert default_ids == {1, 3}
+
+    with_suppressed_ids = {f["id"] for f in await outcomes.open_flags(include_suppressed=True)}
+    assert with_suppressed_ids == {1, 2, 3}
+
+
 # ---------------------------------------------------------------------------
 # 6.6 Sweeper & retention (sweep_deferred only — run_watchdog wiring and
 # prune_old_outcome_flags belong to later rollout steps' own test files)

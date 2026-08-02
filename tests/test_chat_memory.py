@@ -446,3 +446,75 @@ async def test_chat_memory_exception_coerced_to_empty(monkeypatch):
     system_text = " ".join(b["text"] for b in system) if isinstance(system, list) else system
     assert "RELEVANT MEMORY" not in system_text
     assert "LIVE HOMELAB SNAPSHOT:" in system_text
+
+
+@pytest.mark.asyncio
+async def test_cal34_open_items_memory_block_excludes_suppressed(monkeypatch):
+    """CAL34 (docs/outcome-tracker-spec.md's suppressed-flag filter,
+    backend/agents/outcomes.py's _db_open_flags `include_suppressed` gate):
+    with one status=open/suppressed=False row and one status=open/
+    suppressed=True row in a REAL in-memory DB (backend.database.engine
+    patched, not outcomes.open_flags itself -- a literal list handed
+    straight to _format_open_flags_for_memory would bypass the filter under
+    test), driving the real chat()'s CHAT-branch outcomes.open_flags(limit=10)
+    call (chat.py:498) must omit the suppressed row's summary from the
+    [OPEN ITEMS] memory block injected into the system prompt while
+    including the unsuppressed row's summary."""
+    from backend.database import OutcomeFlag
+
+    eng = _make_engine()
+    with Session(eng) as s:
+        s.add(OutcomeFlag(
+            source="homelab_watch", check="garage_open",
+            fingerprint="homelab_watch:garage_open",
+            summary="MARKER-CAL34-VISIBLE-7f3", severity="high", status="open",
+            suppressed=False,
+        ))
+        s.add(OutcomeFlag(
+            source="watchdog", check="dead_letters",
+            fingerprint="watchdog:dead_letters",
+            summary="MARKER-CAL34-HIDDEN-9a1", severity="medium", status="open",
+            suppressed=True,
+        ))
+        s.commit()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    captured_kwargs = {}
+
+    async def mock_sonnet(prompt, *, system=None, web_search=False, **kwargs):
+        captured_kwargs["system"] = system
+        return "assistant reply"
+
+    with patch("backend.agents.router.haiku", new_callable=AsyncMock) as mock_haiku, \
+         patch("backend.agents.router.sonnet", side_effect=mock_sonnet), \
+         patch("backend.integrations.homeassistant.fetch",
+               new_callable=AsyncMock, return_value=_make_ha()), \
+         patch("backend.integrations.unraid.fetch",
+               new_callable=AsyncMock, return_value=_make_unraid()), \
+         patch("backend.integrations.channels_dvr.fetch",
+               new_callable=AsyncMock, return_value=_make_channels()), \
+         patch("backend.integrations.adguard.fetch",
+               new_callable=AsyncMock, return_value=_make_adguard()), \
+         patch("backend.integrations.weather.fetch",
+               new_callable=AsyncMock, return_value=_make_weather()), \
+         patch("backend.agents.memory.vault_recall",
+               new_callable=AsyncMock, return_value=""), \
+         patch("backend.agents.memory.latest_briefing_seed",
+               new_callable=AsyncMock, return_value=""), \
+         patch("backend.agents.chat._db_create_conversation", return_value=4), \
+         patch("backend.agents.chat._db_add_message"), \
+         patch("backend.agents.chat._db_load_history",
+               return_value=[{"role": "user", "content": "what's open"}]), \
+         patch("backend.agents.chat._db_touch_conversation"):
+
+        mock_haiku.return_value = '{"intent":"CHAT"}'
+
+        from backend.agents.chat import chat
+        result = await chat(4, "what's open")
+
+    assert result["reply"] == "assistant reply"
+    system = captured_kwargs.get("system", "")
+    system_text = " ".join(b["text"] for b in system) if isinstance(system, list) else system
+    assert "[OPEN ITEMS]" in system_text
+    assert "MARKER-CAL34-VISIBLE-7f3" in system_text
+    assert "MARKER-CAL34-HIDDEN-9a1" not in system_text

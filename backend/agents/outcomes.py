@@ -218,7 +218,7 @@ def _db_clear_by_fingerprint(fingerprint: str, by: str) -> int:
         return count
 
 
-def _db_open_flags(limit: int) -> list[dict]:
+def _db_open_flags(limit: int, include_suppressed: bool = False) -> list[dict]:
     """Open + needs_follow_up + deferred-past-due, newest first."""
     from sqlmodel import Session, select
     from backend.database import OutcomeFlag, engine
@@ -229,8 +229,9 @@ def _db_open_flags(limit: int) -> list[dict]:
         rows = session.exec(stmt).all()
         out = [
             row for row in rows
-            if row.status in _ACTIVE_STATUSES
-            or (row.status == "deferred" and row.deferred_until is not None and row.deferred_until <= now)
+            if (row.status in _ACTIVE_STATUSES
+                or (row.status == "deferred" and row.deferred_until is not None and row.deferred_until <= now))
+            and (include_suppressed or not row.suppressed)
         ]
         return [_flag_to_dict(row) for row in out[:limit]]
 
@@ -556,9 +557,9 @@ async def clear_flag(source: str, check: str, *, by: str = "auto:condition_clear
     return await asyncio.to_thread(_db_clear_by_fingerprint, fingerprint, by)
 
 
-async def open_flags(limit: int = 50) -> list[dict]:
+async def open_flags(limit: int = 50, *, include_suppressed: bool = False) -> list[dict]:
     """Open + needs_follow_up + deferred-past-due, newest first."""
-    return await asyncio.to_thread(_db_open_flags, limit)
+    return await asyncio.to_thread(_db_open_flags, limit, include_suppressed)
 
 
 async def recently_closed(hours: int = 48, limit: int = 30) -> list[dict]:
