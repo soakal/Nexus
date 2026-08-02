@@ -388,7 +388,11 @@ def build_wiki_catalog(wiki_folder: Path, meta_folder: Path) -> list[dict[str, A
 
         return pages
     except Exception as exc:
-        logging.getLogger("brain_organizer").warning(
+        # Elevated to error (vs. the per-file "skipping" warning above): an
+        # empty return here can now abort the whole run() (see §5.3
+        # criterion 34 / §6.4 criterion 48) if wiki_folder is non-empty, so
+        # this must read as more severe than a routine per-page skip.
+        logging.getLogger("brain_organizer").error(
             "build_wiki_catalog failed catastrophically: %s", exc
         )
         return []
@@ -1415,6 +1419,27 @@ def run(
     daily_folder.mkdir(parents=True, exist_ok=True)
     meta_folder = Path(config["vault_path"]) / config["meta_folder"]
     catalog = build_wiki_catalog(wiki_folder, meta_folder)
+    if not catalog and any(wiki_folder.glob("*.md")):
+        # build_wiki_catalog only returns [] on a legitimately empty
+        # wiki_folder or on its own catastrophic except-path (logged as
+        # error there). Since wiki_folder demonstrably has *.md files,
+        # this is the catastrophic case -- routing/synthesis against an
+        # empty catalog would treat every page as new and duplicate the
+        # whole wiki, so abort before any writes happen (§5.3 criterion
+        # 34 / §6.4 criterion 48).
+        logger.error(
+            "Wiki catalog build returned no pages but wiki/ contains "
+            "markdown files -- aborting run before routing/synthesis"
+        )
+        send_telegram_notification(
+            config,
+            "🧠 Brain Organizer — 🚨 Wiki catalog build failed\n"
+            "wiki/ has markdown files but the catalog came back empty. "
+            "Aborting run to avoid duplicating pages.",
+            priority="high",
+            http_client=_http_client,
+        )
+        return 1
     logger.info("Wiki catalog: %d page(s)", len(catalog))
 
     logger.info("Found %d new file(s) to process", len(files))

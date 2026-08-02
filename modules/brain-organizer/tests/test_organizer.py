@@ -845,6 +845,53 @@ def test_run_usage_capped_aborts_without_per_file_failure_spam(
     assert sha not in processed, "an aborted run must not record a failed attempt"
 
 
+def test_run_aborts_when_catalog_empty_but_wiki_has_markdown_files(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """build_wiki_catalog returning [] while wiki/ genuinely has *.md pages can
+    only mean its own catastrophic except-path fired (see the elevated .error
+    log there). Routing/synthesizing against an empty catalog in that case
+    would treat every existing page as new and duplicate the whole wiki, so
+    run() must abort BEFORE any routing/synthesis (§5.3 criterion 34 / §6.4
+    criterion 48) -- not just log a warning and carry on.
+
+    Uses capsys (not caplog): run() itself calls setup_logging(), which does
+    logging.basicConfig(..., force=True) -- that replaces the root logger's
+    handlers wholesale, including caplog's, so caplog.text reads empty for
+    any test that invokes run() directly. basicConfig's own
+    StreamHandler(sys.stdout) still lands in capsys's stdout capture.
+
+    The genuinely-empty-wiki fast path (no *.md at all -- guard must NOT
+    fire, run() proceeds normally to 0) is already pinned down by
+    test_run_parallel_path_processes_multiple_files above: tmp_vault's wiki/
+    starts with zero *.md files, catalog comes back [], and that test
+    asserts result == 0 with new pages created -- exercising exactly the
+    guard's False branch on a real fixture, not a mock.
+    """
+    (tmp_vault / "wiki" / "Existing.md").write_text("# Existing\n\nSome content.", encoding="utf-8")
+    write_raw(tmp_vault, "note.md", "New content to process")
+
+    monkeypatch.setattr(bo, "build_wiki_catalog", lambda *a, **k: [])
+    mock_telegram = MagicMock()
+    monkeypatch.setattr(bo, "send_telegram_notification", mock_telegram)
+
+    client = MagicMock()
+
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 1
+    client.messages.create.assert_not_called()  # no routing/synthesis occurred
+    assert (tmp_vault / "raw" / "note.md").exists()  # raw file untouched, never consumed
+
+    captured_out = capsys.readouterr().out
+    assert "[ERROR]" in captured_out
+    assert "catalog" in captured_out.lower()
+
+    mock_telegram.assert_called_once()
+    assert mock_telegram.call_args.kwargs.get("priority") == "high"
+
+
 def test_group_files_by_shared_pages_unions_on_any_shared_route() -> None:
     """Two files sharing a SECONDARY (non-primary) route must land in one group.
 
