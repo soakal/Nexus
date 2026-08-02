@@ -421,6 +421,38 @@ async def test_build_autonomy_digest_text(eng):
     assert "1.23" in text or "1.2" in text, f"Missing spend value in digest: {text}"
 
 
+@pytest.mark.asyncio
+async def test_build_autonomy_digest_text_with_active_calibration_hint(eng):
+    """Spec §3.6 addendum: build_autonomy_digest's calibration_line gains a
+    ' | Auto-suppressed: N rule(s)' suffix sourced from
+    calibration.hint_report(30)'s 'suppressed' group (status=='active'
+    CalibrationHint rows) -- test_build_autonomy_digest_text above (no
+    CalibrationHint rows seeded) already pins the zero-hints no-op path."""
+    from backend.database import CalibrationHint, SystemState
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            s.add(row)
+        row.autonomy_enabled = True
+
+        s.add(CalibrationHint(
+            fingerprint="homelab_watch:garage_open",
+            status="active",
+            fp_rate=0.78,
+            first_active_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(days=14),
+        ))
+        s.commit()
+
+    from backend.agents.digest import build_autonomy_digest
+    text = await build_autonomy_digest()
+
+    assert "Flag calibration (30d): none | Auto-suppressed: 1 rule(s)" in text, \
+        f"Missing suppression suffix in digest: {text}"
+
+
 # ---------------------------------------------------------------------------
 # Test 7: Scheduler registers "autonomy_digest" job when enabled
 # ---------------------------------------------------------------------------

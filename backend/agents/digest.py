@@ -124,6 +124,7 @@ async def build_autonomy_digest() -> str:
 
         # Fan-out all DB reads + governor calls concurrently.
         from backend.safety import governor
+        from backend.agents import calibration as calibration_mod
         from backend.agents import outcomes
 
         auto_goals_task = asyncio.to_thread(_db_recent_autonomous_goals, since)
@@ -133,6 +134,7 @@ async def build_autonomy_digest() -> str:
         spend_task = asyncio.to_thread(governor.today_spend_usd)
         state_task = asyncio.to_thread(governor.get_system_state)
         calibration_task = outcomes.calibration_summary(30)
+        hint_report_task = calibration_mod.hint_report(30)
 
         results = await asyncio.gather(
             auto_goals_task,
@@ -142,6 +144,7 @@ async def build_autonomy_digest() -> str:
             spend_task,
             state_task,
             calibration_task,
+            hint_report_task,
             return_exceptions=True,
         )
 
@@ -152,6 +155,7 @@ async def build_autonomy_digest() -> str:
         spend = results[4] if not isinstance(results[4], Exception) else 0.0
         state = results[5] if not isinstance(results[5], Exception) else {}
         calibration = results[6] if not isinstance(results[6], Exception) else {}
+        hint_report = results[7] if not isinstance(results[7], Exception) else None
 
         autonomy_label = "ENABLED" if state.get("autonomy_enabled", True) else "PAUSED"
         daily_cap = state.get("daily_budget_usd", 25.0)
@@ -196,6 +200,17 @@ async def build_autonomy_digest() -> str:
             calibration_line = f"Flag calibration (30d): {calibration_parts}"
         else:
             calibration_line = "Flag calibration (30d): none"
+
+        # Spec §3.6 addendum — count of currently auto-suppressed rules,
+        # sourced from calibration.hint_report(30)'s "suppressed" group
+        # (status=="active" CalibrationHint rows). hint_report is None on a
+        # gather exception or non-dict result; both degrade to no suffix, same
+        # as an empty/absent "suppressed" list. Append-only — never touches
+        # calibration_line's existing text above.
+        suppressed_hints = hint_report.get("suppressed") if isinstance(hint_report, dict) else None
+        suppressed_count = len(suppressed_hints) if isinstance(suppressed_hints, list) else 0
+        if suppressed_count > 0:
+            calibration_line += f" | Auto-suppressed: {suppressed_count} rule(s)"
 
         lines = [
             f"NEXUS autonomy digest — {date_str}",

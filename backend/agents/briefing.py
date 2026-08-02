@@ -149,7 +149,41 @@ def _build_flag_prompt_block(flags: list, cap: int) -> str:
     return "\n".join(lines) if lines else "(none)"
 
 
-def _format_calibration_line(calibration, cap: int) -> str:
+def _format_suppression_sentence(hint_report, cap: int) -> str:
+    """Spec §3.6 addendum: 'Currently auto-suppressed: <fp> (NN% false
+    alarm, until <date>)[, ...].' appended after the existing calibration
+    line, sourced from calibration.hint_report(30)'s "suppressed" group
+    (status=="active" CalibrationHint rows). `hint_report` is an
+    Exception/non-dict on a gather failure or a zeroed report on any
+    internal error (hint_report itself never raises) -- both degrade to
+    '', same discipline as _format_calibration_line. Zero active hints ->
+    '', no trailing punctuation artifacts. Capped at `cap` entries, same
+    bound as the base line, for the same reason."""
+    if not isinstance(hint_report, dict):
+        return ""
+    suppressed = hint_report.get("suppressed")
+    if not isinstance(suppressed, list) or not suppressed:
+        return ""
+    try:
+        parts = []
+        for hint in suppressed[:cap]:
+            if not isinstance(hint, dict):
+                continue
+            fp = hint.get("fingerprint")
+            if not fp:
+                continue
+            pct = round(hint.get("fp_rate", 0.0) * 100)
+            retest_at = hint.get("retest_at")
+            until = retest_at.split("T")[0] if isinstance(retest_at, str) and retest_at else "unknown"
+            parts.append(f"{fp} ({pct}% false alarm, until {until})")
+    except Exception:
+        return ""
+    if not parts:
+        return ""
+    return f" Currently auto-suppressed: {', '.join(parts)}."
+
+
+def _format_calibration_line(calibration, cap: int, hint_report=None) -> str:
     """One-line 'Flag calibration (30d): source:check — N raised, M
     false_positive[, ...].' advisory line for BRIEFING_PROMPT (spec §4.4,
     the briefing's half of calibration_summary()'s two v1 consumers --
@@ -160,9 +194,15 @@ def _format_calibration_line(calibration, cap: int) -> str:
     `cap` (outcome_flag_briefing_max, same constant the KNOWN OPEN ITEMS/
     RECENTLY CLOSED blocks already use) source:check pairs to bound prompt
     growth; each pair itself is one bounded summary line, not a list, so no
-    further per-line truncation is needed."""
+    further per-line truncation is needed.
+
+    `hint_report` (spec §3.6 addendum, optional -- calibration.hint_report(30)'s
+    result) appends a 'Currently auto-suppressed: ...' sentence after the
+    existing prefix/fallback when active hints exist; never modifies the
+    prefix or '(none)' fallback text itself, and appends nothing on an empty
+    or errored hint_report."""
     if not isinstance(calibration, dict) or not calibration:
-        return "Flag calibration (30d): (none)"
+        return "Flag calibration (30d): (none)" + _format_suppression_sentence(hint_report, cap)
     try:
         parts = ", ".join(
             f"{key} — {sum(counts.values())} raised, {counts.get('false_positive', 0)} false_positive"
@@ -170,8 +210,9 @@ def _format_calibration_line(calibration, cap: int) -> str:
             if isinstance(counts, dict)
         )
     except Exception:
-        return "Flag calibration (30d): (none)"
-    return f"Flag calibration (30d): {parts}." if parts else "Flag calibration (30d): (none)"
+        return "Flag calibration (30d): (none)" + _format_suppression_sentence(hint_report, cap)
+    base = f"Flag calibration (30d): {parts}." if parts else "Flag calibration (30d): (none)"
+    return base + _format_suppression_sentence(hint_report, cap)
 
 
 def _format_flag_age(iso_str) -> str:
@@ -384,7 +425,7 @@ async def run_briefing() -> str:
     )
     from backend.integrations.calendar import get_today_events
     from backend.integrations import protonmail
-    from backend.agents import mail_drafts, outcomes
+    from backend.agents import calibration, mail_drafts, outcomes
 
     logger.info("Running morning briefing")
 
@@ -416,13 +457,14 @@ async def run_briefing() -> str:
             outcomes.open_flags(),
             outcomes.recently_closed(hours=48),
             outcomes.calibration_summary(30),
+            calibration.hint_report(30),
             return_exceptions=True,
         )
 
         (
             ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data,
             proton_unread, proton_drafts, open_flags_result, closed_flags_result,
-            calibration_result,
+            calibration_result, hint_report_result,
         ) = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
@@ -445,7 +487,8 @@ async def run_briefing() -> str:
         # _UNVERIFIED_FACT_SECTIONS): degrades to '(none)' on any gather
         # exception or unexpected shape, same discipline as open/closed above.
         calibration_dict = calibration_result if isinstance(calibration_result, dict) else {}
-        calibration_line = _format_calibration_line(calibration_dict, flag_cap)
+        hint_report_dict = hint_report_result if isinstance(hint_report_result, dict) else None
+        calibration_line = _format_calibration_line(calibration_dict, flag_cap, hint_report_dict)
 
         try:
             drafted_ids = await asyncio.to_thread(mail_drafts._db_drafted_email_ids)

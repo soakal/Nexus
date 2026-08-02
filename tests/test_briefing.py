@@ -3,7 +3,11 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from backend.agents.briefing import _strip_unverified_sections, _build_protonmail_section
+from backend.agents.briefing import (
+    _strip_unverified_sections,
+    _build_protonmail_section,
+    _format_calibration_line,
+)
 
 
 def test_strip_unverified_sections_drops_priority_actions_and_inbox():
@@ -639,6 +643,60 @@ async def test_open_items_section_uses_fresh_post_record_read_not_stale_gather_r
 
     assert "## Open Items" in result
     assert "MARKER-FRESH-ONLY" in result
+
+
+# ---------------------------------------------------------------------------
+# _format_calibration_line(calibration, cap, hint_report) -- spec §3.6 addendum,
+# CAL35: the pre-existing prefix/"(none)" fallback stays byte-identical; the
+# "Currently auto-suppressed: ..." sentence is appended only when hint_report
+# carries active/suppressed hints.
+# ---------------------------------------------------------------------------
+
+def test_format_calibration_line_no_hints_byte_identical_to_pre_change():
+    """CAL35: with hint_report=None (its default) or a report with an empty
+    'suppressed' list, output must be byte-identical to the pre-§3.6 line --
+    no trailing space, no trailing artifact."""
+    calibration = {"homelab_watch:garage_open": {"open": 6, "false_positive": 2}}
+    base = "Flag calibration (30d): homelab_watch:garage_open — 8 raised, 2 false_positive."
+    assert _format_calibration_line(calibration, 10) == base
+    assert _format_calibration_line(calibration, 10, hint_report=None) == base
+    assert _format_calibration_line(calibration, 10, hint_report={"suppressed": []}) == base
+    # "(none)" fallback path must also stay untouched.
+    assert _format_calibration_line({}, 10) == "Flag calibration (30d): (none)"
+    assert _format_calibration_line({}, 10, hint_report={"suppressed": []}) == "Flag calibration (30d): (none)"
+
+
+def test_format_calibration_line_appends_suppression_sentence_when_active():
+    """Spec §3.6 example (docs/calibration-loop-spec.md:293): one active hint
+    appends a correctly formatted 'Currently auto-suppressed: <fp> (NN% false
+    alarm, until <date>).' sentence after the existing line, unmodified."""
+    calibration = {"homelab_watch:garage_open": {"open": 8, "false_positive": 6}}
+    hint_report = {
+        "suppressed": [
+            {
+                "fingerprint": "homelab_watch:garage_open",
+                "fp_rate": 0.78,
+                "retest_at": "2026-09-13T00:00:00",
+            }
+        ]
+    }
+    result = _format_calibration_line(calibration, 10, hint_report=hint_report)
+    assert result == (
+        "Flag calibration (30d): homelab_watch:garage_open — 14 raised, 6 false_positive."
+        " Currently auto-suppressed: homelab_watch:garage_open (78% false alarm, until 2026-09-13)."
+    )
+
+
+def test_format_calibration_line_hint_report_exception_or_non_dict_is_noop():
+    """A gather() exception surfaces here as a raw Exception instance (not a
+    dict); a malformed entry inside 'suppressed' must not crash formatting
+    either -- both degrade to the base line, never raise."""
+    calibration = {"homelab_watch:garage_open": {"open": 6, "false_positive": 2}}
+    base = "Flag calibration (30d): homelab_watch:garage_open — 8 raised, 2 false_positive."
+    assert _format_calibration_line(calibration, 10, hint_report=RuntimeError("db down")) == base
+    assert _format_calibration_line(calibration, 10, hint_report={"suppressed": "not-a-list"}) == base
+    assert _format_calibration_line(calibration, 10, hint_report={"suppressed": [{"fp_rate": 0.5}]}) == base
+    assert _format_calibration_line(calibration, 10, hint_report={"suppressed": ["not-a-dict"]}) == base
 
 
 # ---------------------------------------------------------------------------
