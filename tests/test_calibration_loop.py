@@ -340,6 +340,29 @@ def test_cal24_shipped_default_config_produces_zero_suppression_change(eng):
         assert row.suppressed_reason is None
 
 
+def test_cal40_manual_suppress_on_high_severity_rule_still_pages(eng, calibration_on):
+    """CAL40: a manual `/calibration suppress <fp>` (calibration.set_override
+    (fp, True, by=...)) on a high-severity rule, under the default
+    calibration_suppress_high_severity=False, still leaves should_page
+    returning (True, None) at severity="high" — the guardrail outranks a
+    manual override (spec §3.4/§5.2). The same fingerprint at severity=
+    "medium" is suppressed as normal, proving the override itself did take
+    effect and it's specifically the high-severity guardrail doing the
+    overriding."""
+    from backend.agents import calibration, outcomes
+
+    fp = "watchdog:dead_letters"
+    result = asyncio.run(calibration.set_override(fp, True, by="telegram"))
+    assert result == "applied"
+
+    page, reason = asyncio.run(outcomes.should_page("watchdog", "dead_letters", severity="high"))
+    assert (page, reason) == (True, None)
+
+    page2, reason2 = asyncio.run(outcomes.should_page("watchdog", "dead_letters", severity="medium"))
+    assert page2 is False
+    assert reason2
+
+
 def test_record_flag_ex_stamps_suppressed_row_and_returns_surface_false(eng, calibration_on):
     """§3.1/§3.2 branch 0 — the write half of CAL20-24's read/gate/write
     trio, otherwise completely untested by CAL20-24 (they only exercise

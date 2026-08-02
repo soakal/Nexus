@@ -376,6 +376,41 @@ def test_prune_old_outcome_flags_never_deletes_open_or_needs_follow_up(tmp_path,
     assert remaining == {"c": "open", "d": "needs_follow_up", "e": "resolved"}
 
 
+def test_prune_old_outcome_flags_keeps_suppressed_open_row_but_still_deletes_closed(tmp_path, monkeypatch):
+    """CAL50 (extends AC31): a 200-day-old row with status="open",
+    suppressed=True is kept regardless of age — suppression is orthogonal to
+    the open/closed status the prune filter actually keys on (spec §8) — while
+    an old closed row is still deleted alongside it."""
+    from sqlmodel import Session
+    from backend.database import OutcomeFlag
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+
+    now = datetime.utcnow()
+    old = now - timedelta(days=200)
+    with Session(engine) as s:
+        s.add(OutcomeFlag(
+            source="x", check="a", summary="old suppressed but open",
+            status="open", suppressed=True, suppressed_reason="calibration:x:a",
+            created_at=old,
+        ))
+        s.add(OutcomeFlag(source="x", check="b", summary="old closed", status="resolved", created_at=old))
+        s.commit()
+
+    fake_s = MagicMock()
+    fake_s.outcome_flag_retention_days = 180
+    monkeypatch.setattr("backend.config.get_settings", lambda: fake_s)
+
+    from backend.agents.backup import prune_old_outcome_flags
+    count = prune_old_outcome_flags()
+
+    assert count == 1  # only the old closed row
+    with Session(engine) as s:
+        remaining = {row.check: (row.status, row.suppressed) for row in s.exec(select(OutcomeFlag)).all()}
+    assert remaining == {"a": ("open", True)}
+
+
 def test_prune_old_outcome_flags_zero_is_noop(tmp_path, monkeypatch):
     from sqlmodel import Session
     from backend.database import OutcomeFlag
