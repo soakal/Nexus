@@ -125,6 +125,59 @@ async def flags_calibration(days: int = 30, _=Depends(require_api_key)):
     return await outcomes.calibration_summary(days)
 
 
+@router.get("/flags/calibration/hints")
+async def flags_calibration_hints(days: int = 30, _=Depends(require_api_key)):
+    """Calibration Loop hint report (docs/calibration-loop-spec.md §4/§5.2) —
+    suppressed/watching/overridden groups, in full, unpaginated (the 15-row
+    watching cap is a future Telegram renderer's job, not this route's).
+    A strictly longer literal segment than /flags/calibration so it can't be
+    shadowed by it, but declared here (with the other calibration routes)
+    and still ahead of /flags/{flag_id}/resolve per the ordering note above."""
+    from backend.agents import calibration
+
+    days = max(1, min(days, 365))
+    return await calibration.hint_report(days)
+
+
+@router.post("/flags/calibration/{fingerprint}/override")
+async def flags_calibration_override(
+    fingerprint: str,
+    body: dict = Body(...),
+    _=Depends(require_api_key),
+):
+    """Brian's explicit override (spec §5.2). Un-suppress (active=false)
+    needs no gate — tightening only removes capability. Manual suppress
+    (active=true) is still subject to the high-severity guardrail, enforced
+    inside outcomes.should_page at read time, same as the automatic path.
+    Body: {active: bool, note?: str}.
+      200 — applied
+      404 — no such hint (only reachable on active=false; active=true always
+            creates the row)
+      400 — malformed fingerprint, `active` missing/non-boolean, or `note`
+            not a string / over 1000 chars
+    """
+    from backend.agents import calibration
+
+    active = body.get("active")
+    if not isinstance(active, bool):
+        raise HTTPException(status_code=400, detail="active must be a boolean")
+
+    note = body.get("note")
+    if note is not None and (not isinstance(note, str) or len(note) > 1000):
+        raise HTTPException(status_code=400, detail="note must be a string of at most 1000 characters")
+
+    result = await calibration.set_override(
+        fingerprint, active, by="api", note=note,
+    )
+
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="No calibration hint for that fingerprint")
+    if result == "invalid":
+        raise HTTPException(status_code=400, detail="Malformed fingerprint")
+
+    return {"fingerprint": fingerprint, "active": active, "status": result}
+
+
 @router.get("/flags")
 async def list_flags(
     limit: int = 50,

@@ -982,6 +982,129 @@ def test_cal45_calibration_recompute_absent_when_disabled(monkeypatch):
     assert "calibration_recompute" not in ids
 
 
+# ---------------------------------------------------------------------------
+# §5.2 hint_report / set_override (rollout §9.5 step 3, first slice —
+# REST/backend layer; the Telegram command and digest lines are a later
+# cycle). Covers set_override's three-way applied/not_found/invalid return
+# contract (including the malformed-fingerprint case), the
+# override_until/expires_at date-math invariant (CAL41 "never permanent" on
+# active=True), and the suppressed/suppressed_reason clearing side effect on
+# active=False.
+# ---------------------------------------------------------------------------
+
+def test_set_override_invalid_fingerprint_returns_invalid_without_touching_db(eng):
+    """A fingerprint missing ':' (or falsy) returns "invalid" without ever
+    reaching the DB — no CalibrationHint row is created for it."""
+    from backend.agents import calibration
+    from backend.database import CalibrationHint
+
+    assert asyncio.run(calibration.set_override("no_colon_here", True, by="brian")) == "invalid"
+    assert asyncio.run(calibration.set_override("", True, by="brian")) == "invalid"
+
+    with Session(eng) as s:
+        assert s.exec(select(CalibrationHint)).all() == []
+
+
+def test_set_override_active_false_not_found_when_no_hint_row(eng):
+    """active=False against a fingerprint with no existing CalibrationHint row
+    returns "not_found" (the only branch on which "not_found" is reachable —
+    active=True always creates the row, per the module's own docstring)."""
+    from backend.agents import calibration
+
+    result = asyncio.run(
+        calibration.set_override("homelab_watch:never_seen", False, by="brian")
+    )
+    assert result == "not_found"
+
+
+def test_set_override_active_true_never_permanent_and_clears_prior_override_until(eng):
+    """CAL41: active=True sets status="active", first_active_at=now,
+    expires_at == first_active_at + calibration_hint_max_days (never a
+    permanent suppression), and override_until=None -- even when the hint
+    previously carried a future override_until from an earlier
+    active=False call."""
+    from backend.agents import calibration
+    from backend.config import get_settings
+    from backend.database import CalibrationHint
+
+    fp = "homelab_watch:garage_open"
+
+    before = datetime.utcnow()
+    result = asyncio.run(calibration.set_override(fp, True, by="brian", note="testing suppress"))
+    after = datetime.utcnow()
+    assert result == "applied"
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is not None
+    assert hint.status == "active"
+    assert hint.first_active_at is not None
+    assert before <= hint.first_active_at <= after
+    max_days = get_settings().calibration_hint_max_days
+    assert hint.expires_at == hint.first_active_at + timedelta(days=max_days)
+    assert hint.override_until is None  # CAL41: never permanent
+    assert hint.override_by == "brian"
+    assert hint.override_note == "testing suppress"
+
+
+def test_set_override_active_false_sets_override_until_and_clears_suppressed_open_flag(eng):
+    """active=False: status="overridden_off", override_until == override_at +
+    calibration_override_days, and any open OutcomeFlag row for that
+    fingerprint has suppressed/suppressed_reason cleared (mirrors CAL18's
+    recompute-driven side effect, but triggered by an explicit override)."""
+    from backend.agents import calibration
+    from backend.config import get_settings
+    from backend.database import CalibrationHint, OutcomeFlag
+
+    fp = "homelab_watch:garage_open"
+    asyncio.run(calibration.set_override(fp, True, by="brian"))  # seed an active hint
+
+    open_id = _make_flag(eng, fingerprint=fp, status="open", suppressed=True)
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, open_id)
+        row.suppressed_reason = "calibration:homelab_watch:garage_open fp_rate=1.00 n=10"
+        s.add(row)
+        s.commit()
+
+    before = datetime.utcnow()
+    result = asyncio.run(calibration.set_override(fp, False, by="brian", note="false alarm confirmed"))
+    after = datetime.utcnow()
+    assert result == "applied"
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+        flag = s.get(OutcomeFlag, open_id)
+
+    assert hint.status == "overridden_off"
+    override_days = get_settings().calibration_override_days
+    assert hint.override_at is not None
+    assert before <= hint.override_at <= after
+    assert hint.override_until == hint.override_at + timedelta(days=override_days)
+    assert hint.override_note == "false alarm confirmed"
+
+    assert flag.suppressed is False
+    assert flag.suppressed_reason is None
+
+
+def test_hint_report_groups_persisted_status_into_suppressed_and_overridden(eng):
+    """hint_report(days) sorts a status="active" hint into "suppressed" and a
+    status="overridden_off" hint into "overridden", rendering the PERSISTED
+    row's frozen fields (not a live recompute) for both groups."""
+    from backend.agents import calibration
+
+    fp_active = "homelab_watch:garage_open"
+    fp_overridden = "homelab_watch:unraid_temp"
+    asyncio.run(calibration.set_override(fp_active, True, by="brian"))
+    asyncio.run(calibration.set_override(fp_overridden, True, by="brian"))
+    asyncio.run(calibration.set_override(fp_overridden, False, by="brian"))
+
+    report = asyncio.run(calibration.hint_report(30))
+
+    assert [row["fingerprint"] for row in report["suppressed"]] == [fp_active]
+    assert [row["fingerprint"] for row in report["overridden"]] == [fp_overridden]
+    assert report["watching"] == []
+
+
 @pytest.mark.asyncio
 async def test_cal46_calibration_recompute_swallows_exception_and_logs(caplog):
     """CAL46: _calibration_recompute swallows a raising recompute_hints and

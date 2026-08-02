@@ -16,13 +16,12 @@ API — no Session/ORM object ever crosses an await boundary (CAL48). This
 module never imports backend.safety.broker or the websocket layer (CAL47).
 Zero LLM calls (CAL49).
 
-This cycle (rollout §9.5 step 2) ships only `recompute_hints()` — the §2.3
-honest-denominator aggregation plus the persisted §2.4/§2.5 state machine.
-Nothing pages differently as a result: `calibration_suppression_enabled`
-still defaults False (landed previous cycle in outcomes.should_page), so
-hints compute and persist but the gate stays inert. Scheduler registration
-(§2.2, CAL45/CAL46) and `/calibration` + `hint_report`/`set_override`
-(§4/§5) are future cycles.
+This cycle (rollout §9.5 step 3, first slice) adds `hint_report()` (§5.2) and
+`set_override()` (§5.2) — the read/write pair the REST routes and a future
+`/calibration` Telegram command both need. Nothing pages differently as a
+result: `calibration_suppression_enabled` still defaults False, so hints
+compute and persist but the gate stays inert. The `/calibration` command
+itself and the digest/briefing line extensions (§4/§3.6) are a later cycle.
 """
 import asyncio
 import logging
@@ -342,3 +341,276 @@ async def recompute_hints() -> dict:
     except Exception as e:
         logger.error(f"recompute_hints failed: {e}")
         return dict(_ZEROED_RESULT)
+
+
+_ZEROED_REPORT = {
+    "window_days": 0,
+    "suppression_enabled": False,
+    "fp_threshold": 0.0,
+    "min_verdicts": 0,
+    "suppressed": [],
+    "watching": [],
+    "overridden": [],
+}
+
+
+# ---------------------------------------------------------------------------
+# Sync DB helper — hint_report. Called exclusively via asyncio.to_thread.
+# ---------------------------------------------------------------------------
+
+def _db_hint_report(days: int, now: datetime, settings) -> dict:
+    """The full read for `/calibration` + the REST route (spec §4/§5.2).
+
+    Two different data sources, deliberately not conflated:
+      - `suppressed` (hint.status == "active") and `overridden`
+        (hint.status == "overridden_off") groups render the PERSISTED
+        CalibrationHint row's frozen fields — the numbers that justified the
+        decision at the moment it was made (§1.1 "auditability": "why did
+        you start suppressing this on the 14th" must answer from decision-
+        time evidence, not today's recompute).
+      - `watching` (everything else: status == "expired", or a fingerprint
+        with window activity but no hint row yet) renders a LIVE §2.3
+        honest-denominator computation over the requested `days` window —
+        nothing has been decided about these fingerprints, so there is no
+        frozen evidence to protect, and `days` here is independent of the
+        nightly job's fixed `calibration_window_days`.
+
+    Never truncates any group (CAL37's no-black-box requirement) — the
+    15-row cap on `watching` is the future renderer's job.
+    """
+    from sqlmodel import Session, select
+    from backend.database import CalibrationHint, OutcomeFlag, engine
+
+    cutoff = now - timedelta(days=days)
+
+    with Session(engine) as session:
+        rows = session.exec(
+            select(OutcomeFlag).where(OutcomeFlag.created_at >= cutoff)
+        ).all()
+        # §6/CAL10 — "missed detection" rows have no rule to calibrate.
+        rows = [
+            r for r in rows
+            if not (r.source == "manual" and (r.check or "").startswith("missed:"))
+        ]
+
+        by_fp: dict[str, list] = {}
+        for r in rows:
+            by_fp.setdefault(r.fingerprint, []).append(r)
+
+        live: dict[str, dict] = {}
+        for fingerprint, frows in by_fp.items():
+            suppressed_rows = [r for r in frows if r.suppressed]
+            live_rows = [r for r in frows if not r.suppressed]
+            suppressed_surfacings = sum(r.surfaced_count for r in suppressed_rows)
+
+            verdict_rows = [
+                r for r in live_rows
+                if r.status in ("resolved", "false_positive")
+                and not (r.resolved_by or "").startswith("auto:")
+            ]
+            auto_cleared_count = sum(1 for r in live_rows if (r.resolved_by or "").startswith("auto:"))
+            false_positive_count = sum(1 for r in verdict_rows if r.status == "false_positive")
+            verdict_count = len(verdict_rows)
+            fp_rate = (false_positive_count / verdict_count) if verdict_count else 0.0
+
+            max_severity = "medium"
+            best_rank = -1
+            for r in live_rows:
+                rank = _SEVERITY_RANK.get(r.severity, 1)
+                if rank > best_rank:
+                    best_rank = rank
+                    max_severity = r.severity
+
+            live[fingerprint] = {
+                "fingerprint": fingerprint,
+                "verdict_count": verdict_count,
+                "false_positive_count": false_positive_count,
+                "fp_rate": fp_rate,
+                "auto_cleared_count": auto_cleared_count,
+                "suppressed_surfacings": suppressed_surfacings,
+                "max_severity": max_severity,
+                "never_auto_suppressed": max_severity == "high",
+            }
+
+        hints = {h.fingerprint: h for h in session.exec(select(CalibrationHint)).all()}
+
+        suppressed: list[dict] = []
+        watching: list[dict] = []
+        overridden: list[dict] = []
+        seen: set[str] = set()
+
+        for fingerprint, hint in hints.items():
+            seen.add(fingerprint)
+            if hint.status == "active":
+                suppressed.append({
+                    "fingerprint": fingerprint,
+                    "fp_rate": hint.fp_rate,
+                    "verdict_count": hint.verdict_count,
+                    "false_positive_count": hint.false_positive_count,
+                    "auto_cleared_count": hint.auto_cleared_count,
+                    "suppressed_surfacings": hint.suppressed_surfacings,
+                    "max_severity": hint.max_severity,
+                    "never_auto_suppressed": hint.max_severity == "high",
+                    "since": hint.first_active_at.isoformat() if hint.first_active_at else None,
+                    "retest_at": hint.expires_at.isoformat() if hint.expires_at else None,
+                    "reason": hint.reason,
+                })
+            elif hint.status == "overridden_off":
+                overridden.append({
+                    "fingerprint": fingerprint,
+                    "fp_rate": hint.fp_rate,
+                    "verdict_count": hint.verdict_count,
+                    "false_positive_count": hint.false_positive_count,
+                    "auto_cleared_count": hint.auto_cleared_count,
+                    "max_severity": hint.max_severity,
+                    "override_by": hint.override_by,
+                    "override_at": hint.override_at.isoformat() if hint.override_at else None,
+                    "override_until": hint.override_until.isoformat() if hint.override_until else None,
+                    "override_note": hint.override_note,
+                    "reason": hint.reason,
+                })
+            else:
+                data = live.get(fingerprint)
+                if data is not None:
+                    watching.append(data)
+
+        for fingerprint, data in live.items():
+            if fingerprint not in seen:
+                watching.append(data)
+
+        suppressed.sort(key=lambda d: d["fingerprint"])
+        overridden.sort(key=lambda d: d["fingerprint"])
+        watching.sort(key=lambda d: d["fp_rate"], reverse=True)
+
+        return {
+            "window_days": days,
+            "suppression_enabled": bool(getattr(settings, "calibration_suppression_enabled", False)),
+            "fp_threshold": float(getattr(settings, "calibration_fp_threshold", 0.60)),
+            "min_verdicts": int(getattr(settings, "calibration_min_verdicts", 5)),
+            "suppressed": suppressed,
+            "watching": watching,
+            "overridden": overridden,
+        }
+
+
+def _db_set_override(
+    fingerprint: str, active: bool, *, by: str, note: str | None, now: datetime, settings,
+) -> str:
+    """§5.2 mechanics, one Session. Returns "applied" (state changed) or
+    "not_found" (active=False against a fingerprint with no hint row —
+    active=True always creates one, so "not_found" is unreachable on that
+    branch)."""
+    from sqlmodel import Session, select
+    from backend.database import CalibrationHint, OutcomeFlag, engine
+
+    hint_max_days = int(getattr(settings, "calibration_hint_max_days", 30))
+    override_days = int(getattr(settings, "calibration_override_days", 90))
+
+    with Session(engine) as session:
+        hint = session.exec(
+            select(CalibrationHint).where(CalibrationHint.fingerprint == fingerprint)
+        ).first()
+
+        if not active:
+            # Un-suppress. Tightening needs no gate (§5.1) — the caller is
+            # trusted (telegram/api actor). override_until is what stops the
+            # NEXT nightly recompute from silently undoing this tonight.
+            if hint is None:
+                return "not_found"
+            hint.status = "overridden_off"
+            hint.override_by = by
+            hint.override_at = now
+            hint.override_note = note
+            hint.override_until = now + timedelta(days=override_days)
+            hint.updated_at = now
+            session.add(hint)
+            session.commit()
+        else:
+            # Manual suppress — create-or-update. Still subject to §3.4's
+            # high-severity guardrail, but that's enforced by should_page at
+            # read time (it checks the `severity` the CALLER passes, not
+            # anything stored on the hint), so nothing extra is needed here
+            # (CAL40).
+            if hint is None:
+                hint = CalibrationHint(fingerprint=fingerprint)
+            hint.status = "active"
+            hint.first_active_at = now
+            hint.expires_at = now + timedelta(days=hint_max_days)
+            hint.override_by = by
+            hint.override_at = now
+            hint.override_note = note
+            hint.override_until = None
+            hint.reason = (
+                f"manually suppressed by {by}: {note}" if note
+                else f"manually suppressed by {by}"
+            )
+            hint.updated_at = now
+            session.add(hint)
+            session.commit()
+
+        # §2.5's side effect, same as a recompute's transition-out-of-active:
+        # un-suppressing must not leave a live condition invisible in
+        # /flags/briefing/chat until it happens to re-fire.
+        if not active:
+            open_rows = session.exec(
+                select(OutcomeFlag)
+                .where(OutcomeFlag.fingerprint == fingerprint)
+                .where(OutcomeFlag.status == "open")
+            ).all()
+            for row in open_rows:
+                row.suppressed = False
+                row.suppressed_reason = None
+                row.updated_at = now
+                session.add(row)
+            if open_rows:
+                session.commit()
+
+        return "applied"
+
+
+# ---------------------------------------------------------------------------
+# Public async API — hint_report / set_override (§5.2)
+# ---------------------------------------------------------------------------
+
+async def hint_report(days: int = 30) -> dict:
+    """The full observability read for `/calibration` + the REST route
+    (spec §4/§5.2): `suppressed` / `watching` / `overridden` groups, in full
+    — no truncation here (CAL37). NEVER raises; degrades to a zeroed
+    structure on any error (same contract as recompute_hints)."""
+    try:
+        from backend.config import get_settings
+        settings = get_settings()
+        now = datetime.utcnow()
+        return await asyncio.to_thread(_db_hint_report, days, now, settings)
+    except Exception as e:
+        logger.warning(f"hint_report failed: {e}")
+        return dict(_ZEROED_REPORT)
+
+
+async def set_override(fingerprint: str, active: bool, *, by: str, note: str | None = None) -> str:
+    """Brian's explicit override (spec §5.2). Returns "applied" / "not_found"
+    / "invalid", mirroring outcomes.resolve_flag's status-string convention
+    so Telegram/REST/tests share one mapping.
+
+    active=False (un-suppress): status="overridden_off", override_until =
+    now + calibration_override_days, and clears suppressed/suppressed_reason
+    on the fingerprint's open OutcomeFlag row(s).
+    active=True (manual suppress): status="active", first_active_at=now,
+    expires_at = now + calibration_hint_max_days (CAL41 — never permanent),
+    override_until=None.
+
+    NEVER raises (CAL47-adjacent discipline for this module) — a malformed
+    fingerprint or any DB error both degrade to "invalid" rather than
+    propagating."""
+    if not fingerprint or ":" not in fingerprint:
+        return "invalid"
+    try:
+        from backend.config import get_settings
+        settings = get_settings()
+        now = datetime.utcnow()
+        return await asyncio.to_thread(
+            _db_set_override, fingerprint, active, by=by, note=note, now=now, settings=settings,
+        )
+    except Exception as e:
+        logger.warning(f"set_override failed (fingerprint={fingerprint!r}): {e}")
+        return "invalid"

@@ -596,6 +596,97 @@ def test_flags_full_lifecycle(app_client, auth_headers):
     assert invalid_status.status_code == 400
 
 
+# ---------------------------------------------------------------------------
+# Calibration Loop REST routes (docs/calibration-loop-spec.md §4/§5.2,
+# rollout §9.5 step 3 first slice): GET /flags/calibration/hints and
+# POST /flags/calibration/{fingerprint}/override.
+# ---------------------------------------------------------------------------
+
+def test_calibration_hints_and_override_routes_require_auth(app_client):
+    """Both new calibration routes are Bearer-gated -- no key -> 401."""
+    assert app_client.get("/api/safety/flags/calibration/hints").status_code == 401
+    assert app_client.post(
+        "/api/safety/flags/calibration/homelab_watch:garage_open/override",
+        json={"active": True},
+    ).status_code == 401
+
+
+def test_calibration_override_lifecycle_and_note_validation(app_client, auth_headers):
+    """POST .../override applies a manual suppress (200, status="active"),
+    rejects a non-string/over-length note (400, the Security auto-fix), then
+    un-suppresses (200, status="overridden_off"); a malformed fingerprint is
+    400 and an active=False against a never-suppressed fingerprint is 404.
+    GET .../hints then reflects the applied override in its "overridden"
+    group."""
+    fp = "homelab_watch:AC_calibration_override"
+
+    # Bad note: non-string.
+    bad_note_type = app_client.post(
+        f"/api/safety/flags/calibration/{fp}/override",
+        json={"active": True, "note": 12345},
+        headers=auth_headers,
+    )
+    assert bad_note_type.status_code == 400
+
+    # Bad note: over 1000 chars.
+    bad_note_len = app_client.post(
+        f"/api/safety/flags/calibration/{fp}/override",
+        json={"active": True, "note": "x" * 1001},
+        headers=auth_headers,
+    )
+    assert bad_note_len.status_code == 400
+
+    # Malformed fingerprint (no ':').
+    malformed = app_client.post(
+        "/api/safety/flags/calibration/no_colon_here/override",
+        json={"active": True},
+        headers=auth_headers,
+    )
+    assert malformed.status_code == 400
+
+    # active missing/non-boolean.
+    bad_active = app_client.post(
+        f"/api/safety/flags/calibration/{fp}/override",
+        json={"active": "yes"},
+        headers=auth_headers,
+    )
+    assert bad_active.status_code == 400
+
+    # Valid manual suppress.
+    suppress = app_client.post(
+        f"/api/safety/flags/calibration/{fp}/override",
+        json={"active": True, "note": "manually suppressed for test"},
+        headers=auth_headers,
+    )
+    assert suppress.status_code == 200
+    # The route's "status" field echoes set_override's applied/not_found/
+    # invalid return contract, not the persisted CalibrationHint.status.
+    assert suppress.json() == {"fingerprint": fp, "active": True, "status": "applied"}
+
+    # Un-suppress the same fingerprint.
+    unsuppress = app_client.post(
+        f"/api/safety/flags/calibration/{fp}/override",
+        json={"active": False},
+        headers=auth_headers,
+    )
+    assert unsuppress.status_code == 200
+    assert unsuppress.json() == {"fingerprint": fp, "active": False, "status": "applied"}
+
+    # active=False against a fingerprint with no hint row at all -> 404.
+    not_found = app_client.post(
+        "/api/safety/flags/calibration/homelab_watch:AC_never_suppressed/override",
+        json={"active": False},
+        headers=auth_headers,
+    )
+    assert not_found.status_code == 404
+
+    # GET /flags/calibration/hints reflects the override in "overridden".
+    hints = app_client.get("/api/safety/flags/calibration/hints", headers=auth_headers)
+    assert hints.status_code == 200
+    body = hints.json()
+    assert fp in {row["fingerprint"] for row in body["overridden"]}
+
+
 def test_flags_resolve_deferred_valid_defer_days(app_client, auth_headers):
     """POST /flags/{id}/resolve status="deferred" with a valid int defer_days
     resolves 200 and sets OutcomeFlag.deferred_until (outcomes.resolve_flag ->
