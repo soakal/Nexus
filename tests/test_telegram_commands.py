@@ -506,6 +506,45 @@ async def test_cmd_flags_lists_each_flag_with_pinned_format():
 
 
 # ---------------------------------------------------------------------------
+# /flag (rollout step 6, spec §6 — missed-detection capture)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cmd_flag_plain_text_unaffected_by_missed_prefix_handling():
+    """A plain /flag <text> (no 'missed ' prefix) must remain byte-identical
+    to pre-existing behavior: severity stays 'medium' and check is the same
+    slugified-first-six-words value as before."""
+    with patch("backend.agents.outcomes.record_flag", new_callable=AsyncMock, return_value=5) as mock_record:
+        reply = await telegram_commands._cmd_flag("foo", _msg("/flag foo"))
+
+    mock_record.assert_awaited_once_with("manual", "foo", "foo", severity="medium")
+    assert reply == "Flag #5 recorded."
+
+
+@pytest.mark.asyncio
+async def test_cmd_flag_missed_prefix_case_insensitive_records_high_severity():
+    """A case-insensitive 'missed ' prefix records check=f"missed:{slug}"
+    with severity="high" instead of the default manual-note handling."""
+    with patch("backend.agents.outcomes.record_flag", new_callable=AsyncMock, return_value=9) as mock_record:
+        reply = await telegram_commands._cmd_flag(
+            "missed the water heater leaked", _msg("/flag missed the water heater leaked"),
+        )
+
+    mock_record.assert_awaited_once_with(
+        "manual", "missed:the_water_heater_leaked", "missed the water heater leaked", severity="high",
+    )
+    assert reply == "Flag #9 recorded."
+
+
+@pytest.mark.asyncio
+async def test_cmd_flag_missed_prefix_uppercase_still_matches():
+    with patch("backend.agents.outcomes.record_flag", new_callable=AsyncMock, return_value=1) as mock_record:
+        await telegram_commands._cmd_flag("Missed the leak", _msg("/flag Missed the leak"))
+
+    mock_record.assert_awaited_once_with("manual", "missed:the_leak", "Missed the leak", severity="high")
+
+
+# ---------------------------------------------------------------------------
 # /calibration (docs/calibration-loop-spec.md §4/§8 — CAL36-CAL44)
 # ---------------------------------------------------------------------------
 

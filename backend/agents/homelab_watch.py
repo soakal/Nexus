@@ -83,7 +83,8 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
         return False
     _active_alerts.add(key)
     from backend.agents import outcomes
-    d = await outcomes.record_flag_ex("homelab_watch", key, message)
+    severity = "high" if key in ("unraid_array", "vzdump_failed") else "medium"
+    d = await outcomes.record_flag_ex("homelab_watch", key, message, severity=severity)
     if d["surface"]:
         buttons = None
         if d["id"] is not None:

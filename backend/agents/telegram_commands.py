@@ -446,17 +446,29 @@ async def _cmd_defer(args: str, msg: dict) -> str:
 
 async def _cmd_flag(args: str, msg: dict) -> str:
     """/flag <text> -> record_flag("manual", <slugified first words>, args,
-    severity="medium"). Lets Brian log his own item into the same store."""
+    severity="medium"). Lets Brian log his own item into the same store.
+
+    A case-insensitive "missed " prefix (spec §6, missed-detection capture)
+    instead records check=f"missed:{slug-of-remaining-text}" with
+    severity="high", so a self-reported missed detection is distinguishable
+    from a routine manual note."""
     from backend.agents import outcomes
 
     text = args.strip()
     if not text:
         return "Usage: /flag <text> — log your own item into the outcome tracker"
 
-    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
-    check = "_".join(slug.split("_")[:6]) or "note"
+    severity = "medium"
+    if text.lower().startswith("missed "):
+        remainder = text[len("missed "):].strip()
+        slug = re.sub(r"[^a-z0-9]+", "_", remainder.lower()).strip("_")
+        check = f"missed:{'_'.join(slug.split('_')[:6]) or 'note'}"
+        severity = "high"
+    else:
+        slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+        check = "_".join(slug.split("_")[:6]) or "note"
 
-    flag_id = await outcomes.record_flag("manual", check, text, severity="medium")
+    flag_id = await outcomes.record_flag("manual", check, text, severity=severity)
     if flag_id is None:
         return "Not recorded (outcome tracking is disabled)."
     return f"Flag #{flag_id} recorded."

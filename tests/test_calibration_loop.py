@@ -548,6 +548,37 @@ def test_cal10_manual_missed_rows_excluded_entirely_no_hint_row_created(eng):
     assert result["scanned"] == 0
 
 
+def test_cal10b_telegram_flag_missed_output_excluded_end_to_end(eng):
+    """CAL10, end-to-end (rollout step 6): a real Telegram '/flag missed ...'
+    call — not a hand-built OutcomeFlag row — must produce a check value that
+    CAL10's `source == "manual" and check.startswith("missed:")` filter
+    actually excludes. Pins the join between telegram_commands._cmd_flag's
+    new prefix branch and calibration.py's exclusion, which
+    test_cal10_manual_missed_rows_excluded_entirely_no_hint_row_created only
+    exercises against a fabricated row, never against _cmd_flag's real
+    output."""
+    from backend.agents import calibration, telegram_commands
+    from backend.database import CalibrationHint
+
+    reply = asyncio.run(telegram_commands._cmd_flag("missed the water heater leaked", {}))
+    assert reply.startswith("Flag #")
+
+    fp = "manual:missed:the_water_heater_leaked"
+    with Session(eng) as s:
+        from backend.database import OutcomeFlag
+        row = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == fp)).first()
+    assert row is not None  # the write itself happened, and severity landed as "high"
+    assert row.severity == "high"
+
+    result = asyncio.run(calibration.recompute_hints())
+
+    with Session(eng) as s:
+        hint = s.exec(select(CalibrationHint).where(CalibrationHint.fingerprint == fp)).first()
+    assert hint is None
+    assert fp not in result["activated"]
+    assert result["scanned"] == 0
+
+
 def test_cal11_empty_table_returns_zeroed_scanned_and_creates_no_rows(eng):
     """CAL11: recompute_hints() on an empty table returns
     {"scanned": 0, ...} and creates no rows."""

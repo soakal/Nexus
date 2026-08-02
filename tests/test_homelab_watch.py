@@ -617,6 +617,30 @@ async def test_backup_fetch_raise_is_not_a_failed_backup():
     mock_notify.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_edge_alert_severity_high_for_array_and_backup_medium_for_others():
+    """Rollout step 6 (spec §3.4): _edge_alert bumps severity to "high" for
+    unraid_array and vzdump_failed only -- unraid_temp and garage_open must
+    stay at record_flag_ex's "medium" default, matching CAL25/CAL27/CAL30's
+    assumption."""
+    record_flag_ex_mock = AsyncMock(return_value={"id": 1, "surface": True, "reason": None})
+    with patch("backend.agents.outcomes.record_flag_ex", record_flag_ex_mock), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
+        await homelab_watch._edge_alert("unraid_array", True, "array bad", kind="homelab_array")
+        homelab_watch.reset()
+        await homelab_watch._edge_alert("vzdump_failed", True, "backup bad", kind="homelab_backup")
+        homelab_watch.reset()
+        await homelab_watch._edge_alert("unraid_temp", True, "temp bad", kind="homelab_disk_temp")
+        homelab_watch.reset()
+        await homelab_watch._edge_alert("garage_open", True, "garage bad", kind="homelab_garage")
+
+    severities = {c.args[1]: c.kwargs["severity"] for c in record_flag_ex_mock.await_args_list}
+    assert severities["unraid_array"] == "high"
+    assert severities["vzdump_failed"] == "high"
+    assert severities["unraid_temp"] == "medium"
+    assert severities["garage_open"] == "medium"
+
+
 # ---------------------------------------------------------------------------
 # run_homelab_watch — top-level entry point
 # ---------------------------------------------------------------------------
