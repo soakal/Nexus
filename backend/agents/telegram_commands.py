@@ -516,10 +516,13 @@ async def _cmd_calibration(args: str, msg: dict) -> str:
     if suppressed:
         for h in suppressed:
             pct = round(h["fp_rate"] * 100)
-            lines.append(
+            line = (
                 f"{h['fingerprint']} — {pct}% false alarm "
                 f"({h['false_positive_count']}/{h['verdict_count']} judged)"
             )
+            if h["never_auto_suppressed"]:
+                line += " · HIGH, never auto-suppressed"
+            lines.append(line)
             lines.append(
                 f"  since {_format_date(h['since'])}, re-tests {_format_date(h['retest_at'])} "
                 f"· {h['suppressed_surfacings']} occurrences silenced"

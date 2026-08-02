@@ -589,6 +589,7 @@ async def test_cmd_calibration_suppressed_never_truncated_and_flags_high_severit
             "since": "2026-08-14T00:00:00",
             "retest_at": "2026-09-13T00:00:00",
             "suppressed_surfacings": 41,
+            "never_auto_suppressed": False,
         },
         {
             "fingerprint": "briefing:unifi_new_devices",
@@ -598,6 +599,7 @@ async def test_cmd_calibration_suppressed_never_truncated_and_flags_high_severit
             "since": "2026-08-20T00:00:00",
             "retest_at": "2026-09-19T00:00:00",
             "suppressed_surfacings": 3,
+            "never_auto_suppressed": False,
         },
     ]
     watching = []
@@ -640,6 +642,57 @@ async def test_cmd_calibration_suppressed_never_truncated_and_flags_high_severit
 
     # CAL38 — the never_auto_suppressed watching entry is annotated.
     assert "watchdog:rule_1 — 50% false alarm (2/4 judged) · HIGH, never auto-suppressed" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_suppressed_flags_high_severity_never_auto_suppressed(monkeypatch):
+    """CAL38 (SUPPRESSED group): calibration.py:191-208 deliberately ignores
+    severity when deciding activation (spec §2.4) — a HIGH-severity rule that
+    crosses the FP threshold really does become status="active" exactly like
+    a medium/low one, so hint_report() (calibration.py:444-457) classifies it
+    into "suppressed" with never_auto_suppressed=True and — before this
+    step — no explanation on the rendered line. Drives the REAL
+    recompute_hints() -> hint_report() -> _cmd_calibration() path (nothing
+    inside calibration itself is mocked) with 4/5 false-positive verdicts on
+    a severity="high" watchdog:dead_letters fingerprint — enough to cross
+    the default 60% fp_threshold / 5-verdict min (backend/config.py) — and
+    asserts the SUPPRESSED line carries the same "HIGH, never
+    auto-suppressed" annotation the WATCHING loop already renders (CAL38's
+    existing mocked coverage above)."""
+    from sqlmodel import Session, SQLModel, create_engine
+    from sqlmodel.pool import StaticPool
+
+    import backend.database as db
+    from backend.database import OutcomeFlag
+    from backend.agents import calibration
+
+    eng = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr(db, "engine", eng)
+
+    fp = "watchdog:dead_letters"
+    for status in ("false_positive", "false_positive", "false_positive", "false_positive", "resolved"):
+        with Session(eng) as s:
+            s.add(OutcomeFlag(
+                source="watchdog", check="dead_letters", fingerprint=fp,
+                summary="test flag", status=status, resolved_by="telegram",
+                severity="high",
+            ))
+            s.commit()
+
+    await calibration.recompute_hints()
+
+    reply = await telegram_commands._cmd_calibration("", _msg("/calibration"))
+
+    assert "SUPPRESSED (1)" in reply
+    assert (
+        "watchdog:dead_letters — 80% false alarm (4/5 judged) · HIGH, never auto-suppressed"
+        in reply
+    )
 
 
 @pytest.mark.asyncio
