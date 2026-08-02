@@ -360,6 +360,18 @@ def _format_age(iso_str: str | None) -> str:
     return f"{days}d ago"
 
 
+def _format_date(iso_str: str | None) -> str:
+    """ISO timestamp -> "YYYY-MM-DD" for /calibration's since/re-test dates —
+    never raises (mirrors _format_age's defensive-read discipline: a
+    malformed/missing timestamp degrades to "?")."""
+    if not iso_str:
+        return "?"
+    try:
+        return datetime.fromisoformat(iso_str).date().isoformat()
+    except ValueError:
+        return "?"
+
+
 async def _cmd_flags(args: str, msg: dict) -> str:
     """Open + needs_follow_up + deferred-past-due flags — same shape as
     /goals and /tasks."""
@@ -450,6 +462,96 @@ async def _cmd_flag(args: str, msg: dict) -> str:
     return f"Flag #{flag_id} recorded."
 
 
+async def _cmd_calibration(args: str, msg: dict) -> str:
+    """/calibration [unsuppress|suppress] <fingerprint> — the observability
+    surface for the calibration loop (spec §4). Bare renders
+    calibration.hint_report(30) in full: SUPPRESSED renders first and is
+    NEVER truncated (CAL37's no-black-box requirement), WATCHING is capped at
+    15. The two subcommands call set_override, mapping its "applied" /
+    "not_found" / "invalid" tri-state result the same way _cmd_resolve maps
+    resolve_flag's."""
+    from backend.agents import calibration
+
+    parts = args.split(maxsplit=1)
+    if parts:
+        action = parts[0].lower()
+        if action not in ("unsuppress", "suppress"):
+            return "Usage: /calibration [unsuppress|suppress] <fingerprint>"
+        fingerprint = parts[1].strip() if len(parts) > 1 else ""
+        if not fingerprint:
+            return f"Usage: /calibration {action} <fingerprint>"
+
+        result = await calibration.set_override(fingerprint, active=(action == "suppress"), by="telegram")
+        mapping = {
+            "not_found": f"No calibration hint found for {fingerprint}.",
+            "invalid": f"Invalid fingerprint: {fingerprint}",
+        }
+        if result in mapping:
+            return mapping[result]
+        verb = "suppressed" if action == "suppress" else "un-suppressed"
+        return f"{fingerprint} {verb}."
+
+    report = await calibration.hint_report(30)
+    suppressed = report["suppressed"]
+    watching = report["watching"]
+    overridden = report["overridden"]
+    if not suppressed and not watching and not overridden:
+        return "No calibration data yet — flags need to accumulate ✓/✗ verdicts before rules can be judged."
+
+    lines = [f"Flag calibration ({report['window_days']} days)", ""]
+
+    lines.append(f"SUPPRESSED ({len(suppressed)})")
+    if suppressed:
+        for h in suppressed:
+            pct = round(h["fp_rate"] * 100)
+            lines.append(
+                f"{h['fingerprint']} — {pct}% false alarm "
+                f"({h['false_positive_count']}/{h['verdict_count']} judged)"
+            )
+            lines.append(
+                f"  since {_format_date(h['since'])}, re-tests {_format_date(h['retest_at'])} "
+                f"· {h['suppressed_surfacings']} occurrences silenced"
+            )
+    else:
+        lines.append("(none)")
+    lines.append("")
+
+    lines.append("WATCHING (below threshold)")
+    if watching:
+        for w in watching[:15]:
+            pct = round(w["fp_rate"] * 100)
+            line = (
+                f"{w['fingerprint']} — {pct}% false alarm "
+                f"({w['false_positive_count']}/{w['verdict_count']} judged)"
+            )
+            if w["never_auto_suppressed"]:
+                line += " · HIGH, never auto-suppressed"
+            if w["auto_cleared_count"]:
+                line += f" · {w['auto_cleared_count']} auto-cleared"
+            lines.append(line)
+    else:
+        lines.append("(none)")
+    lines.append("")
+
+    lines.append(f"OVERRIDDEN BY YOU ({len(overridden)})")
+    if overridden:
+        for o in overridden:
+            lines.append(
+                f"{o['fingerprint']} — un-suppressed {_format_date(o['override_at'])}, "
+                f"protected until {_format_date(o['override_until'])}"
+            )
+    else:
+        lines.append("(none)")
+    lines.append("")
+
+    threshold_pct = round(report["fp_threshold"] * 100)
+    state = "ON" if report["suppression_enabled"] else "OFF"
+    lines.append(f"Suppression: {state} (>={threshold_pct}% of >={report['min_verdicts']} judged flags)")
+    lines.append("/calibration unsuppress <rule>  ·  /calibration suppress <rule>")
+
+    return "\n".join(lines)
+
+
 COMMANDS: dict[str, tuple[Handler, str]] = {
     "nx": (_cmd_chat, "Ask NEXUS anything"),
     "help": (_cmd_help, "List commands"),
@@ -475,6 +577,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "resolve": (_cmd_resolve, "Resolve an outcome flag by id"),
     "defer": (_cmd_defer, "Defer an outcome flag for N days"),
     "flag": (_cmd_flag, "Log your own item into the outcome tracker"),
+    "calibration": (_cmd_calibration, "Flag calibration status / suppress-unsuppress a rule"),
 }
 
 

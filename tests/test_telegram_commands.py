@@ -503,3 +503,162 @@ async def test_cmd_flags_lists_each_flag_with_pinned_format():
     assert "#7 [high] homelab_watch:garage_open — Garage door left open 2h (just now)" in lines
     # Full-line shape pinned for the created_at=None fallback branch.
     assert "#3 [medium] budget_watch:daily_spend — Spend approaching limit (?)" in lines
+
+
+# ---------------------------------------------------------------------------
+# /calibration (docs/calibration-loop-spec.md §4/§8 — CAL36-CAL44)
+# ---------------------------------------------------------------------------
+
+def _empty_hint_report():
+    return {
+        "window_days": 30,
+        "suppression_enabled": False,
+        "fp_threshold": 0.60,
+        "min_verdicts": 5,
+        "suppressed": [],
+        "watching": [],
+        "overridden": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_no_data_replies_no_data_yet():
+    """CAL36: bare /calibration with a fully-empty hint_report() replies with
+    a 'no calibration data yet' message, not an error or an empty string."""
+    with patch("backend.agents.calibration.hint_report", new_callable=AsyncMock, return_value=_empty_hint_report()):
+        reply = await telegram_commands._cmd_calibration("", _msg("/calibration"))
+
+    assert "no calibration data yet" in reply.lower()
+    assert reply.strip() != ""
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_suppressed_never_truncated_and_flags_high_severity_watching():
+    """CAL37 (no-black-box): with 2 active hints and 40 watching rules, BOTH
+    suppressed fingerprints render in full — rate, since-date, re-test date,
+    and silenced count — before any truncation, even though WATCHING is
+    capped at 15 (only the first 15 watching fingerprints may appear).
+    CAL38: a watching rule flagged never_auto_suppressed renders the
+    explicit 'HIGH, never auto-suppressed' annotation."""
+    report = _empty_hint_report()
+    report["suppressed"] = [
+        {
+            "fingerprint": "homelab_watch:garage_open",
+            "fp_rate": 0.78,
+            "false_positive_count": 7,
+            "verdict_count": 9,
+            "since": "2026-08-14T00:00:00",
+            "retest_at": "2026-09-13T00:00:00",
+            "suppressed_surfacings": 41,
+        },
+        {
+            "fingerprint": "briefing:unifi_new_devices",
+            "fp_rate": 1.0,
+            "false_positive_count": 6,
+            "verdict_count": 6,
+            "since": "2026-08-20T00:00:00",
+            "retest_at": "2026-09-19T00:00:00",
+            "suppressed_surfacings": 3,
+        },
+    ]
+    watching = []
+    for i in range(40):
+        watching.append({
+            "fingerprint": f"watchdog:rule_{i}",
+            "fp_rate": 0.5,
+            "false_positive_count": 2,
+            "verdict_count": 4,
+            "auto_cleared_count": 0,
+            "never_auto_suppressed": i == 1,  # second entry is the HIGH one
+        })
+    report["watching"] = watching
+
+    with patch("backend.agents.calibration.hint_report", new_callable=AsyncMock, return_value=report):
+        reply = await telegram_commands._cmd_calibration("", _msg("/calibration"))
+
+    # SUPPRESSED renders first and both fingerprints appear in full, with
+    # rate/since/re-test/silenced-count, regardless of the 40-item watching
+    # list below it.
+    suppressed_idx = reply.index("SUPPRESSED")
+    watching_idx = reply.index("WATCHING")
+    assert suppressed_idx < watching_idx
+
+    assert "homelab_watch:garage_open — 78% false alarm (7/9 judged)" in reply
+    assert "since 2026-08-14, re-tests 2026-09-13 · 41 occurrences silenced" in reply
+    assert "briefing:unifi_new_devices — 100% false alarm (6/6 judged)" in reply
+    assert "since 2026-08-20, re-tests 2026-09-19 · 3 occurrences silenced" in reply
+
+    # WATCHING is capped at 15 — the first 15 fingerprints appear, the 16th
+    # does not, even though hint_report() supplied 40. Assert on the full
+    # rendered line (not the bare "watchdog:rule_{i}" fingerprint fragment),
+    # since e.g. "watchdog:rule_1" is also a substring of a rendered
+    # "watchdog:rule_15" line — the full "... — 50% false alarm (2/4 judged)"
+    # clause can't be satisfied by a longer fingerprint's line.
+    for i in range(15):
+        assert f"watchdog:rule_{i} — 50% false alarm (2/4 judged)" in reply
+    assert "watchdog:rule_15" not in reply
+    assert "watchdog:rule_39" not in reply
+
+    # CAL38 — the never_auto_suppressed watching entry is annotated.
+    assert "watchdog:rule_1 — 50% false alarm (2/4 judged) · HIGH, never auto-suppressed" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_suppress_applied_calls_set_override():
+    """/calibration suppress <fp> calls set_override(fingerprint, active=True,
+    by="telegram") and reports the applied result."""
+    with patch("backend.agents.calibration.set_override", new_callable=AsyncMock, return_value="applied") as mock_override:
+        reply = await telegram_commands._cmd_calibration(
+            "suppress homelab_watch:garage_open", _msg("/calibration suppress homelab_watch:garage_open")
+        )
+
+    mock_override.assert_awaited_once_with("homelab_watch:garage_open", active=True, by="telegram")
+    assert "homelab_watch:garage_open" in reply
+    assert "suppressed" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_unsuppress_applied_calls_set_override():
+    """CAL39: /calibration unsuppress <fp> calls set_override(fingerprint,
+    active=False, by="telegram") and reports the applied result."""
+    with patch("backend.agents.calibration.set_override", new_callable=AsyncMock, return_value="applied") as mock_override:
+        reply = await telegram_commands._cmd_calibration(
+            "unsuppress homelab_watch:garage_open", _msg("/calibration unsuppress homelab_watch:garage_open")
+        )
+
+    mock_override.assert_awaited_once_with("homelab_watch:garage_open", active=False, by="telegram")
+    assert "homelab_watch:garage_open" in reply
+    assert "un-suppressed" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_unsuppress_not_found():
+    """CAL42: /calibration unsuppress <unknown> replies 'not found' and
+    changes nothing beyond the set_override call itself."""
+    with patch("backend.agents.calibration.set_override", new_callable=AsyncMock, return_value="not_found"):
+        reply = await telegram_commands._cmd_calibration(
+            "unsuppress homelab_watch:no_such_rule", _msg("/calibration unsuppress homelab_watch:no_such_rule")
+        )
+
+    assert reply == "No calibration hint found for homelab_watch:no_such_rule."
+
+
+@pytest.mark.asyncio
+async def test_cmd_calibration_suppress_invalid_fingerprint():
+    """set_override's 'invalid' result (malformed fingerprint) is surfaced
+    distinctly from 'not_found'."""
+    with patch("backend.agents.calibration.set_override", new_callable=AsyncMock, return_value="invalid"):
+        reply = await telegram_commands._cmd_calibration("suppress no_colon_here", _msg("/calibration suppress no_colon_here"))
+
+    assert reply == "Invalid fingerprint: no_colon_here"
+
+
+def test_calibration_registered_in_command_menu():
+    """CAL44: 'calibration' is registered in COMMANDS and reachable via
+    command_menu()/help. Unlike test_command_menu_matches_commands_dict
+    (which only checks command_menu() names == COMMANDS.keys() — a
+    tautology that would hold even if 'calibration' were removed from
+    both), this pins the specific entry."""
+    assert "calibration" in telegram_commands.COMMANDS
+    menu_names = {m["command"] for m in telegram_commands.command_menu()}
+    assert "calibration" in menu_names
