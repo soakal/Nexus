@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -987,3 +988,36 @@ def test_route_topics_signature_has_no_registry_param(tmp_config: dict[str, Any]
     params = list(inspect.signature(bo.route_topics).parameters)
     assert "existing_registry" not in params
     assert params == ["content", "catalog", "config", "client"]
+
+
+# ---------------------------------------------------------------------------
+# setup_logging uses a bounded RotatingFileHandler, not an unbounded FileHandler
+# (spec #2 SS6.5 -- organizer.log must not grow without limit).
+# ---------------------------------------------------------------------------
+
+def test_setup_logging_attaches_rotating_file_handler_with_size_limit(
+    tmp_config: dict[str, Any],
+) -> None:
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    try:
+        bo.setup_logging(tmp_config)
+
+        rotating = [h for h in root.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(rotating) == 1, root.handlers
+        handler = rotating[0]
+        assert handler.maxBytes == 5 * 1024 * 1024
+        assert handler.backupCount == 3
+
+        # A plain (non-rotating) FileHandler must no longer be present.
+        plain_file_handlers = [
+            h for h in root.handlers
+            if type(h) is logging.FileHandler
+        ]
+        assert plain_file_handlers == []
+    finally:
+        for h in root.handlers:
+            h.close()
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)

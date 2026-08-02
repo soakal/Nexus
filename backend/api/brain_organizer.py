@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import subprocess
@@ -51,7 +52,7 @@ async def brain_organizer_status(_=Depends(require_api_key)):
 
     if _PROCESSED.exists():
         try:
-            data = json.loads(_PROCESSED.read_text(encoding="utf-8"))
+            data = json.loads(await asyncio.to_thread(_PROCESSED.read_text, encoding="utf-8"))
             for entry in data.values():
                 ts = entry.get("timestamp")
                 if entry.get("status") == "failed":
@@ -66,7 +67,7 @@ async def brain_organizer_status(_=Depends(require_api_key)):
     pending = 0
     if _CONFIG.exists():
         try:
-            config = json.loads(_CONFIG.read_text(encoding="utf-8"))
+            config = json.loads(await asyncio.to_thread(_CONFIG.read_text, encoding="utf-8"))
             pending = _count_pending(config)
         except Exception:
             pass
@@ -74,7 +75,8 @@ async def brain_organizer_status(_=Depends(require_api_key)):
     log_tail: list[str] = []
     if _LOG.exists():
         try:
-            lines = _LOG.read_text(encoding="utf-8").splitlines()
+            text = await asyncio.to_thread(_LOG.read_text, encoding="utf-8")
+            lines = text.splitlines()
             # Last 5 meaningful lines (INFO/WARNING/ERROR only)
             log_tail = [
                 ln for ln in lines[-20:]

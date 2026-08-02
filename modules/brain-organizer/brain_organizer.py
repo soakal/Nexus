@@ -15,6 +15,7 @@ import difflib
 import hashlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import shutil
@@ -78,7 +79,7 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
 
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     handlers: list[logging.Handler] = [
-        logging.FileHandler(log_file, encoding="utf-8"),
+        RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ]
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
