@@ -188,6 +188,13 @@ def scan_raw_folder(
                 continue
             except ValueError:
                 pass
+            try:
+                content = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                content = None
+            if content is not None and not content.strip():
+                logger.warning("Skipping %s — empty or whitespace-only file.", f.name)
+                continue
             sha = compute_sha256(f)
             record = processed.get(sha)
             if record is None:
@@ -201,7 +208,12 @@ def scan_raw_folder(
                         "Skipping %s — exceeded max attempts (%d). Move it out of raw/ to re-enable.",
                         f.name, max_attempts,
                     )
-            # else: success record — skip
+            elif "filename" in record and record["filename"] != f.name:
+                # Content matches a completed note, but under a different filename —
+                # this is a genuinely distinct file that was never processed (the
+                # successfully-processed raw file is unlinked, so it can't still be here).
+                results.append((f, sha))
+            # else: success record with matching (or legacy, unrecorded) filename — skip
     return results
 
 

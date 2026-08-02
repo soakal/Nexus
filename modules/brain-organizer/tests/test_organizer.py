@@ -110,6 +110,58 @@ def test_scan_raw_folder_excludes_backup_subfolder(tmp_vault: Path, tmp_config: 
     assert results == []
 
 
+def test_scan_raw_folder_skips_zero_byte_file(
+    tmp_vault: Path, tmp_config: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    write_raw(tmp_vault, "empty.md", "")
+    with caplog.at_level(logging.WARNING, logger="brain_organizer"):
+        results = bo.scan_raw_folder(tmp_config, {})
+    assert results == []
+    assert "empty.md" in caplog.text
+
+
+def test_scan_raw_folder_skips_whitespace_only_file(
+    tmp_vault: Path, tmp_config: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    write_raw(tmp_vault, "blank.md", "   \n\t\n  ")
+    with caplog.at_level(logging.WARNING, logger="brain_organizer"):
+        results = bo.scan_raw_folder(tmp_config, {})
+    assert results == []
+    assert "blank.md" in caplog.text
+
+
+def test_scan_raw_folder_reprocesses_when_success_record_filename_differs(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    f = write_raw(tmp_vault, "renamed.md", "Same content")
+    sha = bo.compute_sha256(f)
+    processed = {sha: {"filename": "original.md", "timestamp": "2026-01-01", "topics": []}}
+    results = bo.scan_raw_folder(tmp_config, processed)
+    assert len(results) == 1
+    assert results[0][0].name == "renamed.md"
+
+
+def test_scan_raw_folder_skips_when_success_record_filename_matches(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    f = write_raw(tmp_vault, "done.md", "Same content")
+    sha = bo.compute_sha256(f)
+    processed = {sha: {"filename": "done.md", "timestamp": "2026-01-01", "topics": []}}
+    results = bo.scan_raw_folder(tmp_config, processed)
+    assert results == []
+
+
+def test_scan_raw_folder_failed_record_ignores_filename_drift(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    tmp_config["max_file_attempts"] = 3
+    f = write_raw(tmp_vault, "renamed-bad.md", "Content")
+    sha = bo.compute_sha256(f)
+    processed = {sha: {"filename": "original-bad.md", "status": "failed", "attempts": 3}}
+    results = bo.scan_raw_folder(tmp_config, processed)
+    assert results == []
+
+
 # ---------------------------------------------------------------------------
 # backup_file
 # ---------------------------------------------------------------------------
