@@ -900,35 +900,129 @@ def _defuse_unknown_wikilinks(
     text: str,
     topic: str,
     catalog: list[dict[str, Any]] | None,
+    *,
+    threshold: float = 0.82,
 ) -> str:
-    """Rewrite any [[wikilink]] the model generated that doesn't resolve to a
-    real (or near-duplicate) catalog page into plain `backtick` text instead.
+    """Rewrite any [[wikilink]] the model generated into filename-space (the
+    space Obsidian actually resolves), or backtick-defuse it if it names
+    nothing the vault has.
 
-    The CREATE branch's "use [[wikilinks]] to reference related pages"
-    instruction gets over-applied: source material often MENTIONS names that
-    aren't vault pages at all (e.g. Claude Code memory-file names like
-    "project_version_scheme" mentioned in a session note), and the model
-    wikilinks them anyway -- producing a permanently broken link every time,
-    since nothing by that name will ever exist as a page. Never rely on the
-    prompt instruction alone to prevent this -- same deterministic-backstop
-    pattern as the daily-note guard and the night-exemption filter elsewhere
-    in this codebase. Applied to every synthesis result (merge and create
-    alike), not just the branch that introduced the instruction, since a
-    merge can just as easily echo a hallucinated link from its input.
+    Obsidian resolves links by **filename**, but this module (prompts and,
+    until this fix, this guard) speaks **titles** -- so a perfectly valid
+    `[[Bug Fixes]]` (the real page's *title*) rendered as a permanently
+    broken link because the file on disk is `Bug-Fixes.md`. This resolver
+    closes that gap with an ordered filename-space lookup, first match wins:
+
+        1. target is an exact filename stem            -> already correct
+        2. target == topic (self-reference)             -> unchanged
+        3. target is an exact catalog title              -> rewrite to stem
+        4. case-insensitive stem match                    -> rewrite to stem
+        5. case-insensitive title match                   -> rewrite to stem
+        6. find_similar_page fuzzy match                  -> rewrite to stem
+        7. otherwise                                      -> backtick-defuse
+
+    Source material also often MENTIONS names that aren't vault pages at all
+    (e.g. Claude Code memory-file names like "project_version_scheme"
+    mentioned in a session note), and the model wikilinks them anyway --
+    producing a permanently broken link every time, since nothing by that
+    name will ever exist as a page. Never rely on the prompt instruction
+    alone to prevent this -- same deterministic-backstop pattern as the
+    daily-note guard and the night-exemption filter elsewhere in this
+    codebase. Applied to every synthesis result (merge and create alike),
+    not just the branch that introduced the instruction, since a merge can
+    just as easily echo a hallucinated link from its input.
+
+    Catalog entries missing a "filename" field degrade gracefully to
+    today's title-only matching behavior (left unchanged if their title
+    matches) rather than raising -- they simply cannot be rewritten to a
+    stem since there is no filename to rewrite to.
     """
     catalog = catalog or []
-    known_titles = {p["title"] for p in catalog}
-    known_titles.add(topic)  # the page being written links to itself, harmless
+
+    # Config-sourced threshold isn't validated upstream -- a malformed or
+    # out-of-range `new_page_similarity_threshold` (wrong type, negative,
+    # >1) must degrade to the safe default rather than raise mid-synthesis
+    # (a TypeError here would surface as a lost note write, not a config
+    # error) or silently make every/no link match.
+    try:
+        threshold = float(threshold)
+    except (TypeError, ValueError):
+        threshold = 0.82
+    if not (0.0 <= threshold <= 1.0):
+        threshold = 0.82
+
+    by_stem: dict[str, str] = {}
+    by_title: dict[str, str] = {}
+    title_only: set[str] = set()  # catalog entries with no filename to resolve to
+
+    for p in catalog:
+        filename = p.get("filename")
+        title = p.get("title")
+        if not filename:
+            if title:
+                title_only.add(title)
+            continue
+        stem = Path(filename).stem
+        by_stem.setdefault(stem, stem)
+        if title:
+            by_title.setdefault(title, stem)
+
+    by_stem_ci: dict[str, str] = {}
+    for stem in by_stem:
+        by_stem_ci.setdefault(stem.lower(), by_stem[stem])
+
+    by_title_ci: dict[str, str] = {}
+    for title, stem in by_title.items():
+        by_title_ci.setdefault(title.lower(), stem)
+
+    title_only_ci = {t.lower() for t in title_only}
 
     def _replace(m: "re.Match[str]") -> str:
         target = m.group(1).strip()
         heading = m.group(2)
         alias = m.group(3)
+
+        # 1. exact filename stem match -- already correct, no rewrite needed
+        if target in by_stem:
+            return m.group(0)
+
+        # 2. self-reference -- the page being written links to itself
+        if target == topic:
+            return m.group(0)
+
+        # 3. exact catalog title match
+        resolved_stem = by_title.get(target)
+        # 4. case-insensitive stem match
+        if resolved_stem is None:
+            resolved_stem = by_stem_ci.get(target.lower())
+        # 5. case-insensitive title match
+        if resolved_stem is None:
+            resolved_stem = by_title_ci.get(target.lower())
+
+        if resolved_stem is None:
+            if target in title_only or target.lower() in title_only_ci:
+                # Known by title only (no filename on record) -- degrade to
+                # today's title-only matching behavior instead of guessing.
+                return m.group(0)
+            # 6. fuzzy near-duplicate match
+            similar = find_similar_page(target, catalog, threshold)
+            if similar is not None:
+                similar_filename = similar.get("filename")
+                if similar_filename:
+                    resolved_stem = Path(similar_filename).stem
+                else:
+                    # Matched entry has no filename either -- same graceful
+                    # degradation as above.
+                    return m.group(0)
+
+        if resolved_stem is not None:
+            display = alias.strip() if alias else target
+            heading_part = f"#{heading}" if heading else ""
+            alias_part = "" if display == resolved_stem else f"|{display}"
+            return f"[[{resolved_stem}{heading_part}{alias_part}]]"
+
+        # 7. unknown -- backtick-defuse
         display = alias.strip() if alias else target + (f"#{heading}" if heading else "")
-        if target in known_titles:
-            return m.group(0)
-        if find_similar_page(target, catalog) is not None:
-            return m.group(0)
         return f"`{display}`"
 
     return _WIKILINK_PAT.sub(_replace, text)
@@ -1168,7 +1262,9 @@ def synthesize_wiki(
             f"({len(text)} vs {len(existing_content)} chars) — refusing to write to avoid data loss."
         )
 
-    text = _defuse_unknown_wikilinks(text, topic, catalog)
+    text = _defuse_unknown_wikilinks(
+        text, topic, catalog, threshold=config.get("new_page_similarity_threshold", 0.82)
+    )
     return text
 
 

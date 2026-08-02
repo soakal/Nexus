@@ -576,6 +576,84 @@ def test_defuse_unknown_wikilinks_leaves_real_catalog_page_alone() -> None:
     assert result == text
 
 
+def test_defuse_unknown_wikilinks_rewrites_exact_title_match_to_stem() -> None:
+    """Criterion 1: an exact catalog-title match (resolver step 3) rewrites
+    the title-form link into filename space, aliasing back to the original
+    title text since the stem and title differ.
+    """
+    catalog = [{"title": "Bug Fixes", "filename": "Bug-Fixes.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Bug Fixes]]."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == "See [[Bug-Fixes|Bug Fixes]]."
+
+
+def test_defuse_unknown_wikilinks_rewrites_exact_title_match_preserves_em_dash() -> None:
+    """Criterion 2: an exact title containing em-dash/en-dash punctuation
+    survives the rewrite unmangled as the alias display text.
+    """
+    title = "Build Log: CWI AI — Passes 1–13, 13–32"
+    catalog = [{"title": title, "filename": "Build-Log.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = f"See [[{title}]] for details."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == f"See [[Build-Log|{title}]] for details."
+
+
+def test_defuse_unknown_wikilinks_rewrites_heading_fragment_on_resolved_match() -> None:
+    """Criterion 7: a heading fragment on a link that DOES resolve (exact
+    title match) is preserved through the rewrite -- distinct from
+    test_defuse_unknown_wikilinks_preserves_heading_fragment above, which
+    only covers the unknown-target backtick-defuse branch.
+    """
+    catalog = [{"title": "Bug Fixes", "filename": "Bug-Fixes.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Bug Fixes#Setup]]."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == "See [[Bug-Fixes#Setup|Bug Fixes]]."
+
+
+def test_defuse_unknown_wikilinks_resolves_case_insensitive_stem_and_title() -> None:
+    """Resolver steps 4 and 5: a target matching the filename stem or the
+    catalog title only case-insensitively still resolves to the real stem,
+    with the original (differently-cased) text preserved as the alias.
+    """
+    catalog = [{"title": "Bug Fixes", "filename": "Bug-Fixes.md", "path_str": "x", "headers": "", "summary": ""}]
+    # step 4: case-insensitive stem match
+    result_stem = bo._defuse_unknown_wikilinks("See [[bug-fixes]].", "Other Topic", catalog)
+    assert result_stem == "See [[Bug-Fixes|bug-fixes]]."
+    # step 5: case-insensitive title match
+    result_title = bo._defuse_unknown_wikilinks("See [[BUG FIXES]].", "Other Topic", catalog)
+    assert result_title == "See [[Bug-Fixes|BUG FIXES]]."
+
+
+def test_defuse_unknown_wikilinks_ci_stem_match_independent_of_fuzzy_fallback() -> None:
+    """Step 4 (case-insensitive stem match) must do real work on its own --
+    not merely happen to be covered by step 6's fuzzy fallback. Chosen so the
+    filename stem ("FAQ") and the catalog title ("Frequently Asked
+    Questions") are dissimilar enough that find_similar_page's normalized
+    ratio (~0.23, well under the 0.82 default threshold) would NOT resolve
+    this on its own -- only the direct case-insensitive stem lookup can.
+    """
+    catalog = [{"title": "Frequently Asked Questions", "filename": "FAQ.md", "path_str": "x", "headers": "", "summary": ""}]
+    assert bo.find_similar_page("faq", catalog) is None  # confirms no fuzzy safety net for this pair
+    result = bo._defuse_unknown_wikilinks("See [[faq]] for help.", "Other Topic", catalog)
+    assert result == "See [[FAQ|faq]] for help."
+
+
+def test_defuse_unknown_wikilinks_exact_title_match_independent_of_fuzzy_fallback() -> None:
+    """Step 3 (exact title match) must do real work on its own. An ordinary
+    title always self-matches at fuzzy ratio 1.0, which happens to also
+    satisfy step 6 -- so this uses a punctuation-only title ("***"), whose
+    _normalize_title output is the empty string. find_similar_page's guard
+    clause (`if not norm_title: return None`) means step 6 can NEVER
+    resolve this target regardless of catalog content, isolating step 3 as
+    the only path capable of rewriting it correctly.
+    """
+    catalog = [{"title": "***", "filename": "Section-Divider.md", "path_str": "x", "headers": "", "summary": ""}]
+    assert bo._normalize_title("***") == ""
+    assert bo.find_similar_page("***", catalog) is None  # confirms no fuzzy safety net for this title
+    result = bo._defuse_unknown_wikilinks("See [[***]] for details.", "Other Topic", catalog)
+    assert result == "See [[Section-Divider|***]] for details."
+
+
 def test_defuse_unknown_wikilinks_converts_unknown_target_to_backticks() -> None:
     text = "Mentioned in [[project_version_scheme]] during the session."
     result = bo._defuse_unknown_wikilinks(text, "Other Topic", [])
@@ -593,7 +671,10 @@ def test_defuse_unknown_wikilinks_allows_near_duplicate_via_find_similar_page() 
     catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
     text = "See [[Financial Forecasting]] for numbers."
     result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
-    assert result == text  # left alone -- find_similar_page recognizes it
+    # find_similar_page recognizes the near-duplicate and the resolver
+    # rewrites it into filename space (stem), keeping the original text as
+    # the display alias -- it is no longer left title-form untouched.
+    assert result == "See [[Financial-Forecast|Financial Forecasting]] for numbers."
 
 
 def test_defuse_unknown_wikilinks_allows_self_reference() -> None:
@@ -625,6 +706,98 @@ def test_synthesize_wiki_defuses_hallucinated_link_in_create_branch(tmp_config: 
     assert "[[NEXUS]]" in result
     assert "[[project_version_scheme]]" not in result
     assert "`project_version_scheme`" in result
+
+
+def test_defuse_unknown_wikilinks_fuzzy_match_without_filename_degrades_gracefully() -> None:
+    """Engineer-flagged gap: find_similar_page can fuzzy-match a catalog entry
+    that has no "filename" field at all (title-only entry). Step 6 of the
+    resolver must not raise and must not emit broken [[#...]] syntax with an
+    empty stem -- it degrades to leaving the original link untouched, same as
+    the documented title-only-entry graceful degradation.
+    """
+    catalog = [{"title": "Financial Forecast", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Financial Forecasting]] for numbers."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == text  # left unchanged -- no filename to rewrite to
+    assert "[[#" not in result
+    assert "[[|" not in result
+
+
+def test_defuse_unknown_wikilinks_malformed_threshold_string_falls_back_to_default() -> None:
+    """A non-numeric new_page_similarity_threshold must not raise a TypeError
+    mid-synthesis -- it clamps to the 0.82 default and still resolves a
+    near-duplicate match exactly as the untouched default would.
+    """
+    catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Financial Forecasting]] for numbers."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog, threshold="not-a-number")
+    assert result == "See [[Financial-Forecast|Financial Forecasting]] for numbers."
+
+
+def test_defuse_unknown_wikilinks_out_of_range_high_threshold_falls_back_to_default() -> None:
+    """A threshold > 1.0 would make find_similar_page's ratio check
+    unsatisfiable (ratio never exceeds 1.0), permanently defusing every
+    near-duplicate -- the clamp must fall back to 0.82 instead so the
+    near-duplicate still resolves.
+    """
+    catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Financial Forecasting]] for numbers."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog, threshold=5.0)
+    assert result == "See [[Financial-Forecast|Financial Forecasting]] for numbers."
+
+
+def test_defuse_unknown_wikilinks_negative_threshold_falls_back_to_default() -> None:
+    """A negative threshold would make find_similar_page's ratio check
+    trivially true for anything -- the clamp must fall back to 0.82 so an
+    unrelated low-similarity target is still correctly backtick-defused
+    rather than silently over-matched.
+    """
+    catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
+    text = "See [[Kubernetes]] for numbers."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog, threshold=-5.0)
+    assert result == "See `Kubernetes` for numbers."
+
+
+# ---------------------------------------------------------------------------
+# _normalize_title -- lowercase/strip-punctuation/stem helper shared by
+# find_similar_page and the wikilink resolver above.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Financial Forecasting", "financial forecast"),
+        ("Financial Forecast", "financial forecast"),
+        ("Startups", "startup"),
+        ("Front—End Development", "frontend development"),
+    ],
+)
+def test_normalize_title(raw: str, expected: str) -> None:
+    assert bo._normalize_title(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# find_similar_page -- near-duplicate title finder (spec #2 criteria 35-37)
+# ---------------------------------------------------------------------------
+
+def test_find_similar_page_returns_near_duplicate_entry() -> None:
+    catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
+    assert bo.find_similar_page("Financial Forecasting", catalog) is catalog[0]
+
+
+def test_find_similar_page_returns_none_for_unrelated_title() -> None:
+    catalog = [{"title": "Financial Forecast", "filename": "Financial-Forecast.md", "path_str": "x", "headers": "", "summary": ""}]
+    assert bo.find_similar_page("Kubernetes", catalog) is None
+
+
+def test_find_similar_page_threshold_changes_match_outcome() -> None:
+    """Same inputs, different threshold kwarg -- a low threshold matches, a
+    high threshold does not, proving `threshold` actually gates the ratio
+    check rather than being ignored.
+    """
+    catalog = [{"title": "Machine Learning Overview", "filename": "ML-Overview.md", "path_str": "x", "headers": "", "summary": ""}]
+    assert bo.find_similar_page("Machine Learning Notes", catalog, threshold=0.5) is catalog[0]
+    assert bo.find_similar_page("Machine Learning Notes", catalog, threshold=0.95) is None
 
 
 # ---------------------------------------------------------------------------
