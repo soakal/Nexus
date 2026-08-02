@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import math
 import os
 import re
 import shutil
@@ -717,6 +718,69 @@ def _daily_note_route(
 # Catalog-aware routing (Haiku)
 # ---------------------------------------------------------------------------
 
+# §4.3: small stopword set for the lexical ranking below -- common English
+# function words that carry no topical signal and would otherwise dilute the
+# IDF score just by sheer frequency. Only used by the router_catalog_ranking
+# path; never touches the flag-off prompt.
+_ROUTER_RANKING_STOPWORDS = frozenset({
+    "the", "and", "for", "are", "but", "not", "you", "all", "can",
+    "her", "was", "one", "our", "out", "day", "get", "has", "him",
+    "his", "how", "man", "new", "now", "old", "see", "two", "way",
+    "who", "did", "its", "let", "put", "say", "she", "too", "use",
+    "with", "this", "that", "from", "have", "will", "your", "they",
+    "been", "were", "into", "than", "then", "them", "some", "when",
+    "what", "more", "also", "about", "there", "these", "which",
+    "would", "could", "should", "each", "other", "such", "over",
+    "only", "note", "notes",
+})
+
+
+def _router_ranking_tokens(text: str) -> list[str]:
+    """Lowercase alphanumeric words of length >2, minus a small stopword set.
+
+    Used only by the §4.3 lexical ranking below.
+    """
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return [w for w in words if len(w) > 2 and w not in _ROUTER_RANKING_STOPWORDS]
+
+
+def _rank_catalog_by_relevance(
+    content: str, catalog: list[dict[str, Any]], max_in_prompt: int
+) -> list[dict[str, Any]]:
+    """§4.3: select the rich prompt window by relevance, not alphabet.
+
+    Tokenizes `content[:3000]` and each catalog entry's `title + headers +
+    summary`, scores each entry by summed IDF (computed across the full
+    catalog) over the token intersection, and returns the top
+    `max_in_prompt` entries sorted by (-score, title.lower()) -- ties,
+    including the all-zero-overlap case, degrade gracefully to alphabetical
+    order, same as today's truncation.
+    """
+    query_tokens = set(_router_ranking_tokens(content[:3000]))
+
+    entry_tokens: list[set[str]] = []
+    doc_freq: defaultdict[str, int] = defaultdict(int)
+    for entry in catalog:
+        headers = entry.get("headers", "")
+        summary = entry.get("summary", "")
+        tokens = set(_router_ranking_tokens(f"{entry['title']} {headers} {summary}"))
+        entry_tokens.append(tokens)
+        for token in tokens:
+            doc_freq[token] += 1
+
+    n_docs = len(catalog)
+    idf: dict[str, float] = {
+        token: math.log(n_docs / df) for token, df in doc_freq.items()
+    }
+
+    scored: list[tuple[float, str, dict[str, Any]]] = []
+    for entry, tokens in zip(catalog, entry_tokens):
+        score = sum(idf[t] for t in query_tokens & tokens)
+        scored.append((-score, entry["title"].lower(), entry))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [entry for _, _, entry in scored[:max_in_prompt]]
+
+
 def route_topics(
     content: str,
     catalog: list[dict[str, Any]],
@@ -738,10 +802,16 @@ def route_topics(
     def _uncategorized_fallback() -> list[tuple[str, Path, bool]]:
         return [("Uncategorized", wiki_folder / "Uncategorized.md", True)]
 
-    # Build numbered catalog block (capped at config limit, already sorted by title)
+    # Build numbered catalog block (capped at config limit).
     router_catalog_ranking: bool = config.get("router_catalog_ranking", True)
     max_in_prompt: int = config.get("catalog_max_pages_in_prompt", 60)
-    catalog_pages = catalog[:max_in_prompt]
+    # §4.3: with the flag on, the rich window is chosen by lexical relevance
+    # to `content`, not alphabet/insertion order. Flag off keeps today's
+    # alphabetical-truncation slice byte-for-byte.
+    if router_catalog_ranking:
+        catalog_pages = _rank_catalog_by_relevance(content, catalog, max_in_prompt)
+    else:
+        catalog_pages = catalog[:max_in_prompt]
     catalog_lines: list[str] = []
     for i, page in enumerate(catalog_pages, 1):
         title = page["title"]
@@ -755,11 +825,14 @@ def route_topics(
     catalog_block = "\n".join(catalog_lines)
 
     # §4.4: append a full title-only index of every remaining page so no page
-    # is structurally unroutable behind the alphabetical-truncation window.
-    # Gated by router_catalog_ranking so the flag off preserves today's
+    # is structurally unroutable behind the rich window's truncation. A
+    # proper set difference against whatever §4.3 selected above, so the
+    # index and the rich block never overlap or double-truncate. Gated by
+    # router_catalog_ranking so the flag off preserves today's
     # alphabetical-truncation prompt byte-for-byte.
     if router_catalog_ranking:
-        remaining_pages = catalog[max_in_prompt:]
+        selected_ids = {id(page) for page in catalog_pages}
+        remaining_pages = [page for page in catalog if id(page) not in selected_ids]
         if remaining_pages:
             index_lines = [
                 f"{page['title']} ({Path(page['filename']).stem})"

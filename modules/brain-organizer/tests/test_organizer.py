@@ -307,6 +307,45 @@ def _catalog_entry(title: str, filename_stem: str) -> dict[str, Any]:
     }
 
 
+def test_route_topics_ranking_prefers_lexical_match_over_alphabetical_position(
+    tmp_config: dict[str, Any],
+) -> None:
+    """§4.3 / spec criteria 16-17 core fix: with router_catalog_ranking=True
+    (tmp_config's default), a page whose headers lexically match the note
+    content must be pulled into the rich prompt window even though it sits
+    deep in the catalog (index 150 of 200) and is alphabetically
+    indistinguishable from 199 same-shaped peers -- displacing an
+    alphabetically-earlier but lexically-irrelevant page that the old
+    catalog[:max_in_prompt] positional truncation would have kept instead."""
+    catalog: list[dict[str, Any]] = []
+    for i in range(200):
+        entry = _catalog_entry(f"Page {i:03d}", f"page-{i:03d}")
+        if i == 150:
+            entry["headers"] = "zorblatt quantum flux"
+        catalog.append(entry)
+    cfg = dict(tmp_config, catalog_max_pages_in_prompt=5)
+
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        '{"routes": [{"match": "new", "title": "Something Brand New"}]}'
+    )
+    bo.route_topics(
+        "Need to log details about zorblatt quantum flux today.", catalog, cfg, client,
+    )
+    prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+
+    assert "ALL OTHER PAGES" in prompt
+    rich_block, index_block = prompt.split("\n\nALL OTHER PAGES", 1)
+
+    # the lexically-relevant deep page is pulled into the rich window...
+    assert "Page 150" in rich_block
+    # ...displacing the alphabetically-next-earliest irrelevant page, which
+    # the old positional catalog[:5] truncation would have kept in slot 5
+    # instead -- it must now surface only via the §4.4 index, not be lost.
+    assert "Page 004" not in rich_block
+    assert "Page 004 (page-004)" in index_block
+
+
 def test_route_topics_index_covers_pages_beyond_rich_block(
     tmp_config: dict[str, Any],
 ) -> None:
@@ -345,35 +384,47 @@ def test_route_topics_index_covers_pages_beyond_rich_block(
 def test_route_topics_router_catalog_ranking_off_is_byte_identical(
     tmp_config: dict[str, Any],
 ) -> None:
-    """Spec criterion 20: with router_catalog_ranking=False the prompt must be
-    byte-identical to the pre-change alphabetical-only prompt — i.e. exactly
-    the flag-on prompt with the appended index block spliced back out, and
-    nothing else different."""
+    """Spec criterion 20: with router_catalog_ranking=False, the prompt's
+    catalog block must be byte-identical to the untouched plain
+    catalog[:max_in_prompt] positional slice (brain_organizer.route_topics's
+    flag-off branch) -- no ranking, no appended index block -- regardless of
+    what the (unrelated) ranking-on path would have selected for the same
+    catalog.
+
+    Deliberately ordered rich-before-far but alphabetically far < rich, so
+    that if the flag-off path ever accidentally started using
+    _rank_catalog_by_relevance's alphabetical tie-break instead of the plain
+    slice, the selected/ordered entries would visibly differ and this test
+    would catch it (comparing against an on-run cannot: ranking-on legally
+    picks a different composition than the flag-off slice, which is exactly
+    why the old round-trip-reconstruction version of this test broke)."""
     rich = [_catalog_entry(f"Rich Page {i}", f"rich-page-{i}") for i in range(3)]
     far = [_catalog_entry(f"Far Page {i}", f"far-page-{i}") for i in range(2)]
     catalog = rich + far
-    cfg_on = dict(tmp_config, catalog_max_pages_in_prompt=3, router_catalog_ranking=True)
     cfg_off = dict(tmp_config, catalog_max_pages_in_prompt=3, router_catalog_ranking=False)
 
-    routes_response = '{"routes": [{"match": "new", "title": "Something Brand New"}]}'
-
-    client_on = MagicMock()
-    client_on.messages.create.return_value = make_message(routes_response)
-    bo.route_topics("some content", catalog, cfg_on, client_on)
-    prompt_on = client_on.messages.create.call_args.kwargs["messages"][0]["content"]
-
     client_off = MagicMock()
-    client_off.messages.create.return_value = make_message(routes_response)
+    client_off.messages.create.return_value = make_message(
+        '{"routes": [{"match": "new", "title": "Something Brand New"}]}'
+    )
     bo.route_topics("some content", catalog, cfg_off, client_off)
     prompt_off = client_off.messages.create.call_args.kwargs["messages"][0]["content"]
 
-    assert "ALL OTHER PAGES" in prompt_on
     assert "ALL OTHER PAGES" not in prompt_off
 
-    idx_start = prompt_on.index("\n\nALL OTHER PAGES")
-    idx_end = prompt_on.index("\n\nNOTE TO ROUTE:")
-    reconstructed_off = prompt_on[:idx_start] + prompt_on[idx_end:]
-    assert reconstructed_off == prompt_off
+    # Reproduce the untouched flag-off branch's line format directly
+    # (brain_organizer.route_topics, "else: catalog_pages = catalog[:max_in_prompt]"
+    # followed by the "{i}. {title}. {summary}" formatting for entries with no
+    # headers) -- independent of any flag-on/ranking run.
+    expected_lines = [
+        f"{i}. {page['title']}. {page.get('summary', '')}"
+        for i, page in enumerate(catalog[:3], 1)
+    ]
+    expected_block = "\n".join(expected_lines)
+
+    prefix = "EXISTING WIKI PAGES (route to these whenever possible):\n"
+    catalog_block_off = prompt_off.split("\n\nNOTE TO ROUTE:")[0].split(prefix, 1)[1]
+    assert catalog_block_off == expected_block
 
 
 @pytest.mark.parametrize("llm_title", [
