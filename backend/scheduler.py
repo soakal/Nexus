@@ -283,6 +283,15 @@ async def _prune_retention():
         logger.error(f"Retention prune job error: {e}")
 
 
+async def _calibration_recompute():
+    try:
+        from backend.agents.calibration import recompute_hints
+        result = await recompute_hints()
+        logger.info(f"Calibration recompute: {result}")
+    except Exception as e:
+        logger.error(f"Calibration recompute job error: {e}")
+
+
 async def _watchdog():
     try:
         from backend.agents.watchdog import run_watchdog
@@ -696,6 +705,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Facts digest enabled: weekly on {digest_day} at {fdh:02d}:{fdm:02d} {timezone}")
+    if getattr(s, "calibration_enabled", True):
+        scheduler.add_job(
+            _calibration_recompute,
+            CronTrigger(hour=3, minute=50, timezone=timezone),
+            id="calibration_recompute",
+            replace_existing=True,
+        )
+        logger.info(f"Calibration recompute enabled: daily at 03:50 {timezone}")
     from pathlib import Path as _Path
     _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
     if (_bo_dir / "venv" / "Scripts" / "python.exe").exists():

@@ -931,3 +931,75 @@ def test_cal49_calibration_module_has_zero_llm_calls():
     assert not re.search(r"\b(haiku|sonnet|opus)\s*\(", src_text), (
         "calibration.py contains an LLM call"
     )
+
+
+# ---------------------------------------------------------------------------
+# 8.8 Scheduler and invariants (CAL45-CAL46)
+# ---------------------------------------------------------------------------
+
+def test_cal45_calibration_recompute_registered_at_0350_when_enabled(monkeypatch):
+    """CAL45: setup_scheduler registers job id "calibration_recompute" with a
+    CronTrigger at 03:50 in the configured timezone when calibration_enabled
+    is True (the default) -- mirrors test_infisical_soak_reminder.py's
+    add_job-mock pattern for asserting job registration without running the
+    scheduler."""
+    from unittest.mock import patch
+
+    from apscheduler.triggers.cron import CronTrigger
+
+    from backend.config import get_settings
+    from backend.scheduler import scheduler, setup_scheduler
+
+    monkeypatch.setattr(get_settings(), "calibration_enabled", True)
+
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+
+    ids = {c.kwargs.get("id"): c for c in mock_add.call_args_list}
+    assert "calibration_recompute" in ids
+    trigger = ids["calibration_recompute"].args[1]
+    assert isinstance(trigger, CronTrigger)
+    fields = {f.name: str(f) for f in trigger.fields}
+    assert fields["hour"] == "3"
+    assert fields["minute"] == "50"
+    assert str(trigger.timezone) == "America/New_York"
+
+
+def test_cal45_calibration_recompute_absent_when_disabled(monkeypatch):
+    """CAL45: no "calibration_recompute" job is registered when
+    calibration_enabled is False."""
+    from unittest.mock import patch
+
+    from backend.config import get_settings
+    from backend.scheduler import scheduler, setup_scheduler
+
+    monkeypatch.setattr(get_settings(), "calibration_enabled", False)
+
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+
+    ids = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "calibration_recompute" not in ids
+
+
+@pytest.mark.asyncio
+async def test_cal46_calibration_recompute_swallows_exception_and_logs(caplog):
+    """CAL46: _calibration_recompute swallows a raising recompute_hints and
+    logs rather than propagating -- mirrors test_watchdog.py's
+    test_watchdog_scheduler_wrapper_swallows_exception (patch the lazily-
+    imported target function, call the wrapper, assert it does not raise)."""
+    import logging
+    from unittest.mock import AsyncMock, patch
+
+    from backend.scheduler import _calibration_recompute
+
+    recompute_mock = AsyncMock(side_effect=RuntimeError("calibration exploded"))
+
+    with caplog.at_level(logging.ERROR):
+        with patch("backend.agents.calibration.recompute_hints", recompute_mock):
+            await _calibration_recompute()  # must not raise
+
+    recompute_mock.assert_awaited_once()
+    assert any(
+        "Calibration recompute job error" in rec.message for rec in caplog.records
+    )

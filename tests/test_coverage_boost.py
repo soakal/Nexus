@@ -217,10 +217,14 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # backend/config.py / backend/agents/facts_cleanup.py) +1
     # "secret_fallback_drain" (2026-07-28, unconditional -- see
     # backend/secrets/fallback_log.py -- its durability must not depend on
-    # any feature flag) = 24. Both deltas landed as separate commits; if
-    # either flips back off, drop this count and its id below deliberately,
-    # not as a side effect of an unrelated change.
-    assert mock_add.call_count == 24
+    # any feature flag) +1 "calibration_recompute" (2026-08-01, see
+    # docs/calibration-loop-spec.md CAL45, gated on calibration_enabled which
+    # defaults True -- see tests/test_calibration_loop.py::
+    # test_cal45_calibration_recompute_registered_at_0350_when_enabled) = 25.
+    # These deltas landed as separate commits; if any flips back off, drop
+    # this count and its id below deliberately, not as a side effect of an
+    # unrelated change.
+    assert mock_add.call_count == 25
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -249,6 +253,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "infisical_soak_reminder",
         "hermes_soak_reminder",
         "facts_digest",
+        "calibration_recompute",
     }
 
 
@@ -257,7 +262,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     (see backend/agents/watchdog.py::run_watchdog) rather than registering its
     own scheduler job — matches the same choice already made for
     check_budget_warning. If a future change moves it to its own job, this
-    test and test_setup_scheduler_adds_jobs's call_count==24 must both be
+    test and test_setup_scheduler_adds_jobs's call_count==25 must both be
     updated together, deliberately."""
     from datetime import datetime
     import backend.scheduler as sched_mod
@@ -269,7 +274,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 24
+    assert mock_add.call_count == 25
 
 
 # ---------------------------------------------------------------------------
