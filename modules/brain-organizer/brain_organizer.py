@@ -619,6 +619,17 @@ def _splice_tags_field(
     return lines[:field_start] + tags_lines + lines[field_end:]
 
 
+def _frontmatter_has_tags_key(lines: list[str], start: int, end: int) -> bool:
+    """True if a top-level ``tags:`` key line exists anywhere in
+    `lines[start:end]` (a frontmatter block's body, excluding its "---"
+    delimiters). Only answers "does the key exist" -- unlike
+    `_splice_tags_field` it never needs to compute the field's line span, so
+    it doesn't need to understand block-list/inline-array/hash-string form
+    beyond recognizing the "tags:" key line itself (spec #3 crit 44)."""
+    key_re = re.compile(r"^tags\s*:\s*(.*)$", re.IGNORECASE)
+    return any(key_re.match(lines[i].strip()) is not None for i in range(start, end))
+
+
 def _write_frontmatter_tags(
     content: str, tags: list[str], *, original_frontmatter: str | None = None
 ) -> str:
@@ -636,6 +647,13 @@ def _write_frontmatter_tags(
         `content` unchanged and log exactly one WARNING -- never guess.
       - equal tag list against an already-canonical block: byte-identical
         no-op.
+      - `tags == []` and the target block (existing frontmatter, the
+        original-frontmatter restore block, or the "no block at all" case)
+        has no existing ``tags:`` key: no ``tags:`` field is written at all
+        -- an empty suggestion list must never CREATE a bare ``tags:`` line
+        where none existed (spec #3 crit 44/14). This does not apply when a
+        ``tags:`` key already exists; replacing an existing field (even with
+        an empty list) still goes through the normal splice path.
 
     Newline style (CRLF vs LF, detected from the first 2 000 chars, same
     anchoring `_find_frontmatter` uses) and a leading BOM are both preserved.
@@ -662,11 +680,23 @@ def _write_frontmatter_tags(
             if ofm is not None:
                 ofm_lines = original_frontmatter.splitlines()
                 ofm_start, ofm_end = ofm
-                new_block = newline.join(
-                    _splice_tags_field(ofm_lines, ofm_start, ofm_end, tags, newline)
-                )
+                if not tags and not _frontmatter_has_tags_key(
+                    ofm_lines, ofm_start, ofm_end
+                ):
+                    # crit 44: no tags to add and none existed -- restore the
+                    # original block verbatim, no bare "tags:" line gained.
+                    new_block = newline.join(ofm_lines)
+                else:
+                    new_block = newline.join(
+                        _splice_tags_field(ofm_lines, ofm_start, ofm_end, tags, newline)
+                    )
             else:
                 new_block = original_frontmatter
+        elif not tags:
+            # crit 44: no frontmatter to restore and nothing to add -- a
+            # fresh block containing only a bare "tags:" line is not worth
+            # creating.
+            return content
         else:
             new_block = newline.join(["---", _render_tags_block(tags, newline), "---"])
 
@@ -676,6 +706,10 @@ def _write_frontmatter_tags(
 
     lines = body.splitlines()
     start, end = fm
+    if not tags and not _frontmatter_has_tags_key(lines[: end + 1], start, end):
+        # crit 44: no existing tags: key and nothing to add -- leave the
+        # frontmatter (and the rest of the document) otherwise untouched.
+        return content
     new_fm_lines = _splice_tags_field(lines[: end + 1], start, end, tags, newline)
     new_fm_text = newline.join(new_fm_lines)
 

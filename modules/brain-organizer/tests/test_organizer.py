@@ -1117,7 +1117,7 @@ def test_process_file_no_existing_frontmatter_writes_byte_identical_content(
     assert "---" not in result
 
 
-def test_process_file_existing_frontmatter_without_tags_key_inserts_bare_tags_field(
+def test_process_file_existing_frontmatter_without_tags_key_and_empty_tags_leaves_frontmatter_untouched(
     tmp_vault: Path, tmp_config: dict[str, Any]
 ) -> None:
     """Pins the Security-flagged edge case (STEP's Phase 2 gate is
@@ -1125,17 +1125,16 @@ def test_process_file_existing_frontmatter_without_tags_key_inserts_bare_tags_fi
     that has frontmatter but no prior `tags:` key still triggers
     `_write_frontmatter_tags` this cycle (because `orig_fm` alone is
     truthy — needed so §3.4's category/date restore still fires even when
-    a page never had tags). With `existing_tags == []` and no `suggest_tags`
-    call yet (`note_tags` stays `[]` this step), the call is effectively
-    `_write_frontmatter_tags(content, [])`, whose own pre-existing,
-    already-tested behavior (test_write_frontmatter_tags_inserts_before_
-    closing_delimiter_when_no_tags_key in test_frontmatter_tags.py) is to
-    insert a `tags:` key before the closing delimiter regardless of list
-    emptiness. This matches §3.3's full-spec Phase 2 pseudocode, which
-    calls `_write_frontmatter_tags` unconditionally on every route (this
-    step's OR-gate is a strict subset of that). Every other key
-    (category) stays untouched. Documented here, not treated as a
-    defect — Security explicitly deferred this exact question."""
+    a page never had tags). With `existing_tags == []` and `suggest_tags`'s
+    mocked response here not valid JSON (falls back to `[]` per crit 30),
+    `note_tags` stays `[]`, so the call is effectively
+    `_write_frontmatter_tags(content, [])`. Spec #3 crit 44: an empty tags
+    list must never CREATE a bare `tags:` key where none existed — the
+    frontmatter (and the rest of the document) comes out byte-identical to
+    what synthesize_wiki produced, `category` included. Supersedes this
+    test's pre-cycle-26 name/assertions, which pinned the old (buggy)
+    bare-`tags:`-insertion behavior from before `suggest_tags` was wired
+    into `process_file`."""
     wiki_path = tmp_vault / "wiki" / "Gamma.md"
     existing = (
         "---\n"
@@ -1151,7 +1150,8 @@ def test_process_file_existing_frontmatter_without_tags_key_inserts_bare_tags_fi
     # LLM preserves the frontmatter block verbatim this time (not the §3.4
     # drop case above) -- content still has its own "---" block, so Phase 2
     # splices directly into wiki_content's own block rather than
-    # reconstructing from orig_fm.
+    # reconstructing from orig_fm. Also serves as suggest_tags's (Phase 0)
+    # response, which is not valid JSON -- note_tags falls back to [].
     client.messages.create.return_value = make_message(
         "---\n"
         "category: Work\n"
@@ -1169,9 +1169,9 @@ def test_process_file_existing_frontmatter_without_tags_key_inserts_bare_tags_fi
     lines = wiki_path.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "---"
     assert lines[1] == "category: Work"
-    assert lines[2] == "tags:"
-    assert lines[3] == "---"
-    assert lines[4] == "# Gamma"
+    assert lines[2] == "---"
+    assert lines[3] == "# Gamma"
+    assert "tags:" not in wiki_path.read_text(encoding="utf-8")
 
 
 def test_process_file_new_page_writes_phase0_suggested_tags_to_frontmatter(

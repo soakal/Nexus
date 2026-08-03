@@ -282,6 +282,28 @@ def test_write_frontmatter_tags_preserves_lone_cr_and_exotic_linebreaks_in_body(
     )
 
 
+def test_write_frontmatter_tags_orig_fm_restore_without_tags_key_and_empty_tags_leaves_frontmatter_untouched() -> None:
+    """Spec #3 crit 44 x sect 3.4 composition (this cycle's highest-risk
+    untested combination): when the merged content has no locatable
+    frontmatter of its own (synthesize_wiki dropped the block, so
+    `_find_frontmatter(content)` is None) and the caller supplies
+    `original_frontmatter` to restore, an empty tags list against an
+    original block that never had a `tags:` key must restore that block
+    byte-for-byte -- not gain a bare `tags:` line it never had. Distinct
+    from the sibling `existing-block/no-key + empty tags` case in
+    test_organizer.py, which never goes through the orig_fm-restore branch
+    at all."""
+    content = "# Alpha\n\nMerged body content with frontmatter dropped by the LLM.\n"
+    original_frontmatter = "---\ncategory: Work\n---\n"
+
+    result = bo._write_frontmatter_tags(
+        content, [], original_frontmatter=original_frontmatter
+    )
+
+    assert result == original_frontmatter + content
+    assert "tags:" not in result
+
+
 # ---------------------------------------------------------------------------
 # _build_tag_vocabulary -- spec §2.4, criterion 12 (§6.2). Pure function, no I/O.
 # ---------------------------------------------------------------------------
