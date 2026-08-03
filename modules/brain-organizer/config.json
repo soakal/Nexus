@@ -23,5 +23,10 @@
   "api_provider": "anthropic",
   "max_file_attempts": 2,
   "backup_retention_days": 30,
-  "mcp_write_token": ""
+  "mcp_write_token": "",
+  "tags_enabled": true,
+  "tag_max_per_note": 5,
+  "tag_max_new_per_note": 1,
+  "tag_max_per_page": 12,
+  "tag_vocabulary_max_in_prompt": 200
 }

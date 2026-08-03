@@ -101,12 +101,25 @@ _CONFIG_DEFAULTS: dict[str, Any] = {
     "api_provider": "anthropic",
     "max_file_attempts": 2,
     "backup_retention_days": 30,
+    # Spec #3 SS5 -- frontmatter tags. tags_enabled is the single rollback
+    # lever (false => output byte-identical to pre-tags behavior); the rest
+    # feed _reconcile_tags's anti-sprawl pipeline (SS1.3) and suggest_tags's
+    # vocabulary prompt budget.
+    "tags_enabled": True,
+    "tag_max_per_note": 5,
+    "tag_max_new_per_note": 1,
+    "tag_max_per_page": 12,
+    "tag_vocabulary_max_in_prompt": 200,
 }
 
 # Numeric keys with a meaningful valid range, beyond "must be the right type".
 _CONFIG_RANGES: dict[str, tuple[float, float]] = {
     "new_page_similarity_threshold": (0.0, 1.0),
     "mcp_port": (1, 65535),
+    "tag_max_per_note": (0, 1000),
+    "tag_max_new_per_note": (0, 1000),
+    "tag_max_per_page": (0, 1000),
+    "tag_vocabulary_max_in_prompt": (0, 10000),
 }
 
 
@@ -681,6 +694,125 @@ def _write_frontmatter_tags(
 
     result = bom + new_fm_text + remainder
     return result if result != content else content
+
+
+# ---------------------------------------------------------------------------
+# Tag reconciliation (spec #3 SS1.3) -- the deterministic anti-sprawl gate
+# between an LLM's proposed tags and what actually gets written; never trust
+# the prompt alone. Purely additive: not wired into process_file or any
+# other caller yet (that's a later step), same as the frontmatter
+# read/write helpers above.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_tag(t: str) -> str:
+    """Fold a tag through the same stemming _normalize_title uses for page
+    titles, after collapsing tag-specific separators (-, _, /) to spaces --
+    e.g. "home-automation" and "Home Automation" both normalize to the same
+    key, letting _reconcile_tags canonicalize a proposed tag onto an
+    existing vocabulary spelling regardless of which separator style either
+    one uses. A NEW wrapper, not an edit to _normalize_title itself --
+    consolidate_wiki.py and mcp_server.py depend on that function's exact
+    current behavior (spec #3 crit 43).
+    """
+    return _normalize_title(t.replace("-", " ").replace("_", " ").replace("/", " "))
+
+
+_TAG_SEP_RE = re.compile(r"[\s_]+")
+_TAG_DISALLOWED_RE = re.compile(r"[^a-z0-9-]")
+
+
+def _reconcile_tags(
+    proposed: list[str],
+    vocabulary: list[str],
+    existing: list[str],
+    config: dict[str, Any],
+) -> list[str]:
+    """Deterministic anti-sprawl reconciler (spec #3 SS1.3) over one note's
+    LLM-proposed tags. Runs the following pipeline, in order:
+
+      1. Slugify: lowercase, strip, collapse whitespace/underscores to "-",
+         drop everything outside [a-z0-9-].
+      2. Shape filter: length 2-30, not purely numeric, not a "category/*"
+         value. The category/* check runs on the lowercased-and-stripped
+         value *before* slugify drops the "/" -- otherwise a slug like
+         "category/projects" would already have lost the very character
+         this filter looks for.
+      3. Canonicalize: a proposed tag whose _normalize_tag matches an
+         existing vocabulary entry's _normalize_tag is replaced with the
+         vocabulary's spelling -- the corpus spelling always wins.
+      4. De-duplicate: collapse case-insensitive duplicates, keeping the
+         first occurrence's spelling. Not enumerated in spec SS1.3's stage
+         list, but a necessary consequence of stage 3 -- multiple proposed
+         variant spellings (e.g. "Home Automation", "home-automation",
+         "home_automation") can all canonicalize onto the same vocabulary
+         entry, and nothing downstream dedups them (_render_tags_block's
+         docstring explicitly disclaims that job). Skipping this would
+         waste tag_max_per_note budget on one repeated concept and defeat
+         both the anti-sprawl purpose of this function and the no-op
+         idempotency guarantee (crit 14).
+      5. Drop anything already in `existing` (case-insensitive).
+      6. Allow at most config["tag_max_new_per_note"] tags not already in
+         the vocabulary; surplus new tags are dropped, not renamed.
+      7. Truncate to config["tag_max_per_note"].
+      8. If len(existing) >= config["tag_max_per_page"], growth stops and
+         nothing is ever removed -- return [] instead of running the rest
+         of the pipeline. Checked first here rather than as a final
+         override since it doesn't depend on any other stage's output and
+         the result is identical either way.
+    """
+    if len(existing) >= config["tag_max_per_page"]:
+        return []
+
+    vocab_by_norm = {_normalize_tag(v): v for v in vocabulary}
+    existing_lower = {e.lower() for e in existing}
+
+    slugged: list[str] = []
+    for raw in proposed:
+        lowered = raw.lower().strip()
+        if lowered.startswith("category/"):
+            continue
+        slug = _TAG_DISALLOWED_RE.sub("", _TAG_SEP_RE.sub("-", lowered))
+        if not (2 <= len(slug) <= 30):
+            continue
+        if slug.isdigit():
+            continue
+        slugged.append(slug)
+
+    # (tag, is_vocab) -- is_vocab records whether stage 3 canonicalized this
+    # tag onto an existing vocabulary spelling, so stage 6's new-tag cap
+    # doesn't need to re-derive vocabulary membership.
+    canonicalized: list[tuple[str, bool]] = []
+    for slug in slugged:
+        vocab_match = vocab_by_norm.get(_normalize_tag(slug))
+        canonicalized.append((vocab_match, True) if vocab_match is not None else (slug, False))
+
+    # Stage 4: collapse case-insensitive duplicates produced by stage 3
+    # (multiple proposed variants canonicalizing onto the same vocabulary
+    # spelling), keeping the first occurrence's spelling/position.
+    seen_norm: set[str] = set()
+    deduped: list[tuple[str, bool]] = []
+    for tag, is_vocab in canonicalized:
+        key = tag.lower()
+        if key in seen_norm:
+            continue
+        seen_norm.add(key)
+        deduped.append((tag, is_vocab))
+    canonicalized = deduped
+
+    fresh = [(t, is_vocab) for t, is_vocab in canonicalized if t.lower() not in existing_lower]
+
+    max_new = config["tag_max_new_per_note"]
+    result: list[str] = []
+    new_count = 0
+    for tag, is_vocab in fresh:
+        if not is_vocab:
+            if new_count >= max_new:
+                continue  # surplus new tags dropped, not renamed
+            new_count += 1
+        result.append(tag)
+
+    return result[: config["tag_max_per_note"]]
 
 
 # ---------------------------------------------------------------------------

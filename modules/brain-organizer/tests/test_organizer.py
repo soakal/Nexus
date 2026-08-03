@@ -2120,3 +2120,171 @@ def test_validate_config_real_config_json_keys_and_defaults_do_not_drift() -> No
     assert not defaults_never_shipped, (
         f"_CONFIG_DEFAULTS has keys never present in config.json: {defaults_never_shipped}"
     )
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("tag_max_per_note", -1),
+        ("tag_max_new_per_note", -1),
+        ("tag_max_per_page", -1),
+        ("tag_vocabulary_max_in_prompt", 10001),
+    ],
+)
+def test_validate_config_out_of_range_tag_keys_raises(
+    tmp_config: dict[str, Any], key: str, value: int
+) -> None:
+    """Security's auto-fix this cycle added the four new numeric tag config
+    keys to _CONFIG_RANGES (tag_max_per_note/tag_max_new_per_note/
+    tag_max_per_page: 0-1000, tag_vocabulary_max_in_prompt: 0-10000).
+    Exercises the real validate_config() range-check path per key, matching
+    the existing test_validate_config_out_of_range_numeric_raises
+    convention, rather than just inspecting _CONFIG_RANGES's dict contents
+    (which the generic drift test above does not cover -- it only checks
+    _CONFIG_DEFAULTS/config.json key parity, not _CONFIG_RANGES)."""
+    tmp_config[key] = value
+    with pytest.raises(ValueError, match=key):
+        bo.validate_config(tmp_config)
+
+
+# ---------------------------------------------------------------------------
+# _normalize_tag / _reconcile_tags (spec #3 SS1.3 -- criteria 21-28)
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_tags_canonicalizes_onto_vocabulary_spelling() -> None:
+    """spec #3 criterion 21: a proposed tag differing only in separator/case
+    from an existing vocabulary entry is replaced with the vocabulary's own
+    spelling, not the proposed spelling -- the corpus spelling always wins."""
+    result = bo._reconcile_tags(["Home Automation"], ["home-automation"], [], bo._CONFIG_DEFAULTS)
+    assert result == ["home-automation"]
+
+
+def test_reconcile_tags_canonicalizes_via_stemming() -> None:
+    """spec #3 criterion 22: _normalize_tag's _normalize_title stemming
+    matches a plural proposed tag onto its singular vocabulary spelling."""
+    result = bo._reconcile_tags(["startups"], ["startup"], [], bo._CONFIG_DEFAULTS)
+    assert result == ["startup"]
+
+
+def test_reconcile_tags_caps_brand_new_tags_at_max_new_per_note() -> None:
+    """spec #3 criterion 23: with the default tag_max_new_per_note=1, three
+    brand-new proposed tags against an empty vocabulary yield exactly one
+    survivor -- surplus new tags are dropped, not renamed. The survivor is
+    deterministically the first-proposed tag: stage 6 walks `fresh` in
+    original order and stops accepting new tags the instant the cap is
+    hit, so "alpha" (not an arbitrary member of the set) must win. A
+    membership-only assertion here would pass even if a future change
+    silently reordered the surviving tag."""
+    result = bo._reconcile_tags(["alpha", "beta", "gamma"], [], [], bo._CONFIG_DEFAULTS)
+    assert result == ["alpha"]
+
+
+def test_reconcile_tags_drops_category_prefixed_value() -> None:
+    """spec #3 criterion 24: a 'category/*' proposed tag is dropped.
+
+    Also pins the engineer's deliberate ordering deviation from the spec's
+    prose (slugify, THEN shape-filter for category/*): this implementation
+    checks the category/ prefix on the lowercased/stripped raw value BEFORE
+    slugify would strip the '/' the check depends on. Checking mixed case
+    and surrounding whitespace confirms the guard fires on the raw value,
+    not on the post-slugify shape (where the '/' would already be gone and
+    the check could never match)."""
+    result = bo._reconcile_tags(["category/projects"], [], [], bo._CONFIG_DEFAULTS)
+    assert result == []
+    result_mixed_case_and_whitespace = bo._reconcile_tags(
+        ["  Category/Projects  "], [], [], bo._CONFIG_DEFAULTS
+    )
+    assert result_mixed_case_and_whitespace == []
+
+
+def test_reconcile_tags_drops_tags_already_present_in_existing() -> None:
+    """spec #3 criterion 25: a proposed tag already in `existing` (matched
+    case-insensitively) is dropped rather than duplicated, even when it also
+    canonicalizes onto a vocabulary spelling first."""
+    result = bo._reconcile_tags(["Alpha"], ["alpha"], ["alpha"], bo._CONFIG_DEFAULTS)
+    assert result == []
+
+
+def test_reconcile_tags_at_page_cap_returns_empty_without_running_pipeline() -> None:
+    """spec #3 criterion 26, and the engineer's stage-7-checked-first
+    reordering: when len(existing) >= tag_max_per_page (default 12), the
+    function short-circuits to [] even though `proposed` contains a tag that
+    would otherwise cleanly survive every later stage (exact vocabulary
+    match, not already in existing, well-shaped) -- confirming stage 7 runs
+    before, and independent of, the rest of the pipeline. Nothing is ever
+    removed from existing; growth just stops."""
+    existing = [f"tag{i}" for i in range(12)]
+    result = bo._reconcile_tags(["brand-new-topic"], ["brand-new-topic"], existing, bo._CONFIG_DEFAULTS)
+    assert result == []
+
+
+def test_reconcile_tags_truncates_to_max_per_note() -> None:
+    """spec #3 criterion 27: six valid vocabulary tags are truncated to the
+    default tag_max_per_note=5. All six are already-vocabulary spellings so
+    the tag_max_new_per_note=1 cap (which only limits tags NOT already in
+    the vocabulary) cannot itself explain the truncation."""
+    vocab = [f"vocab-tag-{i}" for i in range(6)]
+    result = bo._reconcile_tags(vocab, vocab, [], bo._CONFIG_DEFAULTS)
+    assert result == vocab[:5]
+
+
+def test_reconcile_tags_drops_junk_inputs_without_raising() -> None:
+    """spec #3 criterion 28: empty string, single-char, purely-numeric,
+    punctuation-only, and over-length (>30 char) proposed tags are all
+    dropped by the shape filter, and none raises."""
+    junk = ["", "a", "12345", "###", "x" * 40]
+    result = bo._reconcile_tags(junk, [], [], bo._CONFIG_DEFAULTS)
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: stage 3 (canonicalize) can feed stage 4 (de-duplicate)
+# multiple variant spellings of the same vocabulary entry -- Realist-caught
+# defect in a prior revision of this cycle, fixed by adding the de-dup
+# stage. Criterion 14 is the no-op idempotency guarantee these tests pin.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_tags_dedups_variant_spellings_that_canonicalize_together() -> None:
+    """Realist-requested regression test: three variant spellings of the
+    same concept ("Home Automation", "home-automation", "home_automation")
+    all canonicalize onto the single vocabulary entry "home-automation" via
+    stage 3. Before the fix, nothing collapsed the three resulting
+    duplicates and all three copies of "home-automation" would have been
+    emitted, burning tag_max_per_note budget on one repeated concept.
+    Stage 4 must collapse them to exactly one survivor."""
+    result = bo._reconcile_tags(
+        ["Home Automation", "home-automation", "home_automation"],
+        ["home-automation"],
+        [],
+        bo._CONFIG_DEFAULTS,
+    )
+    assert result == ["home-automation"]
+
+
+def test_reconcile_tags_dedup_output_round_trips_through_frontmatter_write_parse() -> None:
+    """Realist-requested regression test guarding criterion 14 (no-op
+    idempotency) at the boundary between _reconcile_tags's de-dup stage and
+    the frontmatter read/write helpers it feeds in practice: writing
+    _reconcile_tags's deduped output via _write_frontmatter_tags, parsing
+    it back out via _parse_frontmatter_tags, and writing again with the
+    re-parsed tags must reproduce the exact same bytes -- nothing lost,
+    duplicated, or reordered on the way out and back in. If stage 4's
+    dedup ever regressed and let duplicate canonical spellings through
+    again, _parse_frontmatter_tags's own first-seen dedup (a different,
+    unrelated code path) would silently absorb the surplus at parse time
+    and this test would still catch the drift via the reparsed != result
+    check below, rather than falsely passing."""
+    proposed = ["Home Automation", "home-automation", "home_automation"]
+    reconciled = bo._reconcile_tags(proposed, ["home-automation"], [], bo._CONFIG_DEFAULTS)
+    assert reconciled == ["home-automation"]  # sanity: stage 4 already proven above
+
+    original = "---\ntitle: Test\n---\nBody text.\n"
+    written_once = bo._write_frontmatter_tags(original, reconciled)
+
+    reparsed = bo._parse_frontmatter_tags(written_once)
+    assert reparsed == reconciled  # nothing lost or duplicated round-tripping through disk
+
+    written_twice = bo._write_frontmatter_tags(written_once, reparsed)
+    assert written_twice == written_once  # byte-identical no-op -- criterion 14
