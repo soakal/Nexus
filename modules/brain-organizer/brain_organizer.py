@@ -527,6 +527,163 @@ def _parse_frontmatter_tags(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Frontmatter writing (spec #3 §3.1/§3.2) -- the only code path that mutates
+# a wiki page's frontmatter. Not wired into any caller yet (that's a later
+# step); reuses _find_frontmatter exclusively for locating the block, same
+# as the parsing helpers above -- never a fresh document-wide search.
+# ---------------------------------------------------------------------------
+
+
+_TAG_LINE_BREAK_RE = re.compile("[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+")
+
+
+def _render_tags_block(tags: list[str], newline: str) -> str:
+    """Render `tags` as a YAML block-list field, e.g. ``tags:\\n  - a\\n  - b``.
+
+    Always the block-list form -- the measured majority live form (19 of 25
+    tagged pages) and what Obsidian's own tag UI writes -- even for pages
+    whose existing field on disk used inline-array or hash-string form. One
+    emission path; existing spellings/casing are the caller's responsibility,
+    this function never re-slugifies or re-cases a tag.
+
+    A tag value containing a line-break character (any of the ones
+    ``str.splitlines()`` recognises -- CR, LF, vertical/form feed, U+2028,
+    etc.) would otherwise let that value inject extra lines into the
+    frontmatter block, including a forged closing ``---`` delimiter and
+    arbitrary new top-level keys. Since a tag is never legitimately
+    multi-line, any such characters are collapsed to a single space rather
+    than passed through -- the only sanitization this function performs.
+    """
+    safe_tags = [_TAG_LINE_BREAK_RE.sub(" ", t).strip() for t in tags]
+    lines = ["tags:"] + [f"  - {t}" for t in safe_tags]
+    return newline.join(lines)
+
+
+def _splice_tags_field(
+    lines: list[str], start: int, end: int, tags: list[str], newline: str
+) -> list[str]:
+    """Return `lines` with the ``tags:`` field inside `lines[start:end]`
+    replaced by `tags` rendered via `_render_tags_block`, or -- if no
+    ``tags:`` key exists in that range -- inserted immediately before
+    `lines[end]` (the closing ``---``). Mirrors `_parse_frontmatter_tags`'s
+    form detection (block list / inline array / hash-string / scalar) to
+    find the field's line span; never extracts or interprets values.
+    """
+    key_re = re.compile(r"^tags\s*:\s*(.*)$", re.IGNORECASE)
+    item_re = re.compile(r"^-\s*(.*)$")
+    span: tuple[int, int] | None = None
+    i = start
+    while i < end:
+        m = key_re.match(lines[i].strip())
+        if m is None:
+            i += 1
+            continue
+        rest = m.group(1).strip()
+        if rest.startswith("["):
+            # Inline array, possibly spanning multiple lines until "]".
+            j = i
+            buf = rest
+            while "]" not in buf and j + 1 < end:
+                j += 1
+                buf += " " + lines[j].strip()
+            span = (i, j + 1)
+        elif rest == "":
+            # Block list form: "tags:" followed by "  - x" lines.
+            j = i + 1
+            while j < end and item_re.match(lines[j].strip()) is not None:
+                j += 1
+            span = (i, j)
+        else:
+            # Single-line scalar or hash-string form, e.g. "tags: #a #b".
+            span = (i, i + 1)
+        break
+
+    tags_lines = _render_tags_block(tags, newline).split(newline)
+    if span is None:
+        return lines[:end] + tags_lines + lines[end:]
+    field_start, field_end = span
+    return lines[:field_start] + tags_lines + lines[field_end:]
+
+
+def _write_frontmatter_tags(
+    content: str, tags: list[str], *, original_frontmatter: str | None = None
+) -> str:
+    """Render `tags` into `content`'s frontmatter -- the only function that
+    mutates it (spec #3 §3.2). Case table:
+
+      - existing frontmatter block: replace its ``tags:`` field in place (or
+        insert one before the closing "---" if absent); every other key
+        stays byte-identical.
+      - no block, no `original_frontmatter`: prepend a fresh block.
+      - no block, `original_frontmatter` given (the synthesis branch that
+        drops frontmatter -- §3.4): re-prepend the original block with its
+        ``tags:`` field replaced, so `category`/`date`/`related`/etc. survive.
+      - a leading code fence (frontmatter can't be safely located): return
+        `content` unchanged and log exactly one WARNING -- never guess.
+      - equal tag list against an already-canonical block: byte-identical
+        no-op.
+
+    Newline style (CRLF vs LF, detected from the first 2 000 chars, same
+    anchoring `_find_frontmatter` uses) and a leading BOM are both preserved.
+    """
+    logger = logging.getLogger("brain_organizer")
+
+    bom = "﻿" if content.startswith("﻿") else ""
+    body = content[len(bom):]
+    newline = "\r\n" if "\r\n" in body[:2000] else "\n"
+
+    fm = _find_frontmatter(body)
+    if fm is None:
+        body_lines = body.splitlines()
+        first_non_blank = next((ln for ln in body_lines if ln.strip()), None)
+        if first_non_blank is not None and first_non_blank.strip().startswith("```"):
+            logger.warning(
+                "_write_frontmatter_tags: cannot safely locate frontmatter "
+                "(document starts with a code fence) -- leaving content unchanged"
+            )
+            return content
+
+        if original_frontmatter is not None:
+            ofm = _find_frontmatter(original_frontmatter)
+            if ofm is not None:
+                ofm_lines = original_frontmatter.splitlines()
+                ofm_start, ofm_end = ofm
+                new_block = newline.join(
+                    _splice_tags_field(ofm_lines, ofm_start, ofm_end, tags, newline)
+                )
+            else:
+                new_block = original_frontmatter
+        else:
+            new_block = newline.join(["---", _render_tags_block(tags, newline), "---"])
+
+        if not new_block.endswith(newline):
+            new_block += newline
+        return bom + new_block + body
+
+    lines = body.splitlines()
+    start, end = fm
+    new_fm_lines = _splice_tags_field(lines[: end + 1], start, end, tags, newline)
+    new_fm_text = newline.join(new_fm_lines)
+
+    # Everything after the frontmatter's closing "---" line is carried
+    # through byte-for-byte from the original body, rather than being
+    # reflowed through splitlines()/join() over the whole document.
+    # str.splitlines() also breaks on lone "\r", "\v", "\f", "\x1c"-"\x1e",
+    # "\x85", U+2028 and U+2029 -- rejoining the *entire* body with a
+    # single detected `newline` would silently normalize (or, for the
+    # Unicode separators, delete outright) any of those characters
+    # anywhere in the note, not just inside the frontmatter block.
+    keepend_lines = body.splitlines(keepends=True)
+    closing_delim_line = keepend_lines[end] if end < len(keepend_lines) else ""
+    remainder = "".join(keepend_lines[end + 1 :])
+    if closing_delim_line.endswith(("\n", "\r")):
+        new_fm_text += newline
+
+    result = bom + new_fm_text + remainder
+    return result if result != content else content
+
+
+# ---------------------------------------------------------------------------
 # Per-page catalog entry extractor
 # ---------------------------------------------------------------------------
 

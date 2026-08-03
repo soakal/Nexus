@@ -1,8 +1,16 @@
-"""Tests for spec #3 (docs/brain-organizer-frontmatter-tags-spec.md) §2.1:
-_find_frontmatter and _parse_frontmatter_tags. Pure functions, no I/O --
-covers acceptance criteria 1-7 (§6.1) plus the §2.1 prose contract
+"""Tests for spec #3 (docs/brain-organizer-frontmatter-tags-spec.md):
+
+§2.1 -- _find_frontmatter and _parse_frontmatter_tags. Pure functions, no
+I/O -- covers acceptance criteria 1-7 (§6.1) plus the §2.1 prose contract
 ("de-duplicated case-insensitively, first-seen spelling wins, order
-preserved") and BOM handling."""
+preserved") and BOM handling.
+
+§3.1/§3.2 -- _render_tags_block and _write_frontmatter_tags, the write
+layer. Pure functions, no I/O -- covers acceptance criteria 13-20 (§6.3)
+plus two regression cases flagged by this cycle's Security review: a
+line-break embedded in a tag value forging a premature closing delimiter
+(structural injection), and a mixed-line-ending document body being
+silently normalized by a whole-document splitlines()/join()."""
 
 from __future__ import annotations
 
@@ -113,3 +121,149 @@ def test_parse_frontmatter_tags_unbracketed_scalar_after_tags_key_skipped() -> N
     text = "---\ntags: solo-tag\ncategory: Reference\n---\n\nBody.\n"
 
     assert bo._parse_frontmatter_tags(text) == []
+
+
+# ---------------------------------------------------------------------------
+# _write_frontmatter_tags / _render_tags_block -- spec §3.1/§3.2, §6.3
+# criteria 13-20, plus the two Security-flagged regression cases from this
+# cycle (line-break-in-tag structural injection, mixed-line-ending body
+# byte-preservation). Fixtures below are built by hand-tracing
+# _find_frontmatter's (first_body_line_index, closing_delimiter_line_index)
+# contract, never a fresh document-wide regex.
+# ---------------------------------------------------------------------------
+
+
+def test_write_frontmatter_tags_no_existing_frontmatter_prepends_block() -> None:
+    """Criterion 13: no existing frontmatter -> a fresh block is prepended,
+    the rest of the document is byte-identical."""
+    content = "Body line 1.\nBody line 2.\n"
+
+    result = bo._write_frontmatter_tags(content, ["alpha", "beta"])
+
+    assert result == "---\ntags:\n  - alpha\n  - beta\n---\n" + content
+
+
+def test_write_frontmatter_tags_noop_when_tags_unchanged_and_canonical() -> None:
+    """Criterion 14: no-op guarantee -- an equal tag list against an
+    already-canonical block returns the input byte for byte (not merely an
+    equal-valued copy)."""
+    content = "---\ntags:\n  - alpha\n  - beta\n---\n\nBody.\n"
+
+    result = bo._write_frontmatter_tags(content, ["alpha", "beta"])
+
+    assert result is content or result == content
+
+
+def test_write_frontmatter_tags_preserves_other_frontmatter_keys() -> None:
+    """Criterion 15: category:/date: stay byte-identical after a tags-only
+    change; only the tags: field's rendered values change."""
+    content = (
+        "---\ncategory: Reference\ntags:\n  - alpha\ndate: 2026-01-01\n---\n\nBody.\n"
+    )
+
+    result = bo._write_frontmatter_tags(content, ["alpha", "gamma"])
+
+    assert result == (
+        "---\ncategory: Reference\ntags:\n  - alpha\n  - gamma\ndate: 2026-01-01\n"
+        "---\n\nBody.\n"
+    )
+
+
+def test_write_frontmatter_tags_inserts_before_closing_delimiter_when_no_tags_key() -> None:
+    """Criterion 16: frontmatter with no tags: key gets one inserted
+    immediately before the closing "---"; other keys untouched."""
+    content = "---\ncategory: Reference\ndate: 2026-01-01\n---\n\nBody.\n"
+
+    result = bo._write_frontmatter_tags(content, ["alpha"])
+
+    assert result == (
+        "---\ncategory: Reference\ndate: 2026-01-01\ntags:\n  - alpha\n---\n\nBody.\n"
+    )
+
+
+def test_write_frontmatter_tags_preserves_crlf_newline_style() -> None:
+    """Criterion 17: a CRLF document stays CRLF throughout -- no mixed
+    endings introduced by the rewrite."""
+    content = "---\r\ntags:\r\n  - alpha\r\n---\r\n\r\nBody.\r\n"
+
+    result = bo._write_frontmatter_tags(content, ["alpha", "beta"])
+
+    assert result == "---\r\ntags:\r\n  - alpha\r\n  - beta\r\n---\r\n\r\nBody.\r\n"
+    assert "\r\n" in result and "\n" not in result.replace("\r\n", "")
+
+
+def test_write_frontmatter_tags_preserves_leading_bom() -> None:
+    """Criterion 18: a leading UTF-8 BOM byte stays the first character of
+    the output."""
+    content = "﻿---\ntags:\n  - alpha\n---\n\nBody.\n"
+
+    result = bo._write_frontmatter_tags(content, ["alpha", "beta"])
+
+    assert result.startswith("﻿")
+    assert result == "﻿---\ntags:\n  - alpha\n  - beta\n---\n\nBody.\n"
+
+
+def test_write_frontmatter_tags_fence_led_document_unchanged_and_warns(caplog) -> None:
+    """Criterion 19: a document _find_frontmatter can't safely anchor (here,
+    a leading code fence hiding an interior --- block) is returned unchanged
+    and logs exactly one WARNING -- never a guess."""
+    content = "```markdown\n---\ntags: [hidden]\n---\n\nBody.\n```\n"
+
+    with caplog.at_level("WARNING", logger="brain_organizer"):
+        result = bo._write_frontmatter_tags(content, ["alpha"])
+
+    assert result == content
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+
+
+def test_write_frontmatter_tags_hash_string_form_rewritten_to_block_list() -> None:
+    """Criterion 20: existing hash-string tags: #a #b #c is rewritten to
+    block-list form, values preserved."""
+    content = "---\ntags: #compliance #legal #hipaa\n---\n\nBody.\n"
+
+    result = bo._write_frontmatter_tags(content, ["compliance", "legal", "hipaa"])
+
+    assert result == (
+        "---\ntags:\n  - compliance\n  - legal\n  - hipaa\n---\n\nBody.\n"
+    )
+
+
+def test_write_frontmatter_tags_sanitizes_line_break_in_tag_value() -> None:
+    """Security regression: a tag value containing an embedded newline +
+    "---" + a new YAML key must not be able to forge a premature closing
+    frontmatter delimiter and inject an arbitrary top-level key. The
+    line-break character is collapsed to a single space, keeping the
+    malicious payload confined to one harmless tags: list item."""
+    content = "---\ntags:\n  - alpha\n---\n\nBody.\n"
+    malicious_tag = "evil\n---\nnew_key: injected"
+
+    result = bo._write_frontmatter_tags(content, ["alpha", malicious_tag])
+
+    assert result == (
+        "---\ntags:\n  - alpha\n  - evil --- new_key: injected\n---\n\nBody.\n"
+    )
+    # No forged closing delimiter or injected top-level key ended up as its
+    # own line anywhere in the output -- exactly the real opening and
+    # closing "---" delimiters exist as standalone lines.
+    assert "\nnew_key: injected" not in result
+    assert sum(1 for line in result.split("\n") if line == "---") == 2
+
+
+def test_write_frontmatter_tags_preserves_lone_cr_and_exotic_linebreaks_in_body() -> None:
+    """Security regression: rewriting the frontmatter must not run
+    splitlines()/join() over the whole document body. A lone "\\r" (and, by
+    the same mechanism, VT/FF/FS-RS-GS/NEL/U+2028/U+2029) inside the body --
+    after the frontmatter's closing "---" -- must survive untouched rather
+    than being silently normalized or deleted."""
+    content = (
+        "---\ntags:\n  - alpha\n---\n\n"
+        "Body line1.\rBody line2 with lone CR.\nNormal LF line.\n"
+    )
+
+    result = bo._write_frontmatter_tags(content, ["alpha", "beta"])
+
+    assert result == (
+        "---\ntags:\n  - alpha\n  - beta\n---\n\n"
+        "Body line1.\rBody line2 with lone CR.\nNormal LF line.\n"
+    )
