@@ -387,6 +387,42 @@ def test_route_topics_index_covers_pages_beyond_rich_block(
         assert entry["title"] in prompt
 
 
+def test_route_topics_index_entry_missing_filename_degrades_to_title_stem(
+    tmp_config: dict[str, Any],
+) -> None:
+    """§4.4 fix: a catalog entry with no "filename" key must not KeyError
+    when building the title-only index — it degrades to its own title as
+    the stem, matching the identical entry.get("filename") fallback already
+    used elsewhere (route_topics' _resolve_existing lookup at :1567,
+    _rank_catalog_by_relevance's headers/summary access pattern, etc.).
+    Large enough catalog (rich=3, far=5 with catalog_max_pages_in_prompt=3)
+    so the filename-less entry falls into the §4.4 index branch, not the
+    rich window."""
+    rich = [_catalog_entry(f"Rich Page {i}", f"rich-page-{i}") for i in range(3)]
+    far = [_catalog_entry(f"Far Page {i}", f"far-page-{i}") for i in range(4)]
+    no_filename_entry = {
+        "title": "Filenameless Page",
+        "path_str": "/vault/wiki/Filenameless Page.md",
+        "headers": "",
+        "summary": "",
+    }
+    catalog = rich + far + [no_filename_entry]
+    cfg = dict(tmp_config, catalog_max_pages_in_prompt=3)
+
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        '{"routes": [{"match": "new", "title": "Something Brand New"}]}'
+    )
+    # Must not raise KeyError building the §4.4 index for the filename-less entry.
+    bo.route_topics("some content", catalog, cfg, client)
+
+    prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "ALL OTHER PAGES" in prompt
+    index_block = prompt.split("\n\nALL OTHER PAGES", 1)[1]
+    # degrades to its own title as the stem: "Filenameless Page (Filenameless Page)"
+    assert "Filenameless Page (Filenameless Page)" in index_block
+
+
 def test_route_topics_router_catalog_ranking_off_is_byte_identical(
     tmp_config: dict[str, Any],
 ) -> None:

@@ -541,9 +541,10 @@ def _parse_frontmatter_tags(text: str) -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Frontmatter writing (spec #3 §3.1/§3.2) -- the only code path that mutates
-# a wiki page's frontmatter. Not wired into any caller yet (that's a later
-# step); reuses _find_frontmatter exclusively for locating the block, same
-# as the parsing helpers above -- never a fresh document-wide search.
+# a wiki page's frontmatter. Wired into process_file via
+# _write_frontmatter_tags; reuses _find_frontmatter exclusively for
+# locating the block, same as the parsing helpers above -- never a fresh
+# document-wide search.
 # ---------------------------------------------------------------------------
 
 
@@ -699,8 +700,7 @@ def _write_frontmatter_tags(
 # ---------------------------------------------------------------------------
 # Tag reconciliation (spec #3 SS1.3) -- the deterministic anti-sprawl gate
 # between an LLM's proposed tags and what actually gets written; never trust
-# the prompt alone. Purely additive: not wired into process_file or any
-# other caller yet (that's a later step), same as the frontmatter
+# the prompt alone. Wired into process_file, same as the frontmatter
 # read/write helpers above.
 # ---------------------------------------------------------------------------
 
@@ -823,9 +823,8 @@ def _build_tag_vocabulary(catalog: list[dict[str, Any]], limit: int) -> list[str
 
     Counts every tag across every catalog entry, drops any "category/*"
     value, sorts by (-count, tag) so the most-used tags lead and ties break
-    alphabetically, and returns the first `limit` entries. Purely additive:
-    not wired into route_topics/synthesize_wiki/process_file yet (that's a
-    later step).
+    alphabetically, and returns the first `limit` entries. Wired into
+    process_file to build the vocabulary passed to suggest_tags.
     """
     counts: Counter[str] = Counter()
     for entry in catalog:
@@ -1498,10 +1497,11 @@ def route_topics(
         selected_ids = {id(page) for page in catalog_pages}
         remaining_pages = [page for page in catalog if id(page) not in selected_ids]
         if remaining_pages:
-            index_lines = [
-                f"{page['title']} ({Path(page['filename']).stem})"
-                for page in remaining_pages
-            ]
+            index_lines = []
+            for page in remaining_pages:
+                filename = page.get("filename")
+                stem = Path(filename).stem if filename else page["title"]
+                index_lines.append(f"{page['title']} ({stem})")
             catalog_block += (
                 "\n\nALL OTHER PAGES (title — file):\n" + "\n".join(index_lines)
             )
@@ -1653,8 +1653,7 @@ def route_topics(
 # ---------------------------------------------------------------------------
 # Tag suggestion (Haiku) — spec #3 SS4. Mirrors route_topics' _call_api usage
 # pattern (system text folded into the user message, JSON-only response,
-# markdown-fence stripping). Purely additive: not called from process_file
-# or anywhere else yet (that's a later step).
+# markdown-fence stripping). Wired into process_file.
 # ---------------------------------------------------------------------------
 
 def suggest_tags(
