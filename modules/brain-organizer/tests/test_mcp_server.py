@@ -182,42 +182,115 @@ def test_wiki_search_finds_daily_folder_pages(wiki_app, tmp_vault: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# _build_stem_index / _normalize_wikilinks — wiki/daily/ resolution
+# build_link_index / _normalize_wikilinks — wiki/daily/ resolution
 # ---------------------------------------------------------------------------
 
 def test_build_stem_index_includes_daily_folder_pages(tmp_vault: Path) -> None:
     """A [[2026-07-25]] link must resolve even though the target page moved
     into wiki/daily/ -- without this it would get flagged in a spurious
     '## Broken Links' footer on every note that references a daily page."""
-    from mcp_server import _build_stem_index
+    from brain_organizer import build_link_index
 
     seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25\n\ncontent")
-    index = _build_stem_index(tmp_vault / "wiki", tmp_vault / "wiki" / "daily")
+    wiki_dir = tmp_vault / "wiki"
+    index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
 
     assert "2026-07-25" in index.values()
 
 
 def test_build_stem_index_excludes_processed_folder(tmp_vault: Path) -> None:
-    from mcp_server import _build_stem_index
+    from brain_organizer import build_link_index
 
     (tmp_vault / "wiki" / "processed").mkdir(parents=True, exist_ok=True)
     (tmp_vault / "wiki" / "processed" / "Old-Note.md").write_text("# Old", encoding="utf-8")
 
-    index = _build_stem_index(tmp_vault / "wiki", tmp_vault / "wiki" / "daily")
+    wiki_dir = tmp_vault / "wiki"
+    index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
 
     assert "Old-Note" not in index.values()
 
 
 def test_normalize_wikilinks_resolves_daily_folder_target(tmp_vault: Path) -> None:
-    from mcp_server import _build_stem_index, _normalize_wikilinks
+    from brain_organizer import build_link_index
+    from mcp_server import _normalize_wikilinks
 
     seed_daily(tmp_vault, "2026-07-25", "# 2026-07-25\n\ncontent")
-    index = _build_stem_index(tmp_vault / "wiki", tmp_vault / "wiki" / "daily")
+    wiki_dir = tmp_vault / "wiki"
+    index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
 
     result = _normalize_wikilinks("See [[2026-07-25]] for details.", index)
 
     assert "Broken Links" not in result
     assert "[[2026-07-25]]" in result
+
+
+def test_normalize_wikilinks_shared_index_resolves_case_insensitive_target(tmp_vault: Path) -> None:
+    """Proves build_link_index (brain_organizer) and _normalize_wikilinks
+    (mcp_server) are genuinely wired together, not just independently
+    working: a target that only matches via canonical_link_key's
+    case/spacing normalization (not a literal string match) must still
+    resolve to the on-disk stem."""
+    from brain_organizer import build_link_index
+    from mcp_server import _normalize_wikilinks
+
+    seed_wiki(tmp_vault, "Home-Assistant", "# Home Assistant")
+    wiki_dir = tmp_vault / "wiki"
+    index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
+
+    result = _normalize_wikilinks("See [[home assistant]] for setup.", index)
+
+    assert "Broken Links" not in result
+    assert "[[Home-Assistant]]" in result
+
+
+def test_normalize_wikilinks_substitutes_stem_for_bare_trailing_heading_sigil(
+    tmp_vault: Path,
+) -> None:
+    """§3.3(a) bare-trailing-heading-sigil regression pin (NOT criterion 16 --
+    see test_raw_post_calls_build_link_index_with_exact_folder_scope below
+    and test_build_wiki_catalog_excludes_daily_and_processed_subfolders in
+    test_organizer.py for that): WIKILINK_PAT allows an empty heading
+    group (unlike the old mcp_server _WIKILINK_RE, whose anchor group
+    required >=1 char after '#' and so never matched a bare trailing '#' at
+    all). A resolvable target with a bare trailing '#' must now get its stem
+    substituted, with the bare sigil preserved."""
+    from brain_organizer import build_link_index
+    from mcp_server import _normalize_wikilinks
+
+    seed_wiki(tmp_vault, "Home-Assistant", "# Home Assistant")
+    wiki_dir = tmp_vault / "wiki"
+    index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
+
+    result = _normalize_wikilinks("See [[home-assistant#]] for setup.", index)
+
+    assert result == "See [[Home-Assistant#]] for setup."
+
+
+def test_normalize_wikilinks_leaves_pure_anchor_untouched() -> None:
+    """Net-identical-behavior regression pin: [[#heading]] (empty target)
+    must still be left completely unchanged. WIKILINK_PAT's target group
+    requires >=1 char so it never matches this at all (the old mcp_server
+    regex did match, with an empty captured target, and hit the same
+    early-return branch explicitly -- same net output, different code
+    path)."""
+    from mcp_server import _normalize_wikilinks
+
+    text = "See [[#heading]] for context."
+    result = _normalize_wikilinks(text, {})
+
+    assert result == text
+    assert "Broken Links" not in result
+
+
+def test_mcp_server_no_longer_defines_its_own_wikilink_helpers() -> None:
+    """mcp_server.py must not re-define its own _WIKILINK_RE / _canonical_key
+    / _build_stem_index -- the whole point of this step is a single shared
+    implementation in brain_organizer.py that both modules import."""
+    import mcp_server
+
+    assert not hasattr(mcp_server, "_WIKILINK_RE")
+    assert not hasattr(mcp_server, "_canonical_key")
+    assert not hasattr(mcp_server, "_build_stem_index")
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +309,41 @@ def test_raw_post_creates_file(wiki_app, tmp_vault: Path) -> None:
     created = tmp_vault / "raw" / data["file"]
     assert created.exists()
     assert created.read_text(encoding="utf-8") == "A new note from remote"
+
+
+def test_raw_post_calls_build_link_index_with_exact_folder_scope(
+    wiki_app, tmp_vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion 16 (docs/brain-organizer-robustness-spec.md:191) / §3.3(b):
+    the POST /raw handler's build_link_index call must scan exactly 3
+    folders, in this order -- [vault_root, wiki/, wiki/daily] -- and never a
+    4th (e.g. wiki/processed/, which build_link_index's whole non-recursive
+    design exists to exclude, see its docstring in brain_organizer.py).
+    Spies on the actual call site in mcp_server.py's post_raw route, not
+    just build_link_index in isolation, so a widened call-site literal is
+    caught even though build_link_index itself behaves correctly for
+    whatever folders it's handed."""
+    import mcp_server
+
+    calls: list[list[Path]] = []
+    real_build_link_index = mcp_server.build_link_index
+
+    def spy(folders: list[Path]) -> dict[str, str]:
+        calls.append(list(folders))
+        return real_build_link_index(folders)
+
+    monkeypatch.setattr(mcp_server, "build_link_index", spy)
+
+    resp = wiki_app.post(
+        "/raw",
+        json={"content": "hi", "filename": "scope-check.md"},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 201
+    assert len(calls) == 1
+    wf = tmp_vault / "wiki"
+    assert calls[0] == [wf.parent, wf, wf / "daily"]
 
 
 def test_raw_post_requires_content(wiki_app) -> None:

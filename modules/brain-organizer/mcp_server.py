@@ -30,14 +30,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from brain_organizer import sanitize_topic_name, validate_config
+from brain_organizer import (
+    WIKILINK_PAT,
+    build_link_index,
+    canonical_link_key,
+    sanitize_topic_name,
+    validate_config,
+)
 from flask import Flask, jsonify, request
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
-
-# Matches [[target]], [[target|alias]], [[target#anchor]], [[target#anchor|alias]].
-# Negative lookbehind excludes embeds (![[image.png]]). Group 1=target, 2=anchor, 3=alias.
-_WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\[\]|#]*?)(#[^\[\]|]+)?(\|[^\[\]]+)?\]\]")
 
 _LOOPBACK_ADDRS = ("127.0.0.1", "::1")
 
@@ -75,74 +77,43 @@ def _sanitize_filename(name: str) -> str:
     return safe
 
 
-def _canonical_key(name: str) -> str:
-    """Normalize a stem or link target for case/spacing comparison."""
-    collapsed = re.sub(r"\s+", " ", name.strip())
-    return collapsed.lower().replace(" ", "-")
-
-
-def _build_stem_index(wiki_folder: Path, daily_folder: Path | None = None) -> dict[str, str]:
-    """Return {canonical_key: actual_stem} for Brain root + wiki + wiki/daily
-    .md files.
-
-    Deliberately NOT a blanket rglob: wiki_folder also contains
-    wiki/processed/ (263 archived pre-distillation source notes on the real
-    vault, which the rest of the codebase treats as out-of-scope --
-    backend/agents/wiki_ingest.py explicitly skips parent.name == "processed").
-    A blanket rglob swept those in too (found live 2026-07-25: search result
-    count roughly doubled, and a stem could resolve to a processed-folder
-    duplicate that GET /wiki/<topic> then 404s on, since read_wiki only
-    special-cases daily_folder). So: brain_root and wiki_folder use
-    non-recursive globs (unchanged), and ONLY daily_folder (a single flat
-    subfolder, no further nesting) is added explicitly -- covers exactly the
-    wiki/daily/ case _daily_note_route creates, nothing more.
-    Wiki (then daily) entries win on key collision, in that order.
-    """
-    index: dict[str, str] = {}
-    brain_root = wiki_folder.parent
-    if brain_root.exists():
-        for md in sorted(brain_root.glob("*.md")):
-            if md.is_file():
-                index[_canonical_key(md.stem)] = md.stem
-    if wiki_folder.exists():
-        for md in sorted(wiki_folder.glob("*.md")):
-            if md.is_file():
-                index[_canonical_key(md.stem)] = md.stem
-    if daily_folder is not None and daily_folder.exists():
-        for md in sorted(daily_folder.glob("*.md")):
-            if md.is_file():
-                index[_canonical_key(md.stem)] = md.stem
-    return index
-
-
 def _normalize_wikilinks(content: str, index: dict[str, str]) -> str:
     """Rewrite [[wikilinks]] to canonical file stems; flag unresolved ones.
 
-    Resolvable targets are rewritten to the actual stem (anchor + alias preserved).
-    Unresolved targets are left in place and listed in a ## Broken Links footer.
-    Pure same-file anchors ([[#heading]]) and embeds (![[...]]) are skipped.
+    Resolvable targets are rewritten to the actual stem (heading + alias
+    preserved). Unresolved targets are left in place and listed in a
+    ## Broken Links footer. Pure same-file anchors ([[#heading]]) and embeds
+    (![[...]]) are skipped -- WIKILINK_PAT's target group requires at least
+    one non-#/|/] character, so it never matches [[#heading]] at all (left
+    untouched by .sub() as unmatched text).
+
+    Thin HTTP-side wrapper over brain_organizer's WIKILINK_PAT / index --
+    that pattern's heading/alias groups are sigil-free (no leading "#"/"|"),
+    unlike the regex this replaced, so the sigils are re-added on emit here.
     """
     broken: list[str] = []
     seen_broken: set[str] = set()
 
-    def _sub(m: re.Match) -> str:  # type: ignore[type-arg]
+    def _sub(m: "re.Match[str]") -> str:
         target = m.group(1) or ""
-        anchor = m.group(2) or ""
-        alias = m.group(3) or ""
+        heading = m.group(2)
+        alias = m.group(3)
 
         if not target.strip():  # pure same-file anchor [[#heading]] — leave alone
             return m.group(0)
 
-        key = _canonical_key(target)
+        key = canonical_link_key(target)
         canonical = index.get(key)
         if canonical is None:
             if key and key not in seen_broken:
                 seen_broken.add(key)
                 broken.append(target.strip())
             return m.group(0)
-        return f"[[{canonical}{anchor}{alias}]]"
+        heading_part = f"#{heading}" if heading is not None else ""
+        alias_part = f"|{alias}" if alias is not None else ""
+        return f"[[{canonical}{heading_part}{alias_part}]]"
 
-    new_content = _WIKILINK_RE.sub(_sub, content)
+    new_content = WIKILINK_PAT.sub(_sub, content)
 
     if broken and "## Broken Links" not in new_content:
         footer_lines = "\n".join(f"- [[{t}]]" for t in broken)
@@ -260,7 +231,7 @@ def create_app(
         # real vault), which the rest of the codebase treats as out-of-scope;
         # sweeping it in roughly doubled search results with stale duplicates
         # and could return a topic that GET /wiki/<topic> then 404s on (found
-        # live 2026-07-25). See _build_stem_index's docstring for the same call.
+        # live 2026-07-25). See build_link_index's docstring for the same call.
         md_files = list(wf.glob("*.md"))
         df = _daily_folder()
         if df.exists():
@@ -328,8 +299,9 @@ def create_app(
         content = str(data["content"])
 
         try:
-            stem_index = _build_stem_index(_wiki_folder(), _daily_folder())
-            content = _normalize_wikilinks(content, stem_index)
+            wf = _wiki_folder()
+            link_index = build_link_index([wf.parent, wf, _daily_folder()])
+            content = _normalize_wikilinks(content, link_index)
         except Exception as exc:  # never block a save on normalization
             logger.warning("Wikilink normalization skipped: %s", exc)
 

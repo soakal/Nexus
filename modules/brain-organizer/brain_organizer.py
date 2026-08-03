@@ -351,6 +351,42 @@ def sanitize_topic_name(topic: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Wikilink target/stem indexing — shared with mcp_server.py's inbound-link
+# resolver (_normalize_wikilinks).
+# ---------------------------------------------------------------------------
+
+def canonical_link_key(name: str) -> str:
+    """Normalize a stem or link target for case/spacing comparison."""
+    collapsed = re.sub(r"\s+", " ", name.strip())
+    return collapsed.lower().replace(" ", "-")
+
+
+def build_link_index(folders: list[Path]) -> dict[str, str]:
+    """Return {canonical_link_key: actual_stem} for the given folders' .md files.
+
+    Each folder is scanned with a non-recursive glob("*.md") -- deliberately
+    NOT a blanket rglob: the wiki folder also contains wiki/processed/ (263
+    archived pre-distillation source notes on the real vault, which the rest
+    of the codebase treats as out-of-scope -- backend/agents/wiki_ingest.py
+    explicitly skips parent.name == "processed"). A blanket rglob swept those
+    in too (found live 2026-07-25: search result count roughly doubled, and
+    a stem could resolve to a processed-folder duplicate that GET
+    /wiki/<topic> then 404s on, since read_wiki only special-cases the daily
+    folder). So callers pass exactly the folders they want scanned
+    (non-recursively) -- e.g. brain_root, wiki_folder, wiki/daily -- nothing
+    more. Later folders in the list win on key collision.
+    """
+    index: dict[str, str] = {}
+    for folder in folders:
+        if not folder.exists():
+            continue
+        for md in sorted(folder.glob("*.md")):
+            if md.is_file():
+                index[canonical_link_key(md.stem)] = md.stem
+    return index
+
+
+# ---------------------------------------------------------------------------
 # Title normalisation — used by build_wiki_catalog, find_similar_page,
 # consolidate_wiki.py (imported from here).
 # ---------------------------------------------------------------------------
@@ -1122,7 +1158,7 @@ def detect_topics(
 # Wiki synthesis (Sonnet)
 # ---------------------------------------------------------------------------
 
-_WIKILINK_PAT = re.compile(r"(?<!\!)\[\[([^\]|#]+)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]")
+WIKILINK_PAT = re.compile(r"(?<!\!)\[\[([^\]|#]+)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]")
 
 
 def _defuse_unknown_wikilinks(
@@ -1265,7 +1301,7 @@ def _defuse_unknown_wikilinks(
             stats["backticked"] = stats.get("backticked", 0) + 1
         return f"`{display}`"
 
-    return _WIKILINK_PAT.sub(_replace, text)
+    return WIKILINK_PAT.sub(_replace, text)
 
 
 def synthesize_wiki(

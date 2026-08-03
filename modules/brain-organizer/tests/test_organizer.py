@@ -690,6 +690,38 @@ def test_build_wiki_catalog_respects_summary_chars_bound(tmp_path: Path) -> None
     assert bounded_pages[0]["summary"] == default_pages[0]["summary"][:20]
 
 
+def test_build_wiki_catalog_excludes_daily_and_processed_subfolders(
+    tmp_path: Path,
+) -> None:
+    """Criterion 16 (docs/brain-organizer-robustness-spec.md:191) / §3.3(b):
+    build_wiki_catalog's wiki_folder.glob("*.md") scan is deliberately
+    non-recursive -- a page in wiki/daily/ or wiki/processed/ must never
+    appear in the catalog, only wiki/*.md itself. A blanket rglob would
+    silently widen this (the same class of bug build_link_index's docstring
+    documents for the shared-resolver side)."""
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    meta_folder.mkdir()
+    (wiki_folder / "Alpha.md").write_text("# Alpha\n\nRoot page.\n", encoding="utf-8")
+
+    daily_folder = wiki_folder / "daily"
+    daily_folder.mkdir()
+    (daily_folder / "2026-07-25.md").write_text(
+        "# 2026-07-25\n\nDaily page.\n", encoding="utf-8"
+    )
+
+    processed_folder = wiki_folder / "processed"
+    processed_folder.mkdir()
+    (processed_folder / "Old-Note.md").write_text(
+        "# Old\n\nProcessed page.\n", encoding="utf-8"
+    )
+
+    pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
+
+    assert [p["title"] for p in pages] == ["Alpha"]
+
+
 def test_process_file_skips_llm_route_for_daily_note(
     tmp_vault: Path, tmp_config: dict[str, Any]
 ) -> None:
