@@ -1991,6 +1991,63 @@ def test_run_summary_reports_links_rewritten_and_backticked_counts(
     assert "links_rewritten=1 links_backticked=1" in summary
 
 
+def test_run_summary_reports_tags_added_and_tags_new_vocabulary_counts(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Robustness spec §6.3 -- run()'s summary must surface tags_added= and
+    tags_new_vocabulary= counts, threaded from process_file's Phase 0
+    (suggest_tags -> _reconcile_tags, compared case-insensitively against the
+    catalog-derived vocabulary) and Phase 2 (len(final_tags) -
+    len(existing_tags) for the written page) through run()'s
+    _record_success (folded under state_lock) -> _send_run_summary. Same
+    route_topics-faked pattern as
+    test_run_summary_reports_links_rewritten_and_backticked_counts above.
+
+    A pre-existing wiki page tagged "existing-tag" seeds the catalog-derived
+    vocabulary with exactly one entry. The Phase 0 tag-suggestion call
+    proposes ["existing-tag", "new-vocab-tag"] -- one vocabulary match, one
+    brand-new tag (default tag_max_new_per_note=1 allows exactly one new tag
+    through _reconcile_tags, and a vocabulary match never counts against
+    that cap). The destination page is brand new (existing_tags == []), so
+    both proposed tags land in its frontmatter:
+      - tags_new_vocabulary must be 1 (only "new-vocab-tag" is absent from
+        the vocabulary; "existing-tag" is not new).
+      - tags_added must be 2 (both survive onto a page with no prior tags).
+    Asserting these as two DIFFERENT numbers (not just both correct as the
+    same value) is the point -- it fails if the two counters get swapped or
+    conflated.
+    """
+    wiki_folder = tmp_vault / "wiki"
+    (wiki_folder / "ExistingPage.md").write_text(
+        "---\ntags:\n  - existing-tag\n---\n# ExistingPage\n\nSome content.",
+        encoding="utf-8",
+    )
+    write_raw(tmp_vault, "note.md", "content about a new topic")
+
+    def fake_route_topics(content, catalog, config, client):
+        return [("NewTopic", wiki_folder / "NewTopic.md", True)]
+
+    monkeypatch.setattr(bo, "route_topics", fake_route_topics)
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": ["existing-tag", "new-vocab-tag"]}'),
+        make_message("# NewTopic\n\nSynthesized body about a new topic."),
+    ]
+    mock_telegram = MagicMock()
+    monkeypatch.setattr(bo, "send_telegram_notification", mock_telegram)
+
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 0
+    written = (wiki_folder / "NewTopic.md").read_text(encoding="utf-8")
+    assert "existing-tag" in written
+    assert "new-vocab-tag" in written
+
+    mock_telegram.assert_called_once()
+    summary = mock_telegram.call_args[0][1]
+    assert "tags_added=2 tags_new_vocabulary=1" in summary
+
+
 def test_group_files_by_shared_pages_unions_on_any_shared_route() -> None:
     """Two files sharing a SECONDARY (non-primary) route must land in one group.
 

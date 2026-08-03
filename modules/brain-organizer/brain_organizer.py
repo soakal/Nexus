@@ -2236,9 +2236,12 @@ def process_file(
     route against fresh content (prevents same-run duplicate page creation).
 
     stats: optional mutable accumulator passed straight through to every
-        synthesize_wiki call for this file's routes -- callers that want a
-        per-file rewritten/backticked tally pass one dict here and read it
-        back after this function returns; return type stays `-> list[str]`.
+        synthesize_wiki call for this file's routes, and also incremented
+        directly here (tags_new_vocabulary in Phase 0, tags_added in
+        Phase 2) -- callers that want a per-file rewritten/backticked/
+        tags_added/tags_new_vocabulary tally pass one dict here and read
+        it back after this function returns; return type stays
+        `-> list[str]`.
     """
     raw_folder = Path(config["vault_path"]) / config["raw_folder"]
     display_name = file_path.relative_to(raw_folder) if file_path.is_relative_to(raw_folder) else file_path.name
@@ -2282,6 +2285,11 @@ def process_file(
             note_tags = _reconcile_tags(
                 suggest_tags(content, [], vocab, config, client), vocab, [], config
             )
+            if stats is not None:
+                vocab_lower = {v.lower() for v in vocab}
+                new_vocab_count = sum(1 for t in note_tags if t.lower() not in vocab_lower)
+                if new_vocab_count:
+                    stats["tags_new_vocabulary"] = stats.get("tags_new_vocabulary", 0) + new_vocab_count
         except Exception as exc:
             logger.warning("tag suggestion failed for %s: %s — continuing untagged", display_name, exc)
 
@@ -2329,6 +2337,10 @@ def process_file(
             wiki_content = _write_frontmatter_tags(
                 wiki_content, final_tags, original_frontmatter=orig_fm
             )
+            if stats is not None:
+                added = len(final_tags) - len(existing_tags)
+                if added:
+                    stats["tags_added"] = stats.get("tags_added", 0) + added
         tmp = _make_temp_path(wiki_file.parent, f".{wiki_file.stem}_", ".tmp")
         try:
             tmp.write_text(wiki_content, encoding="utf-8")
@@ -2488,6 +2500,8 @@ def _send_run_summary(
     raw_remaining: int,
     links_rewritten: int = 0,
     links_backticked: int = 0,
+    tags_added: int = 0,
+    tags_new_vocabulary: int = 0,
     all_topics: set[str] | None = None,
     duration: float | None = None,
     _http_client: httpx.Client | None = None,
@@ -2511,7 +2525,8 @@ def _send_run_summary(
         f"created={created_count} merged={merged_count} "
         f"uncategorized={uncategorized_count} catalog={catalog_count} "
         f"raw_remaining={raw_remaining} links_rewritten={links_rewritten} "
-        f"links_backticked={links_backticked}"
+        f"links_backticked={links_backticked} tags_added={tags_added} "
+        f"tags_new_vocabulary={tags_new_vocabulary}"
     )
     summary = "\n".join(lines)
     logger.info(summary)
@@ -2549,6 +2564,7 @@ def run(
             # is still a direct disk count, independent of that.
             catalog_count=0, raw_remaining=_count_raw_remaining(config),
             links_rewritten=0, links_backticked=0,
+            tags_added=0, tags_new_vocabulary=0,
             _http_client=_http_client,
         )
         return 0
@@ -2595,6 +2611,8 @@ def run(
     uncategorized_count = 0
     links_rewritten_count = 0
     links_backticked_count = 0
+    tags_added_count = 0
+    tags_new_vocabulary_count = 0
 
     # One unified flow for both sequential (max_parallel_files<=1) and
     # parallel runs. These used to be two independently-maintained ~60-line
@@ -2661,6 +2679,7 @@ def run(
     ) -> None:
         nonlocal success_count, created_count, merged_count, uncategorized_count
         nonlocal links_rewritten_count, links_backticked_count
+        nonlocal tags_added_count, tags_new_vocabulary_count
         with state_lock:
             processed[sha] = {
                 "filename": fp.name,
@@ -2688,6 +2707,8 @@ def run(
             if file_stats:
                 links_rewritten_count += file_stats.get("rewritten", 0)
                 links_backticked_count += file_stats.get("backticked", 0)
+                tags_added_count += file_stats.get("tags_added", 0)
+                tags_new_vocabulary_count += file_stats.get("tags_new_vocabulary", 0)
             # Batched, not per-file: the raw file is already deleted by this
             # point, which is the real idempotency marker (scan_raw_folder
             # simply never sees it again) -- losing a few success records to
@@ -2780,6 +2801,7 @@ def run(
         uncategorized_count=uncategorized_count,
         catalog_count=len(catalog), raw_remaining=_count_raw_remaining(config),
         links_rewritten=links_rewritten_count, links_backticked=links_backticked_count,
+        tags_added=tags_added_count, tags_new_vocabulary=tags_new_vocabulary_count,
         all_topics=all_topics, duration=duration,
         _http_client=_http_client,
     )
