@@ -1236,6 +1236,175 @@ def test_process_file_tags_disabled_makes_no_extra_llm_call(
     assert "tags:" not in result
 
 
+def test_process_file_completes_when_suggest_tags_api_call_raises(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 32: a raw exception raised inside suggest_tags's _call_api
+    call must not fail the note. suggest_tags already catches this itself
+    and returns [] (its own docstring names crit 32 by number); Phase 0's
+    surrounding try/except in process_file is a second line of defense for
+    anything that slips past it. Either way, the note must still complete
+    end to end: the routed wiki page is written and the raw file is
+    deleted, exactly as if tag suggestion had never failed."""
+    wiki_path = tmp_vault / "wiki" / "Zeta.md"
+    f = write_raw(tmp_vault, "note.md", "New info about Zeta")
+    client = MagicMock()
+    # [0] is the Phase 0 tag-suggestion call (raises), [1] is synthesis.
+    client.messages.create.side_effect = [
+        RuntimeError("boom"),
+        make_message("# Zeta\n\nSynthesized content.\n"),
+    ]
+
+    result = bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Zeta", wiki_path, True)],
+    )
+
+    assert result == ["Zeta"]
+    assert wiki_path.exists()
+    # _call_api strips the raw model response before synthesize_wiki ever
+    # sees it -- assert against that already-stripped form.
+    assert wiki_path.read_text(encoding="utf-8") == "# Zeta\n\nSynthesized content."
+    assert not f.exists()
+
+
+def test_process_file_5a_merge_unions_existing_and_new_tags_alpha_first(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 34: 5a merge path -- existing `tags: [alpha]` plus a
+    Phase-0-suggested new tag `beta` must union to both tags present, with
+    the pre-existing `alpha` first (Phase 2's `final_tags = existing_tags +
+    [... not already present]` order at brain_organizer.py:2372-2374)."""
+    wiki_path = tmp_vault / "wiki" / "Eta.md"
+    existing = (
+        "---\n"
+        "tags: [alpha]\n"
+        "---\n"
+        "# Eta\n\n"
+        "Old note.\n"
+    )
+    wiki_path.write_text(existing, encoding="utf-8")
+
+    f = write_raw(tmp_vault, "note.md", "New info about Eta")
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": ["beta"]}'),
+        make_message(
+            "# Eta\n\nMerged body content with enough length to pass "
+            "synthesize_wiki's merge length-ratio guard.\n"
+        ),
+    ]
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Eta", wiki_path, False)],
+    )
+
+    lines = wiki_path.read_text(encoding="utf-8").splitlines()
+    tags_idx = lines.index("tags:")
+    assert lines[tags_idx + 1] == "  - alpha"
+    assert lines[tags_idx + 2] == "  - beta"
+
+
+def test_process_file_5b_splice_gains_tags_unspliced_sections_byte_identical(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 36: a large-page (5b splice) merge must still gain tags in
+    its frontmatter via Phase 2's union, while any "## " section the splice
+    response didn't touch stays byte-identical."""
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    wiki_path = tmp_vault / "wiki" / "Iota.md"
+    existing = "# Topic\n\n## Existing\n\noldbody\n\n## Other\n\nother content here"
+    wiki_path.write_text(existing, encoding="utf-8")
+
+    f = write_raw(tmp_vault, "note.md", "New info about Topic")
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": ["gamma"]}'),
+        make_message("## Existing\n\nnewbody"),
+    ]
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Topic", wiki_path, False)],
+    )
+
+    result = wiki_path.read_text(encoding="utf-8")
+    assert "tags:" in result
+    assert "  - gamma" in result
+    # The untouched "## Other" section is byte-identical to the original.
+    assert "## Other\n\nother content here" in result
+    assert "newbody" in result
+    assert "oldbody" not in result
+
+
+def test_process_file_no_changes_splice_with_no_new_tags_leaves_file_byte_identical(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 37: a large-page splice response of NO_CHANGES combined
+    with zero newly suggested tags must round-trip the file byte-for-byte
+    -- the 5b splice short-circuit returns existing_content verbatim, and
+    Phase 2's union reproduces the identical existing tags list, so
+    _write_frontmatter_tags hits its own documented no-op guarantee
+    (crit 14) rather than silently rewriting the canonical block."""
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    wiki_path = tmp_vault / "wiki" / "Theta.md"
+    existing = (
+        "---\n"
+        "tags:\n"
+        "  - alpha\n"
+        "---\n"
+        "# Topic\n\n## Existing\n\noldbody\n\n## Other\n\nother content here"
+    )
+    wiki_path.write_text(existing, encoding="utf-8")
+
+    f = write_raw(tmp_vault, "note.md", "Nothing new about Topic")
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": []}'),
+        make_message("NO_CHANGES"),
+    ]
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Topic", wiki_path, False)],
+    )
+
+    assert wiki_path.read_text(encoding="utf-8") == existing
+
+
+def test_process_file_daily_log_page_at_wiki_root_is_tagged(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 39: Daily-Log.md is a real wiki-root topic page, not a
+    date-stemmed page under daily_folder (see
+    test_daily_note_route_non_date_stem_falls_back_to_daily_log_at_root),
+    so Phase 0's `not all(p.is_relative_to(daily_folder) ...)` gate must
+    still fire for it and it must be tagged like any other page."""
+    wiki_folder = tmp_vault / "wiki"
+    wiki_path = wiki_folder / "Daily-Log.md"
+
+    f = write_raw(
+        tmp_vault, "event-hermes-hermes-daily-digest-20260724T120009Z.md",
+        "Morning digest content",
+    )
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": ["digest-summary"]}'),
+        make_message("# Daily-Log\n\nDigest content synthesized.\n"),
+    ]
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Daily-Log", wiki_path, True)],
+    )
+
+    assert client.messages.create.call_count == 2
+    result = wiki_path.read_text(encoding="utf-8")
+    assert "tags:" in result
+    assert "digest-summary" in result
+
+
 # ---------------------------------------------------------------------------
 # synthesize_wiki
 # ---------------------------------------------------------------------------
