@@ -666,6 +666,63 @@ def test_extract_page_entry_bom_less_file_parses_unchanged(tmp_path: Path) -> No
     assert entry["summary"] == "Some body text."
 
 
+def test_extract_page_entry_frontmatter_no_h1_summary_not_leaked(tmp_path: Path) -> None:
+    """spec #3 criteria 8-9: a page with frontmatter and no H1 must not leak
+    the frontmatter block into 'summary' (the live Charlee Health Report.md
+    bug), and must expose the new 'tags' key parsed from that frontmatter."""
+    f = tmp_path / "page.md"
+    f.write_text(
+        "---\n"
+        "title: Something\n"
+        "tags:\n"
+        "  - alpha\n"
+        "  - beta\n"
+        "---\n"
+        "\n"
+        "Real prose paragraph here.\n"
+        "\n"
+        "## Header One\n",
+        encoding="utf-8",
+    )
+
+    entry = bo._extract_page_entry(f)
+
+    assert entry["summary"] == "Real prose paragraph here."
+    assert "title:" not in entry["summary"]
+    assert "tags:" not in entry["summary"]
+    assert entry["title"] == "page"  # no H1 present -> falls back to stem
+    assert entry["headers"] == "Header One"
+    assert entry["tags"] == ["alpha", "beta"]
+
+
+def test_extract_page_entry_frontmatter_with_h1_matches_pre_change_behavior(
+    tmp_path: Path,
+) -> None:
+    """spec #3 criterion 10 (refactor-safety): a page with frontmatter AND an
+    H1 after it must parse title/headers/summary identically to before this
+    cycle's fm-aware scan-start change."""
+    f = tmp_path / "page.md"
+    f.write_text(
+        "---\n"
+        "title: Something\n"
+        "---\n"
+        "\n"
+        "# My Title\n"
+        "\n"
+        "Some body text.\n"
+        "\n"
+        "## Header One\n",
+        encoding="utf-8",
+    )
+
+    entry = bo._extract_page_entry(f)
+
+    assert entry["title"] == "My Title"
+    assert entry["headers"] == "Header One"
+    assert entry["summary"] == "Some body text."
+    assert entry["tags"] == []
+
+
 def test_build_wiki_catalog_missing_parser_version_forces_full_reparse(
     tmp_path: Path,
 ) -> None:

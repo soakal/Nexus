@@ -533,15 +533,22 @@ def _parse_frontmatter_tags(text: str) -> list[str]:
 def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
     """Parse a wiki .md file and return a catalog entry dict.
 
-    Keys: title, filename, path_str, headers, summary.
+    Keys: title, filename, path_str, headers, summary, tags.
     """
     text = f.read_text(encoding="utf-8-sig")
     lines = text.splitlines()
 
+    # --- frontmatter, computed once: title/H1 and prose scans must both
+    # start past it so a leading YAML block never gets mistaken for the
+    # title or the summary paragraph ---
+    fm = _find_frontmatter(text)
+    fm_end = fm[1] if fm is not None else -1
+
     # --- title: first line starting with exactly one "#" ---
     title = f.stem
     h1_index = 0
-    for i, line in enumerate(lines):
+    title_scan_start = fm[1] + 1 if fm is not None else 0
+    for i, line in enumerate(lines[title_scan_start:], start=title_scan_start):
         if line.startswith("# ") and not line.startswith("## "):
             title = line[2:].strip()
             h1_index = i
@@ -553,12 +560,15 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
     ][:10]
     headers_joined = " | ".join(raw_headers)
 
-    # --- summary: first prose paragraph after the H1 ---
+    # --- summary: first prose paragraph after the H1 (and past any
+    # frontmatter, so a no-H1 page doesn't leak the YAML block as its
+    # summary) ---
     _meta_re = re.compile(r"^\*\*[\w\s]+:\*\*|^>\s*\*\*[\w\s]+:\*\*")
     _rule_re = re.compile(r"^[-*_]{3,}$")
     prose_lines: list[str] = []
     collecting = False
-    for line in lines[h1_index + 1 :]:
+    prose_start = max(h1_index + 1, fm_end + 1)
+    for line in lines[prose_start:]:
         stripped = line.strip()
         # Skip blanks, rules, any header, metadata patterns
         if not stripped:
@@ -584,6 +594,7 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
         "path_str": str(f),
         "headers": headers_joined,
         "summary": summary,
+        "tags": _parse_frontmatter_tags(text),
     }
 
 
@@ -594,7 +605,7 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
 # Bump whenever _extract_page_entry's output shape or parsing changes — a
 # missing/mismatched version in the cached wiki-catalog.json forces a full
 # re-parse of every page instead of silently reusing stale entries.
-_CATALOG_PARSER_VERSION = 2
+_CATALOG_PARSER_VERSION = 3
 
 
 def build_wiki_catalog(
