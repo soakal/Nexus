@@ -14,7 +14,20 @@ silently normalized by a whole-document splitlines()/join()."""
 
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import MagicMock
+
 import brain_organizer as bo
+from anthropic.types import TextBlock
+
+
+def _make_message(text: str, stop_reason: str = "end_turn") -> MagicMock:
+    """Build a mock Message with a real TextBlock so isinstance checks pass
+    (mirrors test_organizer.py's make_message helper)."""
+    msg = MagicMock()
+    msg.content = [TextBlock(type="text", text=text)]
+    msg.stop_reason = stop_reason
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -267,3 +280,116 @@ def test_write_frontmatter_tags_preserves_lone_cr_and_exotic_linebreaks_in_body(
         "---\ntags:\n  - alpha\n  - beta\n---\n\n"
         "Body line1.\rBody line2 with lone CR.\nNormal LF line.\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# _build_tag_vocabulary -- spec §2.4, criterion 12 (§6.2). Pure function, no I/O.
+# ---------------------------------------------------------------------------
+
+
+def test_build_tag_vocabulary_excludes_category_tags_and_orders_by_count_then_alpha() -> None:
+    """Criterion 12 (exclusion + ordering halves): any "category/*" tag (case-insensitive) is dropped
+    entirely from the vocabulary, and the survivors are ordered by
+    descending count, ties broken alphabetically -- not catalog order."""
+    catalog: list[dict[str, Any]] = [
+        {"tags": ["category/reference", "ford", "beyondtrust"]},
+        {"tags": ["ford", "Category/Tools", "audit"]},
+        {"tags": ["ford", "audit", "beyondtrust"]},
+    ]
+
+    result = bo._build_tag_vocabulary(catalog, limit=10)
+
+    # ford: 3, audit: 2, beyondtrust: 2 -> ford first, then audit before
+    # beyondtrust (alphabetical tie-break); no category/* tag present at all.
+    assert result == ["ford", "audit", "beyondtrust"]
+
+
+def test_build_tag_vocabulary_slices_to_limit() -> None:
+    """Criterion 12 (honors limit half): the vocabulary is capped to `limit` entries, keeping
+    the highest-ranked ones."""
+    catalog: list[dict[str, Any]] = [
+        {"tags": ["alpha", "beta", "gamma", "delta"]},
+        {"tags": ["alpha", "beta"]},
+        {"tags": ["alpha"]},
+    ]
+
+    result = bo._build_tag_vocabulary(catalog, limit=2)
+
+    assert result == ["alpha", "beta"]
+
+
+# ---------------------------------------------------------------------------
+# suggest_tags -- spec §4, criteria 29-31. Mocks the Anthropic client the
+# same way test_organizer.py's detect_topics/route_topics tests do.
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_tags_strips_fence_and_parses_json(tmp_config: dict[str, Any]) -> None:
+    """Successful path: a fenced ```json ... ``` response is fence-stripped
+    and its "tags" list is returned verbatim. Also pins criterion 29's
+    prompt-content half: the prompt sent to the model contains every
+    vocabulary entry passed in."""
+    client = MagicMock()
+    client.messages.create.return_value = _make_message(
+        '```json\n{"tags": ["home-automation", "ford"]}\n```'
+    )
+    vocabulary = ["home-automation", "ford", "audit"]
+
+    result = bo.suggest_tags(
+        "Some note content about a Ford truck.",
+        existing_tags=[],
+        vocabulary=vocabulary,
+        config=tmp_config,
+        client=client,
+    )
+
+    assert result == ["home-automation", "ford"]
+    assert client.messages.create.call_args.kwargs["model"] == tmp_config["haiku_model"]
+    prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    for tag in vocabulary:
+        assert tag in prompt
+
+
+def test_suggest_tags_returns_empty_list_on_recursion_error_from_malformed_json(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Security regression pin: a malformed, deeply-nested-bracket response
+    (e.g. thousands of unclosed "[") previously raised an uncaught
+    RecursionError out of json.loads(), violating the "never raises, falls
+    back to []" contract. suggest_tags must catch RecursionError alongside
+    JSONDecodeError and return [] instead."""
+    client = MagicMock()
+    client.messages.create.return_value = _make_message("[" * 100_000)
+
+    result = bo.suggest_tags(
+        "content",
+        existing_tags=[],
+        vocabulary=["ford"],
+        config=tmp_config,
+        client=client,
+    )
+
+    assert result == []
+
+
+def test_suggest_tags_returns_empty_list_on_non_json_response(
+    tmp_config: dict[str, Any], caplog
+) -> None:
+    """Criterion 30's json.JSONDecodeError arm: a response that is plain
+    non-JSON text fails json.loads() and suggest_tags must catch that,
+    return [], and log exactly one WARNING rather than raising."""
+    client = MagicMock()
+    client.messages.create.return_value = _make_message("not json at all")
+
+    with caplog.at_level("WARNING", logger="brain_organizer"):
+        result = bo.suggest_tags(
+            "content",
+            existing_tags=[],
+            vocabulary=["ford"],
+            config=tmp_config,
+            client=client,
+        )
+
+    assert result == []
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1

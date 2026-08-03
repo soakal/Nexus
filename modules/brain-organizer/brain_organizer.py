@@ -24,7 +24,7 @@ import sys
 import time
 import threading
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
@@ -813,6 +813,29 @@ def _reconcile_tags(
         result.append(tag)
 
     return result[: config["tag_max_per_note"]]
+
+
+def _build_tag_vocabulary(catalog: list[dict[str, Any]], limit: int) -> list[str]:
+    """Derive the tag vocabulary from the catalog's per-entry tags (spec #3
+    SS2.4) -- no separate registry file (SS1.1: the catalog already reads
+    every page's full text, so this costs zero extra I/O and refreshes
+    exactly when the mtime cache does).
+
+    Counts every tag across every catalog entry, drops any "category/*"
+    value, sorts by (-count, tag) so the most-used tags lead and ties break
+    alphabetically, and returns the first `limit` entries. Purely additive:
+    not wired into route_topics/synthesize_wiki/process_file yet (that's a
+    later step).
+    """
+    counts: Counter[str] = Counter()
+    for entry in catalog:
+        for tag in entry.get("tags", []):
+            if tag.lower().startswith("category/"):
+                continue
+            counts[tag] += 1
+
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [tag for tag, _count in ordered[:limit]]
 
 
 # ---------------------------------------------------------------------------
@@ -1625,6 +1648,84 @@ def route_topics(
         return _uncategorized_fallback()
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Tag suggestion (Haiku) — spec #3 SS4. Mirrors route_topics' _call_api usage
+# pattern (system text folded into the user message, JSON-only response,
+# markdown-fence stripping). Purely additive: not called from process_file
+# or anywhere else yet (that's a later step).
+# ---------------------------------------------------------------------------
+
+def suggest_tags(
+    content: str,
+    existing_tags: list[str],
+    vocabulary: list[str],
+    config: dict[str, Any],
+    client: anthropic.Anthropic,
+) -> list[str]:
+    """Ask Haiku to propose 1-5 topic tags for a note.
+
+    `existing_tags` is accepted for a later wiring step (a future caller
+    will pass the destination page's already-written tags so the prompt can
+    avoid re-proposing them); this function itself does not yet use it.
+
+    Returns the raw proposed tag list straight off the model -- callers run
+    it through `_reconcile_tags` for anti-sprawl enforcement. On any
+    failure (API error, malformed JSON, non-list response) logs one WARNING
+    and returns [] rather than raising, so a tag-suggestion failure never
+    fails a note that would otherwise process cleanly (spec #3 crit 32).
+    """
+    logger = logging.getLogger("brain_organizer")
+
+    vocabulary_block = ", ".join(vocabulary)
+    user_text = (
+        "You are a tagging assistant for a personal wiki. Assign topic tags to a note.\n\n"
+        "EXISTING TAG VOCABULARY (prefer these; they are the tags already used in this wiki):\n"
+        f"{vocabulary_block}\n\n"
+        f"NOTE:\n{content[:3000]}\n\n"
+        'Return ONLY a JSON object, no other text:\n'
+        '{"tags": ["tag-one", "tag-two"]}\n\n'
+        "Rules:\n"
+        "- Return 1 to 5 tags.\n"
+        "- STRONGLY prefer tags from the vocabulary above, spelled EXACTLY as shown.\n"
+        "- Propose a NEW tag only when NO vocabulary tag genuinely fits the note's subject.\n"
+        "- Never propose a near-synonym of a vocabulary tag (e.g. do not invent "
+        '"home-assistant-setup" when "home-automation" exists).\n'
+        "- Tags are lowercase, hyphen-separated, single concepts. No \"category/...\" tags.\n"
+        '- Tag the note\'s SUBJECT, not its format (no "note", "session", "log", "digest").'
+    )
+
+    try:
+        text, _ = _call_api(
+            config["haiku_model"],
+            [{"role": "user", "content": user_text}],
+            config["route_max_tokens"],
+            config,
+            client,
+        )
+    except Exception as exc:
+        logger.warning("suggest_tags: API call failed — returning [] (%s)", exc)
+        return []
+
+    # Strip markdown code fences
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1]
+        cleaned = cleaned.rsplit("```", 1)[0].strip()
+
+    try:
+        data = json.loads(cleaned)
+    except (json.JSONDecodeError, RecursionError):
+        logger.warning("suggest_tags: JSON decode failed — returning []")
+        return []
+
+    tags = data.get("tags") if isinstance(data, dict) else None
+    if not isinstance(tags, list):
+        logger.warning("suggest_tags: 'tags' key missing or not a list — returning []")
+        return []
+
+    return [str(t) for t in tags]
 
 
 # ---------------------------------------------------------------------------
