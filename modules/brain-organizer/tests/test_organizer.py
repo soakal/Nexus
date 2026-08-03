@@ -528,6 +528,112 @@ def test_daily_note_route_reuses_existing_daily_log_catalog_entry(tmp_path: Path
     assert routes == [("Daily-Log", wiki_folder / "Daily-Log.md", False)]
 
 
+# ---------------------------------------------------------------------------
+# _is_features_digest / _features_digest_route / _deterministic_route
+# (spec #2 §7.2, crits 51-54)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stem", [
+    "claude-features-digest-2026-08-02",
+    "claude-features-digest-2026-08-02_20260802T120508Z",  # collision-suffixed
+    "CLAUDE-FEATURES-DIGEST-2026-08-02",                    # case-insensitive
+])
+def test_is_features_digest_matches_digest_stems(stem: str) -> None:
+    assert bo._is_features_digest(stem) is True
+
+
+@pytest.mark.parametrize("stem", [
+    "NEXUS",
+    "2026-08-02",
+    "claude-features-digest",              # missing date -- must not match
+    "Daily-Operations-Log-2026-07-08",     # ordinary daily-note stem
+])
+def test_is_features_digest_rejects_ordinary_stems(stem: str) -> None:
+    assert bo._is_features_digest(stem) is False
+
+
+def test_features_digest_route_returns_none_for_non_digest(tmp_path: Path) -> None:
+    assert bo._features_digest_route("NEXUS-session-notes", [], tmp_path, tmp_path / "daily") is None
+
+
+def test_features_digest_route_creates_new_page_when_absent(tmp_path: Path) -> None:
+    """Lookup-or-create mirrors _daily_note_route's Daily-Log branch: with no
+    matching catalog entry, route to a fresh wiki/Claude-Features-Digest.md."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+
+    routes = bo._features_digest_route(
+        "claude-features-digest-2026-08-02", [], wiki_folder, daily_folder
+    )
+
+    assert routes == [("Claude Features Digest", wiki_folder / "Claude-Features-Digest.md", True)]
+
+
+def test_features_digest_route_reuses_existing_catalog_entry(tmp_path: Path) -> None:
+    """Lookup-or-create, existing branch: an already-registered
+    Claude-Features-Digest.md catalog entry is reused verbatim (is_new=False),
+    same pattern as _daily_note_route_reuses_existing_daily_log_catalog_entry."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+    catalog = [{
+        "title": "Claude Features Digest", "filename": "Claude-Features-Digest.md",
+        "path_str": str(wiki_folder / "Claude-Features-Digest.md"), "headers": "", "summary": "",
+    }]
+
+    routes = bo._features_digest_route(
+        "claude-features-digest-2026-08-02_20260802T120508Z", catalog, wiki_folder, daily_folder
+    )
+
+    assert routes == [("Claude Features Digest", wiki_folder / "Claude-Features-Digest.md", False)]
+
+
+def test_deterministic_route_dispatches_daily_note(tmp_path: Path) -> None:
+    """Row 1 (_is_daily_note/_daily_note_route) via the dispatcher must
+    return _daily_note_route's exact result -- crit 51."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+
+    direct = bo._daily_note_route("Daily-Operations-Log-2026-07-08", [], wiki_folder, daily_folder)
+    dispatched = bo._deterministic_route("Daily-Operations-Log-2026-07-08", [], wiki_folder, daily_folder)
+
+    assert dispatched == direct
+
+
+def test_deterministic_route_dispatches_features_digest(tmp_path: Path) -> None:
+    """Row 2 (_is_features_digest/_features_digest_route) via the
+    dispatcher -- crit 52."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+
+    routes = bo._deterministic_route(
+        "claude-features-digest-2026-08-02", [], wiki_folder, daily_folder
+    )
+
+    assert routes == [("Claude Features Digest", wiki_folder / "Claude-Features-Digest.md", True)]
+
+
+def test_deterministic_route_returns_none_for_ordinary_stem(tmp_path: Path) -> None:
+    """Crit 53: an ordinary topical stem must fall through to None so
+    route_topics still runs for everything else."""
+    wiki_folder = tmp_path / "wiki"
+    daily_folder = wiki_folder / "daily"
+
+    assert bo._deterministic_route("NEXUS-session-notes", [], wiki_folder, daily_folder) is None
+
+
+def test_source_routes_every_row_has_a_dispatch_test() -> None:
+    """Crit 54 drift guard: every (predicate, router) row registered in
+    _SOURCE_ROUTES must be one this file exercises through
+    _deterministic_route above -- appending a new row without adding a
+    matching dispatch test fails this assertion instead of silently
+    shipping untested. (Same pattern as
+    backend/safety/contracts.py::test_every_integration_is_covered.)"""
+    rows_with_dispatch_tests = {
+        (bo._is_daily_note, bo._daily_note_route),
+        (bo._is_features_digest, bo._features_digest_route),
+    }
+    assert set(bo._SOURCE_ROUTES) == rows_with_dispatch_tests
+
 
 # ---------------------------------------------------------------------------
 # _extract_page_entry (BOM-safe decode) / build_wiki_catalog (parser_version)

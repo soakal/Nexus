@@ -28,7 +28,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import anthropic
 import httpx
@@ -860,6 +860,91 @@ def _daily_note_route(
     return [("Daily-Log", wiki_folder / filename, True)]
 
 
+# The daily "Claude features digest" automation (see
+# backend/agents/wiki_ingest.py) drops a file named
+# claude-features-digest-YYYY-MM-DD.md into Brain/raw/ (the vault's ingest
+# endpoint may append a _<UTC-timestamp>Z suffix on a same-name collision,
+# which we don't control). Its topic hint reduces to the bare word "claude",
+# which prefix-matches the generic Claude.md page and swallows the digest.
+# Detect the filename shape and force it onto its own running-log page --
+# ported from wiki_ingest.py's _FEATURES_DIGEST_PAT / _digest_date /
+# _is_features_digest so this module's deterministic-route dispatch (spec
+# #2 §7.2) can claim the same file shape before route_topics ever sees it.
+_FEATURES_DIGEST_PAT = re.compile(
+    r"^claude-features-digest-(\d{4}-\d{2}-\d{2})", re.IGNORECASE
+)
+_FEATURES_DIGEST_PAGE = "Claude Features Digest"
+
+
+def _features_digest_date(stem: str) -> str | None:
+    """Extract the embedded YYYY-MM-DD from a features-digest filename stem
+    (mirrors backend/agents/wiki_ingest.py::_digest_date)."""
+    m = _FEATURES_DIGEST_PAT.match(stem)
+    return m.group(1) if m else None
+
+
+def _is_features_digest(stem: str) -> bool:
+    """True for the daily Claude-features-digest filename (plain or
+    collision-suffixed) -- mirrors
+    backend/agents/wiki_ingest.py::_is_features_digest."""
+    return bool(_FEATURES_DIGEST_PAT.match(stem))
+
+
+def _features_digest_route(
+    stem: str,
+    catalog: list[dict[str, Any]],
+    wiki_folder: Path,
+    daily_folder: Path,
+) -> list[tuple[str, Path, bool]] | None:
+    """Deterministic route for a Claude-features-digest note. Returns None
+    for non-digest stems.
+
+    Same shape as _daily_note_route's Daily-Log branch: reuse the existing
+    catalog entry for wiki/Claude-Features-Digest.md by exact filename if
+    one is already registered, otherwise point at a fresh page there --
+    no new catalog-creation logic, just the same lookup-or-create pattern.
+    """
+    if not _is_features_digest(stem):
+        return None
+    filename = "Claude-Features-Digest.md"
+    for entry in catalog:
+        if entry["filename"] == filename:
+            return [(entry["title"], Path(entry["path_str"]), False)]
+    return [(_FEATURES_DIGEST_PAGE, wiki_folder / filename, True)]
+
+
+# Table-driven dispatch (spec #2 §7.2): each row is (predicate, router).
+# A new deterministic source registers by appending a row here instead of
+# growing another `X or Y or route_topics(...)` chain at each call site.
+_SOURCE_ROUTES: tuple[
+    tuple[
+        Callable[[str], bool],
+        Callable[[str, list[dict[str, Any]], Path, Path], list[tuple[str, Path, bool]] | None],
+    ],
+    ...,
+] = (
+    (_is_daily_note, _daily_note_route),
+    (_is_features_digest, _features_digest_route),
+)
+
+
+def _deterministic_route(
+    stem: str,
+    catalog: list[dict[str, Any]],
+    wiki_folder: Path,
+    daily_folder: Path,
+) -> list[tuple[str, Path, bool]] | None:
+    """Dispatch stem to the first _SOURCE_ROUTES row whose predicate
+    matches, else None -- callers OR the result with route_topics(...) for
+    the non-deterministic fallback (crit 53: ordinary stems MUST resolve to
+    None here so route_topics still runs for everything else).
+    """
+    for predicate, router in _SOURCE_ROUTES:
+        if predicate(stem):
+            return router(stem, catalog, wiki_folder, daily_folder)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Catalog-aware routing (Haiku)
 # ---------------------------------------------------------------------------
@@ -1663,7 +1748,7 @@ def process_file(
         logger.info("Routes (pre-computed): %s", [(t, is_new) for (t, _p, is_new) in routes])
     else:
         routes = (
-            _daily_note_route(file_path.stem, catalog, wiki_folder, daily_folder)
+            _deterministic_route(file_path.stem, catalog, wiki_folder, daily_folder)
             or route_topics(content, catalog, config, client)
         )
         logger.info("Routes: %s", [(t, is_new) for (t, _p, is_new) in routes])
@@ -1998,7 +2083,7 @@ def run(
         fp, sha = fp_sha
         try:
             content = fp.read_text(encoding="utf-8")
-            routes = _daily_note_route(fp.stem, list(catalog), wiki_folder, daily_folder) or \
+            routes = _deterministic_route(fp.stem, list(catalog), wiki_folder, daily_folder) or \
                 route_topics(content, list(catalog), config, client)
             logger.info("Routed %s -> %s", fp.name, [t for t, _p, _n in routes])
             return fp, sha, routes, None
