@@ -86,10 +86,11 @@ def tmp_config(tmp_path: Path, tmp_vault: Path) -> dict[str, Any]:
 
 @pytest.fixture
 def mock_anthropic_client() -> MagicMock:
-    """Mock Anthropic client pre-loaded with canned route + wiki responses."""
+    """Mock Anthropic client pre-loaded with canned route + tag-suggest + wiki responses."""
     client = MagicMock()
     client.messages.create.side_effect = [
         _make_message('{"routes": [{"title": "NEXUS", "match": "new"}]}'),
+        _make_message('{"tags": []}'),
         _make_message("# NEXUS\n\n## Overview\n\nNEXUS is a personal AI OS."),
     ]
     return client

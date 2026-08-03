@@ -2269,12 +2269,28 @@ def process_file(
         ", ".join(t for (t, _p, _is_new) in routes),
     )
 
+    # Spec #3 SS3.3 Phase 0 -- suggest tags for this note once, before synthesis.
+    # Skipped entirely (no suggest_tags call) when every route resolves under
+    # daily_folder (date pages are a per-day journal -- tagging 365/year is
+    # noise) or when tags_enabled is False (single rollback lever, crit 40).
+    # Best-effort: any failure here degrades to "no new tags", never fails
+    # a note that would otherwise process cleanly (crit 32).
+    note_tags: list[str] = []
+    if config["tags_enabled"] and not all(p.is_relative_to(daily_folder) for (_t, p, _n) in routes):
+        try:
+            vocab = _build_tag_vocabulary(catalog, config["tag_vocabulary_max_in_prompt"])
+            note_tags = _reconcile_tags(
+                suggest_tags(content, [], vocab, config, client), vocab, [], config
+            )
+        except Exception as exc:
+            logger.warning("tag suggestion failed for %s: %s — continuing untagged", display_name, exc)
+
     # Build a quick title -> catalog entry lookup for scope contracts
     catalog_by_title: dict[str, dict[str, Any]] = {p["title"]: p for p in catalog}
 
     # Phase 1: synthesize ALL routes into memory before touching the filesystem.
     # (topic, wiki_file_path, wiki_content, existing_tags, orig_fm)
-    topic_results: list[tuple[str, Path, str, list[str], str]] = []
+    topic_results: list[tuple[str, Path, str, list[str], str | None]] = []
     for topic, wiki_path, is_new in routes:
         existing = wiki_path.read_text(encoding="utf-8") if wiki_path.exists() else ""
         existing_tags = _parse_frontmatter_tags(existing)
@@ -2284,7 +2300,7 @@ def process_file(
             fm_lines = existing.lstrip("﻿").splitlines(keepends=True)
             orig_fm = "".join(fm_lines[: fm_end + 1])
         else:
-            orig_fm = ""
+            orig_fm = None
         catalog_entry = None if is_new else catalog_by_title.get(topic)
         wiki_content = synthesize_wiki(
             topic, content, existing, config, client,
@@ -2299,12 +2315,19 @@ def process_file(
     updated_topics: list[tuple[str, Path]] = []
     for topic, wiki_file, wiki_content, existing_tags, orig_fm in topic_results:
         wiki_file.parent.mkdir(parents=True, exist_ok=True)
-        # Spec #3 §3.4 -- preserve/merge frontmatter (category/date/tags) that
-        # synthesize_wiki may otherwise silently drop. note_tags stays [] here
-        # (suggest_tags isn't wired in yet); only re-apply what already existed.
-        if config["tags_enabled"] and (existing_tags or orig_fm):
+        # Spec #3 §3.3/§3.4 -- preserve/merge frontmatter (category/date/tags)
+        # that synthesize_wiki may otherwise silently drop, and union in this
+        # note's newly suggested tags. Union = existing tags (verbatim, original
+        # order) + new note_tags not already present; capped by tag_max_per_page
+        # only when existing_tags is empty (existing pages are never trimmed).
+        if config["tags_enabled"] and (existing_tags or orig_fm or note_tags):
+            final_tags = existing_tags + [
+                t for t in note_tags if t.lower() not in {e.lower() for e in existing_tags}
+            ]
+            if not existing_tags:
+                final_tags = final_tags[: config["tag_max_per_page"]]
             wiki_content = _write_frontmatter_tags(
-                wiki_content, existing_tags, original_frontmatter=orig_fm
+                wiki_content, final_tags, original_frontmatter=orig_fm
             )
         tmp = _make_temp_path(wiki_file.parent, f".{wiki_file.stem}_", ".tmp")
         try:

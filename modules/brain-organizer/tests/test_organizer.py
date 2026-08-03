@@ -34,7 +34,8 @@ def make_message(text: str, stop_reason: str = "end_turn") -> MagicMock:
 
 
 def make_client(routes_text: str, wiki_text: str, stop_reason: str = "end_turn") -> MagicMock:
-    """Build a mock client with a routing response followed by a wiki synthesis response.
+    """Build a mock client with a routing response, a tag-suggestion response,
+    then a wiki synthesis response.
 
     routes_text must already be in the new routes JSON shape:
         '{"routes": [{"title":"...", "match": "new"}]}'
@@ -42,6 +43,7 @@ def make_client(routes_text: str, wiki_text: str, stop_reason: str = "end_turn")
     client = MagicMock()
     client.messages.create.side_effect = [
         make_message(routes_text),
+        make_message('{"tags": []}'),
         make_message(wiki_text, stop_reason=stop_reason),
     ]
     return client
@@ -1022,6 +1024,68 @@ def test_process_file_existing_frontmatter_without_tags_key_inserts_bare_tags_fi
     assert lines[4] == "# Gamma"
 
 
+def test_process_file_new_page_writes_phase0_suggested_tags_to_frontmatter(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Spec #3 §3.3/§3.4 end-to-end wiring proof: for a brand-new route (no
+    existing wiki file, so existing_tags == [] and orig_fm == None), Phase 0's
+    suggest_tags -> _reconcile_tags output must actually land in the written
+    file's frontmatter via Phase 2's extended gate (`... or note_tags`) --
+    not just exist as unwired helper functions. Two client calls prove the
+    real end-to-end flow: [0] is the Phase 0 tag-suggestion call, [1] is
+    synthesize_wiki. catalog=[] means both proposed tags are "brand-new"
+    (not in vocabulary) to _reconcile_tags's stage 6 -- tag_max_new_per_note
+    is raised to 2 here (default 1, see test_reconcile_tags_caps_brand_new_
+    tags_at_max_new_per_note for the pinned default-cap behavior) so this
+    test can assert both survive, proving the wiring rather than the cap."""
+    wiki_path = tmp_vault / "wiki" / "Delta.md"
+    synthesized = "# Delta\n\nBrand new page about home automation.\n"
+
+    tmp_config["tag_max_new_per_note"] = 2
+    f = write_raw(tmp_vault, "note.md", "New info about home automation gear")
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": ["home-automation", "smart-home"]}'),
+        make_message(synthesized),
+    ]
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Delta", wiki_path, True)],
+    )
+
+    assert client.messages.create.call_count == 2
+    result = wiki_path.read_text(encoding="utf-8")
+    assert "tags:" in result
+    assert "home-automation" in result
+    assert "smart-home" in result
+    assert result.rstrip("\n").endswith("Brand new page about home automation.")
+
+
+def test_process_file_tags_disabled_makes_no_extra_llm_call(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Crit 40: tags_enabled=False is the single rollback lever -- it must
+    short-circuit Phase 0 entirely (no suggest_tags call at all), leaving
+    the client's call count/order identical to the pre-Phase-0 world (one
+    synthesis call for an already-routed, non-daily note)."""
+    tmp_config["tags_enabled"] = False
+    wiki_path = tmp_vault / "wiki" / "Epsilon.md"
+
+    f = write_raw(tmp_vault, "note.md", "New info about Epsilon")
+    client = MagicMock()
+    client.messages.create.return_value = make_message("# Epsilon\n\nContent.\n")
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Epsilon", wiki_path, True)],
+    )
+
+    assert client.messages.create.call_count == 1
+    result = wiki_path.read_text(encoding="utf-8")
+    assert "tags:" not in result
+
+
 # ---------------------------------------------------------------------------
 # synthesize_wiki
 # ---------------------------------------------------------------------------
@@ -1697,6 +1761,8 @@ def test_run_parallel_path_processes_multiple_files(
     client.messages.create.side_effect = [
         make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'),
         make_message('{"routes": [{"title":"Hermes", "match": "new"}]}'),
+        make_message('{"tags": []}'),
+        make_message('{"tags": []}'),
         make_message("# NEXUS\n\nContent."),
         make_message("# Hermes\n\nContent."),
     ]
