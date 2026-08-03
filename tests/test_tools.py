@@ -328,6 +328,7 @@ async def test_all_dispatchers_never_raise_on_error():
         "backend.integrations.protonmail.list_recent",
         "backend.integrations.protonmail.read_email",
         "backend.integrations.protonmail.health_check",
+        "backend.agents.outcomes.open_flags",
     ]
     patchers = [patch(t, new=AsyncMock(side_effect=Exception("kaboom"))) for t in integ_targets]
     for p in patchers:
