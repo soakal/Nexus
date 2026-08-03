@@ -498,6 +498,57 @@ def test_route_topics_resolve_existing_tolerant_matching(
     assert "hallucinated" not in caplog.text
 
 
+def test_route_topics_dedups_two_routes_naming_same_page(
+    tmp_config: dict[str, Any],
+) -> None:
+    """spec #2 crit 39 (:789): two routes in the same response that both name
+    the same existing page must de-duplicate to a single result via
+    seen_paths -- not appear twice in the returned route list."""
+    catalog = [_catalog_entry("NEXUS", "NEXUS")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        json.dumps(
+            {
+                "routes": [
+                    {"match": "existing", "title": "NEXUS"},
+                    {"match": "existing", "title": "NEXUS"},
+                ]
+            }
+        )
+    )
+
+    routes = bo.route_topics("some content", catalog, tmp_config, client)
+
+    assert len(routes) == 1
+    title, path, is_new = routes[0]
+    assert title == "NEXUS"
+    assert path == Path(catalog[0]["path_str"])
+    assert is_new is False
+
+
+def test_route_topics_hallucinated_existing_title_logs_warning_and_falls_through_to_new(
+    tmp_config: dict[str, Any], caplog: pytest.LogCaptureFixture,
+) -> None:
+    """spec #2 crit 40: a "match":"existing" route naming a title that is
+    NOT present anywhere in the catalog must log the hallucination warning
+    and fall through to the "new" path (re-checked via the near-dup guard),
+    not be silently dropped or raise."""
+    catalog = [_catalog_entry("Real Page", "Real-Page")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        json.dumps({"routes": [{"match": "existing", "title": "Ghost Page"}]})
+    )
+
+    with caplog.at_level(logging.WARNING):
+        routes = bo.route_topics("some content", catalog, tmp_config, client)
+
+    assert "hallucinated" in caplog.text
+    assert len(routes) == 1
+    title, path, is_new = routes[0]
+    assert title == "Ghost Page"
+    assert is_new is True
+
+
 def test_daily_note_route_creates_canonical_date_page(tmp_path: Path) -> None:
     """Date-stem notes route into daily_folder (a subfolder), NOT wiki_folder
     root -- kept out of build_wiki_catalog's non-recursive scan on purpose."""
@@ -921,6 +972,69 @@ def test_build_wiki_catalog_excludes_daily_and_processed_subfolders(
     pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
 
     assert [p["title"] for p in pages] == ["Alpha"]
+
+
+def test_build_wiki_catalog_three_pages_sorted_case_insensitive_and_persists_cache(
+    tmp_path: Path,
+) -> None:
+    """spec #2 crit 31: build_wiki_catalog over a 3-page tmp wiki returns 3
+    entries sorted by lowercased title -- not filename/insertion order and
+    not a raw case-sensitive sort (which would put every uppercase-leading
+    title before any lowercase-leading one) -- and persists the result to
+    wiki-catalog.json.
+
+    Filenames are deliberately decoupled from title alphabetical order
+    (file1/file2/file3 holding Cherry/apple/Banana) so the glob's own
+    sorted() pass can't accidentally produce the expected order on its
+    own -- only the pages.sort(key=title.lower()) call can.
+    """
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    meta_folder.mkdir()
+    (wiki_folder / "file1.md").write_text("# Cherry\n\nCherry body.\n", encoding="utf-8")
+    (wiki_folder / "file2.md").write_text("# apple\n\nApple body.\n", encoding="utf-8")
+    (wiki_folder / "file3.md").write_text("# Banana\n\nBanana body.\n", encoding="utf-8")
+
+    pages = bo.build_wiki_catalog(wiki_folder, meta_folder)
+
+    assert len(pages) == 3
+    assert [p["title"] for p in pages] == ["apple", "Banana", "Cherry"]
+
+    cache_path = meta_folder / "wiki-catalog.json"
+    assert cache_path.exists()
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cache["parser_version"] == bo._CATALOG_PARSER_VERSION
+    assert [p["title"] for p in cache["pages"]] == ["apple", "Banana", "Cherry"]
+
+
+def test_build_wiki_catalog_corrupt_cache_json_falls_back_to_full_rebuild(
+    tmp_path: Path,
+) -> None:
+    """spec #2 crit 33: a wiki-catalog.json that isn't parsable JSON must not
+    raise -- build_wiki_catalog's cache-load path (the inner `except
+    Exception:` around json.load) must treat it as a full cache miss and
+    rebuild the catalog from the real page content on disk."""
+    wiki_folder = tmp_path / "wiki"
+    meta_folder = tmp_path / "_meta"
+    wiki_folder.mkdir()
+    meta_folder.mkdir()
+    page = wiki_folder / "Alpha.md"
+    page.write_text("# Alpha\n\nReal body text.\n", encoding="utf-8")
+
+    cache_path = meta_folder / "wiki-catalog.json"
+    cache_path.write_text("{not valid json at all", encoding="utf-8")
+
+    pages = bo.build_wiki_catalog(wiki_folder, meta_folder)  # must not raise
+
+    assert len(pages) == 1
+    assert pages[0]["title"] == "Alpha"
+    assert pages[0]["summary"] == "Real body text."
+
+    # The corrupt cache is atomically replaced with a valid rebuilt one.
+    rebuilt = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert rebuilt["parser_version"] == bo._CATALOG_PARSER_VERSION
+    assert len(rebuilt["pages"]) == 1
 
 
 def test_process_file_skips_llm_route_for_daily_note(
@@ -2304,6 +2418,56 @@ def test_large_page_splice_is_idempotent_on_repeated_run(
     client2.messages.create.return_value = make_message("## Existing\n\nnewbody")
     result_twice = bo.synthesize_wiki("Topic", "new content", result_once, tmp_config, client2)
     assert result_twice == result_once
+
+
+def test_large_page_splice_appends_new_section_absent_from_original_at_end(
+    tmp_config: dict[str, Any],
+) -> None:
+    """spec #2 crit 42: a splice response containing a "## Gamma" section
+    that has no matching header anywhere in the existing page must be
+    appended at the end (the section-match regex finds no match, so the
+    loop falls into its "else: append" branch), with everything before it
+    left byte-identical."""
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    existing = "# Topic\n\n## Alpha\n\nalpha body here"  # no trailing "\n"
+    client = MagicMock()
+    client.messages.create.return_value = make_message("## Gamma\n\ngamma content here")
+
+    result = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
+
+    assert result.startswith(existing)  # everything before the append is byte-identical
+    assert result == existing + "\n\n## Gamma\n\ngamma content here\n"
+    assert "## Alpha" in result
+    assert result.index("## Gamma") > result.index("## Alpha")
+
+
+def test_large_page_splice_discards_leading_preamble_before_first_heading(
+    tmp_config: dict[str, Any],
+) -> None:
+    """spec #2 crit 43 (:997): a splice response with freeform preamble text
+    before its first "## " heading must have that preamble discarded
+    entirely -- raw_chunks's leading non-"## " chunk is filtered out of
+    section_chunks, so only the real "## " block reaches the splice and the
+    preamble text must not appear anywhere in the result.
+
+    The edited section is deliberately NOT the page's last section: if the
+    preamble filter at brain_organizer.py:2006 were deleted, the unfiltered
+    preamble chunk would find no header match and get appended at true EOF,
+    where "## Later"'s untouched body would no longer be the last thing in
+    the file to swallow it back out -- so a leaked preamble is observable
+    here, unlike with a single-section fixture.
+    """
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    existing = "# Topic\n\n## Existing\n\noldbody\n\n## Later\n\nlaterbody\n"
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        "Here's the updated section based on your request:\n\n## Existing\n\nnewbody"
+    )
+
+    result = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
+
+    assert "Here's the updated section" not in result
+    assert result == "# Topic\n\n## Existing\n\nnewbody\n\n## Later\n\nlaterbody\n"
 
 
 # ---------------------------------------------------------------------------
