@@ -391,7 +391,11 @@ def build_link_index(folders: list[Path]) -> dict[str, str]:
 # consolidate_wiki.py (imported from here).
 # ---------------------------------------------------------------------------
 
-_STEM_SUFFIXES = ("tion", "ing", "ion", "ed", "es", "s")
+# "ment" adopted from consolidate_wiki.py's local copy during the §8 dedup
+# (spec #2 §10 step 10) -- placed right after "tion" (both 4 chars, neither
+# shadows the other) so the existing longest-first break-on-match order is
+# preserved; e.g. "Deployment" -> "deploy" now matches "Deploy" -> "deploy".
+_STEM_SUFFIXES = ("tion", "ment", "ing", "ion", "ed", "es", "s")
 
 
 def _normalize_title(s: str) -> str:

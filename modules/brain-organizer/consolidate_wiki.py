@@ -19,15 +19,20 @@ import difflib
 import json
 import logging
 import os
-import re
 import shutil
 import sys
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import anthropic
+
+from brain_organizer import (
+    _extract_page_entry as _bo_extract_page_entry,
+    _make_temp_path,
+    _normalize_title,
+    load_config,
+)
 
 try:
     from dotenv import load_dotenv
@@ -38,8 +43,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Paths & defaults
 # ---------------------------------------------------------------------------
-
-CONFIG_PATH = Path(__file__).parent / "config.json"
 
 # Clustering thresholds (lower than the runtime guard — a human reviews before apply)
 _CLUSTER_SEQ_THRESHOLD = 0.75
@@ -58,35 +61,9 @@ logger = logging.getLogger("consolidate_wiki")
 
 
 # ---------------------------------------------------------------------------
-# Config
+# Config, title normalisation, and temp-path helpers are all imported from
+# brain_organizer (dedup, spec #2 §10 step 10) — see the import block above.
 # ---------------------------------------------------------------------------
-
-def load_config(config_path: Path | None = None) -> dict[str, Any]:
-    path = config_path or CONFIG_PATH
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-# ---------------------------------------------------------------------------
-# Title normalisation (mirrors brain_organizer._normalize_title)
-# ---------------------------------------------------------------------------
-
-def _normalize_title(s: str) -> str:
-    """Lower-case, strip punctuation, collapse whitespace, trim common suffixes."""
-    s = s.lower().strip()
-    s = re.sub(r"[^\w\s]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-
-    # Strip common suffixes word-by-word (longest-first so "tion" beats "ion" beats "s").
-    _SUFFIXES = ("tion", "ment", "ing", "ion", "ed", "es", "s")
-    words: list[str] = []
-    for word in s.split():
-        for suf in _SUFFIXES:
-            if word.endswith(suf) and len(word) - len(suf) >= 3:
-                word = word[: -len(suf)]
-                break
-        words.append(word)
-    return " ".join(words)
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +71,15 @@ def _normalize_title(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _extract_page_entry(f: Path) -> dict[str, Any]:
-    """Parse a single wiki page file into a catalog entry dict."""
+    """Parse a single wiki page file into a catalog entry dict.
+
+    Thin wrapper around brain_organizer._extract_page_entry (dedup, spec #2
+    §10 step 10): delegates title/headers/summary parsing to the shared
+    version and adds "chars" (used by _choose_canonical, which the shared
+    caller in brain_organizer.py doesn't need). Preserves this script's own
+    unreadable-file fallback, since the shared version doesn't guard its own
+    f.read_text() call.
+    """
     try:
         text = f.read_text(encoding="utf-8")
     except Exception:
@@ -107,55 +92,9 @@ def _extract_page_entry(f: Path) -> dict[str, Any]:
             "chars": 0,
         }
 
-    lines = text.splitlines()
-    chars = len(text)
-
-    # Title: first line starting with exactly "# "
-    title = f.stem
-    h1_idx = 0
-    for i, line in enumerate(lines):
-        if line.startswith("# ") and not line.startswith("## "):
-            title = line[2:].strip()
-            h1_idx = i
-            break
-
-    # Headers: lines starting with "## "
-    raw_headers: list[str] = []
-    for line in lines:
-        if line.startswith("## "):
-            raw_headers.append(line[3:].strip())
-            if len(raw_headers) >= 10:
-                break
-    headers_joined = " | ".join(raw_headers)
-
-    # Summary: first real prose after H1, skip metadata / rules / headers
-    _META_RE = re.compile(r"^\*\*[\w\s]+:\*\*|^>\s*\*\*[\w\s]+:\*\*")
-    _RULE_RE = re.compile(r"^[-*_]{3,}$")
-    summary_parts: list[str] = []
-    for line in lines[h1_idx + 1:]:
-        stripped = line.strip()
-        if not stripped:
-            if summary_parts:
-                break
-            continue
-        if stripped.startswith("#"):
-            continue
-        if _RULE_RE.match(stripped):
-            continue
-        if _META_RE.match(stripped):
-            continue
-        summary_parts.append(stripped)
-
-    summary_raw = " ".join(summary_parts)[:300]
-
-    return {
-        "title": title,
-        "filename": f.name,
-        "path_str": str(f),
-        "headers": headers_joined,
-        "summary": summary_raw,
-        "chars": chars,
-    }
+    entry = _bo_extract_page_entry(f)
+    entry["chars"] = len(text)
+    return entry
 
 
 def build_catalog(wiki_folder: Path) -> list[dict[str, Any]]:
@@ -239,12 +178,9 @@ def _choose_canonical(cluster: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Atomic write helper
+# Atomic write helper (_make_temp_path imported from brain_organizer — see
+# the import block above; dedup, spec #2 §10 step 10)
 # ---------------------------------------------------------------------------
-
-def _make_temp_path(directory: Path, prefix: str, suffix: str) -> Path:
-    return directory / f"{prefix}{uuid.uuid4().hex}{suffix}"
-
 
 def _atomic_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

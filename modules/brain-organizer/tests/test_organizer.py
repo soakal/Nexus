@@ -1157,11 +1157,24 @@ def test_defuse_unknown_wikilinks_negative_threshold_falls_back_to_default() -> 
         ("Financial Forecasting", "financial forecast"),
         ("Financial Forecast", "financial forecast"),
         ("Startups", "startup"),
-        ("Front—End Development", "frontend development"),
+        # Pins em-dash punctuation stripping (§5.3 criterion 35). The
+        # "develop" stem (not "development") is deliberate: "ment" was
+        # adopted into _STEM_SUFFIXES from consolidate_wiki.py's copy
+        # (§8.2/criterion 57) -- do not "fix" this back to "development".
+        ("Front—End Development", "frontend develop"),
     ],
 )
 def test_normalize_title(raw: str, expected: str) -> None:
     assert bo._normalize_title(raw) == expected
+
+
+def test_normalize_title_ment_suffix_matches_deployment_and_deploy() -> None:
+    """Criterion 57 (§8.4): the "ment" suffix adopted from consolidate_wiki.py
+    must make "Deployment" and "Deploy" normalize to the same stem.
+    """
+    assert bo._normalize_title("Deployment") == bo._normalize_title("Deploy")
+    assert bo._normalize_title("Deployment") == "deploy"
+    assert bo._normalize_title("Deploy") == "deploy"
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1199,15 @@ def test_find_similar_page_threshold_changes_match_outcome() -> None:
     catalog = [{"title": "Machine Learning Overview", "filename": "ML-Overview.md", "path_str": "x", "headers": "", "summary": ""}]
     assert bo.find_similar_page("Machine Learning Notes", catalog, threshold=0.5) is catalog[0]
     assert bo.find_similar_page("Machine Learning Notes", catalog, threshold=0.95) is None
+
+
+def test_find_similar_page_collapses_deployment_deploy_pair() -> None:
+    """§8.2's own recommendation: the nightly near-dup guard must now treat
+    "Deployment" and "Deploy" as the same page (criterion 57's "ment" stem
+    adoption, exercised through the actual consumer of _normalize_title).
+    """
+    catalog = [{"title": "Deploy", "filename": "Deploy.md", "path_str": "x", "headers": "", "summary": ""}]
+    assert bo.find_similar_page("Deployment", catalog) is catalog[0]
 
 
 # ---------------------------------------------------------------------------
