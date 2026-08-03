@@ -1456,6 +1456,37 @@ def test_process_file_daily_log_page_at_wiki_root_is_tagged(
     assert "digest-summary" in result
 
 
+def test_process_file_date_stem_note_under_daily_folder_skips_tagging(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 38: a date-stem note whose ONLY route resolves under
+    daily_folder must skip Phase 0's suggest_tags call entirely (date pages
+    are a per-day journal -- tagging 365/year is noise) and the written
+    page must carry no frontmatter block, unlike the Daily-Log-at-root
+    sibling case pinned by test_process_file_daily_log_page_at_wiki_root_is_tagged
+    (criterion 39) just above."""
+    daily_folder = tmp_vault / "wiki" / "daily"
+    wiki_path = daily_folder / "2026-08-02.md"
+
+    f = write_raw(tmp_vault, "2026-08-02.md", "Notes from today")
+    client = MagicMock()
+    # Single-element side_effect: a suggest_tags call would be consumed here
+    # and StopIteration would fire on the (nonexistent) synthesis call --
+    # this is what makes the call-count assertion below load-bearing.
+    client.messages.create.side_effect = [
+        make_message("# 2026-08-02\n\nSynthesized daily content.\n"),
+    ]
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("2026-08-02", wiki_path, True)],
+    )
+
+    assert client.messages.create.call_count == 1
+    result = wiki_path.read_text(encoding="utf-8")
+    assert not result.startswith("---")
+
+
 # ---------------------------------------------------------------------------
 # synthesize_wiki
 # ---------------------------------------------------------------------------
