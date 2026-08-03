@@ -218,10 +218,11 @@ def test_normalize_wikilinks_resolves_daily_folder_target(tmp_vault: Path) -> No
     wiki_dir = tmp_vault / "wiki"
     index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
 
-    result = _normalize_wikilinks("See [[2026-07-25]] for details.", index)
+    result, broken = _normalize_wikilinks("See [[2026-07-25]] for details.", index)
 
     assert "Broken Links" not in result
     assert "[[2026-07-25]]" in result
+    assert broken == []
 
 
 def test_normalize_wikilinks_shared_index_resolves_case_insensitive_target(tmp_vault: Path) -> None:
@@ -237,10 +238,11 @@ def test_normalize_wikilinks_shared_index_resolves_case_insensitive_target(tmp_v
     wiki_dir = tmp_vault / "wiki"
     index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
 
-    result = _normalize_wikilinks("See [[home assistant]] for setup.", index)
+    result, broken = _normalize_wikilinks("See [[home assistant]] for setup.", index)
 
     assert "Broken Links" not in result
     assert "[[Home-Assistant]]" in result
+    assert broken == []
 
 
 def test_normalize_wikilinks_substitutes_stem_for_bare_trailing_heading_sigil(
@@ -261,9 +263,10 @@ def test_normalize_wikilinks_substitutes_stem_for_bare_trailing_heading_sigil(
     wiki_dir = tmp_vault / "wiki"
     index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
 
-    result = _normalize_wikilinks("See [[home-assistant#]] for setup.", index)
+    result, broken = _normalize_wikilinks("See [[home-assistant#]] for setup.", index)
 
     assert result == "See [[Home-Assistant#]] for setup."
+    assert broken == []
 
 
 def test_normalize_wikilinks_leaves_pure_anchor_untouched() -> None:
@@ -276,10 +279,11 @@ def test_normalize_wikilinks_leaves_pure_anchor_untouched() -> None:
     from mcp_server import _normalize_wikilinks
 
     text = "See [[#heading]] for context."
-    result = _normalize_wikilinks(text, {})
+    result, broken = _normalize_wikilinks(text, {})
 
     assert result == text
     assert "Broken Links" not in result
+    assert broken == []
 
 
 def test_mcp_server_no_longer_defines_its_own_wikilink_helpers() -> None:
@@ -309,6 +313,34 @@ def test_raw_post_creates_file(wiki_app, tmp_vault: Path) -> None:
     created = tmp_vault / "raw" / data["file"]
     assert created.exists()
     assert created.read_text(encoding="utf-8") == "A new note from remote"
+
+
+def test_raw_post_reports_broken_links_without_footer_injection(
+    wiki_app, tmp_vault: Path
+) -> None:
+    """Criterion 17 (docs/brain-organizer-robustness-spec.md §3.3(c)): an
+    unresolvable [[wikilink]] must NOT get a '## Broken Links' footer
+    injected into the saved note content, and the POST /raw JSON response
+    must instead surface the unresolved target via a top-level
+    'broken_links' list -- this is the actual regression case (a real
+    broken link), not the no-broken-link resolved-case tweaks already
+    covered by the 4 updated _normalize_wikilinks unit tests."""
+    resp = wiki_app.post(
+        "/raw",
+        json={
+            "content": "See [[NoSuchTopic]] for details.",
+            "filename": "broken-link-note.md",
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 201
+    data = json.loads(resp.data)
+    assert data["broken_links"] == ["NoSuchTopic"]
+
+    created = tmp_vault / "raw" / data["file"]
+    saved_content = created.read_text(encoding="utf-8")
+    assert "Broken Links" not in saved_content
+    assert saved_content == "See [[NoSuchTopic]] for details."
 
 
 def test_raw_post_calls_build_link_index_with_exact_folder_scope(

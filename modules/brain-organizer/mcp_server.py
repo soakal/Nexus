@@ -77,15 +77,17 @@ def _sanitize_filename(name: str) -> str:
     return safe
 
 
-def _normalize_wikilinks(content: str, index: dict[str, str]) -> str:
+def _normalize_wikilinks(content: str, index: dict[str, str]) -> tuple[str, list[str]]:
     """Rewrite [[wikilinks]] to canonical file stems; flag unresolved ones.
 
     Resolvable targets are rewritten to the actual stem (heading + alias
-    preserved). Unresolved targets are left in place and listed in a
-    ## Broken Links footer. Pure same-file anchors ([[#heading]]) and embeds
-    (![[...]]) are skipped -- WIKILINK_PAT's target group requires at least
-    one non-#/|/] character, so it never matches [[#heading]] at all (left
-    untouched by .sub() as unmatched text).
+    preserved). Unresolved targets are left in place and returned as a list
+    of broken targets (original spelling preserved) -- callers are
+    responsible for surfacing them (e.g. a log warning / API response field)
+    rather than injecting diagnostic text into note content. Pure same-file
+    anchors ([[#heading]]) and embeds (![[...]]) are skipped -- WIKILINK_PAT's
+    target group requires at least one non-#/|/] character, so it never
+    matches [[#heading]] at all (left untouched by .sub() as unmatched text).
 
     Thin HTTP-side wrapper over brain_organizer's WIKILINK_PAT / index --
     that pattern's heading/alias groups are sigil-free (no leading "#"/"|"),
@@ -115,15 +117,16 @@ def _normalize_wikilinks(content: str, index: dict[str, str]) -> str:
 
     new_content = WIKILINK_PAT.sub(_sub, content)
 
-    if broken and "## Broken Links" not in new_content:
-        footer_lines = "\n".join(f"- [[{t}]]" for t in broken)
-        sep = "" if new_content.endswith("\n") else "\n"
-        new_content = (
-            f"{new_content}{sep}\n## Broken Links\n\n"
-            f"<!-- auto-generated: targets with no matching wiki/root note -->\n"
-            f"{footer_lines}\n"
+    if broken:
+        # WIKILINK_PAT's target group only excludes ]/|/#, so a target may
+        # contain \r/\n -- strip those before logging to prevent forged
+        # fake log lines (log injection) from attacker-controlled note content.
+        safe_broken = [t.replace("\r", "").replace("\n", " ") for t in broken]
+        logging.getLogger(__name__).warning(
+            "Unresolved wikilink targets: %s", ", ".join(safe_broken)
         )
-    return new_content
+
+    return new_content, broken
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +301,11 @@ def create_app(
 
         content = str(data["content"])
 
+        broken_links: list[str] = []
         try:
             wf = _wiki_folder()
             link_index = build_link_index([wf.parent, wf, _daily_folder()])
-            content = _normalize_wikilinks(content, link_index)
+            content, broken_links = _normalize_wikilinks(content, link_index)
         except Exception as exc:  # never block a save on normalization
             logger.warning("Wikilink normalization skipped: %s", exc)
 
@@ -330,7 +334,7 @@ def create_app(
             return jsonify({"error": "Failed to write file"}), 500
 
         logger.info("Raw file created: %s", target.name)
-        return jsonify({"status": "ok", "file": target.name}), 201
+        return jsonify({"status": "ok", "file": target.name, "broken_links": broken_links}), 201
 
     return app
 
