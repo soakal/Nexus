@@ -1876,6 +1876,20 @@ def _defuse_unknown_wikilinks(
             # 6. fuzzy near-duplicate match
             similar = find_similar_page(target, catalog, threshold)
             if similar is not None:
+                # Dated-sibling guard: a fuzzy title match can still point at
+                # the WRONG day's page (e.g. "Morning Briefing — 2026-06-29"
+                # scoring 0.947 against "Morning-Briefing-2026-06-28"'s
+                # title). Compare digit runs from the link target against
+                # the matched entry's title -- the same field
+                # find_similar_page itself compared against, not its
+                # filename -- and refuse the match if they differ. No
+                # digits on either side (e.g. Financial Forecasting) or
+                # equal digit sequences still accept the match as before.
+                target_digits = re.findall(r"\d+", target)
+                entry_digits = re.findall(r"\d+", similar.get("title") or "")
+                if target_digits and entry_digits and target_digits != entry_digits:
+                    similar = None
+            if similar is not None:
                 similar_filename = similar.get("filename")
                 if similar_filename:
                     resolved_stem = Path(similar_filename).stem

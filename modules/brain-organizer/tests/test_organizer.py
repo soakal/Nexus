@@ -1428,6 +1428,32 @@ def test_defuse_unknown_wikilinks_allows_near_duplicate_via_find_similar_page() 
     assert result == "See [[Financial-Forecast|Financial Forecasting]] for numbers."
 
 
+def test_defuse_unknown_wikilinks_rejects_dated_sibling_fuzzy_match() -> None:
+    """Regression for the wrong-day cross-link bug: find_similar_page scores
+    "Morning Briefing — 2026-06-29" at 0.947 similarity against the catalog
+    title "Morning Briefing 2026-06-28" (confirmed below), which is high
+    enough to pass the default threshold on its own -- but the two link
+    targets name different days. The dated-sibling guard must compare digit
+    runs and refuse this match, falling through to step 7's backtick-defuse
+    instead of cross-linking onto the wrong day's page.
+    """
+    catalog = [
+        {
+            "title": "Morning Briefing 2026-06-28",
+            "filename": "Morning-Briefing-2026-06-28.md",
+            "path_str": "x",
+            "headers": "",
+            "summary": "",
+        }
+    ]
+    target = "Morning Briefing — 2026-06-29"
+    assert bo.find_similar_page(target, catalog) is catalog[0]  # confirms the fuzzy match fires on its own
+    text = f"See [[{target}]] for today's notes."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == f"See `{target}` for today's notes."
+    assert "Morning-Briefing-2026-06-28" not in result
+
+
 def test_defuse_unknown_wikilinks_allows_self_reference() -> None:
     text = "This page is about [[My New Topic]] specifically."
     result = bo._defuse_unknown_wikilinks(text, "My New Topic", [])
