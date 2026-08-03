@@ -1885,6 +1885,12 @@ def _defuse_unknown_wikilinks(
                 # filename -- and refuse the match if they differ. No
                 # digits on either side (e.g. Financial Forecasting) or
                 # equal digit sequences still accept the match as before.
+                # This title-axis check alone is not sufficient: an entry's
+                # title and filename can disagree on dating (e.g. title
+                # "Council Loop" but filename "Council-Loop-Build-
+                # 2026-07-01.md"), and the REWRITE below emits the filename
+                # stem, not the title -- so the filename-stem axis is
+                # re-checked separately once similar_filename is resolved.
                 target_digits = re.findall(r"\d+", target)
                 entry_digits = re.findall(r"\d+", similar.get("title") or "")
                 if target_digits and entry_digits and target_digits != entry_digits:
@@ -1892,7 +1898,12 @@ def _defuse_unknown_wikilinks(
             if similar is not None:
                 similar_filename = similar.get("filename")
                 if similar_filename:
-                    resolved_stem = Path(similar_filename).stem
+                    similar_stem = Path(similar_filename).stem
+                    stem_digits = re.findall(r"\d+", similar_stem)
+                    if target_digits != stem_digits:
+                        similar = None
+                    else:
+                        resolved_stem = similar_stem
                 else:
                     # Matched entry has no filename either -- same graceful
                     # degradation as above.

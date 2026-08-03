@@ -1454,6 +1454,34 @@ def test_defuse_unknown_wikilinks_rejects_dated_sibling_fuzzy_match() -> None:
     assert "Morning-Briefing-2026-06-28" not in result
 
 
+def test_defuse_unknown_wikilinks_rejects_dated_sibling_via_filename_stem_axis() -> None:
+    """Cycle 33 regression: the title-axis digit guard alone is not enough --
+    an entry's title can be undated ("Council Loop") while its filename stem
+    is dated ("Council-Loop-Build-2026-07-01"), and the REWRITE emits the
+    filename stem, not the title. Before this cycle's fix the mismatch slipped
+    through silently (title-axis digit lists were both empty -> "equal", so
+    the guard never even looked at the filename), rewriting
+    [[Council-Loop]] onto the wrong dated page. The filename-stem axis must
+    be checked independently and reject the match, falling through to step
+    7's backtick-defuse instead.
+    """
+    catalog = [
+        {
+            "title": "Council Loop",
+            "filename": "Council-Loop-Build-2026-07-01.md",
+            "path_str": "x",
+            "headers": "",
+            "summary": "",
+        }
+    ]
+    target = "Council-Loop"
+    assert bo.find_similar_page(target, catalog) is catalog[0]  # confirms the fuzzy match fires on its own
+    text = f"See [[{target}]] for details."
+    result = bo._defuse_unknown_wikilinks(text, "Other Topic", catalog)
+    assert result == f"See `{target}` for details."
+    assert "Council-Loop-Build-2026-07-01" not in result
+
+
 def test_defuse_unknown_wikilinks_allows_self_reference() -> None:
     text = "This page is about [[My New Topic]] specifically."
     result = bo._defuse_unknown_wikilinks(text, "My New Topic", [])
