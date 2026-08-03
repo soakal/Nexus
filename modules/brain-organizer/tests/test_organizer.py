@@ -812,6 +812,57 @@ def test_extract_page_entry_frontmatter_with_h1_matches_pre_change_behavior(
     assert entry["tags"] == []
 
 
+def test_extract_page_entry_post_h1_pseudo_frontmatter_not_leaked_into_summary(
+    tmp_path: Path,
+) -> None:
+    """spec #3 criterion 48: a page shaped like the live Code-Review.md bug --
+    H1, then a run containing both a literal '---' line and 'key:' lines that
+    _find_frontmatter never sees (it isn't at position 0), then a header --
+    must not leak 'category: Tools' into 'summary'. The parser must skip the
+    whole pseudo-frontmatter run and stop at the header immediately after."""
+    f = tmp_path / "Code-Review.md"
+    f.write_text(
+        "# Code Review\n"
+        "\n"
+        "---\n"
+        "category: Tools\n"
+        "date: 2026-06-13\n"
+        "\n"
+        "## Overview\n"
+        "\n"
+        "Real prose paragraph here.\n",
+        encoding="utf-8",
+    )
+
+    entry = bo._extract_page_entry(f)
+
+    assert entry["summary"] == ""
+    assert "category:" not in entry["summary"]
+    assert "date:" not in entry["summary"]
+
+
+def test_extract_page_entry_h1_then_colon_prose_not_swallowed_as_pseudo_frontmatter(
+    tmp_path: Path,
+) -> None:
+    """Highest-risk regression per the engineer's own note: an H1 followed
+    immediately by real prose that merely contains a colon (e.g. 'Note: ...')
+    and no '---' anywhere must NOT be treated as a pseudo-frontmatter run --
+    the prose must still become the summary."""
+    f = tmp_path / "page.md"
+    f.write_text(
+        "# My Title\n"
+        "\n"
+        "Note: this is real prose, not frontmatter.\n"
+        "\n"
+        "## Header One\n",
+        encoding="utf-8",
+    )
+
+    entry = bo._extract_page_entry(f)
+
+    assert entry["summary"] == "Note: this is real prose, not frontmatter."
+
+
 def test_build_wiki_catalog_missing_parser_version_forces_full_reparse(
     tmp_path: Path,
 ) -> None:

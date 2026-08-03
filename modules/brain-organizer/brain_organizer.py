@@ -892,11 +892,13 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
     # --- title: first line starting with exactly one "#" ---
     title = f.stem
     h1_index = 0
+    h1_found = False
     title_scan_start = fm[1] + 1 if fm is not None else 0
     for i, line in enumerate(lines[title_scan_start:], start=title_scan_start):
         if line.startswith("# ") and not line.startswith("## "):
             title = line[2:].strip()
             h1_index = i
+            h1_found = True
             break
 
     # --- headers: all "## " lines (first 10, joined) ---
@@ -910,9 +912,38 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
     # summary) ---
     _meta_re = re.compile(r"^\*\*[\w\s]+:\*\*|^>\s*\*\*[\w\s]+:\*\*")
     _rule_re = re.compile(r"^[-*_]{3,}$")
+    _key_re = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*\s*:")
     prose_lines: list[str] = []
     collecting = False
     prose_start = max(h1_index + 1, fm_end + 1)
+
+    # --- pseudo-frontmatter directly after the H1: a "---"-delimited
+    # key: value run that _find_frontmatter never sees because it isn't
+    # at position 0 (e.g. Code-Review.md, Mobile-Voice-Brain-Capture.md).
+    # Only skip it when the run has both a literal "---" line and a
+    # key: line — a lone "Note: ..." prose paragraph must still count as
+    # the summary. ---
+    if h1_found:
+        saw_dashes = False
+        saw_key = False
+        run_end = h1_index + 1
+        for j in range(h1_index + 1, len(lines)):
+            candidate = lines[j].strip()
+            if not candidate:
+                run_end = j + 1
+                continue
+            if candidate == "---":
+                saw_dashes = True
+                run_end = j + 1
+                continue
+            if _key_re.match(candidate):
+                saw_key = True
+                run_end = j + 1
+                continue
+            break
+        if saw_dashes and saw_key:
+            prose_start = max(prose_start, run_end)
+
     for line in lines[prose_start:]:
         stripped = line.strip()
         # Skip blanks, rules, any header, metadata patterns
@@ -950,7 +981,7 @@ def _extract_page_entry(f: Path, summary_chars: int = 300) -> dict[str, Any]:
 # Bump whenever _extract_page_entry's output shape or parsing changes — a
 # missing/mismatched version in the cached wiki-catalog.json forces a full
 # re-parse of every page instead of silently reusing stale entries.
-_CATALOG_PARSER_VERSION = 3
+_CATALOG_PARSER_VERSION = 4
 
 
 def build_wiki_catalog(
