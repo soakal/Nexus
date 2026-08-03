@@ -1755,6 +1755,69 @@ def _prune_old_backups(config: dict[str, Any], logger: logging.Logger) -> None:
         logger.info("Pruned %d backup(s) older than %d day(s)", pruned, retention_days)
 
 
+def _count_raw_remaining(config: dict[str, Any]) -> int:
+    """Count files still sitting in raw/ (excluding the backups subfolder),
+    via a direct disk listing -- deliberately NOT scan_raw_folder(), which
+    skips zero-byte/whitespace-only files (F2). A stuck empty file must
+    still show up in this count even though scan_raw_folder will never
+    route it.
+    """
+    raw_folder = Path(config["vault_path"]) / config["raw_folder"]
+    backup_folder = Path(config["vault_path"]) / config["backup_folder"]
+    count = 0
+    for ext in (".md", ".txt"):
+        for f in raw_folder.rglob(f"*{ext}"):
+            if not f.is_file():
+                continue
+            try:
+                f.relative_to(backup_folder)
+                continue
+            except ValueError:
+                pass
+            count += 1
+    return count
+
+
+def _send_run_summary(
+    config: dict[str, Any],
+    logger: logging.Logger,
+    *,
+    success_count: int,
+    failed_count: int,
+    created_count: int,
+    merged_count: int,
+    uncategorized_count: int,
+    catalog_count: int,
+    raw_remaining: int,
+    all_topics: set[str] | None = None,
+    duration: float | None = None,
+    _http_client: httpx.Client | None = None,
+) -> None:
+    """Send the end-of-run Telegram/log summary unconditionally (§6.3/§6.6
+    criteria 45-46) -- a silent night, a stuck raw file, or a flat page-
+    creation rate must be visible in the signal, not indistinguishable from
+    a healthy run.
+    """
+    lines = [
+        "🧠 Brain Organizer — Run complete",
+        f"✅ Files processed: {success_count}",
+    ]
+    if all_topics:
+        lines.append(f"📝 Topics updated: {', '.join(sorted(all_topics))}")
+    if duration is not None:
+        lines.append(f"⏱ Duration: {duration:.1f}s")
+    if failed_count:
+        lines.append(f"⚠️ Failed: {failed_count}")
+    lines.append(
+        f"created={created_count} merged={merged_count} "
+        f"uncategorized={uncategorized_count} catalog={catalog_count} "
+        f"raw_remaining={raw_remaining}"
+    )
+    summary = "\n".join(lines)
+    logger.info(summary)
+    send_telegram_notification(config, summary, http_client=_http_client)
+
+
 def run(
     config_path: Path | None = None,
     *,
@@ -1777,6 +1840,16 @@ def run(
 
     if not files:
         logger.info("Nothing to process")
+        _send_run_summary(
+            config, logger,
+            success_count=0, failed_count=0,
+            created_count=0, merged_count=0, uncategorized_count=0,
+            # catalog not built on this path (avoids the disk-scan cost on a
+            # run with nothing to do -- see the comment below); raw_remaining
+            # is still a direct disk count, independent of that.
+            catalog_count=0, raw_remaining=_count_raw_remaining(config),
+            _http_client=_http_client,
+        )
         return 0
 
     _prune_old_backups(config, logger)
@@ -1816,6 +1889,9 @@ def run(
     success_count = 0
     failed_count = 0
     all_topics: set[str] = set()
+    created_count = 0
+    merged_count = 0
+    uncategorized_count = 0
 
     # One unified flow for both sequential (max_parallel_files<=1) and
     # parallel runs. These used to be two independently-maintained ~60-line
@@ -1876,8 +1952,10 @@ def run(
         len(files), len(groups), max_workers,
     )
 
-    def _record_success(sha: str, fp: Path, updated: list[str]) -> None:
-        nonlocal success_count
+    def _record_success(
+        sha: str, fp: Path, updated: list[str], routes: list[tuple[str, Path, bool]],
+    ) -> None:
+        nonlocal success_count, created_count, merged_count, uncategorized_count
         with state_lock:
             processed[sha] = {
                 "filename": fp.name,
@@ -1886,6 +1964,17 @@ def run(
             }
             success_count += 1
             all_topics.update(updated)
+            # §6.3 route buckets, counted per-route (not per-file) on this
+            # succeeded file's already-resolved routes: Uncategorized fallback
+            # routes always carry is_new=True, so title is checked first to
+            # keep it a distinct bucket from a genuine new-page creation.
+            for title, _path, is_new in routes:
+                if title == "Uncategorized":
+                    uncategorized_count += 1
+                elif is_new:
+                    created_count += 1
+                else:
+                    merged_count += 1
             # Batched, not per-file: the raw file is already deleted by this
             # point, which is the real idempotency marker (scan_raw_folder
             # simply never sees it again) -- losing a few success records to
@@ -1937,7 +2026,7 @@ def run(
                     _catalog_lock=catalog_lock,
                     _registry_lock=registry_lock,
                 )
-                _record_success(sha, fp, updated)
+                _record_success(sha, fp, updated, routes)
             except _APIUsageCapped as exc:
                 logger.error("API hard-capped — aborting run: %s", exc)
                 if not aborted.is_set():
@@ -1966,18 +2055,15 @@ def run(
 
     duration = time.monotonic() - start
 
-    if success_count > 0:
-        topics_str = ", ".join(sorted(all_topics))
-        summary = (
-            f"🧠 Brain Organizer — Run complete\n"
-            f"✅ Files processed: {success_count}\n"
-            f"📝 Topics updated: {topics_str}\n"
-            f"⏱ Duration: {duration:.1f}s"
-        )
-        if failed_count:
-            summary += f"\n⚠️ Failed: {failed_count}"
-        logger.info(summary)
-        send_telegram_notification(config, summary, http_client=_http_client)
+    _send_run_summary(
+        config, logger,
+        success_count=success_count, failed_count=failed_count,
+        created_count=created_count, merged_count=merged_count,
+        uncategorized_count=uncategorized_count,
+        catalog_count=len(catalog), raw_remaining=_count_raw_remaining(config),
+        all_topics=all_topics, duration=duration,
+        _http_client=_http_client,
+    )
 
     return 1 if failed_count else 0
 

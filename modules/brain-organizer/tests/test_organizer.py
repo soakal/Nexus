@@ -1434,6 +1434,85 @@ def test_run_aborts_when_catalog_empty_but_wiki_has_markdown_files(
     assert mock_telegram.call_args.kwargs.get("priority") == "high"
 
 
+# ---------------------------------------------------------------------------
+# run() summary -- always emitted, with created=/merged=/uncategorized=/
+# catalog=/raw_remaining= counters (spec #2 criterion 45 / 5 of 46's 7 fields)
+# ---------------------------------------------------------------------------
+
+def test_run_zero_file_summary_still_emits_and_counts_stuck_raw_file(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing-to-process must still emit a summary (criterion 45), and
+    raw_remaining must be a direct disk count -- not scan_raw_folder, which
+    permanently skips a zero-byte/stuck file (F2) -- so a stuck file is
+    visible in the signal even on a run that never got past the early exit.
+    """
+    write_raw(tmp_vault, "stuck.md", "")  # zero-byte: scan_raw_folder will never pick this up
+
+    mock_telegram = MagicMock()
+    monkeypatch.setattr(bo, "send_telegram_notification", mock_telegram)
+
+    result = bo.run(_client=MagicMock(), _config=tmp_config)
+
+    assert result == 0
+    mock_telegram.assert_called_once()
+    summary = mock_telegram.call_args[0][1]
+    assert "✅ Files processed: 0" in summary
+    assert "created=0 merged=0 uncategorized=0 catalog=0 raw_remaining=1" in summary
+
+
+def test_run_summary_counts_created_merged_uncategorized_catalog_for_real_run(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that actually processes files must report counters that reflect
+    what was actually processed: a new page (created), a merge into an
+    existing page (merged), and the Uncategorized fallback (uncategorized --
+    checked BEFORE is_new, since the fallback route always carries
+    is_new=True and must not be miscounted as "created"). catalog= must
+    reflect the post-run catalog (existing page + newly created pages), and
+    raw_remaining=0 once every file is consumed.
+
+    route_topics/synthesize_wiki are monkeypatched (content-keyed, not
+    call-order-keyed) rather than mocking the Anthropic client directly --
+    run()'s Phase A routes files across a small ThreadPoolExecutor even at
+    max_parallel_files=1, so a client-level side_effect list has no
+    guaranteed per-file ordering; a content-keyed fake sidesteps that race
+    entirely.
+    """
+    wiki_folder = tmp_vault / "wiki"
+    (wiki_folder / "Existing.md").write_text("# Existing\n\nOld content.", encoding="utf-8")
+    write_raw(tmp_vault, "new-note.md", "content about a brand new topic")
+    write_raw(tmp_vault, "existing-note.md", "content about an existing topic")
+    write_raw(tmp_vault, "vague-note.md", "content nobody can classify")
+
+    def fake_route_topics(content, catalog, config, client):
+        if "brand new topic" in content:
+            return [("NewTopic", wiki_folder / "NewTopic.md", True)]
+        if "existing topic" in content:
+            return [("Existing", wiki_folder / "Existing.md", False)]
+        return [("Uncategorized", wiki_folder / "Uncategorized.md", True)]
+
+    monkeypatch.setattr(bo, "route_topics", fake_route_topics)
+    monkeypatch.setattr(
+        bo, "synthesize_wiki", lambda topic, *a, **k: f"# {topic}\n\nSynthesized."
+    )
+    mock_telegram = MagicMock()
+    monkeypatch.setattr(bo, "send_telegram_notification", mock_telegram)
+
+    result = bo.run(_client=MagicMock(), _config=tmp_config)
+
+    assert result == 0
+    assert not (tmp_vault / "raw" / "new-note.md").exists()
+    assert not (tmp_vault / "raw" / "existing-note.md").exists()
+    assert not (tmp_vault / "raw" / "vague-note.md").exists()
+
+    mock_telegram.assert_called_once()
+    summary = mock_telegram.call_args[0][1]
+    # 1 new page (NewTopic) + 1 merge (Existing) + 1 Uncategorized fallback;
+    # catalog = pre-existing "Existing" + newly-created NewTopic + Uncategorized.
+    assert "created=1 merged=1 uncategorized=1 catalog=3 raw_remaining=0" in summary
+
+
 def test_group_files_by_shared_pages_unions_on_any_shared_route() -> None:
     """Two files sharing a SECONDARY (non-primary) route must land in one group.
 
