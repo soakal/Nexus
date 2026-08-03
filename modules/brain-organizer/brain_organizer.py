@@ -2273,10 +2273,18 @@ def process_file(
     catalog_by_title: dict[str, dict[str, Any]] = {p["title"]: p for p in catalog}
 
     # Phase 1: synthesize ALL routes into memory before touching the filesystem.
-    # (topic, wiki_file_path, wiki_content)
-    topic_results: list[tuple[str, Path, str]] = []
+    # (topic, wiki_file_path, wiki_content, existing_tags, orig_fm)
+    topic_results: list[tuple[str, Path, str, list[str], str]] = []
     for topic, wiki_path, is_new in routes:
         existing = wiki_path.read_text(encoding="utf-8") if wiki_path.exists() else ""
+        existing_tags = _parse_frontmatter_tags(existing)
+        existing_fm = _find_frontmatter(existing)
+        if existing_fm is not None:
+            _, fm_end = existing_fm
+            fm_lines = existing.lstrip("﻿").splitlines(keepends=True)
+            orig_fm = "".join(fm_lines[: fm_end + 1])
+        else:
+            orig_fm = ""
         catalog_entry = None if is_new else catalog_by_title.get(topic)
         wiki_content = synthesize_wiki(
             topic, content, existing, config, client,
@@ -2284,13 +2292,20 @@ def process_file(
             catalog=catalog,
             stats=stats,
         )
-        topic_results.append((topic, wiki_path, wiki_content))
+        topic_results.append((topic, wiki_path, wiki_content, existing_tags, orig_fm))
         logger.info("Synthesis complete for route: %s (new=%s)", topic, is_new)
 
     # Phase 2: all synthesized — write each wiki atomically to its RESOLVED path
     updated_topics: list[tuple[str, Path]] = []
-    for topic, wiki_file, wiki_content in topic_results:
+    for topic, wiki_file, wiki_content, existing_tags, orig_fm in topic_results:
         wiki_file.parent.mkdir(parents=True, exist_ok=True)
+        # Spec #3 §3.4 -- preserve/merge frontmatter (category/date/tags) that
+        # synthesize_wiki may otherwise silently drop. note_tags stays [] here
+        # (suggest_tags isn't wired in yet); only re-apply what already existed.
+        if config["tags_enabled"] and (existing_tags or orig_fm):
+            wiki_content = _write_frontmatter_tags(
+                wiki_content, existing_tags, original_frontmatter=orig_fm
+            )
         tmp = _make_temp_path(wiki_file.parent, f".{wiki_file.stem}_", ".tmp")
         try:
             tmp.write_text(wiki_content, encoding="utf-8")

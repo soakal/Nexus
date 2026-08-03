@@ -899,6 +899,130 @@ def test_process_file_skips_llm_route_for_daily_note(
 
 
 # ---------------------------------------------------------------------------
+# process_file — Phase 2 frontmatter/tags preservation (spec #3 §3.3/§3.4)
+# ---------------------------------------------------------------------------
+
+def test_process_file_merge_drops_frontmatter_still_preserves_category_and_tag(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Criterion 35: a 5a merge whose synthesized content drops the
+    frontmatter block entirely must still end up with both the pre-existing
+    non-tag key (category) and the pre-existing tag (alpha) in the written
+    file — restored from `orig_fm`/`existing_tags` captured in Phase 1."""
+    wiki_path = tmp_vault / "wiki" / "Alpha.md"
+    existing = (
+        "---\n"
+        "category: Work\n"
+        "tags: [alpha]\n"
+        "---\n"
+        "# Alpha\n\n"
+        "Old note.\n"
+    )
+    wiki_path.write_text(existing, encoding="utf-8")
+
+    f = write_raw(tmp_vault, "note.md", "New info about Alpha")
+    client = MagicMock()
+    # Simulates the LLM returning "the complete updated Wiki document" with
+    # the frontmatter block silently dropped (the exact regression §3.4 guards).
+    client.messages.create.return_value = make_message(
+        "# Alpha\n\nMerged body content with the frontmatter dropped by the LLM.\n"
+    )
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Alpha", wiki_path, False)],
+    )
+
+    result = wiki_path.read_text(encoding="utf-8")
+    assert "category: Work" in result
+    assert "alpha" in result
+
+
+def test_process_file_no_existing_frontmatter_writes_byte_identical_content(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """A brand-new route with no pre-existing wiki page (no frontmatter,
+    no tags) must skip _write_frontmatter_tags entirely — the written file
+    is byte-identical to what synthesize_wiki returned, and no stray empty
+    ``---`` block is ever emitted."""
+    wiki_path = tmp_vault / "wiki" / "Beta.md"
+    # _call_api() strips() the raw model response before synthesize_wiki ever
+    # sees it -- assert against that already-stripped form, not the padded
+    # mock text, so "byte-identical" means what process_file actually wrote.
+    synthesized = "# Beta\n\nBrand fresh page with no frontmatter at all.\n".strip()
+
+    f = write_raw(tmp_vault, "note.md", "New info about Beta")
+    client = MagicMock()
+    client.messages.create.return_value = make_message(synthesized)
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Beta", wiki_path, True)],
+    )
+
+    result = wiki_path.read_text(encoding="utf-8")
+    assert result == synthesized
+    assert "---" not in result
+
+
+def test_process_file_existing_frontmatter_without_tags_key_inserts_bare_tags_field(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Pins the Security-flagged edge case (STEP's Phase 2 gate is
+    `existing_tags OR orig_fm`, not `existing_tags AND orig_fm`): a page
+    that has frontmatter but no prior `tags:` key still triggers
+    `_write_frontmatter_tags` this cycle (because `orig_fm` alone is
+    truthy — needed so §3.4's category/date restore still fires even when
+    a page never had tags). With `existing_tags == []` and no `suggest_tags`
+    call yet (`note_tags` stays `[]` this step), the call is effectively
+    `_write_frontmatter_tags(content, [])`, whose own pre-existing,
+    already-tested behavior (test_write_frontmatter_tags_inserts_before_
+    closing_delimiter_when_no_tags_key in test_frontmatter_tags.py) is to
+    insert a `tags:` key before the closing delimiter regardless of list
+    emptiness. This matches §3.3's full-spec Phase 2 pseudocode, which
+    calls `_write_frontmatter_tags` unconditionally on every route (this
+    step's OR-gate is a strict subset of that). Every other key
+    (category) stays untouched. Documented here, not treated as a
+    defect — Security explicitly deferred this exact question."""
+    wiki_path = tmp_vault / "wiki" / "Gamma.md"
+    existing = (
+        "---\n"
+        "category: Work\n"
+        "---\n"
+        "# Gamma\n\n"
+        "Old body.\n"
+    )
+    wiki_path.write_text(existing, encoding="utf-8")
+
+    f = write_raw(tmp_vault, "note.md", "New info about Gamma")
+    client = MagicMock()
+    # LLM preserves the frontmatter block verbatim this time (not the §3.4
+    # drop case above) -- content still has its own "---" block, so Phase 2
+    # splices directly into wiki_content's own block rather than
+    # reconstructing from orig_fm.
+    client.messages.create.return_value = make_message(
+        "---\n"
+        "category: Work\n"
+        "---\n"
+        "# Gamma\n\n"
+        "Updated body with enough length to pass synthesize_wiki's merge "
+        "length-ratio guard.\n"
+    )
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Gamma", wiki_path, False)],
+    )
+
+    lines = wiki_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "---"
+    assert lines[1] == "category: Work"
+    assert lines[2] == "tags:"
+    assert lines[3] == "---"
+    assert lines[4] == "# Gamma"
+
+
+# ---------------------------------------------------------------------------
 # synthesize_wiki
 # ---------------------------------------------------------------------------
 
