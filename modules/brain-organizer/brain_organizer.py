@@ -1704,6 +1704,8 @@ def suggest_tags(
             config,
             client,
         )
+    except _APIUsageCapped:
+        raise
     except Exception as exc:
         logger.warning("suggest_tags: API call failed — returning [] (%s)", exc)
         return []
@@ -2290,6 +2292,8 @@ def process_file(
                 new_vocab_count = sum(1 for t in note_tags if t.lower() not in vocab_lower)
                 if new_vocab_count:
                     stats["tags_new_vocabulary"] = stats.get("tags_new_vocabulary", 0) + new_vocab_count
+        except _APIUsageCapped:
+            raise
         except Exception as exc:
             logger.warning("tag suggestion failed for %s: %s — continuing untagged", display_name, exc)
 

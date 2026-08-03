@@ -1826,6 +1826,51 @@ def test_run_usage_capped_aborts_without_per_file_failure_spam(
     assert sha not in processed, "an aborted run must not record a failed attempt"
 
 
+def test_run_usage_capped_during_phase0_tag_suggestion_aborts_before_synthesis(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """_APIUsageCapped raised from Phase 0's tag-suggestion call (suggest_tags)
+    must abort the run exactly like a routing-time cap, not be swallowed by
+    process_file's blanket `except Exception` and fall through to Phase 1
+    synthesis.
+
+    Uses a claude-features-digest-*.md filename so `_deterministic_route`
+    matches and routing makes ZERO API calls -- the file's very FIRST
+    `_call_api` is therefore Phase 0's `suggest_tags` call, exactly the path
+    the two `except _APIUsageCapped: raise` re-raises (suggest_tags and
+    process_file's Phase 0 handler) protect. Without those re-raises, the
+    capped exception would be logged and swallowed as "tag suggestion
+    failed... continuing untagged", and process_file would fall through to
+    Phase 1 synthesis, which issues a SECOND `_call_api` call (and aborts
+    there instead) -- so `call_count == 1` (not 2) is the assertion that
+    actually distinguishes fixed from broken behavior; result/raw-file/
+    processed-ledger alone would pass either way.
+    """
+    tmp_config["max_parallel_files"] = 1
+    raw_file = write_raw(tmp_vault, "claude-features-digest-2026-01-01.md", "Digest content")
+    sha = bo.compute_sha256(raw_file)
+
+    capped_response = MagicMock()
+    capped_response.status_code = 400
+    capped_response.request = MagicMock()
+    capped_response.headers = {}
+
+    client = MagicMock()
+    client.messages.create.side_effect = anthropic.APIStatusError(
+        "usage limits exceeded", response=capped_response, body={}
+    )
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 0
+    assert raw_file.exists(), "aborted, not failed -- kept for retry, not attempt-counted"
+    processed = bo.load_processed(tmp_config)
+    assert sha not in processed, "an aborted run must not record a failed attempt"
+    assert client.messages.create.call_count == 1, (
+        "Phase 0's call must be the ONLY API call -- a swallowed cap would "
+        "fall through to Phase 1 synthesis and call again"
+    )
+
+
 def test_run_aborts_when_catalog_empty_but_wiki_has_markdown_files(
     tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
