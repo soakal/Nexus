@@ -2210,6 +2210,66 @@ def test_large_page_splice_replaces_matching_section_despite_header_wikilink_nor
     assert "newbody" in result
 
 
+def test_large_page_splice_last_section_no_trailing_newline_leaves_no_stale_content(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Regression for spec #2 crit 41 / spec #1 crit 11 (defect 1): the body-line
+    regex used to require each body line to end in "\\n" to be consumed, so when
+    the replaced section was the LAST thing in the page and the raw file had no
+    trailing newline, that final unterminated line fell outside the match and
+    survived -- stale old content glued underneath the freshly spliced-in new
+    section, silently corrupting the page forever. The fix's `(?:\\n|$)`
+    alternative must consume that last line too, producing byte-clean output.
+    """
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    existing = "# Topic\n\n## Existing\n\noldSTALEbody"  # no trailing "\n" -- deliberate
+    client = MagicMock()
+    client.messages.create.return_value = make_message("## Existing\n\nnewbody")
+    result = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
+    assert "STALE" not in result  # no trace of the old body survives anywhere
+    assert result == "# Topic\n\n## Existing\n\nnewbody\n"
+
+
+def test_large_page_splice_restores_blank_line_before_following_section(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Regression for spec #2 crit 41 / spec #1 crit 11 (defect 2): when the
+    replaced section is followed by another untouched "## " section, the old
+    replacement logic consumed the blank-line separator along with the matched
+    body and never put it back, joining the new content directly onto the next
+    header with no blank line. The fix must restore exactly one blank line, and
+    the untouched following section's content must be byte-identical.
+    """
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    existing = "# Topic\n\n## Existing\n\noldbody\n\n## Other\n\nother content here"
+    client = MagicMock()
+    client.messages.create.return_value = make_message("## Existing\n\nnewbody")
+    result = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
+    assert result == (
+        "# Topic\n\n## Existing\n\nnewbody\n\n## Other\n\nother content here"
+    )
+
+
+def test_large_page_splice_is_idempotent_on_repeated_run(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Light bonus check (Security's note): re-running the splice a second time
+    with the same returned section must not drift the spacing further -- running
+    it twice should converge to the same byte-identical output as running it
+    once, not double up or lose the separator on repeat application.
+    """
+    tmp_config["large_page_threshold_chars"] = 10  # force the 5b branch
+    existing = "# Topic\n\n## Existing\n\noldbody\n\n## Other\n\nother content here"
+    client = MagicMock()
+    client.messages.create.return_value = make_message("## Existing\n\nnewbody")
+    result_once = bo.synthesize_wiki("Topic", "new content", existing, tmp_config, client)
+
+    client2 = MagicMock()
+    client2.messages.create.return_value = make_message("## Existing\n\nnewbody")
+    result_twice = bo.synthesize_wiki("Topic", "new content", result_once, tmp_config, client2)
+    assert result_twice == result_once
+
+
 # ---------------------------------------------------------------------------
 # Empty / suspiciously-short synthesis result guard
 # ---------------------------------------------------------------------------

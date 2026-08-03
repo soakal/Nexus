@@ -2036,12 +2036,24 @@ def synthesize_wiki(
                     r"(?m)^"
                     + re.escape(header_line)
                     + r"\s*\n"          # header line
-                    r"(?:(?!^## ).*\n)*"  # body lines (up to next ## or EOF)
+                    r"(?:(?!^## ).*(?:\n|$))*"  # body lines, up to next ## or true EOF
+                    # (?:\n|$) tolerates a final line with no trailing
+                    # newline -- without it, an unterminated last line
+                    # falls outside the match and survives, unreplaced,
+                    # glued underneath the new content.
                 )
                 match = re.search(pattern, result)
                 if match:
-                    # Replace existing section
-                    result = result[: match.start()] + chunk + "\n" + result[match.end() :]
+                    # Replace existing section. When more content follows
+                    # (the loop above stopped only because it hit the next
+                    # "## " header, not because it reached EOF), the match
+                    # consumed the single blank-line separator along with
+                    # the old body -- restore it so the next section keeps
+                    # its leading blank line.
+                    replacement = chunk + "\n"
+                    if match.end() < len(result):
+                        replacement += "\n"
+                    result = result[: match.start()] + replacement + result[match.end() :]
                 else:
                     # Append new section at end
                     if not result.endswith("\n"):
