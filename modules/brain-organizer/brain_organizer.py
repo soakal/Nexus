@@ -1131,6 +1131,7 @@ def _defuse_unknown_wikilinks(
     catalog: list[dict[str, Any]] | None,
     *,
     threshold: float = 0.82,
+    stats: dict[str, int] | None = None,
 ) -> str:
     """Rewrite any [[wikilink]] the model generated into filename-space (the
     space Obsidian actually resolves), or backtick-defuse it if it names
@@ -1165,6 +1166,12 @@ def _defuse_unknown_wikilinks(
     today's title-only matching behavior (left unchanged if their title
     matches) rather than raising -- they simply cannot be rewritten to a
     stem since there is no filename to rewrite to.
+
+    stats: optional mutable accumulator (e.g. {"rewritten": 0, "backticked": 0})
+        incremented in place -- steps 3-6 above bump "rewritten", step 7 bumps
+        "backticked". Steps 1/2 and the title-only degrade leave the link
+        unchanged, so neither counter moves. Return type stays `-> str`;
+        callers that never pass `stats` see identical behavior.
     """
     catalog = catalog or []
 
@@ -1248,10 +1255,14 @@ def _defuse_unknown_wikilinks(
             display = alias.strip() if alias else target
             heading_part = f"#{heading}" if heading else ""
             alias_part = "" if display == resolved_stem else f"|{display}"
+            if stats is not None:
+                stats["rewritten"] = stats.get("rewritten", 0) + 1
             return f"[[{resolved_stem}{heading_part}{alias_part}]]"
 
         # 7. unknown -- backtick-defuse
         display = alias.strip() if alias else target + (f"#{heading}" if heading else "")
+        if stats is not None:
+            stats["backticked"] = stats.get("backticked", 0) + 1
         return f"`{display}`"
 
     return _WIKILINK_PAT.sub(_replace, text)
@@ -1266,6 +1277,7 @@ def synthesize_wiki(
     *,
     catalog_entry: dict[str, Any] | None = None,
     catalog: list[dict[str, Any]] | None = None,
+    stats: dict[str, int] | None = None,
 ) -> str:
     """Synthesize or merge a wiki page for *topic*.
 
@@ -1279,6 +1291,10 @@ def synthesize_wiki(
             contract (headers, title) so the model stays on-topic.
         catalog:       Full page list. Used in the CREATE branch (5c) to compute
             related-page wikilink suggestions.
+        stats:         Optional mutable accumulator threaded straight through to
+            every _defuse_unknown_wikilinks call in this function (both the
+            5b splice loop and the 5a/5c final normalizer), so a caller can
+            tally rewritten/backticked links across one synthesis call.
     """
     max_chars: int = config["max_file_chars"]
     large_threshold: int = config["large_page_threshold_chars"]
@@ -1375,7 +1391,9 @@ def synthesize_wiki(
                 # large-page diffs kept whatever raw [[links]] the model
                 # emitted, broken or not.
                 chunk = _defuse_unknown_wikilinks(
-                    chunk, topic, catalog, threshold=config["new_page_similarity_threshold"]
+                    chunk, topic, catalog,
+                    threshold=config["new_page_similarity_threshold"],
+                    stats=stats,
                 )
                 # Find and replace the matching section in the existing content,
                 # or append if not present.
@@ -1518,7 +1536,9 @@ def synthesize_wiki(
         )
 
     text = _defuse_unknown_wikilinks(
-        text, topic, catalog, threshold=config["new_page_similarity_threshold"]
+        text, topic, catalog,
+        threshold=config["new_page_similarity_threshold"],
+        stats=stats,
     )
     return text
 
@@ -1570,6 +1590,7 @@ def process_file(
     _routes: list[tuple[str, Path, bool]] | None = None,
     _catalog_lock: threading.Lock | None = None,
     _registry_lock: threading.Lock | None = None,
+    stats: dict[str, int] | None = None,
 ) -> list[str]:
     """
     Backup → route to existing/new pages → synthesize ALL wikis first → write all atomically
@@ -1581,6 +1602,11 @@ def process_file(
 
     catalog is mutated in-place during Phase 2 so later files in the same run
     route against fresh content (prevents same-run duplicate page creation).
+
+    stats: optional mutable accumulator passed straight through to every
+        synthesize_wiki call for this file's routes -- callers that want a
+        per-file rewritten/backticked tally pass one dict here and read it
+        back after this function returns; return type stays `-> list[str]`.
     """
     raw_folder = Path(config["vault_path"]) / config["raw_folder"]
     display_name = file_path.relative_to(raw_folder) if file_path.is_relative_to(raw_folder) else file_path.name
@@ -1624,6 +1650,7 @@ def process_file(
             topic, content, existing, config, client,
             catalog_entry=catalog_entry,
             catalog=catalog,
+            stats=stats,
         )
         topic_results.append((topic, wiki_path, wiki_content))
         logger.info("Synthesis complete for route: %s (new=%s)", topic, is_new)
@@ -1789,14 +1816,16 @@ def _send_run_summary(
     uncategorized_count: int,
     catalog_count: int,
     raw_remaining: int,
+    links_rewritten: int = 0,
+    links_backticked: int = 0,
     all_topics: set[str] | None = None,
     duration: float | None = None,
     _http_client: httpx.Client | None = None,
 ) -> None:
     """Send the end-of-run Telegram/log summary unconditionally (§6.3/§6.6
-    criteria 45-46) -- a silent night, a stuck raw file, or a flat page-
-    creation rate must be visible in the signal, not indistinguishable from
-    a healthy run.
+    criteria 45-47) -- a silent night, a stuck raw file, a flat page-
+    creation rate, or a sustained wikilink-backtick rate must be visible in
+    the signal, not indistinguishable from a healthy run.
     """
     lines = [
         "🧠 Brain Organizer — Run complete",
@@ -1811,7 +1840,8 @@ def _send_run_summary(
     lines.append(
         f"created={created_count} merged={merged_count} "
         f"uncategorized={uncategorized_count} catalog={catalog_count} "
-        f"raw_remaining={raw_remaining}"
+        f"raw_remaining={raw_remaining} links_rewritten={links_rewritten} "
+        f"links_backticked={links_backticked}"
     )
     summary = "\n".join(lines)
     logger.info(summary)
@@ -1848,6 +1878,7 @@ def run(
             # run with nothing to do -- see the comment below); raw_remaining
             # is still a direct disk count, independent of that.
             catalog_count=0, raw_remaining=_count_raw_remaining(config),
+            links_rewritten=0, links_backticked=0,
             _http_client=_http_client,
         )
         return 0
@@ -1892,6 +1923,8 @@ def run(
     created_count = 0
     merged_count = 0
     uncategorized_count = 0
+    links_rewritten_count = 0
+    links_backticked_count = 0
 
     # One unified flow for both sequential (max_parallel_files<=1) and
     # parallel runs. These used to be two independently-maintained ~60-line
@@ -1954,8 +1987,10 @@ def run(
 
     def _record_success(
         sha: str, fp: Path, updated: list[str], routes: list[tuple[str, Path, bool]],
+        file_stats: dict[str, int] | None = None,
     ) -> None:
         nonlocal success_count, created_count, merged_count, uncategorized_count
+        nonlocal links_rewritten_count, links_backticked_count
         with state_lock:
             processed[sha] = {
                 "filename": fp.name,
@@ -1975,6 +2010,14 @@ def run(
                     created_count += 1
                 else:
                     merged_count += 1
+            # §6.3/47: this file's _defuse_unknown_wikilinks tally, accumulated
+            # into the run-wide totals under the same lock as every other
+            # counter above -- file_stats itself was only ever touched by this
+            # file's own worker thread (never shared across files), so this
+            # is the sole point it needs to be thread-safe.
+            if file_stats:
+                links_rewritten_count += file_stats.get("rewritten", 0)
+                links_backticked_count += file_stats.get("backticked", 0)
             # Batched, not per-file: the raw file is already deleted by this
             # point, which is the real idempotency marker (scan_raw_folder
             # simply never sees it again) -- losing a few success records to
@@ -2020,13 +2063,18 @@ def run(
                     # next run) instead of silently deleting the raw file
                     # with nowhere for its content to have gone.
                     raise RuntimeError("routing produced no routes")
+                # Per-file, not shared: this dict is only ever touched by
+                # this file's own worker thread before _record_success
+                # aggregates it under state_lock -- no lock needed here.
+                file_stats: dict[str, int] = {"rewritten": 0, "backticked": 0}
                 updated = process_file(
                     fp, config, client, logger, catalog,
                     _routes=routes,
                     _catalog_lock=catalog_lock,
                     _registry_lock=registry_lock,
+                    stats=file_stats,
                 )
-                _record_success(sha, fp, updated, routes)
+                _record_success(sha, fp, updated, routes, file_stats)
             except _APIUsageCapped as exc:
                 logger.error("API hard-capped — aborting run: %s", exc)
                 if not aborted.is_set():
@@ -2061,6 +2109,7 @@ def run(
         created_count=created_count, merged_count=merged_count,
         uncategorized_count=uncategorized_count,
         catalog_count=len(catalog), raw_remaining=_count_raw_remaining(config),
+        links_rewritten=links_rewritten_count, links_backticked=links_backticked_count,
         all_topics=all_topics, duration=duration,
         _http_client=_http_client,
     )

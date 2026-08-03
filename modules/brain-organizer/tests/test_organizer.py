@@ -926,6 +926,38 @@ def test_synthesize_wiki_defuses_hallucinated_link_in_create_branch(tmp_config: 
     assert "`project_version_scheme`" in result
 
 
+def test_synthesize_wiki_stats_accumulator_counts_rewritten_and_backticked(
+    tmp_config: dict[str, Any]
+) -> None:
+    """spec #2 criterion 47 / last 2 of criterion 46's 7 fields: the optional
+    `stats` kwarg threaded through synthesize_wiki -> _defuse_unknown_wikilinks
+    must tally exactly what steps 3-6 rewrote ("rewritten") and what step 7
+    backtick-defused ("backticked") -- and must NOT move for links steps 1/2
+    leave untouched (an already-correct stem, and a self-reference) -- all in
+    one synthesis call, mirroring
+    test_synthesize_wiki_defuses_hallucinated_link_in_create_branch above.
+    """
+    catalog = [
+        {"title": "Bug Fixes", "filename": "Bug-Fixes.md", "path_str": "x", "headers": "", "summary": ""},
+    ]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        "# Topic\n\nSee [[Bug Fixes]], [[Bug-Fixes]], [[Topic]], and [[Unknown Thing]] for context."
+    )
+    stats: dict[str, int] = {}
+    result = bo.synthesize_wiki("Topic", "content", "", tmp_config, client, catalog=catalog, stats=stats)
+
+    # step 3 (exact title match) rewrites "Bug Fixes" -> aliased stem link
+    assert "[[Bug-Fixes|Bug Fixes]]" in result
+    # step 1 (already an exact stem) and step 2 (self-reference) are untouched
+    assert "[[Bug-Fixes]]" in result
+    assert "[[Topic]]" in result
+    # step 7 (unresolvable) backtick-defuses
+    assert "`Unknown Thing`" in result
+
+    assert stats == {"rewritten": 1, "backticked": 1}
+
+
 def test_defuse_unknown_wikilinks_fuzzy_match_without_filename_degrades_gracefully() -> None:
     """Engineer-flagged gap: find_similar_page can fuzzy-match a catalog entry
     that has no "filename" field at all (title-only entry). Step 6 of the
@@ -1511,6 +1543,45 @@ def test_run_summary_counts_created_merged_uncategorized_catalog_for_real_run(
     # 1 new page (NewTopic) + 1 merge (Existing) + 1 Uncategorized fallback;
     # catalog = pre-existing "Existing" + newly-created NewTopic + Uncategorized.
     assert "created=1 merged=1 uncategorized=1 catalog=3 raw_remaining=0" in summary
+
+
+def test_run_summary_reports_links_rewritten_and_backticked_counts(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """spec #2 criterion 47 / last 2 of criterion 46's 7 fields: run()'s
+    summary must surface links_rewritten=/links_backticked= counts derived
+    from _defuse_unknown_wikilinks's stats accumulator, threaded through
+    synthesize_wiki -> process_file -> run()'s _record_success (folded under
+    state_lock) -> _send_run_summary. Only route_topics is faked (same
+    content-keyed pattern as
+    test_run_summary_counts_created_merged_uncategorized_catalog_for_real_run
+    above) -- synthesize_wiki and _defuse_unknown_wikilinks run for real, so
+    the counters reflect an actual title-match rewrite and an actual
+    backtick-defuse produced in the same run.
+    """
+    wiki_folder = tmp_vault / "wiki"
+    (wiki_folder / "Bug-Fixes.md").write_text("# Bug Fixes\n\nKnown issues.", encoding="utf-8")
+    write_raw(tmp_vault, "note.md", "content about a new topic")
+
+    def fake_route_topics(content, catalog, config, client):
+        return [("NewTopic", wiki_folder / "NewTopic.md", True)]
+
+    monkeypatch.setattr(bo, "route_topics", fake_route_topics)
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        "# NewTopic\n\nSee [[Bug Fixes]] and also [[Unknown Thing]] for context."
+    )
+    mock_telegram = MagicMock()
+    monkeypatch.setattr(bo, "send_telegram_notification", mock_telegram)
+
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 0
+    assert (wiki_folder / "NewTopic.md").exists()
+
+    mock_telegram.assert_called_once()
+    summary = mock_telegram.call_args[0][1]
+    assert "links_rewritten=1 links_backticked=1" in summary
 
 
 def test_group_files_by_shared_pages_unions_on_any_shared_route() -> None:
