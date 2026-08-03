@@ -421,6 +421,112 @@ def _normalize_title(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Frontmatter parsing (stdlib-only -- spec #3 §8.8; no pyyaml). Anchored
+# strictly at position 0 of the (BOM-stripped) text: real wiki pages
+# (NEXUS.md, Obsidian.md, Sales.md) carry mid-file "---" blocks that would
+# false-positive as frontmatter under a document-wide search.
+# ---------------------------------------------------------------------------
+
+_FM_MAX_LINES = 100
+
+
+def _find_frontmatter(text: str) -> tuple[int, int] | None:
+    """Return (first_body_line_index, closing_delimiter_line_index) or None.
+
+    Detects on ``text.lstrip("\ufeff")``. A leading code fence (```` ``` ````)
+    -- 3 live pages wrap their whole document in one, hiding an interior
+    "---" block from Obsidian -- returns None immediately. Otherwise line 0
+    of the BOM-stripped text must be exactly "---", with a later exact "---"
+    within the first ``_FM_MAX_LINES`` lines; either miss returns None.
+    """
+    stripped = text.lstrip("\ufeff")
+    lines = stripped.splitlines()
+    if not lines:
+        return None
+    first_non_blank = next((ln for ln in lines if ln.strip()), None)
+    if first_non_blank is not None and first_non_blank.strip().startswith("```"):
+        return None
+    if lines[0] != "---":
+        return None
+    limit = min(len(lines), _FM_MAX_LINES)
+    for i in range(1, limit):
+        if lines[i] == "---":
+            return (1, i)
+    return None
+
+
+def _parse_frontmatter_tags(text: str) -> list[str]:
+    """Parse the ``tags:`` field from a document's top-of-file frontmatter.
+
+    Only looks inside the block ``_find_frontmatter`` locates -- never a
+    document-wide search. Handles the three live forms: YAML block list,
+    hash-string (invalid YAML, but present verbatim on 4 live pages), and
+    inline array. Returns original spellings, de-duplicated
+    case-insensitively (first-seen spelling wins), order preserved.
+    """
+    fm = _find_frontmatter(text)
+    if fm is None:
+        return []
+    start, end = fm
+    lines = text.lstrip("\ufeff").splitlines()
+
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw_value: str) -> None:
+        value = raw_value.strip().strip('"').strip("'").strip()
+        if value and value.lower() not in seen:
+            seen.add(value.lower())
+            tags.append(value)
+
+    key_re = re.compile(r"^tags\s*:\s*(.*)$", re.IGNORECASE)
+    item_re = re.compile(r"^-\s*(.*)$")
+
+    i = start
+    while i < end:
+        m = key_re.match(lines[i].strip())
+        if m is None:
+            i += 1
+            continue
+        rest = m.group(1).strip()
+        if rest.startswith("["):
+            # Inline array, e.g. tags: [risk-management, audit, "some tag"]
+            buf = rest
+            j = i
+            while "]" not in buf and j + 1 < end:
+                j += 1
+                buf += " " + lines[j].strip()
+            inner = buf.split("]", 1)[0]
+            inner = inner[1:] if inner.startswith("[") else inner
+            for part in inner.split(","):
+                if part.strip():
+                    _add(part)
+            i = j + 1
+        elif rest.startswith("#"):
+            # Hash-string form (invalid YAML): tags: #compliance #legal #hipaa
+            for tok in rest.split():
+                _add(tok.lstrip("#"))
+            i += 1
+        elif rest == "":
+            # Block list form:
+            #   tags:
+            #     - ford
+            #     - beyondtrust
+            j = i + 1
+            while j < end:
+                item = item_re.match(lines[j].strip())
+                if item is None:
+                    break
+                _add(item.group(1))
+                j += 1
+            i = j
+        else:
+            i += 1
+
+    return tags
+
+
+# ---------------------------------------------------------------------------
 # Per-page catalog entry extractor
 # ---------------------------------------------------------------------------
 
