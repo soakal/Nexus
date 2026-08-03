@@ -297,6 +297,58 @@ def test_mcp_server_no_longer_defines_its_own_wikilink_helpers() -> None:
     assert not hasattr(mcp_server, "_build_stem_index")
 
 
+def test_inbound_stem_rewrite_round_trips_clean_through_outbound_defuse(
+    tmp_vault: Path,
+) -> None:
+    """spec #2 §3.4 criterion 14: the on-disk stem that inbound
+    _normalize_wikilinks (mcp_server.py) substitutes for a title-form
+    [[link]] must be recognized, unchanged, by outbound
+    _defuse_unknown_wikilinks' (brain_organizer.py) step-1 `target in
+    by_stem` check -- both sides key off the same verbatim md.stem, so a
+    stem it just emitted must never get backticked or re-rewritten one hop
+    later. Uses a page whose title ("Home Assistant") differs from its
+    filename stem ("Home-Assistant") so the round trip actually exercises
+    the stem/title split rather than a case where they happen to coincide.
+    """
+    from brain_organizer import build_link_index, build_wiki_catalog
+    from brain_organizer import _defuse_unknown_wikilinks
+    from mcp_server import _normalize_wikilinks
+
+    seed_wiki(tmp_vault, "Home-Assistant", "# Home Assistant\n\nSmart home hub.")
+    wiki_dir = tmp_vault / "wiki"
+
+    # Inbound: title-form [[home assistant]] -> stem-form [[Home-Assistant]]
+    inbound_index = build_link_index([wiki_dir.parent, wiki_dir, wiki_dir / "daily"])
+    inbound_result, broken = _normalize_wikilinks(
+        "See [[home assistant]] for setup.", inbound_index
+    )
+    assert broken == []
+    assert "[[Home-Assistant]]" in inbound_result
+
+    # Outbound: feed that stem-form link straight back through the real
+    # catalog (built the same way production builds it, not a hand-written
+    # dict), using an unrelated topic so step 2 (self-reference) can't be
+    # what's making the assertion pass instead of step 1 (by_stem).
+    meta_folder = tmp_vault / "_meta"
+    catalog = build_wiki_catalog(wiki_dir, meta_folder)
+    stats: dict[str, int] = {}
+    outbound_result = _defuse_unknown_wikilinks(
+        inbound_result, topic="Some-Unrelated-Topic", catalog=catalog, stats=stats
+    )
+
+    assert outbound_result == inbound_result
+    assert "`" not in outbound_result
+    # Steps 3-6 (case-insensitive/fuzzy rewrite) would produce this exact
+    # same output string too (the stem already equals itself case-
+    # insensitively), so the string equality check above alone can't tell
+    # step 1's untouched-passthrough apart from a later step's no-op
+    # rewrite. stats["rewritten"] is only ever bumped by steps 3-6, never
+    # step 1 -- so this is what actually pins the match down to step 1's
+    # `target in by_stem` exact check specifically.
+    assert stats.get("rewritten", 0) == 0
+    assert stats.get("backticked", 0) == 0
+
+
 # ---------------------------------------------------------------------------
 # POST /raw
 # ---------------------------------------------------------------------------
