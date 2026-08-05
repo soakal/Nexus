@@ -8,8 +8,12 @@ from sqlmodel.pool import StaticPool
 from backend.agents.briefing import (
     _strip_unverified_sections,
     _build_protonmail_section,
+    _build_claude_usage_section,
+    _build_openrouter_section,
     _format_calibration_line,
 )
+from backend.integrations.claude_usage import ClaudeUsageData, ClaudeUsageWindow
+from backend.integrations.openrouter import OpenRouterData
 
 
 def test_strip_unverified_sections_drops_priority_actions_and_inbox():
@@ -39,6 +43,170 @@ def test_strip_unverified_sections_drops_proton_mail():
     assert "## Proton Mail" not in stripped
     assert "## Weather\nClear, 72°F." in stripped
     assert "## Today's Focus\nStay focused." in stripped
+
+
+def test_strip_unverified_sections_drops_claude_usage():
+    text = (
+        "## Weather\nClear, 72°F.\n\n"
+        "## Claude Usage\n- 5-hour: 45% used, resets in 1h 30m\n\n"
+        "## Today's Focus\nStay focused."
+    )
+    stripped = _strip_unverified_sections(text)
+    assert "45%" not in stripped
+    assert "## Claude Usage" not in stripped
+    assert "## Weather\nClear, 72°F." in stripped
+    assert "## Today's Focus\nStay focused." in stripped
+
+
+# ---------------------------------------------------------------------------
+# _build_claude_usage_section — pure, never raises
+# ---------------------------------------------------------------------------
+
+def test_build_claude_usage_section_both_windows_present():
+    data = ClaudeUsageData(
+        available=True,
+        captured_at=None,
+        five_hour=ClaudeUsageWindow(used_percentage=45.0, resets_at=None),
+        seven_day=ClaudeUsageWindow(used_percentage=7.0, resets_at=None),
+    )
+    section = _build_claude_usage_section(data)
+    assert "## Claude Usage" in section
+    assert "5-hour: 45% used" in section
+    assert "7-day: 7% used" in section
+
+
+def test_build_claude_usage_section_unavailable_no_capture():
+    section = _build_claude_usage_section(ClaudeUsageData(available=False))
+    assert section == "## Claude Usage\nNo Claude Code session captured yet."
+
+
+def test_build_claude_usage_section_exception_never_raises():
+    section = _build_claude_usage_section(RuntimeError("gather failure"))
+    assert section == "## Claude Usage\nClaude Code usage data unavailable."
+
+
+def test_build_claude_usage_section_one_window_absent():
+    data = ClaudeUsageData(
+        available=True,
+        five_hour=ClaudeUsageWindow(used_percentage=10.0, resets_at=None),
+        seven_day=None,
+    )
+    section = _build_claude_usage_section(data)
+    assert "5-hour: 10% used" in section
+    assert "7-day: no data" in section
+
+
+def test_build_claude_usage_section_includes_reset_countdown():
+    import time
+    future = time.time() + 5400  # 1h30m out, without using datetime.now()/Date.now()-style calls
+    data = ClaudeUsageData(
+        available=True,
+        five_hour=ClaudeUsageWindow(used_percentage=50.0, resets_at=future),
+        seven_day=None,
+    )
+    section = _build_claude_usage_section(data)
+    assert "resets in 1h" in section
+
+
+def test_build_claude_usage_section_wrong_type_never_raises():
+    section = _build_claude_usage_section({"not": "a dataclass"})
+    assert section == "## Claude Usage\nClaude Code usage data unavailable."
+
+
+def test_build_claude_usage_section_window_as_dict_never_raises():
+    """Regression guard (Opus verification pass, 2026-08-05): a malformed
+    window (e.g. a dict instead of ClaudeUsageWindow, from a future shape
+    change) must degrade to 'no data', not an AttributeError on
+    `w.used_percentage` that would kill the whole briefing."""
+    data = ClaudeUsageData(available=True, five_hour={"used_percentage": 50}, seven_day=None)
+    section = _build_claude_usage_section(data)
+    assert "5-hour: no data" in section
+
+
+def test_build_claude_usage_section_past_reset_reads_naturally():
+    """Regression guard: a capture whose 5-hour window already elapsed (the
+    normal overnight state) used to render 'resets in due now' -- the
+    countdown helper now returns the full clause itself."""
+    data = ClaudeUsageData(
+        available=True,
+        five_hour=ClaudeUsageWindow(used_percentage=6.0, resets_at=1.0),  # far in the past
+        seven_day=None,
+    )
+    section = _build_claude_usage_section(data)
+    assert "resets in due now" not in section
+    assert "resets any moment" in section
+
+
+def test_build_claude_usage_section_reset_countdown_has_day_tier():
+    import time
+    future = time.time() + 60 * 60 * 111  # ~111h out, like a real 7-day window
+    data = ClaudeUsageData(
+        available=True,
+        five_hour=None,
+        seven_day=ClaudeUsageWindow(used_percentage=8.0, resets_at=future),
+    )
+    section = _build_claude_usage_section(data)
+    assert "resets in 4d" in section
+
+
+# ---------------------------------------------------------------------------
+# _build_openrouter_section — pure, never raises
+# ---------------------------------------------------------------------------
+
+def test_build_openrouter_section_limited_key():
+    data = OpenRouterData(
+        available=True, model_count=400,
+        credit_limit=5.0, credit_remaining=0.0, usage=5.05146565, usage_daily=0.12,
+    )
+    section = _build_openrouter_section(data)
+    assert "## OpenRouter" in section
+    assert "$0.00 remaining of $5.00" in section
+    assert "$0.12 used" in section
+    assert "400 models available" in section
+
+
+def test_build_openrouter_section_unlimited_key():
+    data = OpenRouterData(available=True, model_count=10, credit_limit=None, credit_remaining=None, usage=12.3)
+    section = _build_openrouter_section(data)
+    assert "unlimited key, $12.30 used" in section
+
+
+def test_build_openrouter_section_unavailable():
+    section = _build_openrouter_section(OpenRouterData(available=False))
+    assert section == "## OpenRouter\nOpenRouter usage data unavailable."
+
+
+def test_build_openrouter_section_credit_limit_set_but_remaining_none_never_raises():
+    """Regression guard (Opus verification pass, 2026-08-05): a real crash
+    bug -- credit_limit set but credit_remaining null/absent (a reachable
+    shape if the two fields aren't correlated in an API response) used to
+    raise TypeError on `f"{None:.2f}"`, killing the entire run_briefing()
+    call AFTER the paid Sonnet call had already run."""
+    data = OpenRouterData(available=True, model_count=5, credit_limit=5.0, credit_remaining=None, usage=3.0)
+    section = _build_openrouter_section(data)
+    assert "unknown remaining of $5.00" in section
+
+
+def test_build_openrouter_section_usage_none_never_raises():
+    data = OpenRouterData(available=True, model_count=5, credit_limit=None, credit_remaining=None, usage=None)
+    section = _build_openrouter_section(data)
+    assert "$0.00 used" in section
+
+
+def test_build_openrouter_section_exception_never_raises():
+    section = _build_openrouter_section(RuntimeError("gather failure"))
+    assert section == "## OpenRouter\nOpenRouter usage data unavailable."
+
+
+def test_build_openrouter_section_wrong_type_never_raises():
+    section = _build_openrouter_section({"not": "a dataclass"})
+    assert section == "## OpenRouter\nOpenRouter usage data unavailable."
+
+
+def test_build_openrouter_section_omits_daily_line_when_zero():
+    data = OpenRouterData(available=True, model_count=5, credit_limit=5.0, credit_remaining=1.0, usage=4.0, usage_daily=0.0)
+    section = _build_openrouter_section(data)
+    assert "Today:" not in section
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,28 @@ module-level reused SSL context + one shared client instead of three. This turne
 modules all pay the same cost; only `speedtest.py` is fixed so far, the rest deferred to a later
 pass). Merged to `master`.
 
+**Claude Code + OpenRouter usage tracker (2026-08-05, branch `feat/claude-usage-tracker`, worktree
+`nexus-claude-usage`)** — two analogous dashboard cards + briefing sections, both deterministic
+(never LLM-narrated, never fact-extracted — see `_UNVERIFIED_FACT_SECTIONS` in `briefing.py`).
+**Claude usage**: `backend/integrations/claude_usage.py` reads `~/.claude/rate-limits.json`, a file
+`~/.claude/statusline-command.sh` now writes on every statusline render (edited outside this repo)
+— there is no Anthropic API for personal subscription usage, this is the only legitimate source.
+Deliberately `dashboard.*` only in `state_workers.py`, no `source.*` entry — the file is
+legitimately hours old whenever no Claude Code session is running, which is normal, not an outage.
+**OpenRouter**: `backend/integrations/openrouter.py`'s `fetch()` extended to also hit the real
+`GET /api/v1/key` endpoint (live-verified against Brian's actual key before implementing) for
+credit/usage data; gained a `@async_ttl_cache(30)` in the same pass, since it moved out of
+`backend/safety/contracts.py`'s `EXCLUDED` list (now a real `CONTRACTS` entry) and picked up a
+`dashboard.openrouter` collector on top of its pre-existing `source.openrouter` health check —
+uncached, that would have silently turned ~1 request/5min into ~6. Independently Opus-verified
+against the approved plan; caught and fixed a real crash bug (`_build_openrouter_section` raised
+`TypeError` when `credit_limit` was set but `credit_remaining` was null — reachable, would have
+silently killed the entire daily briefing after the paid Sonnet call already ran), a wrong-signal
+staleness bug (the Claude Usage card was dimming off poll freshness instead of the capture's own
+age), a "resets in due now" phrasing bug plus a missing day-tier on both the backend and frontend
+countdown helpers, and a null-coerced-to-$0.00 frontend bug on `credit_remaining`. Full pytest
+suite: 1870 passed, 1 skipped, 0 failed.
+
 ## Run / build / test
 - **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`  ·  **Restore db:** `.\restore.ps1 [-From <dir>]` (validates the backup BEFORE stopping NEXUS; logic lives in `backend/agents/backup.py::restore_from` — tested by `tests/test_restore_drill.py`)
 - Backend: FastAPI + uvicorn on **:8000**, venv at `.\venv` (`.\venv\Scripts\python.exe`). `start.ps1` launches it via **`run.py`** (NOT `-m uvicorn`) — run.py pins the Windows **SelectorEventLoop** before uvicorn builds its loop (must be set there: uvicorn creates the loop before importing the app, so a policy in `main.py` is too late). The default ProactorEventLoop throws `WinError 64` under concurrent integration fetches → "app not loading data". See Non-obvious rules.

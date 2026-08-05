@@ -114,61 +114,10 @@ def test_import_env_file_not_found(tmp_path):
         mig.import_env_file(str(tmp_path / "missing.env"))
 
 
-# ---------------------------------------------------------------------------
-# backend/integrations/openrouter.py
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_openrouter_fetch_success():
-    from backend.integrations import openrouter
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": [{"id": "m1"}, {"id": "m2"}]}
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_resp)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        data = await openrouter.fetch()
-    assert data.available is True
-    assert data.model_count == 2
-
-
-@pytest.mark.asyncio
-async def test_openrouter_health_check_true():
-    from backend.integrations import openrouter
-    with patch("backend.integrations.openrouter._get_data", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = openrouter.OpenRouterData(available=True, model_count=5)
-        result = await openrouter.health_check()
-    assert result is True
-
-
-@pytest.mark.asyncio
-async def test_openrouter_health_check_exception():
-    from backend.integrations import openrouter
-    with patch("backend.integrations.openrouter._get_data", new_callable=AsyncMock, side_effect=Exception("err")):
-        result = await openrouter.health_check()
-    assert result is False
-
-
-@pytest.mark.asyncio
-async def test_openrouter_no_api_key():
-    from backend.integrations import openrouter
-    with patch("backend.config.get_settings") as mock_settings:
-        mock_settings.return_value.openrouter_api_key = property(
-            lambda self: (_ for _ in ()).throw(KeyError("OPENROUTER_API_KEY"))
-        )
-        # Simpler: patch get_settings to raise on attribute access
-        settings_obj = MagicMock()
-        type(settings_obj).openrouter_api_key = property(
-            lambda s: (_ for _ in ()).throw(KeyError("OPENROUTER_API_KEY"))
-        )
-        mock_settings.return_value = settings_obj
-        with pytest.raises(Exception):
-            await openrouter._get_data()
-
+# backend/integrations/openrouter.py -- moved to its own tests/test_openrouter.py
+# (2026-08-05, extended fetch() to also read GET /api/v1/key credit data;
+# the old single-mocked-client-response tests here couldn't distinguish the
+# two calls that now happen inside fetch()).
 
 # ---------------------------------------------------------------------------
 # backend/scheduler.py

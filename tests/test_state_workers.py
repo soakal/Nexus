@@ -20,6 +20,35 @@ def test_every_source_has_a_state_collector():
     )
 
 
+def test_claude_usage_is_dashboard_only_not_a_registered_source():
+    # Real, imported registries -- not a hardcoded copy -- so this can't be
+    # silently "corrected" later. claude_usage's file is legitimately hours
+    # old whenever no Claude Code session is running (normal operation, not
+    # an outage), so there is no honest up/down health signal -- registering
+    # it as a source would pin a permanently-OFFLINE tile on the Sources card
+    # for a feature that's working correctly.
+    from backend.api.sources import REGISTRY_NAMES
+    from backend.state_workers import COLLECTOR_GROUPS
+
+    all_keys = {c.key for group in COLLECTOR_GROUPS.values() for c in group}
+    assert "dashboard.claude_usage" in all_keys
+    assert "source.claude_usage" not in all_keys
+    assert "claude_usage" not in REGISTRY_NAMES
+
+
+def test_openrouter_has_both_a_source_and_dashboard_collector():
+    # Unlike claude_usage, openrouter's data genuinely is a live network call
+    # with a meaningful up/down signal -- it keeps its pre-existing
+    # source.openrouter health-check collector AND gains a dashboard.*
+    # collector (2026-08-05) now that a real consumer (Dashboard.jsx's
+    # OpenRouter card, briefing.py's narrated section) reads its credit data.
+    from backend.state_workers import COLLECTOR_GROUPS
+
+    all_keys = {c.key for group in COLLECTOR_GROUPS.values() for c in group}
+    assert "source.openrouter" in all_keys
+    assert "dashboard.openrouter" in all_keys
+
+
 def test_no_duplicate_collector_keys():
     # Two collectors racing to write the same StateSnapshot key was a real bug
     # found during this feature's live smoke test (see state_store.py's

@@ -203,12 +203,25 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         # would actually break.
         FieldContract("summary", (str,), "type", consumer="briefing.py:201,288 (via get_today_events/calendar_block), api/today.py:14,18"),
     ),
+    "openrouter": (
+        # model_count/credit_remaining/credit_limit gained real consumers
+        # 2026-08-05 (Dashboard.jsx's OpenRouter card, briefing.py's narrated
+        # section) -- previously excluded below as consumerless.
+        # credit_limit/credit_remaining stay nullable (OpenRouter's own
+        # "no cap" convention for an unlimited key) so both allow NoneType,
+        # same pattern as adguard's filtering_enabled above.
+        FieldContract("model_count", (int,), "positive", consumer="Dashboard.jsx:OpenRouter card"),
+        FieldContract("credit_limit", (int, float, type(None)), "type",
+                       consumer="Dashboard.jsx:OpenRouter card (unguarded .toFixed(2) once non-None), briefing.py:_build_openrouter_section (None means unlimited key)"),
+        FieldContract("credit_remaining", (int, float, type(None)), "type",
+                       consumer="Dashboard.jsx:OpenRouter card, briefing.py:_build_openrouter_section (None means unlimited key OR credit_limit/credit_remaining uncorrelated in the API response)"),
+        FieldContract("usage", (int, float), "type", consumer="Dashboard.jsx:OpenRouter card, briefing.py:_build_openrouter_section"),
+    ),
 }
 
 EXCLUDED: dict[str, str] = {
     "speedtest": "no fetch(); run_speedtest() downloads 25MB + uploads 5MB per call — a canary must not trigger that on a schedule",
     "protonmail": "no fetch(); reads are parameterised (list_recent), and inbox_summary() never raises — it returns the error as a string, so it's unassertable",
-    "openrouter": "fetch() has zero consumers; available is hardcoded True on success",
     "hermes": "no fetch() — it's now a pure action-relay bridge + liveness probe (get_status/health_check), not a data integration with a shape to protect",
 }
 
