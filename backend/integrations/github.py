@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 
 @dataclass
@@ -27,7 +28,7 @@ async def fetch() -> GitHubData:
     username = settings.github_username
     stale_cutoff = datetime.now(UTC) - timedelta(hours=settings.pr_stale_hours)
 
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         # Open PRs
         resp = await client.get("https://api.github.com/search/issues", headers=headers,
                                 params={"q": f"is:pr is:open author:{username}", "per_page": 20})
@@ -77,7 +78,7 @@ async def health_check() -> bool:
         from backend.config import get_settings
         settings = get_settings()
         headers = {"Authorization": f"token {settings.github_token}"}
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
             resp = await client.get("https://api.github.com/user", headers=headers)
             return resp.status_code == 200
     except Exception:

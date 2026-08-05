@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ async def fetch() -> AdGuardData:
     settings = get_settings()
     host = settings.adguard_host
 
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         auth = _auth(settings)
         resp = await client.get(f"{host}/control/stats", auth=auth)
         resp.raise_for_status()
@@ -74,7 +75,7 @@ async def health_check() -> bool:
     try:
         from backend.config import get_settings
         settings = get_settings()
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
             for attempt in range(2):
                 try:
                     resp = await client.get(f"{settings.adguard_host}/control/stats", auth=_auth(settings))
@@ -91,7 +92,7 @@ async def health_check() -> bool:
 async def set_filtering(enabled: bool) -> None:
     from backend.config import get_settings
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         await client.post(
             f"{settings.adguard_host}/control/dns_config",
             json={"protection_enabled": enabled},

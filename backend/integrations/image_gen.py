@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 import httpx
 
+from backend.http_client import SSL_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}?width=1024&height=1024&nologo=true"
@@ -20,7 +22,7 @@ async def generate_image(prompt: str) -> bytes | None:
     reason (non-200, non-image response, transport error). Never raises."""
     url = POLLINATIONS_URL.format(prompt=quote(prompt, safe=""))
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=60) as client:
             resp = await client.get(url)
         if resp.status_code != 200:
             logger.debug(f"generate_image failed: HTTP {resp.status_code}")

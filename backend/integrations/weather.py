@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ async def fetch() -> WeatherData:
     lat = settings.weather_lat
     lon = settings.weather_lon
 
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         # Current weather
         resp = await client.get(
             "https://api.openweathermap.org/data/2.5/weather",

@@ -36,13 +36,14 @@ async def test_run_speedtest_reuses_one_client_and_ssl_context():
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=client)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        from backend.integrations.speedtest import _SSL_CONTEXT, run_speedtest
+        from backend.http_client import SSL_CONTEXT
+        from backend.integrations.speedtest import run_speedtest
         result = await run_speedtest()
 
     assert result["online"] is True
     mock_cls.assert_called_once()
     _, kwargs = mock_cls.call_args
-    assert kwargs.get("verify") is _SSL_CONTEXT
+    assert kwargs.get("verify") is SSL_CONTEXT
     # 1 discarded warmup + 3 ping round-trips + 1 download = 5 GETs, all on
     # the same client -- not 5 across 3 separately-constructed clients.
     assert client.get.await_count == 5

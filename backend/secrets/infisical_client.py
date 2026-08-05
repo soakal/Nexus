@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from backend.http_client import SSL_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 _SERVICE_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
@@ -64,7 +66,7 @@ def _now_iso() -> str:
 def _login() -> str:
     global _token
     s = _settings()
-    with httpx.Client(base_url=s.infisical_url, timeout=10.0) as c:
+    with httpx.Client(verify=SSL_CONTEXT, base_url=s.infisical_url, timeout=10.0) as c:
         resp = c.post(
             "/api/v1/auth/universal-auth/login",
             json={"clientId": s.infisical_client_id, "clientSecret": s.infisical_client_secret},
@@ -77,7 +79,7 @@ def _login() -> str:
 def _request(method: str, path: str, **kwargs) -> httpx.Response:
     global _token
     s = _settings()
-    with httpx.Client(base_url=s.infisical_url, timeout=10.0) as c:
+    with httpx.Client(verify=SSL_CONTEXT, base_url=s.infisical_url, timeout=10.0) as c:
         if _token is None:
             _login()
         headers = kwargs.pop("headers", {}) or {}

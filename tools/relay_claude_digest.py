@@ -215,6 +215,7 @@ def _save_relayed(names: set[str]) -> None:
 async def _push_to_brain(filename: str, content: str) -> bool:
     import httpx
     from backend.config import get_settings
+    from backend.http_client import SSL_CONTEXT
 
     settings = get_settings()
     url = f"{settings.brain_mcp_url.rstrip('/')}/raw"
@@ -224,7 +225,7 @@ async def _push_to_brain(filename: str, content: str) -> bool:
             headers["Authorization"] = f"Bearer {settings.brain_mcp_token}"
     except Exception:
         pass
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=15) as client:
         resp = await client.post(url, json={"content": content, "filename": filename}, headers=headers)
         resp.raise_for_status()
         return True

@@ -3,6 +3,8 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+from backend.http_client import SSL_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 _BRIEFING_FOLLOWUP_KEYWORDS = frozenset([
@@ -800,7 +802,7 @@ If they're saving something from the conversation, use the relevant prior assist
                     _mcp_url = _settings.brain_mcp_url.rstrip("/")
                     _token = getattr(_settings, "brain_mcp_token", "")
                     _headers = {"Authorization": f"Bearer {_token}"} if _token else {}
-                    async with _httpx.AsyncClient(timeout=10) as _client:
+                    async with _httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as _client:
                         _resp = await _client.post(
                             f"{_mcp_url}/raw",
                             json={"content": body, "filename": filename},

@@ -5,6 +5,7 @@ from datetime import datetime
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ async def fetch() -> HAData:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     # 10s not 5: /api/states returns ~1200 entities and intermittently exceeds
     # 5s, which surfaced as spurious "Home Assistant unreachable" 502s in the UI.
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
         resp = await client.get(f"{host}/api/states", headers=headers)
         resp.raise_for_status()
         entities = resp.json()
@@ -131,7 +132,7 @@ async def health_check() -> bool:
         from backend.config import get_settings
         settings = get_settings()
         headers = {"Authorization": f"Bearer {settings.hass_token}"}
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
             resp = await client.get(f"{settings.hass_host}/api/", headers=headers)
             return resp.status_code == 200
     except Exception:
@@ -159,7 +160,7 @@ async def call_service(domain: str, service: str, data: dict | None = None) -> d
     url = f"{settings.hass_host}/api/services/{domain}/{service}"
     # 15s not 5: HomeKit-bridged devices (Ecobee) and the Konnected garage door
     # can take >5s to ack a service call — 5s made mode changes 502 spuriously.
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=15) as client:
         resp = await client.post(url, json=data or {}, headers=headers)
         resp.raise_for_status()
         result = resp.json()
@@ -230,7 +231,7 @@ async def fetch_automation_index() -> dict[str, list[str]]:
         token = settings.hass_token
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
             for ent in automations:
                 unique_id = (ent.get("attributes") or {}).get("id")
                 if not unique_id:

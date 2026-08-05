@@ -3,6 +3,8 @@ import re
 
 import httpx
 
+from backend.http_client import SSL_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 _DDG_URL = "https://api.duckduckgo.com/"
@@ -38,7 +40,7 @@ def _clean_html(s: str) -> str:
 async def _ddg_html_search(query: str, max_results: int = 5) -> str:
     """Fallback: scrape DuckDuckGo's HTML endpoint for organic result snippets."""
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10, follow_redirects=True) as client:
             resp = await client.post(
                 _DDG_HTML,
                 data={"q": query},
@@ -66,7 +68,7 @@ async def _ddg_html_search(query: str, max_results: int = 5) -> str:
 async def ddg_search(query: str, max_results: int = 5) -> str:
     """DuckDuckGo search: Instant Answers API first, then HTML results fallback."""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
             resp = await client.get(
                 _DDG_URL,
                 params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
@@ -94,7 +96,7 @@ async def ddg_search(query: str, max_results: int = 5) -> str:
 async def github_latest_release(owner: str, repo: str) -> str:
     """Fetch the latest release tag from a public GitHub repo."""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
             resp = await client.get(
                 _GH_RELEASES.format(owner=owner, repo=repo),
                 headers={"Accept": "application/vnd.github.v3+json"},

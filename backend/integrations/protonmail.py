@@ -1,16 +1,40 @@
 import json
 import logging
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
 
 class IntegrationError(Exception):
     pass
+
+
+def _mcp_client_factory(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """Mirrors mcp.shared._httpx_utils.create_mcp_http_client's defaults
+    (follow_redirects on, 30s default timeout) but reuses the process-wide TLS
+    context instead of letting httpx build a fresh one. _call_tool() opens a
+    brand new MCP session PER CALL by design (see its own docstring), and the
+    MCP library's default factory builds a fresh certifi-backed SSL context on
+    every AsyncClient() construction -- so without this, protonmail paid the
+    full ~1.3s blocking stall on every single MCP round trip, not just once.
+    """
+    kwargs: dict = {"verify": SSL_CONTEXT, "follow_redirects": True}
+    kwargs["timeout"] = httpx.Timeout(30.0) if timeout is None else timeout
+    if headers is not None:
+        kwargs["headers"] = headers
+    if auth is not None:
+        kwargs["auth"] = auth
+    return httpx.AsyncClient(**kwargs)
 
 
 async def _call_tool(tool_name: str, arguments: dict, *, timeout: float = 20.0) -> str:
@@ -23,7 +47,9 @@ async def _call_tool(tool_name: str, arguments: dict, *, timeout: float = 20.0) 
     from backend.config import get_settings
     settings = get_settings()
 
-    async with streamablehttp_client(settings.protonmail_mcp_url, timeout=timeout) as (read, write, _):
+    async with streamablehttp_client(
+        settings.protonmail_mcp_url, timeout=timeout, httpx_client_factory=_mcp_client_factory
+    ) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(tool_name, arguments)

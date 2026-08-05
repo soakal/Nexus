@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ async def _get_data() -> OpenRouterData:
         raise Exception("OPENROUTER_API_KEY not configured")
 
     headers = {"Authorization": f"Bearer {api_key}"}
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         resp = await client.get("https://openrouter.ai/api/v1/models", headers=headers)
         resp.raise_for_status()
         models = resp.json().get("data", [])

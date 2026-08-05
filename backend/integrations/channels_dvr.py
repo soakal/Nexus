@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ async def fetch() -> ChannelsData:
     settings = get_settings()
     host = settings.channels_host
 
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         data = ChannelsData()
 
         # Disk stats. GET /dvr returns a nested lowercase "disk" object with
@@ -116,7 +117,7 @@ async def health_check() -> bool:
     try:
         from backend.config import get_settings
         settings = get_settings()
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
             resp = await client.get(f"{settings.channels_host}/dvr")
             return resp.status_code == 200
     except Exception:
@@ -126,7 +127,7 @@ async def health_check() -> bool:
 async def trigger_recording(program_id: str) -> dict:
     from backend.config import get_settings
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=5) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
         resp = await client.post(f"{settings.channels_host}/dvr/guide/jobs", json={"program_id": program_id})
         if resp.status_code == 404:
             raise ValueError(f"Program {program_id} not found")

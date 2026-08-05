@@ -14,6 +14,7 @@ from datetime import datetime
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 
 @dataclass
@@ -32,7 +33,7 @@ async def get_status() -> HermesStatus:
     except Exception:
         headers = {}
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=5) as client:
             resp = await client.get(f"{settings.hermes_host}/hermes/status", headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
@@ -95,7 +96,7 @@ async def relay_action(message: str, idempotency_key: str | None = None) -> dict
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
             resp = await client.post(
                 f"{settings.hermes_host}/hermes/action", json={"message": message}, headers=headers
             )
@@ -123,7 +124,7 @@ async def relay(message: str) -> str:
     except Exception:
         pass
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
             resp = await client.post(f"{settings.hermes_host}/hermes/action", json={"message": message}, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()

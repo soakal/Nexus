@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from backend.http_client import SSL_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,7 @@ async def get_tigers_last_game() -> str | None:
     """Yesterday's Tigers score if they played and the game is final, else None."""
     yesterday = (_today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=8) as client:
             resp = await client.get(
                 "https://statsapi.mlb.com/api/v1/schedule",
                 params={"sportId": 1, "date": yesterday, "teamId": 116},
@@ -54,7 +56,7 @@ async def get_tigers_last_game() -> str | None:
 async def get_lions_last_game() -> str | None:
     """Most recent completed Lions score within the last 7 days, else None."""
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=8) as client:
             for days_ago in range(1, 8):
                 date_str = (_today() - datetime.timedelta(days=days_ago)).strftime("%Y%m%d")
                 try:

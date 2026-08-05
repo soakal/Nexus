@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ async def _fetch_ical() -> tuple[str, int, int]:
     urls = _ical_urls()
     texts = []
     ok = 0
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
         for url in urls:
             fetch_url = "https://" + url[len("webcal://"):] if url.startswith("webcal://") else url
             try:

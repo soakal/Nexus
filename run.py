@@ -20,7 +20,13 @@ import sys
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-import uvicorn
+# Build the shared TLS context (backend/http_client.py) before uvicorn is even
+# imported: it's a ~1.3s BLOCKING call on this host (see that module's
+# docstring), and paying it here means it lands on the bare main thread before
+# any event loop exists, instead of stalling live requests later.
+import backend.http_client  # noqa: E402,F401
+
+import uvicorn  # noqa: E402
 
 if __name__ == "__main__":
     reload = "--reload" in sys.argv

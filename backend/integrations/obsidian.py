@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from backend.cache import async_ttl_cache
+from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ async def fetch() -> ObsidianData:
 @async_ttl_cache(30)
 async def health_check() -> bool:
     try:
-        async with httpx.AsyncClient(timeout=3) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=3) as client:
             resp = await client.get(f"{_mcp_url()}/health")
             return resp.status_code == 200
     except Exception:
@@ -292,7 +293,7 @@ async def create_note(title: str, content: str, folder: str = "NEXUS") -> str:
 
 
 async def _post_raw(content: str, filename: str, timeout: float = 10) -> None:
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=timeout) as client:
         resp = await client.post(
             f"{_mcp_url()}/raw",
             json={"content": content, "filename": filename},

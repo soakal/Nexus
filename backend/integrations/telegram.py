@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from backend.http_client import SSL_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 _API = "https://api.telegram.org"
@@ -86,7 +88,7 @@ async def _call(method: str, params: dict, *, timeout: float = 30) -> httpx.Resp
     same posture as every other required-secret property)."""
     from backend.config import get_settings
     token = get_settings().telegram_bot_token
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=timeout) as client:
         return await client.post(f"{_API}/bot{token}/{method}", json=params)
 
 
@@ -189,7 +191,7 @@ async def send_photo(photo: bytes, *, caption: str | None = None, chat_id: str |
         data = {"chat_id": str(target_chat)}
         if caption:
             data["caption"] = caption[:1024]
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=60) as client:
             resp = await client.post(
                 f"{_API}/bot{token}/sendPhoto",
                 data=data,
@@ -227,7 +229,7 @@ async def get_file_bytes(file_id: str, *, max_bytes: int = 20 * 1024 * 1024) -> 
     resp.raise_for_status()
     file_path = resp.json()["result"]["file_path"]
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
         file_resp = await client.get(f"{_API}/file/bot{token}/{file_path}")
         file_resp.raise_for_status()
         content = file_resp.content

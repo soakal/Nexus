@@ -22,6 +22,14 @@ from fastapi import Depends, FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+# Module-level (not inside lifespan()): uvicorn imports this module during
+# config.load(), which runs BEFORE startup() binds the listening socket -- so
+# this import pays the shared TLS context's ~1.3s cost (see that module's
+# docstring) before anything is served, not during a live request. run.py
+# already imports it earlier still (before uvicorn itself); this import is
+# what covers every OTHER entrypoint (pytest, `-m uvicorn`, the tray).
+import backend.http_client  # noqa: F401
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",

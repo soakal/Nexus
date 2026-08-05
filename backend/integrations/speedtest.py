@@ -3,16 +3,9 @@ import time
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from backend.http_client import SSL_CONTEXT
 
-# Paid once at import instead of on every httpx.AsyncClient() construction.
-# Verified 2026-08-05: httpx builds an SSL context synchronously inside
-# AsyncClient(), which costs ~1.3-1.45s on this host (Defender scanning the
-# certifi bundle) and blocks the event loop while doing it -- this, not
-# network latency, was why ping_ms recorded 2.5-7.9 SECONDS (other coroutines
-# building their own httpx clients around the same time delayed this
-# function's resume). Reused across all three phases below.
-_SSL_CONTEXT = httpx.create_ssl_context()
+logger = logging.getLogger(__name__)
 
 
 async def run_speedtest() -> dict:
@@ -21,7 +14,7 @@ async def run_speedtest() -> dict:
     ping_ms = 0.0
 
     try:
-        async with httpx.AsyncClient(verify=_SSL_CONTEXT, timeout=10) as client:
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
             # First request doubles as the connectivity probe (if even this
             # fails we're almost certainly offline, e.g. right after boot)
             # AND warms the TCP/TLS connection -- its timing includes
