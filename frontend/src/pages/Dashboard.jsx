@@ -433,34 +433,43 @@ export default function Dashboard() {
             <div style={{ fontSize: '12px', color: '#8a96ad' }}>OpenRouter data unavailable.</div>
           ) : (
             <>
-              {openrouter.credit_limit == null ? (
-                <div style={{ fontSize: '20px', fontWeight: 700 }}>${(openrouter.usage ?? 0).toFixed(2)} <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}>used (unlimited key)</span></div>
-              ) : (
+              {/* Real account balance (GET /api/v1/credits) leads the card --
+                  this is "the balance" in the everyday sense, distinct from
+                  and can be much larger than the per-key cap below
+                  (live-verified: a key's limit_remaining read $0/exhausted
+                  while the account itself held $12.65 of real balance). */}
+              {openrouter.account_balance != null && openrouter.account_total_credits != null ? (
                 <>
                   <div style={{ fontSize: '20px', fontWeight: 700 }}>
-                    {/* credit_remaining can be null even with a set credit_limit
-                        (an uncorrelated API response) -- must read as "unknown,"
-                        never coerce to $0.00, which would misrepresent "unknown"
-                        as "no credit left". */}
-                    {openrouter.credit_remaining != null ? `$${openrouter.credit_remaining.toFixed(2)}` : 'unknown'}
-                    <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}> / ${openrouter.credit_limit.toFixed(2)} left</span>
+                    ${openrouter.account_balance.toFixed(2)}
+                    <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}> / ${openrouter.account_total_credits.toFixed(2)} balance</span>
                   </div>
                   <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', overflow: 'hidden' }}>
                     {(() => {
-                      // Derive the bar from credit_remaining (the same number
-                      // shown above) rather than usage/credit_limit -- two
-                      // independent representations of the same fact can
-                      // disagree if the API's usage isn't exactly
-                      // limit - limit_remaining. Falls back to usage/limit
-                      // only when credit_remaining itself is unknown.
-                      const pct = openrouter.credit_remaining != null
-                        ? Math.max(0, 100 - (openrouter.credit_remaining / openrouter.credit_limit) * 100)
-                        : ((openrouter.usage ?? 0) / openrouter.credit_limit) * 100
-                      const clamped = Math.min(100, Math.max(0, pct))
+                      // Guard the divisor: a never-topped-up account can
+                      // legitimately have total_credits=0, which would
+                      // otherwise divide to NaN -- an invalid CSS width that
+                      // silently renders as a full green bar instead of the
+                      // "nothing to show" state it actually is.
+                      const pct = openrouter.account_total_credits > 0
+                        ? Math.max(0, 100 - (openrouter.account_balance / openrouter.account_total_credits) * 100)
+                        : 0
+                      const clamped = Math.min(100, pct)
                       return <div style={{ width: `${clamped}%`, height: '100%', borderRadius: '3px', background: usageBarColor(clamped) }} />
                     })()}
                   </div>
                 </>
+              ) : (
+                <div style={{ fontSize: '13px', color: '#8a96ad' }}>Balance unknown</div>
+              )}
+
+              {/* Per-key spending cap, secondary -- omitted entirely for an
+                  unlimited key (nothing meaningful beyond usage, already
+                  covered by the balance above). */}
+              {openrouter.credit_limit != null && (
+                <div style={{ fontSize: '11px', color: '#8a96ad' }}>
+                  Key limit: {openrouter.credit_remaining != null ? `$${openrouter.credit_remaining.toFixed(2)}` : 'unknown'} / ${openrouter.credit_limit.toFixed(2)}
+                </div>
               )}
               <div style={{ fontSize: '11px', color: '#8a96ad' }}>{openrouter.model_count} models available</div>
             </>

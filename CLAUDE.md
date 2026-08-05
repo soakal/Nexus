@@ -58,6 +58,22 @@ age), a "resets in due now" phrasing bug plus a missing day-tier on both the bac
 countdown helpers, and a null-coerced-to-$0.00 frontend bug on `credit_remaining`. Full pytest
 suite: 1870 passed, 1 skipped, 0 failed.
 
+**OpenRouter real account balance fix (2026-08-05, branch `fix/openrouter-account-balance`, worktree
+`nexus-openrouter-balance`)** — the usage tracker above showed `/api/v1/key`'s `limit`/
+`limit_remaining` as "the balance," which is wrong: those are a per-KEY spending cap, not the real
+account credit balance. Live-verified: Brian's key had `limit=5, limit_remaining=0` (exhausted)
+while the real account (`GET /api/v1/credits`, `{"total_credits": 30, "total_usage": 17.35}`) held
+$12.65 of real spendable balance. `openrouter.py`'s `fetch()` now calls all THREE endpoints
+concurrently (models/key/credits); `OpenRouterData` gained `account_total_credits`/
+`account_total_usage`/`account_balance` (`total_credits - total_usage`, `None` if either isn't
+numeric — never coerced to 0). `_build_openrouter_section`/Dashboard.jsx's OpenRouter card now
+lead with the real balance; the old per-key `credit_limit`/`credit_remaining` fields are demoted
+to a secondary "Key limit:" line (omitted entirely for an unlimited key). A quick Opus pass caught
+4 minor findings (a `0/0 → NaN` bar-width edge case for a never-topped-up account, a missing
+`account_total_credits` contract entry for a field Dashboard.jsx dereferences unguarded, a stale
+`usage` contract with zero remaining consumers after the rewrite, one inaccurate comment) — all
+fixed. Full pytest suite: 1874 passed, 1 skipped, 0 failed.
+
 ## Run / build / test
 - **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`  ·  **Restore db:** `.\restore.ps1 [-From <dir>]` (validates the backup BEFORE stopping NEXUS; logic lives in `backend/agents/backup.py::restore_from` — tested by `tests/test_restore_drill.py`)
 - Backend: FastAPI + uvicorn on **:8000**, venv at `.\venv` (`.\venv\Scripts\python.exe`). `start.ps1` launches it via **`run.py`** (NOT `-m uvicorn`) — run.py pins the Windows **SelectorEventLoop** before uvicorn builds its loop (must be set there: uvicorn creates the loop before importing the app, so a policy in `main.py` is too late). The default ProactorEventLoop throws `WinError 64` under concurrent integration fetches → "app not loading data". See Non-obvious rules.

@@ -370,18 +370,32 @@ def _build_openrouter_section(result) -> str:
     if not result.available:
         return "## OpenRouter\nOpenRouter usage data unavailable."
 
-    usage = result.usage if isinstance(result.usage, (int, float)) else 0.0
     lines = ["## OpenRouter"]
-    if result.credit_limit is None:
-        lines.append(f"- Credit: unlimited key, ${usage:.2f} used")
-    elif isinstance(result.credit_remaining, (int, float)):
-        # credit_limit set but credit_remaining absent/null is a real,
-        # reachable shape (an API response where the two fields aren't
-        # correlated) -- must degrade to "unknown," never crash the whole
-        # briefing on a NoneType format spec.
-        lines.append(f"- Credit: ${result.credit_remaining:.2f} remaining of ${result.credit_limit:.2f}")
+
+    # Real account balance (GET /api/v1/credits) leads the section -- this is
+    # "the balance" in the everyday sense, distinct from and can be much
+    # larger than the per-key cap below (live-verified: a key's
+    # limit_remaining read $0/exhausted while the account itself held
+    # $12.65 of real balance).
+    if isinstance(result.account_balance, (int, float)) and isinstance(result.account_total_credits, (int, float)):
+        lines.append(f"- Balance: ${result.account_balance:.2f} of ${result.account_total_credits:.2f} purchased")
     else:
-        lines.append(f"- Credit: unknown remaining of ${result.credit_limit:.2f}")
+        lines.append("- Balance: unknown")
+
+    # Per-key spending cap, secondary -- omitted entirely for an unlimited
+    # key. Cumulative usage isn't separately reported anywhere in that case
+    # (only usage_daily, via the "Today" line below); the real account
+    # balance line above already conveys what matters.
+    if result.credit_limit is not None:
+        if isinstance(result.credit_remaining, (int, float)):
+            # credit_limit set but credit_remaining absent/null is a real,
+            # reachable shape (an API response where the two fields aren't
+            # correlated) -- must degrade to "unknown," never crash the
+            # whole briefing on a NoneType format spec.
+            lines.append(f"- Key limit: ${result.credit_remaining:.2f} remaining of ${result.credit_limit:.2f}")
+        else:
+            lines.append(f"- Key limit: unknown remaining of ${result.credit_limit:.2f}")
+
     if result.usage_daily:
         lines.append(f"- Today: ${result.usage_daily:.2f} used")
     lines.append(f"- {result.model_count} models available")
