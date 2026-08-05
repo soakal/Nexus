@@ -14,7 +14,7 @@ router = APIRouter()
 DASHBOARD_KEYS = (
     "dashboard.weather", "dashboard.adguard", "dashboard.channels",
     "dashboard.unraid", "dashboard.proxmox", "dashboard.proxmox_maintenance",
-    "dashboard.brain", "dashboard.mail", "dashboard.briefing",
+    "dashboard.brain", "dashboard.mail", "dashboard.briefing", "dashboard.today",
 )
 
 
@@ -54,4 +54,5 @@ async def dashboard_state(_=Depends(require_api_key)):
         "brain": item("brain"),
         "mail": item("mail"),
         "briefing": item("briefing"),
+        "today": item("today"),
     }

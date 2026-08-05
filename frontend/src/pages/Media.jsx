@@ -26,7 +26,19 @@ export default function Media() {
   const [scheduling, setScheduling] = useState({})
   const unmountedRef = useRef(false)
 
+  // Periodic/mount/focus reads use the cached snapshot (dashboard.channels,
+  // same channels_dvr.fetch() call, refreshed every 60s by a background
+  // collector) instead of a live call on every 30s poll -- same pattern as
+  // the Uptime.jsx and Dashboard.jsx fixes.
   const load = () => {
+    api.dashboard.state().then(d => {
+      if (!unmountedRef.current && d?.channels?.data) setData(d.channels.data)
+    }).catch(() => {})
+  }
+
+  // A just-scheduled recording needs to show up immediately, not wait for
+  // the next collector tick -- this one path stays a live call on purpose.
+  const loadLive = () => {
     api.channels.get().then(d => {
       if (!unmountedRef.current) setData(d)
     }).catch(() => {})
@@ -53,7 +65,7 @@ export default function Media() {
       await api.channels.record(programId)
       if (unmountedRef.current) return
       setScheduling(prev => ({ ...prev, [programId]: 'scheduled' }))
-      load()
+      loadLive()
       setTimeout(() => {
         setScheduling(prev => {
           const next = { ...prev }

@@ -29,10 +29,15 @@ def test_dashboard_state_is_single_cached_read(client, auth_headers):
     already-persisted snapshots."""
     state_store.store_success("source.homeassistant", {"healthy": True}, 60)
     state_store.store_success("dashboard.weather", {"temp_f": 72}, 60)
+    state_store.store_success(
+        "dashboard.today", {"calendar": "3pm meeting", "email": "2 unread"}, 600
+    )
 
-    with patch("backend.integrations.homeassistant.health_check", new_callable=AsyncMock) as hc:
+    with patch("backend.integrations.homeassistant.health_check", new_callable=AsyncMock) as hc, \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock) as cal:
         resp = client.get("/api/dashboard/state", headers=auth_headers)
         hc.assert_not_called()
+        cal.assert_not_called()
 
     assert resp.status_code == 200
     body = resp.json()
@@ -40,6 +45,8 @@ def test_dashboard_state_is_single_cached_read(client, auth_headers):
     assert body["sources"]["homeassistant"]["freshness"] == "fresh"
     assert body["weather"]["data"] == {"temp_f": 72}
     assert body["weather"]["freshness"] == "fresh"
+    assert body["today"]["data"] == {"calendar": "3pm meeting", "email": "2 unread"}
+    assert body["today"]["freshness"] == "fresh"
 
 
 def test_dashboard_state_exposes_stale_metadata(client, auth_headers):

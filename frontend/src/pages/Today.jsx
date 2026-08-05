@@ -57,7 +57,14 @@ export default function Today() {
   const [homeState, setHomeState] = useState(null)
 
   const load = useCallback(() => {
-    api.today.get().then(setData).catch(() => {})
+    // calendar/email used to be a live api.today.get() call on every 120s
+    // poll -- both underlying caches are also 120s TTL, so almost every poll
+    // missed and paid a live iCal fetch + Proton MCP round trip. Reads the
+    // cached dashboard.today collector instead (600s TTL, plenty fresh for
+    // an agenda/inbox-summary card). homeState stays live -- HA's own 30s
+    // cache already keeps it cheap, and stale lock/door state would be
+    // actively misleading, not just slower.
+    api.dashboard.state().then(d => { if (d?.today?.data) setData(d.today.data) }).catch(() => {})
     api.today.homeState().then(setHomeState).catch(() => {})
     api.briefing.latest()
       .then((b) => {

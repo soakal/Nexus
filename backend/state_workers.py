@@ -61,6 +61,24 @@ async def _mail_status() -> object:
     return await _dashboard_inbox()
 
 
+async def _today() -> object:
+    # Same gather backend/api/today.py's GET / does -- both calendar.py and
+    # protonmail.py's underlying caches are a 120s TTL, matching Today.jsx's
+    # own 120s poll, so almost every poll used to miss and pay a live iCal
+    # fetch + Proton MCP round trip. An agenda/inbox-summary card doesn't
+    # need sub-5-minute freshness, so this collector's 300s cadence is fine.
+    from backend.integrations import protonmail
+    from backend.integrations.calendar import get_today_events
+
+    calendar_str, email = await asyncio.gather(
+        get_today_events(), protonmail.inbox_summary(limit=7), return_exceptions=True
+    )
+    return {
+        "calendar": calendar_str if not isinstance(calendar_str, Exception) else "(unavailable)",
+        "email": email if not isinstance(email, Exception) else "(unavailable)",
+    }
+
+
 async def _latest_briefing() -> object:
     from sqlmodel import Session, select
 
@@ -104,6 +122,7 @@ COLLECTOR_GROUPS: dict[int, tuple[Collector, ...]] = {
         _source("protonmail", 300),
         _source("calendar", 300),
         Collector("dashboard.mail", 600, _mail_status),
+        Collector("dashboard.today", 600, _today),
     ),
     600: (
         _source("weather", 600),
