@@ -4,6 +4,38 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Housekeeping (2026-08-05):** the parent `Agentic os\` folder (which holds this repo) had two
+stale founding docs from before NEXUS existed — `AGENTIC_OS_PROMPT.md` (the original bootstrap
+build prompt, referenced an old model and a since-retired Hermes-webhook briefing path) and
+`Brain-Organizer-Build-Spec.md` (the original from-scratch spec; that build is long complete, and
+its live follow-on specs are the ones under `docs/brain-organizer-*-spec.md` in this repo, not
+that loose copy) — both deleted, plus an empty leftover `.claude\` dir. Separately, a
+`feat/agentic-os-state-foundation` branch + `nexus-agentic-os-v2` worktree (Codex's own
+independent attempt at the same dashboard-cold-cache/state-cache fix — durable SQLite snapshots +
+staggered APScheduler collectors + `/api/dashboard/state` + `/ws/state` push, no Redis, verified
+working: 113/113 targeted tests passed, clean merge-base with `master`) was deleted at Brian's
+explicit call rather than landed. Kodak's Redis/multi-process "Phase 1 Architecture Refactor" plan
+(and its later multi-agent phases) was independently reviewed and rejected the same session — its
+diagnosis didn't match this codebase's actual behavior, and its specialist-agent stack turned out
+to already exist, functionally, in-process (orchestrator, Telegram bot triage, homelab watchdog,
+outcome tracker) — see `feat/dashboard-state-cache`'s commit history for the full audit trail.
+
+**The dashboard-state-cache fix WAS rebuilt** (2026-08-05, branch `feat/dashboard-state-cache`,
+worktree `nexus-dashboard-cache`, 8 commits) — same non-Redis design, this time with the eager
+prime actually wired in, `/ws/state` on its own broadcaster (not shared with `/ws/logs`), and a
+real boot-time race condition found and fixed during live testing. Independently reviewed twice
+(Fable audit against Kodak's original plan: no gaps; Opus verification against the approved build:
+confirmed, 3 minor findings fixed). While rebuilding it, the same live-fanout pattern was also
+found and fixed on `Uptime.jsx`/`Media.jsx`/`Today.jsx`/`Mail.jsx` (each had its own leftover live
+call Kodak's original complaint never covered), plus a real, separately-diagnosed bug in
+`backend/integrations/speedtest.py` (`ping_ms` was measuring a cold TLS handshake, not RTT, because
+httpx builds an SSL context synchronously inside `AsyncClient()` — ~1.3-1.45s on this host,
+suspected Defender scanning the certifi bundle, blocking the event loop each time. Fixed here via a
+module-level reused SSL context + one shared client instead of three. This turned out to be a
+**repo-wide pattern** — 45 `AsyncClient()` construction sites across 19 `backend/integrations/`
+modules all pay the same cost; only `speedtest.py` is fixed so far, the rest deferred to a later
+pass). Merged to `master`.
+
 ## Run / build / test
 - **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`  ·  **Restore db:** `.\restore.ps1 [-From <dir>]` (validates the backup BEFORE stopping NEXUS; logic lives in `backend/agents/backup.py::restore_from` — tested by `tests/test_restore_drill.py`)
 - Backend: FastAPI + uvicorn on **:8000**, venv at `.\venv` (`.\venv\Scripts\python.exe`). `start.ps1` launches it via **`run.py`** (NOT `-m uvicorn`) — run.py pins the Windows **SelectorEventLoop** before uvicorn builds its loop (must be set there: uvicorn creates the loop before importing the app, so a policy in `main.py` is too late). The default ProactorEventLoop throws `WinError 64` under concurrent integration fetches → "app not loading data". See Non-obvious rules.
