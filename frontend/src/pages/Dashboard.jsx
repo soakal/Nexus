@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, wsStateUrl, wsStateProtocols } from '../lib/api'
 import { fmtTime } from '../lib/parseUTC'
 import BrainOrganizerCard from '../components/BrainOrganizerCard'
 import Card from '../components/Card'
@@ -27,29 +27,85 @@ export default function Dashboard() {
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingError, setBriefingError] = useState(false)
   const [lastBriefing, setLastBriefing] = useState(null)
+  const [lastSyncedAt, setLastSyncedAt] = useState(null)
+  const [stateFreshness, setStateFreshness] = useState({})
   const navigate = useNavigate()
 
   const load = useCallback(() => {
-    api.sources.status().then(setSources).catch(() => {})
-    api.get('/weather').then(d => setWeather(d || null)).catch(() => {})
-    api.adguard.get().then(setAdguard).catch(() => {})
-    api.channels.get().then(setChannels).catch(() => {})
-    api.unraid.get().then(setUnraid).catch(() => {})
-    api.proxmox.get().then(setProxmox).catch(() => {})
-    api.proxmox.maintenance().then(setProxmoxMaint).catch(() => {})
-    api.briefing.latest().then(b => setLastBriefing(b?.created_at)).catch(() => {})
-    api.brain.status().then(setBrain).catch(() => {})
-    api.protonmail.inbox().then(d => { setMail(d); setMailError(false) }).catch(() => { setMail(null); setMailError(true) })
+    api.dashboard.state().then(snapshot => {
+      setSources(snapshot?.sources || {})
+      setWeather(snapshot?.weather?.data || null)
+      setAdguard(snapshot?.adguard?.data || null)
+      setChannels(snapshot?.channels?.data || null)
+      setUnraid(snapshot?.unraid?.data || null)
+      setProxmox(snapshot?.proxmox?.data || null)
+      setProxmoxMaint(snapshot?.proxmox_maintenance?.data || null)
+      setBrain(snapshot?.brain?.data || null)
+      setMail(snapshot?.mail?.data || null)
+      // 'never_observed' (cold-start window before this key's collector group
+      // has run once) must degrade the same as 'unavailable' -- otherwise the
+      // card just vanishes instead of showing an Offline state, exactly the
+      // kind of cold-start gap this feature exists to close.
+      setMailError(['unavailable', 'never_observed'].includes(snapshot?.mail?.freshness))
+      setLastBriefing(snapshot?.briefing?.data?.created_at || null)
+      setLastSyncedAt(snapshot?.generated_at || null)
+      setStateFreshness({
+        weather: snapshot?.weather?.freshness,
+        adguard: snapshot?.adguard?.freshness,
+        channels: snapshot?.channels?.freshness,
+        unraid: snapshot?.unraid?.freshness,
+        proxmox: snapshot?.proxmox?.freshness,
+        proxmox_maintenance: snapshot?.proxmox_maintenance?.freshness,
+        brain: snapshot?.brain?.freshness,
+        mail: snapshot?.mail?.freshness,
+        briefing: snapshot?.briefing?.freshness,
+      })
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
+    let stopped = false
+    let socket = null
+    let reconnectTimer = null
+    let refreshTimer = null
+
+    const scheduleLoad = () => {
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(load, 250)
+    }
+
+    const connect = () => {
+      if (stopped) return
+      try {
+        socket = new WebSocket(wsStateUrl(), wsStateProtocols())
+        socket.onmessage = event => {
+          try {
+            const message = JSON.parse(event.data)
+            if (message.type === 'state.updated') scheduleLoad()
+          } catch {}
+        }
+        socket.onclose = () => {
+          if (!stopped) reconnectTimer = setTimeout(connect, 2000)
+        }
+        socket.onerror = () => socket?.close()
+      } catch {
+        reconnectTimer = setTimeout(connect, 2000)
+      }
+    }
+
     load()
-    const timer = setInterval(load, 15000)
+    connect()
+    // Slow safety poll covers sleep/resume and networks that block WebSockets.
+    const timer = setInterval(load, 60000)
     const onVis = () => { if (!document.hidden) load() }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('focus', onVis)
     return () => {
+      stopped = true
       clearInterval(timer)
+      clearTimeout(reconnectTimer)
+      clearTimeout(refreshTimer)
+      socket?.close()
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', onVis)
     }
@@ -99,14 +155,20 @@ export default function Dashboard() {
   const srcVals = Object.values(sources || {})
   const online = srcVals.filter(s => s.healthy).length
   const total = srcVals.length
+  const staleCount = [
+    ...srcVals.map(s => s.freshness),
+    ...Object.values(stateFreshness),
+  ].filter(v => v && v !== 'fresh').length
 
   // DVR storage pct
   const pct = channels && channels.storage_total_gb > 0
     ? Math.round(channels.storage_used_gb / channels.storage_total_gb * 100)
     : 0
 
-  // Current time for "Synced" label
-  const syncedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // "Synced" label reflects the actual snapshot timestamp from the server,
+  // not the browser's own clock (which was always "now" regardless of when
+  // data last actually refreshed).
+  const syncedTime = fmtTime(lastSyncedAt)
   const nowStr = new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
   return (
@@ -145,6 +207,12 @@ export default function Dashboard() {
           </div>
         }
       />
+
+      {staleCount > 0 && (
+        <div style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.25)', background: 'rgba(251,191,36,0.06)', color: '#f4d27a', fontSize: '12px' }}>
+          {staleCount} cached state item{staleCount === 1 ? '' : 's'} stale or unavailable. Last known values remain visible while background workers retry.
+        </div>
+      )}
 
       {/* KPI Row */}
       <section style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--gap)' }}>
@@ -250,16 +318,16 @@ export default function Dashboard() {
             <Eyebrow>System Sources</Eyebrow>
             <span style={{ fontSize: '12px', color: '#5fe0b4', fontWeight: 500 }}>{online} connected</span>
           </div>
-          <span style={{ fontSize: '11px', color: '#5d6982' }}>Synced {syncedTime}</span>
+          <span style={{ fontSize: '11px', color: '#5d6982' }}>Synced {syncedTime || '—'}</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px' }}>
           {Object.entries(sources || {}).map(([name, data]) => (
             <div key={name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '13px 14px', borderRadius: '11px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}>
               <span style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 'none' }}>
-                <StatusDot color={data.healthy ? '#34d399' : '#fb7185'} size={7} glow={false} />
-                <span style={{ fontSize: '10px', letterSpacing: '0.08em', fontWeight: 600, color: data.healthy ? '#5fe0b4' : '#fb7185' }}>
-                  {data.healthy ? 'ONLINE' : 'OFFLINE'}
+                <StatusDot color={data.freshness !== 'fresh' ? '#fbbf24' : data.healthy ? '#34d399' : '#fb7185'} size={7} glow={false} />
+                <span style={{ fontSize: '10px', letterSpacing: '0.08em', fontWeight: 600, color: data.freshness !== 'fresh' ? '#f4d27a' : data.healthy ? '#5fe0b4' : '#fb7185' }}>
+                  {data.freshness !== 'fresh' ? String(data.freshness || 'UNKNOWN').toUpperCase() : data.healthy ? 'ONLINE' : 'OFFLINE'}
                 </span>
               </span>
             </div>

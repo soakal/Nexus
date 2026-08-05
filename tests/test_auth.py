@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 PROTECTED_ENDPOINTS = [
     ("GET", "/api/tasks/"),
     ("GET", "/api/sources/status"),
+    ("GET", "/api/dashboard/state"),
     ("GET", "/api/agents/runs"),
     ("GET", "/api/adguard/"),
     ("GET", "/api/channels/"),

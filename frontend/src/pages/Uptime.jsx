@@ -14,9 +14,12 @@ export default function Uptime() {
   const load = useCallback(() => {
     api.uptime.summary(7).then(setSummary).catch(() => {})
     api.uptime.speedtest(7).then(setSpeedtest).catch(() => {})
-    // Live current status comes from the same cached health checks the dashboard
-    // uses, so the dot recovers in seconds instead of lagging the 2-min sampler.
-    api.sources.status().then(setLiveStatus).catch(() => {})
+    // Live current status reads the same background-refreshed cache the
+    // dashboard uses (30s collector cadence) instead of the live 13-integration
+    // fan-out /api/sources/status used to trigger here on every 30s poll and
+    // tab-focus -- same freshness (still beats the 2-min uptime sampler), zero
+    // live calls from the browser.
+    api.dashboard.state().then(d => setLiveStatus(d?.sources || {})).catch(() => {})
   }, [])
 
   useEffect(() => {

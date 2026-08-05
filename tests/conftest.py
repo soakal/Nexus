@@ -109,6 +109,11 @@ def reset_caches():
     from backend.cache import reset_all_caches
     reset_all_caches()
     try:
+        from backend.state_store import reset_memory_cache as _reset_state_store
+        _reset_state_store()
+    except Exception:
+        pass
+    try:
         from backend.agents.worker_pool import reset_pool
         reset_pool()
     except Exception:

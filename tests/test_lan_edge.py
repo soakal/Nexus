@@ -1,5 +1,5 @@
 """
-LAN edge hardening tests — CORS allowlist + /ws/logs auth.
+LAN edge hardening tests — CORS allowlist + /ws/logs and /ws/state auth.
 
 Mirrors the fixture pattern from tests/test_api_endpoints.py.
 """
@@ -101,6 +101,27 @@ def test_ws_rejects_wrong_key_via_subprotocol(lan_client):
             "/ws/logs", subprotocols=["nexus-api-key", "WRONG_KEY"]
         ):
             pass
+
+
+# ---------------------------------------------------------------------------
+# WebSocket auth — /ws/state (separate broadcaster from /ws/logs, same handshake)
+# ---------------------------------------------------------------------------
+
+def test_state_ws_rejects_no_key(lan_client):
+    """The state stream has the same handshake authentication as the log stream."""
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises((WebSocketDisconnect, Exception)):
+        with lan_client.websocket_connect("/ws/state"):
+            pass
+
+
+def test_state_ws_accepts_key_via_subprotocol(lan_client):
+    from backend.config import get_settings
+    real_key = get_settings().nexus_api_key
+    with lan_client.websocket_connect(
+        "/ws/state", subprotocols=["nexus-api-key", real_key]
+    ) as ws:
+        assert ws is not None
 
 
 # ---------------------------------------------------------------------------

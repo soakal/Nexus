@@ -43,8 +43,24 @@ export default function Mail() {
       .catch(() => setInboxError(true))
   }, [])
 
-  useEffect(() => {
+  // Mail needs to end up genuinely fresh, not stale-only -- so this never
+  // replaces the live call, it only covers the perceived-load gap before it
+  // resolves. dashboard.mail (30s-refreshed cache) is a fast SQLite read
+  // that renders instantly; the live api.protonmail.inbox() call (a real
+  // Proton MCP round trip, ~2-3s) still runs right behind it and is what's
+  // actually shown once it lands. setInbox(prev => prev ?? ...) means
+  // whichever resolves first wins the initial render, but the live result
+  // always applies unconditionally, so it can never be clobbered by a late
+  // cached response arriving second.
+  const loadInitial = useCallback(() => {
+    api.dashboard.state().then(d => {
+      if (d?.mail?.data) setInbox(prev => prev ?? d.mail.data)
+    }).catch(() => {})
     loadInbox()
+  }, [loadInbox])
+
+  useEffect(() => {
+    loadInitial()
     const onVis = () => { if (!document.hidden) loadInbox() }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('focus', onVis)
@@ -52,7 +68,7 @@ export default function Mail() {
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', onVis)
     }
-  }, [loadInbox])
+  }, [loadInitial, loadInbox])
 
   const recipients = to.split(',').map(r => r.trim()).filter(Boolean)
   const recipientsValid = recipients.length > 0 && recipients.every(r => EMAIL_RE.test(r))

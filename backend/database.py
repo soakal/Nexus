@@ -304,6 +304,24 @@ class SystemState(SQLModel, table=True):
     muted_notify_kinds: str | None = Field(default=None)
 
 
+class StateSnapshot(SQLModel, table=True):
+    """Latest durable observation for one dashboard state key.
+
+    `payload_json` always holds the last SUCCESSFUL payload. A failed refresh
+    updates status/error/attempted_at without touching payload_json, so a
+    reader can distinguish stale-but-useful data from never having any.
+    """
+
+    key: str = Field(primary_key=True)
+    payload_json: str | None = None
+    status: str = "never_observed"  # fresh | stale | error | never_observed
+    observed_at: datetime | None = Field(default=None, index=True)
+    attempted_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    expires_at: datetime | None = Field(default=None, index=True)
+    error: str | None = None
+    schema_version: int = 1
+
+
 # Agent/LLM trace observability (council w-observability). One row per
 # traced run of a chat/briefing/orchestrator/proposer/voice entry point.
 # Opened at entry, closed in a finally block with status ok|error. Purely

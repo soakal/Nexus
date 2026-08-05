@@ -35,6 +35,11 @@ class WebSocketManager:
 
 ws_manager = WebSocketManager()
 
+# Separate instance for /ws/state — must not share ws_manager's connection
+# list, or state.updated events leak into the log viewer's message stream
+# and vice versa (see backend/state_workers.py's module docstring).
+state_ws_manager = WebSocketManager()
+
 
 @router.get("/runs")
 async def list_runs(
