@@ -153,22 +153,37 @@ def test_build_claude_usage_section_reset_countdown_has_day_tier():
 # _build_openrouter_section — pure, never raises
 # ---------------------------------------------------------------------------
 
-def test_build_openrouter_section_limited_key():
+def test_build_openrouter_section_leads_with_real_account_balance():
+    """The account balance (GET /api/v1/credits) is "the balance" in the
+    everyday sense and can be much larger than the per-key cap below (live-
+    verified: a key's limit_remaining read $0 while the account held
+    $12.65) -- it must lead the section, not the per-key limit."""
     data = OpenRouterData(
         available=True, model_count=400,
         credit_limit=5.0, credit_remaining=0.0, usage=5.05146565, usage_daily=0.12,
+        account_total_credits=30.0, account_total_usage=17.35, account_balance=12.65,
     )
     section = _build_openrouter_section(data)
     assert "## OpenRouter" in section
-    assert "$0.00 remaining of $5.00" in section
+    assert "Balance: $12.65 of $30.00 purchased" in section
+    assert "Key limit: $0.00 remaining of $5.00" in section
     assert "$0.12 used" in section
     assert "400 models available" in section
+    # Balance must be the FIRST reported line, not buried after the key limit.
+    assert section.index("Balance:") < section.index("Key limit:")
 
 
-def test_build_openrouter_section_unlimited_key():
+def test_build_openrouter_section_unlimited_key_omits_key_limit_line():
     data = OpenRouterData(available=True, model_count=10, credit_limit=None, credit_remaining=None, usage=12.3)
     section = _build_openrouter_section(data)
-    assert "unlimited key, $12.30 used" in section
+    assert "Key limit:" not in section
+    assert "10 models available" in section
+
+
+def test_build_openrouter_section_balance_unknown_never_raises():
+    data = OpenRouterData(available=True, model_count=3, account_total_credits=None, account_balance=None)
+    section = _build_openrouter_section(data)
+    assert "Balance: unknown" in section
 
 
 def test_build_openrouter_section_unavailable():
@@ -184,13 +199,18 @@ def test_build_openrouter_section_credit_limit_set_but_remaining_none_never_rais
     call AFTER the paid Sonnet call had already run."""
     data = OpenRouterData(available=True, model_count=5, credit_limit=5.0, credit_remaining=None, usage=3.0)
     section = _build_openrouter_section(data)
-    assert "unknown remaining of $5.00" in section
+    assert "Key limit: unknown remaining of $5.00" in section
 
 
-def test_build_openrouter_section_usage_none_never_raises():
-    data = OpenRouterData(available=True, model_count=5, credit_limit=None, credit_remaining=None, usage=None)
+def test_build_openrouter_section_usage_daily_falsy_never_raises():
+    """usage (raw, unused by this section directly) and usage_daily=None both
+    must degrade gracefully -- usage_daily's `if result.usage_daily:` guard
+    treats None as falsy, so the 'Today:' line is simply omitted rather than
+    formatting a NoneType."""
+    data = OpenRouterData(available=True, model_count=5, credit_limit=None, credit_remaining=None, usage=None, usage_daily=None)
     section = _build_openrouter_section(data)
-    assert "$0.00 used" in section
+    assert "Today:" not in section
+    assert "5 models available" in section
 
 
 def test_build_openrouter_section_exception_never_raises():

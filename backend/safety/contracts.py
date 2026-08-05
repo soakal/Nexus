@@ -215,7 +215,21 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
                        consumer="Dashboard.jsx:OpenRouter card (unguarded .toFixed(2) once non-None), briefing.py:_build_openrouter_section (None means unlimited key)"),
         FieldContract("credit_remaining", (int, float, type(None)), "type",
                        consumer="Dashboard.jsx:OpenRouter card, briefing.py:_build_openrouter_section (None means unlimited key OR credit_limit/credit_remaining uncorrelated in the API response)"),
-        FieldContract("usage", (int, float), "type", consumer="Dashboard.jsx:OpenRouter card, briefing.py:_build_openrouter_section"),
+        # Real account balance (GET /api/v1/credits, 2026-08-05) -- distinct
+        # from credit_limit/credit_remaining above, which are a per-KEY cap
+        # that can be exhausted while the account itself still holds real
+        # balance (live-verified: this key's limit_remaining read 0 while
+        # the account held $12.65). This is "the balance" in the everyday
+        # sense that Dashboard.jsx's card now leads with. account_total_credits
+        # gets its own contract (not just account_balance) because
+        # Dashboard.jsx dereferences it directly and unguarded
+        # (`.toFixed(2)`, and as a divisor for the bar's percentage) once it's
+        # non-None -- same "unguarded once non-None" rationale as credit_limit
+        # above.
+        FieldContract("account_balance", (int, float, type(None)), "type",
+                       consumer="Dashboard.jsx:OpenRouter card (primary balance figure), briefing.py:_build_openrouter_section (None means unavailable)"),
+        FieldContract("account_total_credits", (int, float, type(None)), "type",
+                       consumer="Dashboard.jsx:OpenRouter card (unguarded .toFixed(2) and bar-percentage divisor once non-None)"),
     ),
 }
 

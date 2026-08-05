@@ -7,15 +7,21 @@ from backend.integrations import openrouter
 # get_secret("OPENROUTER_API_KEY") return "test-openrouter-key" for every test
 # in this file -- no per-test settings patch needed.
 
+_DEFAULT_CREDITS_RESPONSE = httpx.Response(200, json={"data": {"total_credits": 30, "total_usage": 17.35}})
 
-def _patch_transport(monkeypatch, models_response, key_response):
+
+def _patch_transport(monkeypatch, models_response, key_response, credits_response=None):
     """Same MockTransport pattern as test_infisical_client.py -- routes by
-    path so one handler can stand in for both real endpoints fetch() calls."""
+    path so one handler can stand in for all three real endpoints fetch()
+    calls (models/key/credits)."""
     real_client = httpx.AsyncClient
+    credits_response = credits_response if credits_response is not None else _DEFAULT_CREDITS_RESPONSE
 
     def handler(request):
         if request.url.path == "/api/v1/key":
             return key_response
+        if request.url.path == "/api/v1/credits":
+            return credits_response
         return models_response
 
     def fake_client(*args, **kwargs):
@@ -98,8 +104,8 @@ async def test_health_check_false_on_failure(monkeypatch):
 async def test_fetch_is_cached_matching_other_integrations(monkeypatch):
     """Regression guard (Opus verification pass, 2026-08-05): fetch() gained
     real consumers beyond zero (dashboard.openrouter collector, the contract
-    canary) and now makes TWO requests instead of one -- uncached, that's up
-    to 3x the schedulers x 2x the requests of the old single-consumer,
+    canary) and now makes THREE requests instead of one -- uncached, that's
+    up to 3x the schedulers x 3x the requests of the old single-consumer,
     single-request state. A second immediate call must hit the cache, same
     @async_ttl_cache(30) convention every other integration's fetch() uses."""
     calls = {"n": 0}
@@ -109,6 +115,8 @@ async def test_fetch_is_cached_matching_other_integrations(monkeypatch):
         calls["n"] += 1
         if request.url.path == "/api/v1/key":
             return httpx.Response(200, json={"data": {"limit": 5, "limit_remaining": 1, "usage": 4.0}})
+        if request.url.path == "/api/v1/credits":
+            return _DEFAULT_CREDITS_RESPONSE
         return httpx.Response(200, json={"data": []})
 
     def fake_client(*args, **kwargs):
@@ -124,7 +132,7 @@ async def test_fetch_is_cached_matching_other_integrations(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_does_not_orphan_sibling_request_on_partial_failure(monkeypatch):
-    """Regression guard: return_exceptions=True on the gather means both
+    """Regression guard: return_exceptions=True on the gather means all
     requests complete before the client closes, instead of a bare gather()
     propagating the first failure while the client's `async with` block
     closes out from under a still-in-flight sibling call."""
@@ -133,6 +141,8 @@ async def test_fetch_does_not_orphan_sibling_request_on_partial_failure(monkeypa
     def handler(request):
         if request.url.path == "/api/v1/key":
             return httpx.Response(500)
+        if request.url.path == "/api/v1/credits":
+            return _DEFAULT_CREDITS_RESPONSE
         return httpx.Response(200, json={"data": []})
 
     def fake_client(*args, **kwargs):
@@ -140,5 +150,65 @@ async def test_fetch_does_not_orphan_sibling_request_on_partial_failure(monkeypa
         return real_client(*args, **kwargs)
     monkeypatch.setattr(httpx, "AsyncClient", fake_client)
 
+    with pytest.raises(httpx.HTTPStatusError):
+        await openrouter.fetch()
+
+
+# ---------------------------------------------------------------------------
+# Account balance (GET /api/v1/credits) -- 2026-08-05
+# ---------------------------------------------------------------------------
+
+def _key_response(**overrides):
+    body = {"limit": None, "limit_remaining": None, "usage": 0.0}
+    body.update(overrides)
+    return httpx.Response(200, json={"data": body})
+
+
+@pytest.mark.asyncio
+async def test_fetch_parses_real_account_balance(monkeypatch):
+    """Live-verified real shape: total_credits=30, total_usage=17.35 ->
+    balance=12.65 -- this is the number "show balance" refers to, distinct
+    from (and can be much larger than) the per-key limit_remaining above."""
+    _patch_transport(
+        monkeypatch,
+        httpx.Response(200, json={"data": []}),
+        _key_response(limit=5, limit_remaining=0, usage=5.05146565),
+        httpx.Response(200, json={"data": {"total_credits": 30, "total_usage": 17.35}}),
+    )
+
+    result = await openrouter.fetch()
+    assert result.account_total_credits == 30
+    assert result.account_total_usage == pytest.approx(17.35)
+    assert result.account_balance == pytest.approx(12.65)
+    # The per-key cap can be independently exhausted while the account
+    # itself still holds real balance -- both must coexist correctly.
+    assert result.credit_remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_account_balance_missing_fields_never_coerced_to_zero(monkeypatch):
+    _patch_transport(
+        monkeypatch,
+        httpx.Response(200, json={"data": []}),
+        _key_response(),
+        httpx.Response(200, json={"data": {}}),
+    )
+
+    result = await openrouter.fetch()
+    assert result.account_total_credits is None
+    assert result.account_total_usage is None
+    assert result.account_balance is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_raises_on_credits_endpoint_failure(monkeypatch):
+    """Matches this module's pre-existing raise-on-any-failure contract -- a
+    bad /credits response must not silently zero-default the balance."""
+    _patch_transport(
+        monkeypatch,
+        httpx.Response(200, json={"data": []}),
+        _key_response(),
+        httpx.Response(401),
+    )
     with pytest.raises(httpx.HTTPStatusError):
         await openrouter.fetch()

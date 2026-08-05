@@ -95,6 +95,9 @@ def test_dashboard_state_exposes_openrouter(client, auth_headers):
             "usage": 5.05146565,
             "usage_daily": 0.0,
             "is_free_tier": False,
+            "account_total_credits": 30.0,
+            "account_total_usage": 17.35,
+            "account_balance": 12.65,
         },
         600,
     )
@@ -103,4 +106,5 @@ def test_dashboard_state_exposes_openrouter(client, auth_headers):
     body = resp.json()
     assert body["openrouter"]["data"]["credit_remaining"] == 0.0
     assert body["openrouter"]["data"]["usage"] == pytest.approx(5.05146565)
+    assert body["openrouter"]["data"]["account_balance"] == pytest.approx(12.65)
     assert body["openrouter"]["freshness"] == "fresh"
