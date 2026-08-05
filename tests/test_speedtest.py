@@ -20,6 +20,36 @@ async def test_run_speedtest_offline_returns_not_online():
 
 
 @pytest.mark.asyncio
+async def test_run_speedtest_reuses_one_client_and_ssl_context():
+    """Regression guard for the 2026-08-05 fix: ping_ms used to measure a cold
+    TLS handshake, not real network RTT, because each of ping/download/upload
+    built its own httpx.AsyncClient() -- and httpx builds a fresh SSL context
+    synchronously inside AsyncClient(), costing ~1.3-1.45s on this host
+    (verified: Defender scanning the certifi bundle) and blocking the event
+    loop each time. Locks in: exactly ONE client for the whole run, built with
+    the module-level reused SSL context -- not rebuilt per phase.
+    """
+    with patch("httpx.AsyncClient") as mock_cls:
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=MagicMock(content=b"x" * 1000))
+        client.post = AsyncMock(return_value=MagicMock())
+        mock_cls.return_value.__aenter__ = AsyncMock(return_value=client)
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        from backend.integrations.speedtest import _SSL_CONTEXT, run_speedtest
+        result = await run_speedtest()
+
+    assert result["online"] is True
+    mock_cls.assert_called_once()
+    _, kwargs = mock_cls.call_args
+    assert kwargs.get("verify") is _SSL_CONTEXT
+    # 1 discarded warmup + 3 ping round-trips + 1 download = 5 GETs, all on
+    # the same client -- not 5 across 3 separately-constructed clients.
+    assert client.get.await_count == 5
+    client.post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_record_speedtest_skips_db_write_when_offline():
     from backend.scheduler import _record_speedtest
     offline = {"download_mbps": 0.0, "upload_mbps": 0.0, "ping_ms": 0.0, "online": False}
