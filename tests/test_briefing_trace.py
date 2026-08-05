@@ -89,7 +89,9 @@ async def test_trace_opened_and_closed_ok(eng):
     assert result == (
         "## Priority Actions\nNone\n\n"
         "## Proton Mail\nNothing needing attention.\n\n"
-        "## Open Items\nNo open items."
+        "## Open Items\nNo open items.\n\n"
+        "## Claude Usage\nNo Claude Code session captured yet.\n\n"
+        "## OpenRouter\nOpenRouter usage data unavailable."
     )
 
     with Session(eng) as s:

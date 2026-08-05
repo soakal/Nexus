@@ -10,6 +10,50 @@ import StatusPill from '../components/StatusPill'
 import ScreenHeader from '../components/ScreenHeader'
 import PrimaryButton from '../components/PrimaryButton'
 
+// claude_usage's captured_at/resets_at are unix EPOCH SECONDS (the statusline
+// capture file's native shape), not the ISO strings parseUTC.js's helpers
+// expect -- these are deliberately separate, small, local helpers rather than
+// stretching parseUTC.js to cover two timestamp shapes.
+//
+// Returns the FULL "resets in..." clause (not a bare duration) so the call
+// site never prefixes its own "resets in " -- doing that used to produce
+// "resets in due now" once a capture's window had already elapsed, which is
+// the normal overnight state this card exists to show. Includes a day tier
+// (7-day window can be 100+ hours out) -- mirrors briefing.py's
+// _format_epoch_countdown, same bug class, same fix.
+function fmtCountdown(epochSeconds) {
+  if (epochSeconds == null) return 'reset time unknown'
+  const seconds = epochSeconds - Date.now() / 1000
+  if (seconds <= 0) return 'resets any moment'
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+  if (days > 0) return `resets in ${days}d ${hours % 24}h`
+  if (hours > 0) return `resets in ${hours}h ${minutes % 60}m`
+  return `resets in ${minutes}m`
+}
+
+function fmtAgo(epochSeconds) {
+  if (epochSeconds == null) return '—'
+  const seconds = Date.now() / 1000 - epochSeconds
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+// Warning-colored, not freshness-colored: this bar communicates how close to
+// the rate limit Brian is, same thing the statusline itself conveys -- a
+// stale-but-45%-used capture should still read as calm green, not amber,
+// since amber here would mean "usage is high," not "data is old."
+function usageBarColor(pct) {
+  if (pct >= 90) return '#fb7185'
+  if (pct >= 70) return '#fbbf24'
+  return '#5fe0b4'
+}
+
 export default function Dashboard() {
   const [sources, setSources] = useState({})
   const [weather, setWeather] = useState(null)
@@ -20,6 +64,8 @@ export default function Dashboard() {
   const [proxmoxVmsOpen, setProxmoxVmsOpen] = useState(false)
   const [proxmoxMaint, setProxmoxMaint] = useState(null)
   const [brain, setBrain] = useState(null)
+  const [claudeUsage, setClaudeUsage] = useState(null)
+  const [openrouter, setOpenrouter] = useState(null)
   const [mail, setMail] = useState(null)
   const [mailError, setMailError] = useState(false)
   const [mailOpen, setMailOpen] = useState(false)
@@ -41,6 +87,8 @@ export default function Dashboard() {
       setProxmox(snapshot?.proxmox?.data || null)
       setProxmoxMaint(snapshot?.proxmox_maintenance?.data || null)
       setBrain(snapshot?.brain?.data || null)
+      setClaudeUsage(snapshot?.claude_usage?.data || null)
+      setOpenrouter(snapshot?.openrouter?.data || null)
       setMail(snapshot?.mail?.data || null)
       // 'never_observed' (cold-start window before this key's collector group
       // has run once) must degrade the same as 'unavailable' -- otherwise the
@@ -59,6 +107,8 @@ export default function Dashboard() {
         brain: snapshot?.brain?.freshness,
         mail: snapshot?.mail?.freshness,
         briefing: snapshot?.briefing?.freshness,
+        claude_usage: snapshot?.claude_usage?.freshness,
+        openrouter: snapshot?.openrouter?.freshness,
       })
     }).catch(() => {})
   }, [])
@@ -308,6 +358,113 @@ export default function Dashboard() {
             </div>
             <div style={{ fontSize: '12px', color: '#8a96ad', marginTop: '4px' }}>items pending</div>
           </div>
+        </Card>
+
+        {/* Claude Usage -- staleness here is NORMAL (the statusline capture
+            file only updates while an interactive Claude Code session is
+            running), not an outage, so this card dims rather than showing an
+            OFFLINE-style colored pill the way integration cards do.
+            Dimming must key off the CAPTURE's own age (captured_at), not
+            stateFreshness.claude_usage -- that field only reports how
+            recently NEXUS polled the file (ttl_seconds=120), which stays
+            'fresh' indefinitely as long as the poll itself keeps succeeding,
+            even when the underlying capture is days old. A real collector
+            failure (stale/unavailable/never_observed) is still its own,
+            separately-shown case. */}
+        {(() => {
+          const collectorDown = stateFreshness.claude_usage && stateFreshness.claude_usage !== 'fresh'
+          const captureStale = claudeUsage?.available && claudeUsage?.captured_at != null
+            && (Date.now() / 1000 - claudeUsage.captured_at) > 1800
+          const dim = collectorDown || captureStale
+          return (
+        <Card style={{
+          flex: '1 1 220px', display: 'flex', flexDirection: 'column', gap: '10px',
+          opacity: dim ? 0.6 : 1,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+            <Eyebrow>Claude Usage</Eyebrow>
+            {dim && (
+              <StatusPill tone="grey" label={collectorDown ? String(stateFreshness.claude_usage).toUpperCase() : 'STALE'} />
+            )}
+          </div>
+          {!claudeUsage?.available ? (
+            <div style={{ fontSize: '12px', color: '#8a96ad' }}>No Claude Code session captured yet.</div>
+          ) : (
+            <>
+              {[
+                { label: '5-HOUR', w: claudeUsage.five_hour },
+                { label: '7-DAY', w: claudeUsage.seven_day },
+              ].map(({ label, w }) => (
+                <div key={label}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: '11px', color: '#5d6982' }}>{label}</span>
+                    <span style={{ fontSize: '13px', fontWeight: 600 }}>
+                      {w?.used_percentage != null ? `${Math.round(w.used_percentage)}%` : '—'}
+                    </span>
+                  </div>
+                  <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', marginTop: '4px', overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${w?.used_percentage ?? 0}%`, height: '100%', borderRadius: '3px',
+                      background: usageBarColor(w?.used_percentage ?? 0),
+                    }} />
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#5d6982', marginTop: '3px' }}>
+                    {w?.resets_at != null ? fmtCountdown(w.resets_at) : 'no data'}
+                  </div>
+                </div>
+              ))}
+              <div style={{ fontSize: '10px', color: '#5d6982' }}>captured {fmtAgo(claudeUsage.captured_at)}</div>
+            </>
+          )}
+        </Card>
+          )
+        })()}
+
+        {/* OpenRouter -- a real live source (source.openrouter already covers
+            connectivity on the Sources card below); this card is purely the
+            credit/usage numbers, so it dims only on a genuine staleness/
+            outage, not by default like the Claude Usage card above. */}
+        <Card style={{ flex: '1 1 220px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+            <Eyebrow>OpenRouter</Eyebrow>
+            {openrouter?.is_free_tier && <StatusPill tone="grey" label="Free tier" />}
+          </div>
+          {!openrouter?.available ? (
+            <div style={{ fontSize: '12px', color: '#8a96ad' }}>OpenRouter data unavailable.</div>
+          ) : (
+            <>
+              {openrouter.credit_limit == null ? (
+                <div style={{ fontSize: '20px', fontWeight: 700 }}>${(openrouter.usage ?? 0).toFixed(2)} <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}>used (unlimited key)</span></div>
+              ) : (
+                <>
+                  <div style={{ fontSize: '20px', fontWeight: 700 }}>
+                    {/* credit_remaining can be null even with a set credit_limit
+                        (an uncorrelated API response) -- must read as "unknown,"
+                        never coerce to $0.00, which would misrepresent "unknown"
+                        as "no credit left". */}
+                    {openrouter.credit_remaining != null ? `$${openrouter.credit_remaining.toFixed(2)}` : 'unknown'}
+                    <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}> / ${openrouter.credit_limit.toFixed(2)} left</span>
+                  </div>
+                  <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', overflow: 'hidden' }}>
+                    {(() => {
+                      // Derive the bar from credit_remaining (the same number
+                      // shown above) rather than usage/credit_limit -- two
+                      // independent representations of the same fact can
+                      // disagree if the API's usage isn't exactly
+                      // limit - limit_remaining. Falls back to usage/limit
+                      // only when credit_remaining itself is unknown.
+                      const pct = openrouter.credit_remaining != null
+                        ? Math.max(0, 100 - (openrouter.credit_remaining / openrouter.credit_limit) * 100)
+                        : ((openrouter.usage ?? 0) / openrouter.credit_limit) * 100
+                      const clamped = Math.min(100, Math.max(0, pct))
+                      return <div style={{ width: `${clamped}%`, height: '100%', borderRadius: '3px', background: usageBarColor(clamped) }} />
+                    })()}
+                  </div>
+                </>
+              )}
+              <div style={{ fontSize: '11px', color: '#8a96ad' }}>{openrouter.model_count} models available</div>
+            </>
+          )}
         </Card>
       </section>
 

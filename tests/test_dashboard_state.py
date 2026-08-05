@@ -58,3 +58,49 @@ def test_dashboard_state_exposes_stale_metadata(client, auth_headers):
     assert body["sources"]["unifi"]["freshness"] == "never_observed"
     assert body["mail"]["data"] is None
     assert body["mail"]["freshness"] == "never_observed"
+    assert body["claude_usage"]["data"] is None
+    assert body["claude_usage"]["freshness"] == "never_observed"
+    assert body["openrouter"]["data"] is None
+    assert body["openrouter"]["freshness"] == "never_observed"
+
+
+def test_dashboard_state_exposes_claude_usage(client, auth_headers):
+    state_store.store_success(
+        "dashboard.claude_usage",
+        {
+            "available": True,
+            "captured_at": 1785966702.124308,
+            "five_hour": {"used_percentage": 45.0, "resets_at": 1785967200},
+            "seven_day": {"used_percentage": 7.0, "resets_at": 1786514400},
+            "error": None,
+        },
+        120,
+    )
+    resp = client.get("/api/dashboard/state", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["claude_usage"]["data"]["five_hour"]["used_percentage"] == 45.0
+    assert body["claude_usage"]["data"]["seven_day"]["resets_at"] == 1786514400
+    assert body["claude_usage"]["freshness"] == "fresh"
+
+
+def test_dashboard_state_exposes_openrouter(client, auth_headers):
+    state_store.store_success(
+        "dashboard.openrouter",
+        {
+            "available": True,
+            "model_count": 400,
+            "credit_limit": 5.0,
+            "credit_remaining": 0.0,
+            "usage": 5.05146565,
+            "usage_daily": 0.0,
+            "is_free_tier": False,
+        },
+        600,
+    )
+    resp = client.get("/api/dashboard/state", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["openrouter"]["data"]["credit_remaining"] == 0.0
+    assert body["openrouter"]["data"]["usage"] == pytest.approx(5.05146565)
+    assert body["openrouter"]["freshness"] == "fresh"

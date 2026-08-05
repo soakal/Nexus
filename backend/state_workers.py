@@ -115,6 +115,13 @@ COLLECTOR_GROUPS: dict[int, tuple[Collector, ...]] = {
         Collector("dashboard.proxmox_maintenance", 120, _proxmox_maintenance),
         Collector("dashboard.brain", 120, _brain_status),
         Collector("dashboard.briefing", 120, _latest_briefing),
+        # Local file read, not a network call -- 60s so a heavy active session
+        # (where the 5h/7d % genuinely moves minute to minute) feels live.
+        # Deliberately dashboard.* only, no source.* entry: the file is
+        # legitimately hours old whenever no Claude Code session is open,
+        # which is normal operation, not an outage -- registering it as a
+        # source would pin a permanently-OFFLINE tile for a working feature.
+        Collector("dashboard.claude_usage", 120, lambda: _fetch("claude_usage")),
     ),
     300: (
         _source("github", 300),
@@ -123,6 +130,7 @@ COLLECTOR_GROUPS: dict[int, tuple[Collector, ...]] = {
         _source("calendar", 300),
         Collector("dashboard.mail", 600, _mail_status),
         Collector("dashboard.today", 600, _today),
+        Collector("dashboard.openrouter", 600, lambda: _fetch("openrouter")),
     ),
     600: (
         _source("weather", 600),

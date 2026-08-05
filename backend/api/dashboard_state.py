@@ -15,6 +15,7 @@ DASHBOARD_KEYS = (
     "dashboard.weather", "dashboard.adguard", "dashboard.channels",
     "dashboard.unraid", "dashboard.proxmox", "dashboard.proxmox_maintenance",
     "dashboard.brain", "dashboard.mail", "dashboard.briefing", "dashboard.today",
+    "dashboard.claude_usage", "dashboard.openrouter",
 )
 
 
@@ -55,4 +56,6 @@ async def dashboard_state(_=Depends(require_api_key)):
         "mail": item("mail"),
         "briefing": item("briefing"),
         "today": item("today"),
+        "claude_usage": item("claude_usage"),
+        "openrouter": item("openrouter"),
     }

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,16 @@ logger = logging.getLogger(__name__)
 # extract_and_store would turn e.g. "garage door has been open for over 30
 # minutes" into a durable 0.9-confidence Fact, which the goal proposer then
 # treats as grounds for an autonomous investigation, the exact incident
-# class this list exists to contain.
-_UNVERIFIED_FACT_SECTIONS = ("Priority Actions", "Inbox", "Proton Mail", "Open Items")
+# class this list exists to contain. "Claude Usage" is likewise appended
+# AFTER the LLM call, from the raw statusline capture file (see
+# backend/integrations/claude_usage.py) -- a percentage/reset-time pair has
+# nothing for the LLM to synthesize and no business becoming a durable Fact.
+# "OpenRouter" (2026-08-05) is the same shape of section for the same reason
+# -- a credit/usage number, appended from backend.integrations.openrouter's
+# already-cross-checked fetch(), never narrated or fact-extracted.
+_UNVERIFIED_FACT_SECTIONS = (
+    "Priority Actions", "Inbox", "Proton Mail", "Open Items", "Claude Usage", "OpenRouter",
+)
 
 
 def _strip_unverified_sections(text: str) -> str:
@@ -262,6 +271,123 @@ def _build_open_items_section(flags: list) -> str:
     return "\n".join(lines)
 
 
+def _format_epoch_countdown(epoch) -> str:
+    """Best-effort, SELF-CONTAINED 'resets in Nh Nm' / 'resets any moment' /
+    'reset time unknown' clause for a unix-seconds timestamp -- returns the
+    full clause (not a bare duration) so no call site needs to prefix
+    "resets in " itself; that used to produce the nonsensical "resets in due
+    now" once a capture's 5-hour window had already elapsed, the normal
+    overnight state for this feature. Never raises. Includes a day tier
+    (unlike a bare hour count) since the 7-day window can be over 100 hours
+    out."""
+    # time.time() (not datetime.utcnow().timestamp(), which misinterprets a
+    # naive UTC datetime as local time and silently shifts the result by the
+    # host's UTC offset) -- caught by this module's own test, not guessed.
+    try:
+        seconds = float(epoch) - time.time()
+    except (TypeError, ValueError):
+        return "reset time unknown"
+    if seconds <= 0:
+        return "resets any moment"
+    minutes = int(seconds // 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"resets in {days}d {hours}h"
+    if hours:
+        return f"resets in {hours}h {minutes}m"
+    return f"resets in {minutes}m"
+
+
+def _format_epoch_age(epoch) -> str:
+    """Best-effort 'Ns/Nm/Nh/Nd ago' rendering of a unix-seconds timestamp --
+    same convention as _format_flag_age, but for the epoch-seconds shape
+    claude_usage.py's captured_at uses instead of an ISO string. Never
+    raises -- a malformed/missing value degrades to '?'."""
+    try:
+        seconds = time.time() - float(epoch)
+    except (TypeError, ValueError):
+        return "?"
+    if seconds < 0:
+        seconds = 0
+    if seconds < 60:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = int(minutes // 60)
+    if hours < 24:
+        return f"{hours}h ago"
+    days = int(hours // 24)
+    return f"{days}d ago"
+
+
+def _build_claude_usage_section(result) -> str:
+    """Deterministic, factual '## Claude Usage' section, assembled in Python
+    and appended AFTER the LLM call -- never fed into the prompt (see
+    _UNVERIFIED_FACT_SECTIONS above). `result` is either an Exception (gather
+    failure) or the ClaudeUsageData dataclass from
+    backend.integrations.claude_usage.fetch(). Never raises for any input
+    shape -- a missing/malformed capture reads as an honest 'no data' line,
+    never a blank/wrong number, matching that module's own stale-not-wrong
+    contract."""
+    from backend.integrations.claude_usage import ClaudeUsageData
+
+    if isinstance(result, Exception) or not isinstance(result, ClaudeUsageData):
+        return "## Claude Usage\nClaude Code usage data unavailable."
+    if not result.available:
+        return "## Claude Usage\nNo Claude Code session captured yet."
+
+    def _window(label: str, w) -> str:
+        # getattr, not attribute access -- w is documented as
+        # ClaudeUsageWindow | None, but this function's own docstring
+        # promises "never raises for any input shape," so a malformed w
+        # (e.g. a dict, from a future shape change) must degrade to "no
+        # data," not an AttributeError that kills the whole briefing.
+        used_percentage = getattr(w, "used_percentage", None)
+        if w is None or used_percentage is None:
+            return f"- {label}: no data"
+        resets_at = getattr(w, "resets_at", None)
+        reset = f", {_format_epoch_countdown(resets_at)}" if resets_at is not None else ""
+        return f"- {label}: {used_percentage:.0f}% used{reset}"
+
+    lines = ["## Claude Usage", _window("5-hour", result.five_hour), _window("7-day", result.seven_day)]
+    if result.captured_at is not None:
+        lines.append(f"- captured {_format_epoch_age(result.captured_at)}")
+    return "\n".join(lines)
+
+
+def _build_openrouter_section(result) -> str:
+    """Deterministic, factual '## OpenRouter' section, assembled in Python
+    and appended AFTER the LLM call -- same reasoning as
+    _build_claude_usage_section above (see _UNVERIFIED_FACT_SECTIONS). `result`
+    is either an Exception (gather failure) or the OpenRouterData dataclass
+    from backend.integrations.openrouter.fetch(). Never raises."""
+    from backend.integrations.openrouter import OpenRouterData
+
+    if isinstance(result, Exception) or not isinstance(result, OpenRouterData):
+        return "## OpenRouter\nOpenRouter usage data unavailable."
+    if not result.available:
+        return "## OpenRouter\nOpenRouter usage data unavailable."
+
+    usage = result.usage if isinstance(result.usage, (int, float)) else 0.0
+    lines = ["## OpenRouter"]
+    if result.credit_limit is None:
+        lines.append(f"- Credit: unlimited key, ${usage:.2f} used")
+    elif isinstance(result.credit_remaining, (int, float)):
+        # credit_limit set but credit_remaining absent/null is a real,
+        # reachable shape (an API response where the two fields aren't
+        # correlated) -- must degrade to "unknown," never crash the whole
+        # briefing on a NoneType format spec.
+        lines.append(f"- Credit: ${result.credit_remaining:.2f} remaining of ${result.credit_limit:.2f}")
+    else:
+        lines.append(f"- Credit: unknown remaining of ${result.credit_limit:.2f}")
+    if result.usage_daily:
+        lines.append(f"- Today: ${result.usage_daily:.2f} used")
+    lines.append(f"- {result.model_count} models available")
+    return "\n".join(lines)
+
+
 # Unraid parity_status values that mean "no parity concern" (a check finished
 # clean or none is running) -- distinct from "unknown" (a read problem, not a
 # breach, same reasoning as check_unraid_array's own status handling). Real
@@ -424,7 +550,7 @@ async def run_briefing() -> str:
         weather,
     )
     from backend.integrations.calendar import get_today_events
-    from backend.integrations import protonmail
+    from backend.integrations import protonmail, claude_usage, openrouter
     from backend.agents import calibration, mail_drafts, outcomes
 
     logger.info("Running morning briefing")
@@ -458,13 +584,16 @@ async def run_briefing() -> str:
             outcomes.recently_closed(hours=48),
             outcomes.calibration_summary(30),
             calibration.hint_report(30),
+            claude_usage.fetch(),
+            openrouter.fetch(),
             return_exceptions=True,
         )
 
         (
             ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data,
             proton_unread, proton_drafts, open_flags_result, closed_flags_result,
-            calibration_result, hint_report_result,
+            calibration_result, hint_report_result, claude_usage_result,
+            openrouter_result,
         ) = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
@@ -611,6 +740,15 @@ async def run_briefing() -> str:
             logger.warning(f"open_items section: fresh read failed, using pre-LLM list: {e}")
             fresh_open_flags = open_flags_list
         briefing_text = briefing_text + "\n\n" + _build_open_items_section(fresh_open_flags)
+
+        # Deterministic '## Claude Usage' section, same "assembled in Python,
+        # appended after the LLM call" discipline as Proton Mail/Open Items
+        # above -- see _build_claude_usage_section's own docstring.
+        briefing_text = briefing_text + "\n\n" + _build_claude_usage_section(claude_usage_result)
+
+        # Deterministic '## OpenRouter' section, same discipline as Claude
+        # Usage above -- see _build_openrouter_section's own docstring.
+        briefing_text = briefing_text + "\n\n" + _build_openrouter_section(openrouter_result)
 
         # Extract durable facts from briefing content (best-effort, never raises).
         # Priority Actions/Inbox are excluded -- see _strip_unverified_sections.

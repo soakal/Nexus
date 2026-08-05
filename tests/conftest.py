@@ -136,6 +136,41 @@ def reset_caches():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_claude_rate_limits(tmp_path, monkeypatch):
+    """Point claude_usage's file seam at a per-test temp path that does NOT
+    exist, so no test can ever read Brian's real ~/.claude/rate-limits.json
+    (which every active Claude Code session on this machine rewrites -- a test
+    reading it would be non-deterministic and machine-dependent). Default state
+    for the whole suite is therefore 'no capture yet'; a test that wants data
+    writes the file itself. Same principle as _isolate_test_database above.
+    """
+    path = tmp_path / "claude" / "rate-limits.json"
+    monkeypatch.setattr("backend.integrations.claude_usage._rate_limits_path", lambda: path)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_openrouter_fetch(request, monkeypatch):
+    """briefing.py's gather calls openrouter.fetch() directly (2026-08-05,
+    Claude/OpenRouter usage tracker build) -- unlike every other integration
+    run_briefing() gathers, no existing test patches it (openrouter wasn't in
+    that gather until this change), so leaving this unmocked would make every
+    pre-existing run_briefing() test fire a real outbound HTTPS call to
+    openrouter.ai. Default to a safe unavailable result; a test that wants to
+    exercise real OpenRouter data in a briefing patches this locally
+    (innermost patch wins, same pattern as auto_mock_opus_verify above).
+    Skipped for test_openrouter.py, which directly tests the real fetch()."""
+    if request.module.__name__ == "test_openrouter":
+        return
+    from backend.integrations.openrouter import OpenRouterData
+
+    async def _fake_fetch():
+        return OpenRouterData(available=False)
+
+    monkeypatch.setattr("backend.integrations.openrouter.fetch", _fake_fetch)
+
+
 @pytest.fixture
 def api_key():
     return "test-nexus-key"
