@@ -33,6 +33,14 @@ export function wsLogsProtocols() {
   return k ? ['nexus-api-key', k] : []
 }
 
+// Separate socket from /ws/logs — see backend/state_workers.py's module
+// docstring for why state.updated events must not share the log broadcaster.
+export function wsStateUrl() {
+  return `${WS_BASE}/ws/state`
+}
+
+export const wsStateProtocols = wsLogsProtocols
+
 const BASE = `${_base}/api`
 
 function getKey() {
@@ -63,6 +71,7 @@ export const api = {
     retry: (id) => req('POST', `/tasks/${id}/retry`),
   },
   sources: { status: () => req('GET', '/sources/status') },
+  dashboard: { state: () => req('GET', '/dashboard/state') },
   agents: { runs: (q) => req('GET', `/agents/runs${q ? `?q=${encodeURIComponent(q)}` : ''}`) },
   channels: { get: () => req('GET', '/channels/'), record: (id) => req('POST', '/channels/record', { program_id: id }) },
   adguard: {

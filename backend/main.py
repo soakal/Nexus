@@ -100,6 +100,14 @@ async def lifespan(app: FastAPI):
             setup_scheduler(settings.briefing_time, settings.briefing_timezone)
             scheduler.start()
 
+            # Eagerly populate dashboard state once at boot, fire-and-forget,
+            # so the very first request after a restart has real data instead
+            # of waiting on the scheduler's own staggered first run (~0-10s).
+            # Never blocks boot: a slow/failed collector is caught inside
+            # refresh_collector itself, not here.
+            from backend.state_workers import prime_state_workers
+            asyncio.create_task(prime_state_workers())
+
             import threading
             from backend.agents.memo_watcher import start_watcher_blocking
             loop = asyncio.get_running_loop()
@@ -230,6 +238,7 @@ from backend.api import (
     briefing,
     channels,
     chat,
+    dashboard_state,
     facts,
     goals,
     homeassistant,
@@ -254,6 +263,7 @@ app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(facts.router, prefix="/api/facts", tags=["facts"])
 app.include_router(goals.router, prefix="/api/goals", tags=["goals"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(dashboard_state.router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(briefing.router, prefix="/api/briefing", tags=["briefing"])
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 app.include_router(sources.router, prefix="/api/sources", tags=["sources"])
@@ -314,3 +324,34 @@ async def websocket_logs(websocket: WebSocket):
             await websocket.receive_text()
     except Exception:
         ws_manager.disconnect(websocket)
+
+
+@app.websocket("/ws/state")
+async def websocket_state(websocket: WebSocket):
+    # Same handshake auth as /ws/logs (see its comments above), but connects
+    # to state_ws_manager — a SEPARATE broadcaster, deliberately not shared
+    # with /ws/logs (see backend/state_workers.py's module docstring for why).
+    import hmac
+    provided = ""
+    accept_subprotocol = None
+    subprotocols = websocket.scope.get("subprotocols", []) or []
+    if len(subprotocols) >= 2 and subprotocols[0] == "nexus-api-key":
+        provided = subprotocols[1]
+        accept_subprotocol = "nexus-api-key"
+    if not provided:
+        provided = websocket.query_params.get("key", "")
+    try:
+        from backend.config import get_settings
+        expected = get_settings().nexus_api_key
+    except Exception:
+        expected = ""
+    if not provided or not expected or not hmac.compare_digest(provided, expected):
+        await websocket.close(code=1008)
+        return
+    from backend.api.agents import state_ws_manager
+    await state_ws_manager.connect(websocket, subprotocol=accept_subprotocol)
+    try:
+        while True:
+            await websocket.receive_text()
+    except Exception:
+        state_ws_manager.disconnect(websocket)

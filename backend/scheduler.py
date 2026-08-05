@@ -536,6 +536,10 @@ def setup_scheduler(briefing_time: str, timezone: str):
         id="record_uptime",
         replace_existing=True,
     )
+    # Dashboard state is refreshed by deterministic background collectors. No
+    # browser request is allowed to fan out to integrations.
+    from backend.state_workers import register_state_workers
+    register_state_workers(scheduler)
     scheduler.add_job(
         _ingest_brain_spend,
         IntervalTrigger(seconds=300),

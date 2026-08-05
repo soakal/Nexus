@@ -90,10 +90,10 @@ export default function App() {
           return
         }
         // /api/health needs no auth, so it can't tell us whether THIS browser holds
-        // a valid API key. Probe one authenticated endpoint so a missing/invalid key
-        // raises the "NO API KEY" banner instead of silently showing empty pages
-        // (the failure mode that made the mobile Uptime page sit on "LOADING...").
-        const authRes = await fetch(`${API_BASE}/api/sources/status`, {
+        // a valid API key. Probe the cached dashboard read model: it verifies auth
+        // without making the browser fan out to every live integration the way
+        // /api/sources/status (this probe's old target) does server-side.
+        const authRes = await fetch(`${API_BASE}/api/dashboard/state`, {
           headers: { 'Authorization': `Bearer ${key}` },
         })
         if (authRes.status === 401) {
