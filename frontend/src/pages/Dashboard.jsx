@@ -42,7 +42,11 @@ export default function Dashboard() {
       setProxmoxMaint(snapshot?.proxmox_maintenance?.data || null)
       setBrain(snapshot?.brain?.data || null)
       setMail(snapshot?.mail?.data || null)
-      setMailError(snapshot?.mail?.freshness === 'unavailable')
+      // 'never_observed' (cold-start window before this key's collector group
+      // has run once) must degrade the same as 'unavailable' -- otherwise the
+      // card just vanishes instead of showing an Offline state, exactly the
+      // kind of cold-start gap this feature exists to close.
+      setMailError(['unavailable', 'never_observed'].includes(snapshot?.mail?.freshness))
       setLastBriefing(snapshot?.briefing?.data?.created_at || null)
       setLastSyncedAt(snapshot?.generated_at || null)
       setStateFreshness({

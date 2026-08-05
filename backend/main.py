@@ -102,11 +102,16 @@ async def lifespan(app: FastAPI):
 
             # Eagerly populate dashboard state once at boot, fire-and-forget,
             # so the very first request after a restart has real data instead
-            # of waiting on the scheduler's own staggered first run (~0-10s).
+            # of waiting on the scheduler's own first (one-interval-away) run.
             # Never blocks boot: a slow/failed collector is caught inside
             # refresh_collector itself, not here.
+            # Reference kept in this local var (not discarded) so the task
+            # isn't eligible for GC mid-run: asyncio.create_task() only holds
+            # a weak reference internally, and this generator frame stays
+            # suspended at `yield` below for the app's whole lifetime, which
+            # keeps this local alive for exactly as long as it needs to be.
             from backend.state_workers import prime_state_workers
-            asyncio.create_task(prime_state_workers())
+            prime_task = asyncio.create_task(prime_state_workers())
 
             import threading
             from backend.agents.memo_watcher import start_watcher_blocking

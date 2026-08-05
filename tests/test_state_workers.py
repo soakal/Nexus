@@ -35,3 +35,39 @@ def test_no_duplicate_collector_keys():
                 dupes.add(collector.key)
             seen.add(collector.key)
     assert not dupes, f"Duplicate collector key(s) registered across COLLECTOR_GROUPS: {dupes}"
+
+
+def test_state_ws_manager_is_distinct_from_logs_ws_manager():
+    # A real bug found by review: /ws/state sharing /ws/logs's broadcaster
+    # would leak state.updated JSON into the Safety/Traces log viewer
+    # (AgentLog.jsx renders every incoming message with zero type filtering).
+    # This must stay two separate WebSocketManager instances, not two names
+    # for the same one.
+    from backend.api.agents import state_ws_manager, ws_manager
+
+    assert state_ws_manager is not ws_manager
+    assert state_ws_manager.active is not ws_manager.active
+
+
+def test_prime_state_workers_task_reference_is_captured():
+    # Regression guard for a real bug found by review: asyncio.create_task()
+    # only holds a weak reference internally, so a bare
+    # `asyncio.create_task(prime_state_workers())` statement (return value
+    # discarded) leaves the multi-collector boot prime eligible for silent
+    # GC mid-run. This is a static-source check, not a live-timing test
+    # (same "paren-scanning regression guard" style as
+    # test_spend_report.py::test_no_unlabeled_llm_calls_in_agents) -- it
+    # fails if the call site ever regresses back to a bare, unassigned call.
+    import inspect
+    import re
+
+    from backend import main
+
+    lines = [l for l in inspect.getsource(main).splitlines() if "prime_state_workers())" in l]
+    assert lines, "prime_state_workers() call not found in backend/main.py"
+
+    assert re.match(r"\s*\w+\s*=\s*asyncio\.create_task\(prime_state_workers\(\)\)", lines[0]), (
+        "prime_state_workers()'s task must be assigned to a variable (kept as a strong "
+        "reference for the lifespan generator's suspended frame to hold), not called as a "
+        "bare, discarded expression statement -- see the comment at this call site in main.py."
+    )

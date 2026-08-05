@@ -92,6 +92,12 @@ def _get_or_create(session, key: str):
     except IntegrityError:
         session.rollback()
         row = session.get(StateSnapshot, key)
+        if row is None:
+            # Only reachable if the winning insert's own row vanished between
+            # our IntegrityError and this re-fetch (e.g. a concurrent delete) --
+            # nothing in this codebase ever deletes a StateSnapshot row, so
+            # this is a can't-happen guard, not a real recovery path.
+            raise RuntimeError(f"state_store: lost the race for key {key!r} but no row exists")
     return row
 
 
