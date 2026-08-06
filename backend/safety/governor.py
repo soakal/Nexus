@@ -255,6 +255,46 @@ def remove_muted_notify_kind(kind: str) -> None:
     _remove_csv_kind("muted_notify_kinds", kind)
 
 
+def get_anthropic_balance_watch_state() -> dict:
+    """Sync. Last-persisted signal from backend/agents/anthropic_balance_watch.py's
+    monthly check (issue state/comment-count/probe-status), or all-None
+    values if the row is missing or no check has run yet."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            return {"issue_signal": None, "comment_count": None, "probe_status": None}
+        return {
+            "issue_signal": row.anthropic_balance_watch_last_issue_signal,
+            "comment_count": row.anthropic_balance_watch_last_comment_count,
+            "probe_status": row.anthropic_balance_watch_last_probe_status,
+        }
+
+
+def set_anthropic_balance_watch_state(
+    issue_signal: str | None, comment_count: int | None, probe_status: int | None
+) -> None:
+    """Sync. Persists the latest check's signal (whatever the caller passes
+    — a failed sub-check's None-preservation is the caller's job, not
+    this function's)."""
+    from sqlmodel import Session
+
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+        row.anthropic_balance_watch_last_issue_signal = issue_signal
+        row.anthropic_balance_watch_last_comment_count = comment_count
+        row.anthropic_balance_watch_last_probe_status = probe_status
+        session.commit()
+
+
 def add_auto_allow_kind(kind: str) -> None:
     """Promote a kind to auto-allow for agent/autonomous actors (sync).
     Called ONLY by the broker's policy_promote dispatcher, which is itself

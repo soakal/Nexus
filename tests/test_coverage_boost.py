@@ -169,10 +169,11 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # one assertion will legitimately fail there until that venv is set up
     # too) +4 "state_refresh_{30,60,300,600}s" (2026-08-05, see
     # backend/state_workers.py -- one job per COLLECTOR_GROUPS interval,
-    # registered via register_state_workers()) = 29. These deltas landed as
-    # separate commits; if any flips back off, drop this count and its id
-    # below deliberately, not as a side effect of an unrelated change.
-    assert mock_add.call_count == 29
+    # registered via register_state_workers()) +1 "anthropic_balance_watch"
+    # (2026-08-05, monthly) = 30. These deltas landed as separate commits;
+    # if any flips back off, drop this count and its id below deliberately,
+    # not as a side effect of an unrelated change.
+    assert mock_add.call_count == 30
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -206,6 +207,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "hermes_soak_reminder",
         "facts_digest",
         "calibration_recompute",
+        "anthropic_balance_watch",
     }
 
 
@@ -214,7 +216,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     (see backend/agents/watchdog.py::run_watchdog) rather than registering its
     own scheduler job — matches the same choice already made for
     check_budget_warning. If a future change moves it to its own job, this
-    test and test_setup_scheduler_adds_jobs's call_count==29 must both be
+    test and test_setup_scheduler_adds_jobs's call_count==30 must both be
     updated together, deliberately."""
     from datetime import datetime
     import backend.scheduler as sched_mod
@@ -226,7 +228,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 29
+    assert mock_add.call_count == 30
 
 
 # ---------------------------------------------------------------------------

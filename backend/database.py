@@ -302,6 +302,20 @@ class SystemState(SQLModel, table=True):
     # the static Settings.phone_suppressed_kinds (.env, requires a restart) —
     # this is Brian's own on-the-fly "stop pinging me about X" control.
     muted_notify_kinds: str | None = Field(default=None)
+    # Monthly watch for whether Anthropic has shipped a public API-credit-
+    # balance endpoint (backend/agents/anthropic_balance_watch.py) — there is
+    # none today, a known gap (anthropics/claude-code#47574, open, "not
+    # planned"). Persisted as "state:state_reason" (e.g. "closed:not_planned")
+    # so a check-to-check CHANGE (not just a fixed calendar date) is what
+    # triggers a Telegram notice, same reasoning as auth_burst_alert_sources'
+    # edge-trigger-and-persist idiom above.
+    anthropic_balance_watch_last_issue_signal: str | None = Field(default=None)
+    anthropic_balance_watch_last_comment_count: int | None = Field(default=None)
+    # Last HTTP status seen probing the one concrete candidate endpoint the
+    # community has proposed (GET /v1/organizations/balance) — 404 today,
+    # live-verified. A change away from 404 is a strong, direct signal
+    # independent of whether the GitHub issue itself was ever updated.
+    anthropic_balance_watch_last_probe_status: int | None = Field(default=None)
 
 
 class StateSnapshot(SQLModel, table=True):
@@ -548,6 +562,9 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "policy_forbid_kinds", "TEXT")
     _safe_add_column("systemstate", "telegram_conversation_id", "INTEGER")
     _safe_add_column("systemstate", "muted_notify_kinds", "TEXT")
+    _safe_add_column("systemstate", "anthropic_balance_watch_last_issue_signal", "TEXT")
+    _safe_add_column("systemstate", "anthropic_balance_watch_last_comment_count", "INTEGER")
+    _safe_add_column("systemstate", "anthropic_balance_watch_last_probe_status", "INTEGER")
 
 
 def _ensure_system_state():
