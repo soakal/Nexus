@@ -712,6 +712,17 @@ def test_budget_warning_missing_row_creates_and_fires():
 # claim_auth_burst_alert (401-burst watchdog)
 # ---------------------------------------------------------------------------
 
+def _set_auth_burst_tracked(eng, mapping):
+    """Overwrite the persisted per-source claim map directly."""
+    from backend.database import SystemState
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        row.auth_burst_alert_json = json.dumps(
+            {k: v.isoformat() for k, v in mapping.items()}
+        )
+        s.commit()
+
+
 def test_claim_auth_burst_fires_once_then_silent(eng):
     from backend.safety import governor
     _seed_state(eng)
@@ -732,7 +743,7 @@ def test_claim_auth_burst_survives_restart(eng):
 
     with Session(eng) as s:
         row = s.get(SystemState, 1)
-        assert row.auth_burst_alert_sources == "1.2.3.4"
+        assert set(json.loads(row.auth_burst_alert_json)) == {"1.2.3.4"}
 
     paged_again = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
     assert paged_again == []
@@ -745,16 +756,13 @@ def test_claim_auth_burst_resets_after_quiet(eng):
 
     governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
 
-    with Session(eng) as s:
-        row = s.get(SystemState, 1)
-        row.auth_burst_alert_at = datetime.utcnow() - timedelta(minutes=31)
-        s.commit()
+    _set_auth_burst_tracked(eng, {"1.2.3.4": datetime.utcnow() - timedelta(minutes=31)})
 
     paged = governor.claim_auth_burst_alert(set(), set(), 1800)
     assert paged == []
     with Session(eng) as s:
         row = s.get(SystemState, 1)
-        assert row.auth_burst_alert_sources is None
+        assert row.auth_burst_alert_json is None
 
     re_armed = governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
     assert re_armed == ["1.2.3.4"]
@@ -767,19 +775,16 @@ def test_claim_auth_burst_does_not_reset_while_trickling(eng):
 
     governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800)
 
-    with Session(eng) as s:
-        row = s.get(SystemState, 1)
-        row.auth_burst_alert_at = datetime.utcnow() - timedelta(minutes=31)
-        s.commit()
+    _set_auth_burst_tracked(eng, {"1.2.3.4": datetime.utcnow() - timedelta(minutes=31)})
 
     # Below threshold now, but still active (trickling) — must not reset.
     paged = governor.claim_auth_burst_alert(set(), {"1.2.3.4"}, 1800)
     assert paged == []
     with Session(eng) as s:
         row = s.get(SystemState, 1)
-        assert row.auth_burst_alert_sources == "1.2.3.4"
-        assert row.auth_burst_alert_at is not None
-        assert (datetime.utcnow() - row.auth_burst_alert_at).total_seconds() < 60
+        tracked = json.loads(row.auth_burst_alert_json)
+        assert set(tracked) == {"1.2.3.4"}
+        assert (datetime.utcnow() - datetime.fromisoformat(tracked["1.2.3.4"])).total_seconds() < 60
 
 
 def test_claim_auth_burst_multiple_sources(eng):
@@ -806,9 +811,63 @@ def test_claim_auth_burst_creates_missing_system_state_row():
         assert paged == ["1.2.3.4"]
 
 
+def test_claim_auth_burst_rearms_each_source_independently(eng):
+    """THE bug the JSON column replaced: a perpetually-storming source used to
+    refresh one SHARED timestamp, so a different, already-quiet source stayed
+    claimed and its next storm was never paged."""
+    from backend.database import SystemState
+    from backend.safety import governor
+    _seed_state(eng)
+
+    assert governor.claim_auth_burst_alert(
+        {"noisy", "quiet"}, {"noisy", "quiet"}, 1800) == ["noisy", "quiet"]
+
+    stale = datetime.utcnow() - timedelta(minutes=31)
+    _set_auth_burst_tracked(eng, {"noisy": stale, "quiet": stale})
+
+    # Only "noisy" is still storming: "quiet" must be pruned, "noisy" kept.
+    assert governor.claim_auth_burst_alert({"noisy"}, {"noisy"}, 1800) == []
+    with Session(eng) as s:
+        assert set(json.loads(s.get(SystemState, 1).auth_burst_alert_json)) == {"noisy"}
+
+    # "quiet" storms again -> pages again; "noisy" stays silent.
+    assert governor.claim_auth_burst_alert(
+        {"noisy", "quiet"}, {"noisy", "quiet"}, 1800) == ["quiet"]
+
+
+def test_claim_auth_burst_tolerates_corrupt_json(eng):
+    """A poisoned/legacy/partial value must degrade to 're-arm everything'
+    (one duplicate page at worst), never raise -- a raise is swallowed by
+    watchdog's outer try/except and would kill the alert silently forever."""
+    from backend.database import SystemState
+    from backend.safety import governor
+    _seed_state(eng)
+
+    for bad in ("not json at all", "[1,2,3]", '"a string"',
+                '{"1.2.3.4": "not-a-timestamp"}', '{"1.2.3.4": null}'):
+        with Session(eng) as s:
+            s.get(SystemState, 1).auth_burst_alert_json = bad
+            s.commit()
+        assert governor.claim_auth_burst_alert({"1.2.3.4"}, {"1.2.3.4"}, 1800) == ["1.2.3.4"]
+
+
+def test_claim_auth_burst_tracked_map_is_bounded(eng):
+    """The map is PERSISTED and the 401 path is pre-auth reachable, so it is
+    hard-capped the same way authfail.MAX_SOURCES caps the in-memory table."""
+    from backend.database import SystemState
+    from backend.safety import governor
+    _seed_state(eng)
+
+    sources = {f"10.0.0.{i}" for i in range(200)}
+    governor.claim_auth_burst_alert(sources, sources, 1800)
+    with Session(eng) as s:
+        tracked = json.loads(s.get(SystemState, 1).auth_burst_alert_json)
+    assert len(tracked) == governor._MAX_AUTH_BURST_TRACKED
+
+
 # ---------------------------------------------------------------------------
 # Telegram Phase 2 — conversation-id persistence + per-kind mute (CSV, same
-# singleton-row idiom as auth_burst_alert_sources/policy_auto_allow_kinds)
+# singleton-row idiom as policy_auto_allow_kinds)
 # ---------------------------------------------------------------------------
 
 def test_telegram_conversation_id_roundtrip(eng):

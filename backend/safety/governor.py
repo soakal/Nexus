@@ -15,6 +15,7 @@ MUST invoke them via `asyncio.to_thread` so no Session/ORM crosses an `await`
 and the orchestrator's per-task brake both wrap these in `asyncio.to_thread`.
 """
 
+import json
 import logging
 from datetime import datetime
 
@@ -24,6 +25,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DAILY_BUDGET_USD = 25.0
 _DEFAULT_PER_TASK_BUDGET_USD = 5.0
 _DEFAULT_AUTONOMY_ENABLED = True
+
+# Hard cap on the PERSISTED per-source claim map. Mirrors authfail.MAX_SOURCES
+# for the same stated reason -- the 401 path is reachable pre-auth by anyone who
+# can reach 0.0.0.0:8000 -- with the extra concern that, unlike authfail's
+# in-memory table, this one survives restarts. Oldest-last-active evicted first.
+_MAX_AUTH_BURST_TRACKED = 64
 
 
 class BudgetExceeded(Exception):
@@ -559,32 +566,70 @@ def budget_warning_due(threshold_pct: float) -> tuple[bool, float, float]:
         return (False, spend, cap)
 
 
+def _load_auth_burst_tracked(raw: str | None) -> dict[str, datetime]:
+    """Parse SystemState.auth_burst_alert_json into {source: last_active_utc}.
+
+    TOTAL by design -- a NULL, legacy, corrupt, or partially-malformed value
+    returns {} (or drops just the bad entries) rather than raising.
+
+    This matters more than it looks: a raise here propagates out of
+    claim_auth_burst_alert into watchdog.check_auth_failure_burst's outer
+    try/except, which swallows it and returns []. One poisoned column value
+    would therefore silently disable the 401-burst alert FOREVER, because the
+    column would never get rewritten either. Degrading to {} re-arms every
+    source instead -- at worst one duplicate page, never a missed one.
+    """
+    if not raw:
+        return {}
+    out: dict[str, datetime] = {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    for src, ts in data.items():
+        try:
+            out[str(src)] = datetime.fromisoformat(str(ts))
+        except (TypeError, ValueError):
+            continue  # drop just this entry, keep the rest
+    return out
+
+
 def claim_auth_burst_alert(
     over_threshold: set[str], active: set[str], quiet_s: float
 ) -> list[str]:
-    """Edge-trigger + persist the 401-burst alert state (sync).
+    """Edge-trigger + persist the 401-burst alert state, PER SOURCE (sync).
 
-    `over_threshold` — sources at/above the burst threshold on this tick.
-    `active`         — sources with >=1 failure in the window on this tick
+    `over_threshold` -- sources at/above the burst threshold on this tick.
+    `active`         -- sources with >=1 failure in the window on this tick
                        (always a superset of over_threshold).
 
     Returns the sources that crossed the edge ON THIS CALL and must be paged.
-    A source already in the persisted set is NOT returned again (page once,
-    then go quiet), and the persisted set survives restarts so a mid-storm
-    reboot does not re-page.
+    A source already claimed is NOT returned again (page once, then go quiet),
+    and the claim map survives restarts so a mid-storm reboot does not re-page.
 
-    RESET: the tracked set is cleared, re-arming the alert, only when NONE of
-    the tracked sources has produced a failure for `quiet_s` seconds.
-    auth_burst_alert_at is refreshed on every tick where a tracked source
-    shows ANY failure, so a storm that decays to a trickle stays claimed
-    instead of re-arming and re-paging.
+    RE-ARM IS PER SOURCE: each claimed source carries its OWN last-active
+    timestamp, and is dropped (re-arming it) once IT has produced no failure
+    for `quiet_s` seconds -- regardless of what any other source is doing. The
+    previous CSV + single shared timestamp meant a perpetually-storming source
+    kept refreshing the one timestamp, so a different, already-quiet source
+    never re-armed and its next storm was never paged.
 
-    Claims in the same call that returns, mirroring budget_warning_due: a
-    failed notify still consumes the claim. Same accepted tradeoff. Creates
-    SystemState row id=1 if it doesn't exist yet, same as budget_warning_due.
+    A source still producing failures has its timestamp refreshed every tick,
+    so a storm that decays to a trickle stays claimed rather than re-paging.
+
+    On upgrade the old auth_burst_alert_sources CSV is NOT migrated into this
+    column -- a storm in flight at that exact moment gets one duplicate page,
+    which is cheaper than migration code that can only ever run once.
+
+    Creates SystemState row id=1 if it doesn't exist yet, same as
+    budget_warning_due.
     """
     from sqlmodel import Session
     from backend.database import SystemState, engine
+
+    now = datetime.utcnow()
 
     with Session(engine) as session:
         row = session.get(SystemState, 1)
@@ -594,24 +639,44 @@ def claim_auth_burst_alert(
             session.commit()
             session.refresh(row)
 
-        tracked = {s for s in (row.auth_burst_alert_sources or "").split(",") if s}
-        new = over_threshold - tracked
+        tracked = _load_auth_burst_tracked(row.auth_burst_alert_json)
 
-        if new or (tracked & active):
-            row.auth_burst_alert_at = datetime.utcnow()
-        elif (
-            tracked
-            and not (tracked & active)
-            and (
-                row.auth_burst_alert_at is None
-                or (datetime.utcnow() - row.auth_burst_alert_at).total_seconds() >= quiet_s
+        # 1. Re-arm per source: drop any claimed source that is producing no
+        #    failures NOW and has produced none for quiet_s. A clock stepping
+        #    backwards makes the delta negative -> source kept, the safe
+        #    direction (no re-page).
+        tracked = {
+            src: last
+            for src, last in tracked.items()
+            if src in active or (now - last).total_seconds() < quiet_s
+        }
+
+        # 2. The edge: over threshold and not already claimed.
+        new = sorted(over_threshold - set(tracked))
+
+        # 3. Refresh every still-active claim, then claim the new ones.
+        for src in list(tracked):
+            if src in active:
+                tracked[src] = now
+        for src in new:
+            tracked[src] = now
+
+        # 4. Bound the persisted map (see _MAX_AUTH_BURST_TRACKED). Only
+        #    reachable with >64 sources simultaneously over threshold; an
+        #    evicted just-paged source would simply re-page next tick.
+        if len(tracked) > _MAX_AUTH_BURST_TRACKED:
+            tracked = dict(
+                sorted(tracked.items(), key=lambda kv: kv[1], reverse=True)[
+                    :_MAX_AUTH_BURST_TRACKED
+                ]
             )
-        ):
-            tracked = set()
 
-        tracked |= new
-        row.auth_burst_alert_sources = ",".join(sorted(tracked)) or None
-        row.updated_at = datetime.utcnow()
+        row.auth_burst_alert_json = (
+            json.dumps({s: t.isoformat() for s, t in sorted(tracked.items())})
+            if tracked
+            else None
+        )
+        row.updated_at = now
         session.add(row)
         session.commit()
-        return sorted(new)
+        return new
