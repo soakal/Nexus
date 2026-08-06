@@ -14,6 +14,7 @@ const PAGE_CMDS = [
   { id: 'nav-uptime',     label: 'Go to Uptime',          to: '/uptime' },
   { id: 'nav-agents',     label: 'Go to Agents',          to: '/agents' },
   { id: 'nav-safety',     label: 'Go to Safety',          to: '/safety' },
+  { id: 'nav-flags',      label: 'Go to Flags',           to: '/flags' },
   { id: 'nav-facts',      label: 'Go to Facts',           to: '/facts' },
   { id: 'nav-settings',   label: 'Go to Settings',        to: '/settings' },
 ]

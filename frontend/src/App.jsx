@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
   Tv2, Home, Activity, Bot, ShieldCheck, Brain, Mail as MailIcon,
-  Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints,
+  Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints, Flag,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
 import CommandPalette from './components/CommandPalette'
@@ -21,6 +21,7 @@ import HomeAssistant from './pages/HomeAssistant'
 import Mail from './pages/Mail'
 import Settings from './pages/Settings'
 import Safety from './pages/Safety'
+import Flags from './pages/Flags'
 import Facts from './pages/Facts'
 import Traces from './pages/Traces'
 import { API_BASE } from './lib/api'
@@ -38,6 +39,7 @@ const NAV = [
   { to: '/agents',   icon: Bot,              label: 'Agents',         group: 'SYSTEMS'  },
   { to: '/traces',   icon: Waypoints,        label: 'Traces',         group: 'SYSTEMS'  },
   { to: '/safety',   icon: ShieldCheck,      label: 'Safety',         group: 'SYSTEMS'  },
+  { to: '/flags',    icon: Flag,             label: 'Flags',          group: 'SYSTEMS'  },
   { to: '/facts',    icon: Brain,            label: 'Facts',          group: 'SYSTEMS'  },
   { to: '/settings', icon: SettingsIcon,     label: 'Settings',       group: 'SYSTEMS'  },
 ]
@@ -433,6 +435,7 @@ export default function App() {
             <Route path="/agents" element={<Agents />} />
             <Route path="/traces" element={<Traces />} />
             <Route path="/safety" element={<Safety />} />
+            <Route path="/flags" element={<Flags />} />
             <Route path="/facts" element={<Facts />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
