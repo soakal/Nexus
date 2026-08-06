@@ -101,6 +101,27 @@ the `if` — a real `UnboundLocalError` whenever `spend_report_enabled` was `Fal
 existing tests that assert on scheduler job registration around that region. Full pytest suite:
 1882 passed, 1 skipped, 0 failed.
 
+**UniFi alarms endpoint broken, whole integration was dying over it (2026-08-06, branch
+`fix/unifi-alarms-invalid-object`, worktree `nexus-unifi-alarms-fix`)** — found via Telegram's own
+`/status` command showing "UniFi: unavailable" while every other source read fine. Live-verified
+root cause: `unifi.py::fetch()`'s alarms sub-call (`GET .../list/alarm`) returns a real HTTP 400
+`{"meta":{"rc":"error","msg":"api.err.InvalidObject"}}` on the real controller (UniFi Network
+10.5.67 / UDM Pro Max) — confirmed `"alarm"` is no longer (or never was, on this firmware) a valid
+record type by testing `list/wlanconf`/`list/networkconf`/`list/user` on the same controller (all
+200 OK, proving the legacy `list/*` REST pattern itself still works) and trying several plausible
+replacements live (`list/event`, `list/alert`, `stat/alarm`, `stat/event`, the v2
+`/proxy/network/v2/api/site/default/alarm` path) — none worked. Since `fetch()` raised on ANY
+sub-call failure, this ONE broken call was killing the entire UniFi read — client count, uplink
+status, and bandwidth, all independently confirmed working, went dark too. Fixed by isolating the
+alarms call in its own try/except, degrading `UniFiData.alerts` to `None` (never `[]` — `None`
+means "couldn't read this cycle," `[]` means "confirmed no active alarms"; conflating the two would
+be exactly the false-all-clear the rest of this integration's raise-on-failure design exists to
+prevent) while clients/uplink/bandwidth keep raising as before, since those are still genuinely
+working. `tools.py::_unifi_status` and `contracts.py`'s `alerts` FieldContract both updated to treat
+`None` as a distinct, valid "unknown" state rather than crashing or silently reading as zero.
+Live-verified against the real controller post-fix: `client_count=52, uplink_status=ok,
+bandwidth_mbps=0.16, alerts=None`. Full pytest suite: 1920 passed, 1 skipped, 0 failed.
+
 ## Run / build / test
 - **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`  ·  **Restore db:** `.\restore.ps1 [-From <dir>]` (validates the backup BEFORE stopping NEXUS; logic lives in `backend/agents/backup.py::restore_from` — tested by `tests/test_restore_drill.py`)
 - Backend: FastAPI + uvicorn on **:8000**, venv at `.\venv` (`.\venv\Scripts\python.exe`). `start.ps1` launches it via **`run.py`** (NOT `-m uvicorn`) — run.py pins the Windows **SelectorEventLoop** before uvicorn builds its loop (must be set there: uvicorn creates the loop before importing the app, so a policy in `main.py` is too late). The default ProactorEventLoop throws `WinError 64` under concurrent integration fetches → "app not loading data". See Non-obvious rules.

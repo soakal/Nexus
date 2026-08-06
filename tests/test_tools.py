@@ -125,6 +125,24 @@ async def test_unifi_status_normal_and_raise():
 
 
 @pytest.mark.asyncio
+async def test_unifi_status_alerts_none_renders_unknown_not_zero():
+    """Regression guard (2026-08-06): alerts=None (the alarms sub-read failed
+    this cycle, per unifi.py's degrade-not-raise fix) must render as "unknown
+    alert(s)", never "0 alert(s)" -- the latter is a false all-clear."""
+    from backend.agents import tools
+
+    data = MagicMock()
+    data.client_count = 3
+    data.uplink_status = "ok"
+    data.bandwidth_mbps = 5.0
+    data.alerts = None
+    with patch("backend.integrations.unifi.fetch", new=AsyncMock(return_value=data)):
+        out = await tools._unifi_status({})
+    assert "unknown alert(s)" in out
+    assert "0 alert(s)" not in out
+
+
+@pytest.mark.asyncio
 async def test_adguard_status_normal_and_raise():
     from backend.agents import tools
 
