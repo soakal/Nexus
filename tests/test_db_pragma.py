@@ -66,9 +66,9 @@ def test_ensure_task_columns_idempotent(file_db, monkeypatch):
     assert "cancel_requested" in cols()
 
 
-def test_ensure_system_state_columns_adds_auth_burst_columns(file_db):
-    """Creating systemstate WITHOUT the 401-burst columns, then running
-    _ensure_system_state_columns twice, adds them exactly once and never errors."""
+def test_ensure_system_state_columns_adds_auth_burst_column(file_db):
+    """Creating systemstate WITHOUT the 401-burst column, then running
+    _ensure_system_state_columns twice, adds it exactly once and never errors."""
     bd, eng = file_db
 
     with eng.begin() as conn:
@@ -82,17 +82,14 @@ def test_ensure_system_state_columns_adds_auth_burst_columns(file_db):
         with eng.connect() as conn:
             return {row[1] for row in conn.execute(text("PRAGMA table_info(systemstate)"))}
 
-    assert "auth_burst_alert_sources" not in cols()
-    assert "auth_burst_alert_at" not in cols()
+    assert "auth_burst_alert_json" not in cols()
 
     bd._ensure_system_state_columns()
-    assert "auth_burst_alert_sources" in cols()
-    assert "auth_burst_alert_at" in cols()
+    assert "auth_burst_alert_json" in cols()
 
     # Second run must be a harmless no-op (no duplicate-column error).
     bd._ensure_system_state_columns()
-    assert "auth_burst_alert_sources" in cols()
-    assert "auth_burst_alert_at" in cols()
+    assert "auth_burst_alert_json" in cols()
 
 
 def test_ensure_system_state_columns_adds_policy_columns(file_db):

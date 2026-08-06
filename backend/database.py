@@ -270,22 +270,32 @@ class SystemState(SQLModel, table=True):
     # Watermark for the weekly facts-digest job (backend/agents/facts_digest.py) —
     # facts with last_seen_at/created_at after this instant are "new since last digest".
     last_facts_digest_at: datetime | None = Field(default=None)
-    # Sources (comma-separated client identities) currently in an ACTIVE 401-burst
-    # alert state — set when the burst alert pages, cleared after a quiet window.
-    # Non-empty means "already paged, stay silent", so a restart mid-storm does
-    # not re-page. CSV rather than one column per source: this is a homelab with
-    # a handful of client IPs and SystemState is a singleton control row, not a
-    # relational store.
-    auth_burst_alert_sources: str | None = Field(default=None)
-    # Last tick at which any tracked source was still producing failures. The
-    # quiet-period reset measures from here, NOT from when the alert first fired.
-    auth_burst_alert_at: datetime | None = Field(default=None)
+    # 401-burst alert claim state (backend/safety/governor.py::claim_auth_burst_alert).
+    # JSON object mapping each currently-claimed client identity to the UTC ISO
+    # timestamp of the last tick it was STILL producing failures:
+    #     {"1.2.3.4": "2026-08-05T12:34:56.789012", ...}
+    # Presence of a source means "already paged, stay silent" -- so a restart
+    # mid-storm does not re-page -- and that source re-arms once IT ALONE has
+    # been quiet for the configured window.
+    #
+    # Replaced the original `auth_burst_alert_sources` CSV + a single shared
+    # `auth_burst_alert_at` timestamp (2026-08-05): one perpetually-storming
+    # source kept refreshing the shared timestamp, so a different, already-quiet
+    # source stayed claimed and its next storm was never paged; and the set
+    # could only ever be cleared all-or-nothing, so it grew without bound (and
+    # across restarts) for as long as any one source kept storming.
+    #
+    # A JSON TEXT blob rather than one column per source or a side table:
+    # SystemState is a singleton control row, and `*_json` TEXT columns are
+    # already this schema's idiom for structured values (Task.result_json,
+    # TaskStep.output_json, StateSnapshot.payload_json).
+    auth_burst_alert_json: str | None = Field(default=None)
     # Kinds promoted to auto-allow for agent/autonomous actors, CSV. ONLY ever
     # written by a human-confirmed policy_promote action (broker.py) — never
     # by the learner directly. Filtered at read time against a hardcoded
     # _NEVER_PROMOTABLE floor, so a stale/hand-edited value can never grant
     # more than the code permits. Same CSV-on-singleton-row idiom as
-    # auth_burst_alert_sources above, for the same reason (a handful of kinds,
+    # muted_notify_kinds below, for the same reason (a handful of kinds,
     # not a relational store).
     policy_auto_allow_kinds: str | None = Field(default=None)
     # Kinds demoted to always-forbidden for agent/autonomous actors, CSV.
@@ -307,7 +317,7 @@ class SystemState(SQLModel, table=True):
     # none today, a known gap (anthropics/claude-code#47574, open, "not
     # planned"). Persisted as "state:state_reason" (e.g. "closed:not_planned")
     # so a check-to-check CHANGE (not just a fixed calendar date) is what
-    # triggers a Telegram notice, same reasoning as auth_burst_alert_sources'
+    # triggers a Telegram notice, same reasoning as auth_burst_alert_json's
     # edge-trigger-and-persist idiom above.
     anthropic_balance_watch_last_issue_signal: str | None = Field(default=None)
     anthropic_balance_watch_last_comment_count: int | None = Field(default=None)
@@ -556,8 +566,12 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "last_dead_letter_alert_at", "TIMESTAMP")
     _safe_add_column("systemstate", "last_budget_warn_day", "TEXT")
     _safe_add_column("systemstate", "last_facts_digest_at", "TIMESTAMP")
-    _safe_add_column("systemstate", "auth_burst_alert_sources", "TEXT")
-    _safe_add_column("systemstate", "auth_burst_alert_at", "TIMESTAMP")
+    # Replaced auth_burst_alert_sources (TEXT) + auth_burst_alert_at (TIMESTAMP)
+    # 2026-08-05. Those two are deliberately NOT dropped from existing DBs --
+    # this shim only ever ADDs (see _safe_add_column), SQLite DROP COLUMN is a
+    # table rebuild, and two orphaned nullable columns cost nothing. SQLAlchemy
+    # only ever SELECTs declared columns, so they are invisible to the app.
+    _safe_add_column("systemstate", "auth_burst_alert_json", "TEXT")
     _safe_add_column("systemstate", "policy_auto_allow_kinds", "TEXT")
     _safe_add_column("systemstate", "policy_forbid_kinds", "TEXT")
     _safe_add_column("systemstate", "telegram_conversation_id", "INTEGER")
