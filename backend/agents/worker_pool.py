@@ -8,8 +8,15 @@ force-failed.
 
 All synchronous SQLite access happens inside `asyncio.to_thread` helpers so the
 event loop is never blocked (Windows ProactorEventLoop safety — see CLAUDE.md).
+
+`_worker_loop` is also the single choke point for a standalone task's
+completion push (`task_completed`/`task_failed`, see `_notify_task_finished`)
+-- it fires for every one of `enqueue()`'s callers, skips a `stopped` task
+(cancelled or autonomy-paused) and any Goal-backed task (goals.py already
+owns that notification lifecycle via reconcile_running).
 """
 import asyncio
+import html
 import logging
 import os
 from datetime import datetime, timedelta
@@ -163,6 +170,116 @@ def _finalize_failed(task_id: int, reason: str) -> None:
             pass
 
 
+def _load_task_notify_info(task_id: int) -> dict | None:
+    """Terminal-state snapshot for the completion notification.
+
+    Returns None when the Task row is gone -- DELETE /api/tasks/{id} calls
+    request_cancel() then deletes the row, so a cancelled-and-deleted task
+    must produce no notification at all.
+
+    `goal_backed` is True when any Goal row points at this task: goals.py's
+    reconcile_running already owns that lifecycle (obsidian.emit_event +
+    its own notify_phone), so we must never double-notify it.
+    """
+    from sqlmodel import Session, select
+
+    from backend.database import Goal, Task, engine
+
+    with Session(engine) as session:
+        t = session.get(Task, task_id)
+        if t is None:
+            return None
+        goal_backed = session.exec(
+            select(Goal).where(Goal.task_id == task_id).limit(1)
+        ).first() is not None
+        return {
+            "status": t.status,
+            "prompt": t.prompt,
+            "result_json": t.result_json,
+            "steps_taken": t.steps_taken,
+            "goal_backed": goal_backed,
+        }
+
+
+def _summarize_task_result(status: str, result_json: str | None) -> str:
+    """One-line, no-LLM summary of a finished Task. Never raises.
+
+    A successful Task's result_json is a JSON list of step outputs (unlike
+    Goal's result dict shape, which goals._summarize_outcome expects) — the
+    last non-empty element is the summary. A failed Task's result_json is a
+    JSON dict with an "error" key; a handful of known error shapes get a
+    tailored one-liner, everything else falls back to the raw error string.
+    """
+    import json
+
+    try:
+        if not result_json:
+            return "no result recorded"
+        data = json.loads(result_json)
+        if isinstance(data, list):
+            for item in reversed(data):
+                if isinstance(item, str) and item.strip():
+                    return " ".join(item.split())[:300]
+            return "completed"
+        if isinstance(data, dict):
+            error = data.get("error")
+            if error == "budget_exceeded":
+                scope = data.get("scope")
+                spend = data.get("spend") or 0
+                cap = data.get("cap") or 0
+                return f"budget exceeded ({scope}: ${spend:.2f} of ${cap:.2f})"
+            if error == "step_exhausted":
+                return f"step {data.get('step_index')} exhausted after {data.get('attempts')} attempts"
+            if error == "verify_rejected":
+                reason = " ".join(str(data.get("reason", "")).split())[:200]
+                return f"verifier rejected: {reason}"
+            if isinstance(error, str) and error.strip():
+                return " ".join(error.split())[:300]
+        return "no result recorded"
+    except Exception:
+        return "no result recorded"
+
+
+async def _notify_task_finished(task_id: int) -> None:
+    """Best-effort phone push when a STANDALONE durable task finishes.
+
+    NEVER raises -- a notification problem must never affect the worker loop.
+    Deliberately an ALLOW-list on status (only success|failed notify), which is
+    what excludes 'stopped' (user cancel, autonomy_disabled, TaskAborted) and a
+    task left 'running' (hard-cancel mid-await never reaches a finalizer).
+    Goal-backed tasks are skipped outright -- goals.py's reconcile_running owns
+    that notification lifecycle already.
+    """
+    try:
+        info = await asyncio.to_thread(_load_task_notify_info, task_id)
+        if info is None:
+            return
+        if info["status"] not in ("success", "failed"):
+            return
+        if info["goal_backed"]:
+            return
+
+        from backend import events
+
+        prompt_snip = html.escape(" ".join((info["prompt"] or "").split())[:80])
+        summary = html.escape(_summarize_task_result(info["status"], info["result_json"]))
+
+        if info["status"] == "success":
+            steps = info["steps_taken"] or 0
+            content = (
+                f"NEXUS task #{task_id} done: {prompt_snip}\n"
+                f"{steps} steps · {summary}"
+            )
+            kind = "task_completed"
+        else:
+            content = f"NEXUS task #{task_id} FAILED: {prompt_snip}\n{summary}"
+            kind = "task_failed"
+
+        await events.notify_phone(content, kind=kind)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"_notify_task_finished: failed for task {task_id}: {exc}")
+
+
 # --- pool ------------------------------------------------------------------
 
 class TaskWorkerPool:
@@ -294,6 +411,7 @@ class TaskWorkerPool:
                         await asyncio.to_thread(_finalize_failed, task_id, str(e))
                     except Exception:
                         pass
+                await _notify_task_finished(task_id)
             except asyncio.CancelledError:
                 # Worker itself is being shut down.
                 raise
