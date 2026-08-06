@@ -74,6 +74,28 @@ to a secondary "Key limit:" line (omitted entirely for an unlimited key). A quic
 `usage` contract with zero remaining consumers after the rewrite, one inaccurate comment) — all
 fixed. Full pytest suite: 1874 passed, 1 skipped, 0 failed.
 
+**Monthly Anthropic balance-feature watch (2026-08-05, branch `feat/anthropic-balance-watch`,
+worktree `nexus-anthropic-balance-watch`)** — Brian asked NEXUS to check monthly whether Anthropic
+has shipped a public API credit-balance endpoint yet (there is none today; the Claude usage tracker
+above only covers subscription rate limits, not API dollar balance). New
+`backend/agents/anthropic_balance_watch.py`, a read-only, no-LLM, deterministic-trigger monthly job
+(1st of the month, 09:30, `anthropic_balance_watch` scheduler job) combining two independent
+signals: the public GitHub issue tracker for `anthropics/claude-code#47574` (state/state_reason/
+comment count, no auth needed) and a live probe of `GET /v1/organizations/balance` (the one
+concrete candidate endpoint the community has proposed; live-verified 404 today). Persists the last
+seen signal on `SystemState` (three new nullable columns, ALTER-shimmed) and notifies via
+`events.notify_phone` only on a genuine CHANGE from last month's baseline — never on the first
+check unless the current read is already resolved-looking, so this doesn't page about a gap that's
+already known. A transient network failure of either sub-check degrades to silence and preserves
+the prior persisted baseline rather than overwriting it with `None`. Caught and fixed one real bug
+during the build (not by a separate review pass — self-caught while wiring the scheduler job): the
+new `if getattr(s, "anthropic_balance_watch_enabled", True):` block was inserted in the MIDDLE of
+the pre-existing `spend_report_enabled` block, splitting its own closing log statement off into
+unconditionally-executed code that referenced locals (`report_day`/`rh`/`rm`) only defined inside
+the `if` — a real `UnboundLocalError` whenever `spend_report_enabled` was `False`, caught by 5
+existing tests that assert on scheduler job registration around that region. Full pytest suite:
+1882 passed, 1 skipped, 0 failed.
+
 ## Run / build / test
 - **Start:** `.\start.ps1`  ·  **Stop:** `.\stop.ps1`  ·  **Setup:** `.\setup.ps1`  ·  **Restore db:** `.\restore.ps1 [-From <dir>]` (validates the backup BEFORE stopping NEXUS; logic lives in `backend/agents/backup.py::restore_from` — tested by `tests/test_restore_drill.py`)
 - Backend: FastAPI + uvicorn on **:8000**, venv at `.\venv` (`.\venv\Scripts\python.exe`). `start.ps1` launches it via **`run.py`** (NOT `-m uvicorn`) — run.py pins the Windows **SelectorEventLoop** before uvicorn builds its loop (must be set there: uvicorn creates the loop before importing the app, so a policy in `main.py` is too late). The default ProactorEventLoop throws `WinError 64` under concurrent integration fetches → "app not loading data". See Non-obvious rules.

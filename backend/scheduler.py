@@ -324,6 +324,14 @@ async def _spend_report():
         logger.error(f"Spend report job error: {e}")
 
 
+async def _anthropic_balance_watch():
+    try:
+        from backend.agents.anthropic_balance_watch import check_anthropic_balance_feature
+        await check_anthropic_balance_feature()
+    except Exception as e:
+        logger.error(f"Anthropic balance watch job error: {e}")
+
+
 async def _run_facts_digest():
     try:
         from backend.agents.facts_digest import run_facts_digest
@@ -683,6 +691,16 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Spend report enabled: weekly on {report_day} at {rh:02d}:{rm:02d} {timezone}")
+    if getattr(s, "anthropic_balance_watch_enabled", True):
+        # 1st of each month, briefing-time-adjacent — a monthly cadence
+        # comfortably outlives any transient GitHub/Anthropic API hiccup.
+        scheduler.add_job(
+            _anthropic_balance_watch,
+            CronTrigger(day=1, hour=9, minute=30, timezone=timezone),
+            id="anthropic_balance_watch",
+            replace_existing=True,
+        )
+        logger.info("Anthropic balance-feature watch enabled: monthly on the 1st at 09:30")
     if getattr(s, "goal_recurrence_enabled", True):
         scheduler.add_job(
             _goal_recurrence,

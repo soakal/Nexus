@@ -338,6 +338,13 @@ class Settings(BaseSettings):
     homelab_garage_entity_id: str = "cover.garage_door_garage_door"
     homelab_garage_open_minutes: int = 30
 
+    # Monthly watch for whether Anthropic has shipped a public API-credit-
+    # balance endpoint yet (backend/agents/anthropic_balance_watch.py) — no
+    # such API exists today (confirmed 2026-08-05, see that module's
+    # docstring). Read-only, no LLM, notifies only on a genuine change from
+    # last month's persisted signal.
+    anthropic_balance_watch_enabled: bool = True
+
     # Outcome Tracker (docs/outcome-tracker-spec.md), rollout step 1 — the
     # write/dedup foundation in backend/agents/outcomes.py. Master switch
     # first: outcome_flags_enabled=False makes record_flag() a no-op and every
