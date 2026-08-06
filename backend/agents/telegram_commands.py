@@ -236,8 +236,9 @@ async def _cmd_goals(args: str, msg: dict) -> str:
 async def _cmd_task(args: str, msg: dict) -> str:
     """Durable orchestrator task — the /research successor. No auto-emailed
     report (protonmail_send is IRREVERSIBLE and hard-forbidden to non-user
-    actors, so that would need its own separate design decision); check
-    /tasks or the Tasks page for progress instead."""
+    actors, so that would need its own separate design decision); a Telegram
+    message now arrives here on completion (worker_pool._notify_task_finished)
+    — check /tasks or the Tasks page for progress in the meantime."""
     import asyncio
 
     prompt = args.strip()
@@ -257,7 +258,7 @@ async def _cmd_task(args: str, msg: dict) -> str:
     task_id = await asyncio.to_thread(_create)
     from backend.agents.worker_pool import get_pool
     await get_pool().enqueue(task_id)
-    return f"Task #{task_id} queued. Check /tasks or the Tasks page for progress."
+    return f"Task #{task_id} queued — I'll message you here when it finishes. Check /tasks or the Tasks page for progress meanwhile."
 
 
 async def _cmd_tasks(args: str, msg: dict) -> str:

@@ -359,6 +359,7 @@ async def test_cmd_task_creates_and_enqueues():
     pool.enqueue.assert_awaited_once_with(99)
     assert "#99" in reply
     assert "queued" in reply.lower()
+    assert "message you here when it finishes" in reply.lower()
 
 
 @pytest.mark.asyncio
