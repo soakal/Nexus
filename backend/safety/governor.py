@@ -242,17 +242,35 @@ def add_muted_notify_kind(kind: str) -> None:
     """Raises ValueError for a comma (would silently mute MULTIPLE kinds
     through the shared CSV helper — the same trap broker.py's
     _dispatch_policy_promote already guards against on a different CSV
-    column; that guard didn't carry over when this column was added) or a
-    kind in _NEVER_MUTABLE_NOTIFY_KINDS."""
+    column; that guard didn't carry over when this column was added), a kind
+    in _NEVER_MUTABLE_NOTIFY_KINDS, or a kind that is not a real notify kind.
+
+    The unknown-kind check is LAST: the four _NEVER_MUTABLE kinds are all real
+    kinds, so ordering only matters for message quality, and a comma'd string
+    must still report the comma rather than "unknown kind"."""
+    import difflib
+
+    from backend.events import NOTIFY_KINDS
+
     if "," in kind:
         raise ValueError(f"mute kind {kind!r} must not contain a comma")
     if kind in _NEVER_MUTABLE_NOTIFY_KINDS:
         raise ValueError(f"'{kind}' is a safety-critical alert kind and cannot be muted")
+    if kind not in NOTIFY_KINDS:
+        near = difflib.get_close_matches(kind, sorted(NOTIFY_KINDS), n=1, cutoff=0.6)
+        hint = f" Did you mean '{near[0]}'?" if near else ""
+        raise ValueError(f"'{kind}' is not a notification kind NEXUS ever sends.{hint}")
     _add_csv_kind("muted_notify_kinds", kind)
 
 
-def remove_muted_notify_kind(kind: str) -> None:
+def remove_muted_notify_kind(kind: str) -> bool:
+    """Returns whether the kind was actually muted before this call -- so
+    /unmute can say "wasn't muted" instead of falsely claiming success.
+    Deliberately does NOT validate against NOTIFY_KINDS: un-muting must always
+    be able to clear a stale value written before validation existed."""
+    was_muted = kind in get_muted_notify_kinds()
     _remove_csv_kind("muted_notify_kinds", kind)
+    return was_muted
 
 
 def get_anthropic_balance_watch_state() -> dict:

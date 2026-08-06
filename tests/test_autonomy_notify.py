@@ -192,6 +192,55 @@ async def test_notify_phone_unmuted_kind_still_sends():
     hermes_notify_mock.assert_awaited_once()
 
 
+def test_notify_kinds_registry_covers_every_call_site():
+    """Drift guard (same discipline as contracts.py's test_every_integration_is_covered):
+    a new notify_phone kind that isn't registered fails the suite, so /mute can
+    never reject a kind NEXUS genuinely fires. Also fails on a DYNAMIC kind --
+    the fixed allowlist is only complete because every kind is a literal today.
+
+    Deliberately ONE-DIRECTIONAL (found subset of NOTIFY_KINDS, not equality):
+    `autonomy_alert` is notify_phone's signature default with no explicit call
+    site, so equality would fail immediately."""
+    import ast
+    import pathlib
+
+    from backend.events import NOTIFY_KINDS
+
+    # The single legitimate indirection: homelab_watch._edge_alert(kind=...)
+    # forwards its own literal-only parameter through to notify_phone.
+    PASSTHROUGH = {("homelab_watch.py", "kind")}
+
+    found, dynamic = set(), []
+    for f in pathlib.Path("backend").rglob("*.py"):
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name not in ("notify_phone", "_edge_alert"):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "kind":
+                    continue
+                if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                    found.add(kw.value.value)
+                elif not (isinstance(kw.value, ast.Name)
+                          and (f.name, kw.value.id) in PASSTHROUGH):
+                    dynamic.append(f"{f}:{node.lineno}")
+
+    assert not dynamic, (
+        "dynamically-built notify kind(s) -- a fixed NOTIFY_KINDS allowlist can no "
+        f"longer validate /mute; add a prefix rule or a passthrough exemption: {dynamic}"
+    )
+    assert found <= NOTIFY_KINDS, f"notify kinds missing from NOTIFY_KINDS: {sorted(found - NOTIFY_KINDS)}"
+
+
+def test_phone_suppressed_kinds_defaults_are_real_kinds():
+    from backend.config import Settings
+    from backend.events import NOTIFY_KINDS
+    assert set(Settings().phone_suppressed_kinds) <= NOTIFY_KINDS
+
+
 # ---------------------------------------------------------------------------
 # Test 4a: broker needs_confirm fires a phone alert
 # Test 4b: EXECUTED action does NOT call notify_phone

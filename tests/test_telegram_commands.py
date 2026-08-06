@@ -443,6 +443,30 @@ async def test_cmd_muted_empty():
     assert "Nothing muted" in reply
 
 
+@pytest.mark.asyncio
+async def test_cmd_mute_rejects_unknown_kind():
+    """Not mocked -- exercises the real validation path, same as
+    test_cmd_mute_rejects_never_mutable_kind above."""
+    reply = await telegram_commands._cmd_mute("homlab_garage", _msg("/mute homlab_garage"))
+    assert "is not a notification kind" in reply
+    assert "homelab_garage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_mute_no_args_lists_valid_kinds():
+    reply = await telegram_commands._cmd_mute("", _msg("/mute"))
+    assert "budget_warn" in reply
+    assert "homelab_garage" in reply
+    assert "never mutable" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_unmute_reports_kind_was_not_muted():
+    with patch("backend.safety.governor.remove_muted_notify_kind", return_value=False):
+        reply = await telegram_commands._cmd_unmute("budget_warn", _msg("/unmute budget_warn"))
+    assert "wasn't muted" in reply
+
+
 # ---------------------------------------------------------------------------
 # Outcome Tracker rollout step 3 — /flags, /resolve
 # ---------------------------------------------------------------------------

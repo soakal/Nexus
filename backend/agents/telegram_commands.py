@@ -281,17 +281,33 @@ async def _cmd_digest(args: str, msg: dict) -> str:
     return await build_autonomy_digest()
 
 
+def _mute_kind_menu() -> str:
+    """Sorted, human-readable list of every mutable kind for the no-args
+    /mute reply. Never-mutable kinds are shown with a marker rather than
+    hidden -- Brian should be able to see WHY /mute auth_burst is refused."""
+    from backend.events import NOTIFY_KINDS
+    from backend.safety.governor import _NEVER_MUTABLE_NOTIFY_KINDS
+    lines = []
+    for k in sorted(NOTIFY_KINDS):
+        lines.append(f"  {k}  (never mutable)" if k in _NEVER_MUTABLE_NOTIFY_KINDS else f"  {k}")
+    return "\n".join(lines)
+
+
 async def _cmd_mute(args: str, msg: dict) -> str:
     import asyncio
     from backend.safety import governor
 
     kind = args.strip()
     if not kind:
-        return "Usage: /mute <kind> — e.g. /mute budget_warn. See /muted for what's currently muted."
+        return (
+            "Usage: /mute <kind> — e.g. /mute homelab_garage\n"
+            "See /muted for what's currently muted.\n\nValid kinds:\n"
+            + _mute_kind_menu()
+        )
     try:
         await asyncio.to_thread(governor.add_muted_notify_kind, kind)
     except ValueError as e:
-        return str(e)
+        return f"{e}\nRun /mute with no arguments to see every valid kind."
     return f"Muted notifications of kind '{kind}'."
 
 
@@ -302,7 +318,9 @@ async def _cmd_unmute(args: str, msg: dict) -> str:
     kind = args.strip()
     if not kind:
         return "Usage: /unmute <kind>"
-    await asyncio.to_thread(governor.remove_muted_notify_kind, kind)
+    was_muted = await asyncio.to_thread(governor.remove_muted_notify_kind, kind)
+    if not was_muted:
+        return f"'{kind}' wasn't muted — nothing changed. /muted lists what is."
     return f"Unmuted '{kind}'."
 
 

@@ -8,6 +8,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Every `kind` string that any notify_phone() call site in backend/ actually
+# passes today. Hand-maintained on purpose (same discipline as
+# backend/safety/contracts.py's CONTRACTS) -- kept honest by
+# tests/test_autonomy_notify.py::test_notify_kinds_registry_covers_every_call_site,
+# which AST-scans backend/ and fails the suite on an unregistered kind OR on
+# any dynamically-built kind. Adding a new notify kind means adding it here.
+#
+# Used by governor.add_muted_notify_kind to reject a typo'd /mute instead of
+# silently muting a string that nothing ever fires.
+NOTIFY_KINDS: frozenset[str] = frozenset({
+    "agent_message", "anthropic_balance_watch", "auth_burst", "auto_approved",
+    "autonomy_alert", "autonomy_digest", "backup_failed", "budget_warn",
+    "calibration_suppress", "circuit_breaker", "contract_breach",
+    "council_postmortem", "dead_letter", "flag_followup",
+    "goal_criteria_failed", "goal_failed", "goal_proposed", "homelab_array",
+    "homelab_backup_failed", "homelab_digest", "homelab_disk_temp",
+    "homelab_docker_stopped", "homelab_garage", "homelab_vm_stopped",
+    "mail_draft_created", "needs_confirm", "scheduler_stall", "soak_reminder",
+    "spend_report", "throttled",
+})
+
 
 async def publish(event_type: str, payload: dict) -> None:
     try:
