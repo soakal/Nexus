@@ -217,6 +217,8 @@ async def list_flags(
             "last_surfaced_at": r.last_surfaced_at.isoformat() if r.last_surfaced_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "suppressed": r.suppressed,
+            "suppressed_reason": r.suppressed_reason,
         }
         for r in rows
     ]
