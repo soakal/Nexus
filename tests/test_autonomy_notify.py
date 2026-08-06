@@ -206,9 +206,12 @@ def test_notify_kinds_registry_covers_every_call_site():
 
     from backend.events import NOTIFY_KINDS
 
-    # The single legitimate indirection: homelab_watch._edge_alert(kind=...)
-    # forwards its own literal-only parameter through to notify_phone.
-    PASSTHROUGH = {("homelab_watch.py", "kind")}
+    # Legitimate indirections: homelab_watch._edge_alert(kind=...) forwards
+    # its own literal-only parameter through to notify_phone; worker_pool's
+    # _notify_task_finished assigns `kind` to one of two literals
+    # ("task_completed"/"task_failed") depending on a status branch, then
+    # calls notify_phone(kind=kind) once at the end of the function.
+    PASSTHROUGH = {("homelab_watch.py", "kind"), ("worker_pool.py", "kind")}
 
     found, dynamic = set(), []
     for f in pathlib.Path("backend").rglob("*.py"):
