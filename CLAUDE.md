@@ -32,9 +32,14 @@ call Kodak's original complaint never covered), plus a real, separately-diagnose
 httpx builds an SSL context synchronously inside `AsyncClient()` — ~1.3-1.45s on this host,
 suspected Defender scanning the certifi bundle, blocking the event loop each time. Fixed here via a
 module-level reused SSL context + one shared client instead of three. This turned out to be a
-**repo-wide pattern** — 45 `AsyncClient()` construction sites across 19 `backend/integrations/`
-modules all pay the same cost; only `speedtest.py` is fixed so far, the rest deferred to a later
-pass). Merged to `master`.
+**repo-wide pattern — fixed the same session, commit `a307446`**: `backend/http_client.py`'s
+`SSL_CONTEXT` (built once at import, before uvicorn's loop exists) is now passed as
+`verify=SSL_CONTEXT` at 34 `AsyncClient()` sites across 18 `backend/integrations/`/`agents/`
+modules. Two categories deliberately left untouched: 6 sites using `verify=False` (Proxmox,
+scheduler.py — no CA bundle to reuse) and 6 using a custom `transport=` (UniFi/Unraid TLS pinning —
+bypasses SSL context construction entirely). Guarded by `tests/test_httpx_ssl_context.py`, which
+scans all of `backend/`+`tools/` (not just speedtest.py) and asserts the shared context is imported
+before uvicorn's loop exists. Merged to `master`.
 
 **Claude Code + OpenRouter usage tracker (2026-08-05, branch `feat/claude-usage-tracker`, worktree
 `nexus-claude-usage`)** — two analogous dashboard cards + briefing sections, both deterministic
