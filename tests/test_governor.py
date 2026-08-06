@@ -860,3 +860,50 @@ def test_add_muted_notify_kind_rejects_never_mutable(eng, kind):
         governor.add_muted_notify_kind(kind)
     assert kind not in governor.get_muted_notify_kinds()
     assert governor.get_muted_notify_kinds() == set()
+
+
+def test_add_muted_notify_kind_rejects_unknown_kind(eng):
+    from backend.safety import governor
+    with pytest.raises(ValueError):
+        governor.add_muted_notify_kind("homlab_garage")
+    assert governor.get_muted_notify_kinds() == set()
+
+
+def test_add_muted_notify_kind_unknown_suggests_close_match(eng):
+    from backend.safety import governor
+    with pytest.raises(ValueError) as excinfo:
+        governor.add_muted_notify_kind("homlab_garage")
+    assert "homelab_garage" in str(excinfo.value)
+
+
+def test_add_muted_notify_kind_accepts_every_registered_mutable_kind(eng):
+    """Guards that the registry itself never accidentally locks out a real,
+    currently-mutable kind."""
+    from backend.events import NOTIFY_KINDS
+    from backend.safety import governor
+    from backend.safety.governor import _NEVER_MUTABLE_NOTIFY_KINDS
+    for kind in NOTIFY_KINDS - _NEVER_MUTABLE_NOTIFY_KINDS:
+        governor.add_muted_notify_kind(kind)  # must not raise
+    assert governor.get_muted_notify_kinds() == (NOTIFY_KINDS - _NEVER_MUTABLE_NOTIFY_KINDS)
+
+
+def test_add_muted_notify_kind_comma_error_still_mentions_comma(eng):
+    """Regression lock on ordering: the comma check must run before the
+    unknown-kind check, so a comma'd string still reports the comma."""
+    from backend.safety import governor
+    with pytest.raises(ValueError) as excinfo:
+        governor.add_muted_notify_kind("auth_burst,needs_confirm")
+    assert "comma" in str(excinfo.value)
+
+
+def test_remove_muted_notify_kind_returns_whether_it_was_muted(eng):
+    from backend.safety import governor
+    governor.add_muted_notify_kind("goal_proposed")
+    assert governor.remove_muted_notify_kind("goal_proposed") is True
+    assert governor.remove_muted_notify_kind("goal_proposed") is False
+
+
+def test_never_mutable_kinds_are_all_real_kinds():
+    from backend.events import NOTIFY_KINDS
+    from backend.safety.governor import _NEVER_MUTABLE_NOTIFY_KINDS
+    assert _NEVER_MUTABLE_NOTIFY_KINDS <= NOTIFY_KINDS
