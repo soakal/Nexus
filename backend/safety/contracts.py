@@ -134,9 +134,13 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         # — same reasoning as unraid.cpu_pct above (ram_pct is the one
         # exception that keeps a stronger rule, see above). alerts staying an
         # empty list is a legitimate healthy state (no active alarms), so
-        # "type" (not "nonempty") is correct there too.
+        # "type" (not "nonempty") is correct there too. alerts is also
+        # nullable as of 2026-08-06 -- unifi.py's `list/alarm` call was
+        # live-verified broken on the real controller and now degrades to
+        # None (not []) rather than raising, so None must be a valid type
+        # here too, not a contract breach.
         FieldContract("bandwidth_mbps", (int, float), "type", consumer="tools.py:157"),
-        FieldContract("alerts", (list,), "type", consumer="tools.py:153"),
+        FieldContract("alerts", (list, type(None)), "type", consumer="tools.py:153 (None means the alarms read failed this cycle)"),
     ),
     "proxmox": (
         FieldContract("node", (str,), "nonempty", consumer="proxmox.py:114-116"),

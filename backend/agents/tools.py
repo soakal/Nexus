@@ -158,11 +158,15 @@ async def _unifi_status(_input: dict) -> str:
         from backend.integrations import unifi
         data = await unifi.fetch()
         alerts = _safe(data, "alerts", [])
+        # None means the alarms sub-read failed this cycle (unifi.py degrades
+        # it rather than raising) -- must render as "unknown", never as "0
+        # alert(s)", which would be a false all-clear.
+        alert_count = "unknown" if alerts is None else str(len(alerts))
         summary = (
             f"UniFi: clients={_safe(data, 'client_count', 0)}, "
             f"uplink={_safe(data, 'uplink_status', 'unknown')}, "
             f"bandwidth={_safe(data, 'bandwidth_mbps', 0)} Mbps, "
-            f"{len(alerts)} alert(s)"
+            f"{alert_count} alert(s)"
         )
         if alerts:
             summary += f" [{', '.join(str(a) for a in alerts[:3])}]"
