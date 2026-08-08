@@ -357,9 +357,21 @@ def backup_file(config: dict[str, Any], file_path: Path) -> Path:
 # Topic name → safe filename (shared with mcp_server.py)
 # ---------------------------------------------------------------------------
 
+_TOPIC_NAME_MAX_CHARS = 100
+
+
 def sanitize_topic_name(topic: str) -> str:
     safe = re.sub(r"[^\w\s\-]", "", topic)
     safe = re.sub(r"\s+", "-", safe.strip())
+    if len(safe) > _TOPIC_NAME_MAX_CHARS:
+        # Cut at a hyphen boundary so we don't chop mid-word; a long,
+        # run-on route title (Haiku sometimes proposes a full sentence
+        # as a "topic") would otherwise become a filename long enough to
+        # blow past Windows' 260-char MAX_PATH once combined with the
+        # vault path + temp-file uuid suffix, failing writes with a
+        # misleading "No such file or directory".
+        truncated = safe[:_TOPIC_NAME_MAX_CHARS].rsplit("-", 1)[0]
+        safe = truncated or safe[:_TOPIC_NAME_MAX_CHARS]
     return safe or "Uncategorized"
 
 

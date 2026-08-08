@@ -2199,6 +2199,26 @@ def test_sanitize_topic_name_empty_falls_back() -> None:
     assert bo.sanitize_topic_name("!!!") == "Uncategorized"
 
 
+def test_sanitize_topic_name_truncates_long_titles() -> None:
+    # A run-on route title (Haiku occasionally proposes a full sentence as
+    # a "topic") must not become a filename long enough to blow past
+    # Windows' 260-char MAX_PATH once combined with the vault path + temp
+    # file's uuid suffix -- see the 2026-08-06 SOP-Factory-Logo-Fix
+    # incident, where this produced a real "No such file or directory".
+    words = " ".join(f"Word{i}" for i in range(40))
+    result = bo.sanitize_topic_name(words)
+    assert len(result) <= bo._TOPIC_NAME_MAX_CHARS
+    assert not result.endswith("-")
+    assert result.startswith("Word0-Word1-Word2")
+
+
+def test_sanitize_topic_name_truncation_falls_back_when_no_hyphen() -> None:
+    # A single unbroken token longer than the cap has no hyphen boundary
+    # to cut at -- must hard-truncate rather than collapse to empty/"Uncategorized".
+    result = bo.sanitize_topic_name("A" * 150)
+    assert result == "A" * bo._TOPIC_NAME_MAX_CHARS
+
+
 # ---------------------------------------------------------------------------
 # Unified run() -- parallel path (previously had ZERO test coverage; this is
 # where the silent-data-loss / usage-cap / secondary-route bugs all lived)
