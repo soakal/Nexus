@@ -217,10 +217,7 @@ export default function Traces() {
                           <div
                             key={s.id}
                             style={{ ...spanRowStyle, cursor: hasDetail ? 'pointer' : 'default' }}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (hasDetail) setExpandedSpanId(isOpen ? null : s.id)
-                            }}
+                            onClick={() => { if (hasDetail) setExpandedSpanId(isOpen ? null : s.id) }}
                           >
                             <span style={{ fontSize: '11px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                               {s.span_type}

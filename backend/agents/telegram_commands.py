@@ -232,10 +232,12 @@ async def _cmd_goals(args: str, msg: dict) -> str:
     for g in rows:
         lines.append(f"#{g['id']} [{g['status']}] {g['title']}")
         if g["status"] == "failed" and g.get("rejection_reason"):
-            reason = " ".join(g["rejection_reason"].split())[:200]
+            # 300 matches _summarize_task_result's own cap, so /tasks and
+            # /goals detail lines are consistently bounded.
+            reason = " ".join(g["rejection_reason"].split())[:300]
             lines.append(f"   ↳ {reason}")
         elif g["status"] == "completed" and g.get("outcome_summary"):
-            summary = " ".join(g["outcome_summary"].split())[:200]
+            summary = " ".join(g["outcome_summary"].split())[:300]
             lines.append(f"   ↳ {summary}")
     return "\n".join(lines)
 
