@@ -687,6 +687,33 @@ async def test_prune_docker_images_loads_known_hosts_path():
 
 
 @pytest.mark.asyncio
+async def test_prune_docker_images_creates_known_hosts_file_if_absent(tmp_path, monkeypatch):
+    """Regression test for a real bug found in the 2026-08-08 live drill: on a
+    genuinely first-ever connection (no .unraid_ssh_known_hosts file at all),
+    real paramiko's AutoAddPolicy.missing_host_key() calls save_host_keys(),
+    which calls load_host_keys() FIRST to merge with existing content -- and
+    HostKeys.load() does a plain open(filename, "r"), raising FileNotFoundError
+    on a file that's never existed. _ssh_prune_sync must touch the file into
+    existence before any host-key API call, not just tolerate a load failure.
+    This can't be reproduced against the fully-mocked SSHClient the other
+    tests use (missing_host_key/save_host_keys are mocked away with it) --
+    this test instead pins the actual fix: the file exists afterward even
+    when it never existed beforehand."""
+    from backend.integrations import unraid
+    known_hosts = tmp_path / ".unraid_ssh_known_hosts"
+    assert not known_hosts.exists()
+    monkeypatch.setattr(unraid, "_SSH_KNOWN_HOSTS", known_hosts)
+
+    client = _ssh_client(0, "Total reclaimed space: 0B\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        await unraid.prune_docker_images()
+
+    assert known_hosts.exists()
+
+
+@pytest.mark.asyncio
 async def test_prune_docker_images_persists_learned_host_key():
     """save_host_keys() must actually be called after a successful connect --
     without it, TOFU never persists past one connection and every call

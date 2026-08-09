@@ -342,15 +342,24 @@ def _ssh_prune_sync() -> tuple[int, str, str]:
     key = paramiko.Ed25519Key.from_private_key(io.StringIO(pem))
 
     client = paramiko.SSHClient()
+    # The file must exist BEFORE any host-key API call, genuine first-run
+    # or not: paramiko's AutoAddPolicy.missing_host_key() calls
+    # save_host_keys(), which calls load_host_keys() first (to merge with
+    # whatever's already there) -- and HostKeys.load() does a plain
+    # open(filename, "r"), which raises FileNotFoundError on a file that's
+    # never existed. Found live: a real first-ever connection crashed here
+    # (paramiko's own docs don't mention this create-on-first-use gap).
+    _SSH_KNOWN_HOSTS.touch(exist_ok=True)
     try:
         client.load_host_keys(str(_SSH_KNOWN_HOSTS))
     except Exception:
-        # A missing known_hosts file is expected on first run -- paramiko
-        # tolerates that fine. But if the file EXISTS and still failed to
-        # load (corrupt/unreadable), that's silently discarding a real TOFU
-        # pin and re-accepting whatever host key shows up next as new --
-        # worth a log line so that's distinguishable from a genuine first run.
-        if _SSH_KNOWN_HOSTS.exists():
+        # An empty/missing known_hosts file is expected on first run --
+        # paramiko tolerates that fine. But if the file EXISTS with real
+        # content and still failed to load (corrupt/unreadable), that's
+        # silently discarding a real TOFU pin and re-accepting whatever
+        # host key shows up next as new -- worth a log line so that's
+        # distinguishable from a genuine first run.
+        if _SSH_KNOWN_HOSTS.stat().st_size > 0:
             logger.warning("Could not load %s (exists but unreadable) -- treating as first-use", _SSH_KNOWN_HOSTS)
     # TOFU (trust-on-first-use), NOT the same as disabling host-key checking.
     # AutoAddPolicy accepts an unknown host key on first connect and we then
