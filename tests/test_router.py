@@ -421,12 +421,40 @@ async def test_llm_call_span_recorded_when_trace_active(spend_eng):
     assert row.trace_id == 42
     assert row.parent_span_id is None
     assert row.span_type == "llm_call"
-    assert row.name == router.SONNET_MODEL
+    assert row.name == f"span_test ({router.SONNET_MODEL})"
     assert row.tokens_in == 1000
     assert row.tokens_out == 500
+    # Pricing keys off the real model id via _record_trace_span's model= kwarg,
+    # NOT off the (now label-prefixed) span name -- this is the regression guard.
     assert row.cost_usd == pytest.approx(router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0))
     assert row.input_summary is not None and len(row.input_summary) == 1000
     assert row.output_summary == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_llm_call_span_name_falls_back_to_model_when_unlabeled(spend_eng):
+    """No label= passed -> span name degrades to the bare model id, matching
+    pre-B2 behavior exactly (no dangling " ()" suffix)."""
+    from backend.agents import router
+
+    resp = _resp_with_usage()
+    resp.content = [SimpleNamespace(type="text", text="hi there")]
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = resp
+        mock_anthropic.return_value = mock_client
+
+        token = router.set_trace_context(43)
+        try:
+            await router.sonnet("x")
+        finally:
+            router.reset_trace_context(token)
+
+    rows = _trace_span_rows(spend_eng)
+    assert len(rows) == 1
+    assert rows[0].name == router.SONNET_MODEL
+    assert rows[0].cost_usd == pytest.approx(router._compute_cost(router.SONNET_MODEL, 1000, 500, 0, 0))
 
 
 @pytest.mark.asyncio

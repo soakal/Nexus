@@ -86,6 +86,7 @@ def _goal_to_dict(g: Goal) -> dict:
         "approved_at": g.approved_at.isoformat() if g.approved_at else None,
         "expires_at": g.expires_at.isoformat() if g.expires_at else None,
         "rejection_reason": g.rejection_reason,
+        "outcome_summary": g.outcome_summary,
         "cadence": g.cadence,
         "category": g.category,
         "success_criteria": g.success_criteria,
