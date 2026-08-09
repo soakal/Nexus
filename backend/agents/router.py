@@ -311,6 +311,7 @@ def _record_trace_span(
     error: str | None = None,
     trace_id=None,
     parent_span_id=None,
+    model: str | None = None,
 ) -> None:
     """Best-effort: insert a TraceSpan row for one LLM/tool call within a trace.
 
@@ -330,6 +331,12 @@ def _record_trace_span(
     pull token counts + cost for `span_type="llm_call"`; an unparseable usage
     shape (e.g. a MagicMock test response) still records the span, minus
     tokens/cost. `tool_call` spans (a later step) pass `resp=None`.
+
+    `name` is the DISPLAYED span name (may include a call label, e.g.
+    "chat_route (claude-haiku-4-5)") and is decoupled from pricing -- `model`
+    (the real model id) is what `_compute_cost` prices from, falling back to
+    `name` when omitted so tool_call spans and pre-label callers are
+    unaffected.
     """
     if trace_id is None:
         return
@@ -345,7 +352,7 @@ def _record_trace_span(
                     cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
                     cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
                     tokens_in, tokens_out = input_tokens, output_tokens
-                    cost_usd = _compute_cost(name, input_tokens, output_tokens, cache_creation, cache_read)
+                    cost_usd = _compute_cost(model or name, input_tokens, output_tokens, cache_creation, cache_read)
                 except (TypeError, ValueError):
                     pass  # unparseable usage -- span still recorded, sans tokens/cost
 
@@ -455,10 +462,11 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
     # Best-effort trace span (council w-observability). Same in-thread
     # reasoning as the spend write above -- no-op when no trace is active.
     try:
+        span_name = f"{label} ({model})" if label else model
         _record_trace_span(
-            "llm_call", model, span_started_at, resp=resp,
+            "llm_call", span_name, span_started_at, resp=resp,
             input_summary=prompt, output_summary=text,
-            trace_id=trace_id, parent_span_id=parent_span_id,
+            trace_id=trace_id, parent_span_id=parent_span_id, model=model,
         )
     except Exception as e:  # never let tracing break the response
         logger.warning(f"trace span logging failed (non-fatal): {e}")
@@ -591,10 +599,11 @@ def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, t
     # reasoning as the spend write above -- no-op when no trace is active.
     try:
         last_content = messages[-1].get("content", "") if messages else ""
+        span_name = f"{label} ({model})" if label else model
         _record_trace_span(
-            "llm_call", model, span_started_at, resp=resp,
+            "llm_call", span_name, span_started_at, resp=resp,
             input_summary=str(last_content), output_summary=_extract_text(resp),
-            trace_id=trace_id, parent_span_id=parent_span_id,
+            trace_id=trace_id, parent_span_id=parent_span_id, model=model,
         )
     except Exception as e:  # never let tracing break the response
         logger.warning(f"trace span logging failed (non-fatal): {e}")

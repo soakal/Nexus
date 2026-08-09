@@ -648,6 +648,31 @@ async def test_disabled_recurring_goal_not_due(eng):
     assert any(d["id"] == gid for d in due2), "enabled recurring goal should be due"
 
 
+def test_goal_to_dict_includes_outcome_summary(eng):
+    from backend.agents import goals
+    from backend.database import Goal
+
+    with Session(eng) as s:
+        s.add(Goal(
+            title="Prune docker images",
+            description="x",
+            status="completed",
+            fingerprint="dddd3333dddd3333",
+            outcome_summary="Freed 4.2 GB across 3 images.",
+        ))
+        s.add(Goal(
+            title="No summary yet",
+            description="x",
+            status="completed",
+            fingerprint="eeee4444eeee4444",
+        ))
+        s.commit()
+
+    rows = {r["title"]: r for r in goals._db_list_goals()}
+    assert rows["Prune docker images"]["outcome_summary"] == "Freed 4.2 GB across 3 images."
+    assert rows["No summary yet"]["outcome_summary"] is None
+
+
 # ---------------------------------------------------------------------------
 # 9. reconcile_running
 # ---------------------------------------------------------------------------
@@ -913,6 +938,7 @@ def test_api_list_goals(goals_client, auth_headers, monkeypatch):
     items = resp.json()
     assert len(items) >= 1
     assert items[0]["title"] == "Task A"
+    assert "outcome_summary" in items[0]
 
 
 def test_api_approve_returns_200(goals_client, auth_headers, monkeypatch):

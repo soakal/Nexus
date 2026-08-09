@@ -336,6 +336,30 @@ async def test_cmd_goals_lists_goals():
 
 
 @pytest.mark.asyncio
+async def test_cmd_goals_failed_shows_rejection_reason():
+    rows = [{"id": 4, "status": "failed", "title": "Bad goal", "rejection_reason": "task failed: budget exceeded"}]
+    with patch("backend.agents.goals._db_list_goals", return_value=rows):
+        reply = await telegram_commands._cmd_goals("", _msg("/goals"))
+    assert "task failed: budget exceeded" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_goals_completed_shows_outcome_summary():
+    rows = [{"id": 5, "status": "completed", "title": "Prune images", "outcome_summary": "freed 40 GB"}]
+    with patch("backend.agents.goals._db_list_goals", return_value=rows):
+        reply = await telegram_commands._cmd_goals("", _msg("/goals"))
+    assert "freed 40 GB" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_goals_completed_without_summary_no_extra_line():
+    rows = [{"id": 6, "status": "completed", "title": "No summary"}]
+    with patch("backend.agents.goals._db_list_goals", return_value=rows):
+        reply = await telegram_commands._cmd_goals("", _msg("/goals"))
+    assert "↳" not in reply
+
+
+@pytest.mark.asyncio
 async def test_cmd_task_creates_and_enqueues():
     row = MagicMock(id=99)
     session = MagicMock()
@@ -379,6 +403,24 @@ async def test_cmd_tasks_lists_recent():
         reply = await telegram_commands._cmd_tasks("", _msg("/tasks"))
     assert "#1" in reply
     assert "do the thing" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_tasks_failed_shows_reason():
+    rows = [
+        MagicMock(id=1, status="failed", prompt="do the thing",
+                   result_json='{"error": "step_exhausted", "step_index": 2, "attempts": 5}'),
+        MagicMock(id=2, status="success", prompt="fine", result_json='["all good"]'),
+    ]
+    session = MagicMock()
+    session.exec.return_value.all.return_value = rows
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=session)
+    cm.__exit__ = MagicMock(return_value=False)
+    with patch("backend.database.engine"), patch("sqlmodel.Session", return_value=cm):
+        reply = await telegram_commands._cmd_tasks("", _msg("/tasks"))
+    assert "step 2 exhausted after 5 attempts" in reply
+    assert reply.count("↳") == 1
 
 
 @pytest.mark.asyncio

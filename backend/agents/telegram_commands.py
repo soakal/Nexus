@@ -228,7 +228,16 @@ async def _cmd_goals(args: str, msg: dict) -> str:
     rows = await asyncio.to_thread(goals_agent._db_list_goals, None, 20)
     if not rows:
         return "No goals yet."
-    return "\n".join(f"#{g['id']} [{g['status']}] {g['title']}" for g in rows)
+    lines = []
+    for g in rows:
+        lines.append(f"#{g['id']} [{g['status']}] {g['title']}")
+        if g["status"] == "failed" and g.get("rejection_reason"):
+            reason = " ".join(g["rejection_reason"].split())[:200]
+            lines.append(f"   ↳ {reason}")
+        elif g["status"] == "completed" and g.get("outcome_summary"):
+            summary = " ".join(g["outcome_summary"].split())[:200]
+            lines.append(f"   ↳ {summary}")
+    return "\n".join(lines)
 
 
 async def _cmd_task(args: str, msg: dict) -> str:
@@ -261,18 +270,24 @@ async def _cmd_task(args: str, msg: dict) -> str:
 
 async def _cmd_tasks(args: str, msg: dict) -> str:
     import asyncio
+    from backend.agents.worker_pool import _summarize_task_result
 
     def _list():
         from sqlmodel import Session, select
         from backend.database import Task, engine
         with Session(engine) as session:
             rows = session.exec(select(Task).order_by(Task.created_at.desc()).limit(10)).all()
-            return [(t.id, t.status, t.prompt) for t in rows]
+            return [(t.id, t.status, t.prompt, t.result_json) for t in rows]
 
     rows = await asyncio.to_thread(_list)
     if not rows:
         return "No tasks yet."
-    return "\n".join(f"#{tid} [{status}] {prompt[:60]}" for tid, status, prompt in rows)
+    lines = []
+    for tid, status, prompt, result_json in rows:
+        lines.append(f"#{tid} [{status}] {prompt[:60]}")
+        if status == "failed":
+            lines.append(f"   ↳ {_summarize_task_result(status, result_json)}")
+    return "\n".join(lines)
 
 
 async def _cmd_digest(args: str, msg: dict) -> str:

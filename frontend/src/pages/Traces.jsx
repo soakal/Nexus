@@ -114,6 +114,7 @@ export default function Traces() {
   const [spansById, setSpansById] = useState({})
   const [spansLoadingId, setSpansLoadingId] = useState(null)
   const [spansErrors, setSpansErrors] = useState({})
+  const [expandedSpanId, setExpandedSpanId] = useState(null)
 
   const load = useCallback(() => {
     api.traces.list(50, kindFilter === 'all' ? null : kindFilter)
@@ -209,34 +210,84 @@ export default function Traces() {
                     ) : (spansById[t.id] || []).length === 0 ? (
                       <span style={{ fontSize: '12px', color: '#5d6982' }}>No spans recorded.</span>
                     ) : (
-                      spansById[t.id].map(s => (
-                        <div key={s.id} style={spanRowStyle}>
-                          <span style={{ fontSize: '11px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                            {s.span_type}
-                          </span>
-                          <span style={{ fontSize: '12px', color: '#dbe3f0', fontFamily: "'JetBrains Mono', monospace" }}>
-                            {s.name}
-                          </span>
-                          <span style={{ fontSize: '11px', color: '#5d6982' }}>
-                            {fmtMs(s.duration_ms)}
-                          </span>
-                          {(s.tokens_in != null || s.tokens_out != null) && (
+                      spansById[t.id].map(s => {
+                        const hasDetail = !!(s.input_summary || s.output_summary)
+                        const isOpen = expandedSpanId === s.id
+                        return (
+                          <div
+                            key={s.id}
+                            style={{ ...spanRowStyle, cursor: hasDetail ? 'pointer' : 'default' }}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (hasDetail) setExpandedSpanId(isOpen ? null : s.id)
+                            }}
+                          >
+                            <span style={{ fontSize: '11px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                              {s.span_type}
+                            </span>
+                            <span style={{ fontSize: '12px', color: '#dbe3f0', fontFamily: "'JetBrains Mono', monospace" }}>
+                              {s.name}
+                            </span>
                             <span style={{ fontSize: '11px', color: '#5d6982' }}>
-                              {s.tokens_in ?? 0}in / {s.tokens_out ?? 0}out
+                              {fmtMs(s.duration_ms)}
                             </span>
-                          )}
-                          {fmtUsd(s.cost_usd) && (
-                            <span style={{ fontSize: '11px', color: 'var(--accent)' }}>
-                              {fmtUsd(s.cost_usd)}
-                            </span>
-                          )}
-                          {s.error && (
-                            <span style={{ fontSize: '11px', color: '#fb7185', flexBasis: '100%' }}>
-                              {s.error}
-                            </span>
-                          )}
-                        </div>
-                      ))
+                            {(s.tokens_in != null || s.tokens_out != null) && (
+                              <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                                {s.tokens_in ?? 0}in / {s.tokens_out ?? 0}out
+                              </span>
+                            )}
+                            {fmtUsd(s.cost_usd) && (
+                              <span style={{ fontSize: '11px', color: 'var(--accent)' }}>
+                                {fmtUsd(s.cost_usd)}
+                              </span>
+                            )}
+                            {hasDetail && (
+                              <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                                {isOpen ? '⌄' : '›'}
+                              </span>
+                            )}
+                            {s.error && (
+                              <span style={{ fontSize: '11px', color: '#fb7185', flexBasis: '100%' }}>
+                                {s.error}
+                              </span>
+                            )}
+                            {isOpen && (
+                              <div style={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                                {s.input_summary && (
+                                  <div>
+                                    <div style={{ fontSize: '10px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '3px' }}>
+                                      Input
+                                    </div>
+                                    <div style={{
+                                      fontSize: '11px', color: '#c3ccdb', fontFamily: "'JetBrains Mono', monospace",
+                                      whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+                                      background: 'rgba(0,0,0,0.15)', border: '1px solid rgba(120,160,220,0.08)',
+                                      borderRadius: '7px', padding: '8px 10px',
+                                    }}>
+                                      {s.input_summary}
+                                    </div>
+                                  </div>
+                                )}
+                                {s.output_summary && (
+                                  <div>
+                                    <div style={{ fontSize: '10px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '3px' }}>
+                                      Output
+                                    </div>
+                                    <div style={{
+                                      fontSize: '11px', color: '#c3ccdb', fontFamily: "'JetBrains Mono', monospace",
+                                      whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+                                      background: 'rgba(0,0,0,0.15)', border: '1px solid rgba(120,160,220,0.08)',
+                                      borderRadius: '7px', padding: '8px 10px',
+                                    }}>
+                                      {s.output_summary}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })
                     )}
                   </div>
                 )}

@@ -1079,6 +1079,13 @@ export default function Safety() {
                   </div>
                 )}
 
+                {/* Completed: outcome */}
+                {g.status === 'completed' && g.outcome_summary && (
+                  <div style={{ fontSize: '12px', color: '#5fe0b4', marginTop: '4px' }}>
+                    {g.outcome_summary}
+                  </div>
+                )}
+
                 {/* Inline edit form */}
                 {editingGoalId === g.id ? (
                   <div style={{
