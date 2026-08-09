@@ -233,6 +233,29 @@ async def _unraid_docker_restart(input: dict) -> str:  # noqa: A002
         return f"unraid_docker_restart error: {e}"
 
 
+async def _unraid_docker_prune(input: dict) -> str:  # noqa: A002
+    """Prune dangling Docker images on Unraid (no args).
+
+    Goes through the safety broker (Risk.HIGH — agent gets NEEDS_CONFIRM;
+    a human must confirm before the prune executes). Dispatches direct from
+    this PC over native SSH, not via Hermes.
+    """
+    try:
+        key = _idem_key_for("unraid_docker_prune", {})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="unraid_docker_prune",
+            target="unraid",
+            payload={},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"unraid_docker_prune error: {e}"
+
+
 async def _vm_power(input: dict) -> str:  # noqa: A002
     """Start/stop/reboot a Proxmox VM or LXC by vmid.
 
@@ -479,6 +502,18 @@ WRITE_TOOLS: list[ReadTool] = [
             "required": ["container_id"],
         },
         dispatch=_unraid_docker_restart,
+    ),
+    ReadTool(
+        name="unraid_docker_prune",
+        description=(
+            "Prune dangling Docker images on Unraid (no args) — dangling images only, "
+            "never containers/volumes/networks. "
+            "Goes through the safety broker (HIGH risk — needs human confirmation "
+            "before the prune executes for an agent). "
+            "Dispatches direct from this PC over native SSH, not via Hermes."
+        ),
+        input_schema={"type": "object", "properties": {}, "required": []},
+        dispatch=_unraid_docker_prune,
     ),
     ReadTool(
         name="vm_power",

@@ -158,6 +158,15 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # a human tap for an agent/autonomous actor.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
+    if kind == "unraid_docker_prune":
+        # Phase 7d of the Hermes decoupling — native SSH, not via Hermes's
+        # relay. Deletes dangling Docker images only (never containers/
+        # volumes/networks — see unraid.py's prune_docker_images docstring),
+        # but it's still a live SSH command against production infra, so it's
+        # HIGH and always needs a human tap for an agent/autonomous actor.
+        # The inverse (re-pull an image) is available, so not IRREVERSIBLE.
+        return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
+
     if kind == "vm_power":
         # Phase 7b of the Hermes decoupling — native, not via Hermes's relay.
         # Same band Hermes's own vm_action verb already carries
@@ -373,6 +382,16 @@ async def _dispatch_unraid_docker(target: str, payload: dict) -> dict:
     return await unraid.restart_docker(payload["container_id"])
 
 
+async def _dispatch_unraid_docker_prune(target: str, payload: dict) -> dict:
+    """Prune dangling Docker images on Unraid over native SSH.
+
+    Calls unraid.prune_docker_images directly from this PC — NOT via Hermes.
+    """
+    from backend.integrations import unraid
+
+    return await unraid.prune_docker_images()
+
+
 async def _dispatch_vm_power(target: str, payload: dict) -> dict:
     """Start/reboot/gracefully-shut-down a Proxmox VM or LXC.
 
@@ -505,6 +524,7 @@ _DISPATCHERS = {
     "hermes_action": _dispatch_hermes_action,
     "channels_record": _dispatch_channels_record,
     "unraid_docker": _dispatch_unraid_docker,
+    "unraid_docker_prune": _dispatch_unraid_docker_prune,
     "vm_power": _dispatch_vm_power,
     "unifi_block": _dispatch_unifi_block,
     "unifi_unblock": _dispatch_unifi_unblock,

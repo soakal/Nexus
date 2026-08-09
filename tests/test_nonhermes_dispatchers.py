@@ -573,14 +573,15 @@ async def test_obsidian_complete_task_never_raises_on_broker_exception(eng):
 # ===========================================================================
 
 def test_all_tool_specs_length():
-    """all_tool_specs() == read specs + 9 write specs (Phase 7a/7b added vm_power/unifi_block/unifi_unblock)."""
+    """all_tool_specs() == read specs + 10 write specs (Phase 7a/7b added
+    vm_power/unifi_block/unifi_unblock; Phase 7d added unraid_docker_prune)."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 9, (
-        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 10, (
+        f"expected {len(read_specs) + 10} specs, got {len(all_specs)}"
     )
 
 
@@ -595,13 +596,15 @@ def test_all_dispatchers_contains_new_kinds():
     assert "unifi_block" in disp, "all_dispatchers must contain 'unifi_block'"
     assert "unifi_unblock" in disp, "all_dispatchers must contain 'unifi_unblock'"
     assert "vm_power" in disp, "all_dispatchers must contain 'vm_power'"
+    assert "unraid_docker_prune" in disp, "all_dispatchers must contain 'unraid_docker_prune'"
     # Existing ones must still be present
     assert "home_control" in disp
     assert "hermes_command" in disp
 
 
 def test_write_tool_names_includes_new_tools():
-    """write_tool_names() includes all nine write tools (Phase 7a/7b added 3)."""
+    """write_tool_names() includes all ten write tools (Phase 7a/7b added 3;
+    Phase 7d added unraid_docker_prune)."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
@@ -614,7 +617,8 @@ def test_write_tool_names_includes_new_tools():
     assert "home_control" in names
     assert "hermes_command" in names
     assert "send_notification" in names
-    assert len(names) == 9
+    assert "unraid_docker_prune" in names
+    assert len(names) == 10
 
 
 # ===========================================================================
@@ -781,3 +785,136 @@ async def test_broker_obsidian_task_dispatches_direct(eng):
 
     assert res.decision == Decision.EXECUTED
     ct.assert_awaited_once_with("todo.md", "Call dentist")
+
+
+# ===========================================================================
+# Phase 7d — unraid_docker_prune (native SSH docker prune, dangling images only)
+# ===========================================================================
+
+def test_classify_unraid_docker_prune():
+    from backend.safety.broker import classify, Risk, Reversibility
+
+    assert classify("unraid_docker_prune", {}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+
+
+def test_unraid_docker_prune_in_dispatchers():
+    from backend.safety import broker
+
+    assert "unraid_docker_prune" in broker._DISPATCHERS
+
+
+@pytest.mark.asyncio
+async def test_unraid_docker_prune_agent_needs_confirm(eng):
+    """HIGH risk, autonomy ON, agent actor -> NEEDS_CONFIRM; prune_docker_images
+    NOT awaited; exactly one ActionLog row recorded with decision 'needs_confirm'."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.unraid.prune_docker_images",
+        new_callable=AsyncMock,
+        return_value={"success": True, "reclaimed": "Total reclaimed space: 1GB", "removed_count": 2},
+    ) as pd:
+        res = await execute_action(
+            actor="agent",
+            kind="unraid_docker_prune",
+            target="unraid",
+            payload={},
+        )
+
+    assert res.decision == Decision.NEEDS_CONFIRM
+    pd.assert_not_awaited()
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].actor == "agent"
+    assert logs[0].kind == "unraid_docker_prune"
+    assert logs[0].decision == "needs_confirm"
+
+
+@pytest.mark.asyncio
+async def test_unraid_docker_prune_kill_switch(eng):
+    """Kill switch OFF -> FORBIDDEN; prune_docker_images NOT awaited."""
+    _seed_state(eng, autonomy=False)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.unraid.prune_docker_images",
+        new_callable=AsyncMock,
+        return_value={"success": True},
+    ) as pd:
+        res = await execute_action(
+            actor="agent",
+            kind="unraid_docker_prune",
+            target="unraid",
+            payload={},
+        )
+
+    assert res.decision == Decision.FORBIDDEN
+    pd.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unraid_docker_prune_user_executed(eng):
+    """user actor -> always ALLOWED -> EXECUTED; ActionLog row shows executed
+    with the result dict recorded."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    result_payload = {
+        "success": True,
+        "reclaimed": "Total reclaimed space: 500MB",
+        "removed_count": 4,
+    }
+    with patch(
+        "backend.integrations.unraid.prune_docker_images",
+        new_callable=AsyncMock,
+        return_value=result_payload,
+    ) as pd:
+        res = await execute_action(
+            actor="user",
+            kind="unraid_docker_prune",
+            target="unraid",
+            payload={},
+        )
+
+    assert res.decision == Decision.EXECUTED
+    assert res.result == result_payload
+    pd.assert_awaited_once()
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].decision == "executed"
+    import json
+    assert json.loads(logs[0].result_json) == result_payload
+
+
+@pytest.mark.asyncio
+async def test_unraid_docker_prune_dispatch_failure_recorded_failed_not_reraised(eng):
+    """prune_docker_images raising -> execute_action records FAILED and does NOT
+    re-raise (matches the existing broker contract for every other dispatcher)."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.integrations.unraid.prune_docker_images",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("docker prune via SSH failed: connection refused"),
+    ):
+        res = await execute_action(
+            actor="user",
+            kind="unraid_docker_prune",
+            target="unraid",
+            payload={},
+        )
+
+    assert res.decision == Decision.FAILED
+    assert "connection refused" in (res.error or "")
+
+    logs = _all_logs(eng)
+    assert len(logs) == 1
+    assert logs[0].decision == "failed"

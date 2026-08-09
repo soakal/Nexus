@@ -489,3 +489,209 @@ def test_unraid_data_defaults():
     assert data.docker_containers == []
     assert data.storage_total_gb == 0.0
     assert data.storage_used_gb == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 7d — native docker prune (dangling images only) via SSH
+# ---------------------------------------------------------------------------
+
+def _ssh_client(exit_status: int, stdout_text: str = "", stderr_text: str = ""):
+    """Mock a paramiko.SSHClient instance: .connect()/.close()/.load_host_keys()/
+    .save_host_keys()/.set_missing_host_key_policy() are all no-op MagicMocks;
+    .exec_command() returns (stdin, stdout, stderr) mocks where stdout carries
+    both .read() and .channel.recv_exit_status()."""
+    client = MagicMock()
+    stdout_mock = MagicMock()
+    stdout_mock.read.return_value = stdout_text.encode("utf-8")
+    stdout_mock.channel.recv_exit_status.return_value = exit_status
+    stderr_mock = MagicMock()
+    stderr_mock.read.return_value = stderr_text.encode("utf-8")
+    stdin_mock = MagicMock()
+    client.exec_command.return_value = (stdin_mock, stdout_mock, stderr_mock)
+    return client
+
+
+def _fake_settings(**overrides):
+    """A MagicMock standing in for Settings, pre-populated with valid SSH
+    prune config -- individual tests override specific attributes."""
+    settings = MagicMock()
+    settings.unraid_ssh_private_key = "FAKE-PEM-KEY-MATERIAL"
+    settings.unraid_ssh_host = "192.168.1.50"
+    settings.unraid_ssh_user = "nexus"
+    settings.unraid_ssh_port = 22
+    settings.unraid_ssh_prune_timeout_s = 60
+    for k, v in overrides.items():
+        setattr(settings, k, v)
+    return settings
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_success_counts_removed():
+    """A Total reclaimed space line + Deleted:/Untagged: lines -> success dict
+    with the exact reclaimed line and a matching removed_count."""
+    client = _ssh_client(
+        0,
+        "Deleted: sha256:aaa\nDeleted: sha256:bbb\nUntagged: myimage:old\n"
+        "Total reclaimed space: 1.234GB\n",
+        "",
+    )
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        result = await prune_docker_images()
+
+    assert result == {
+        "success": True,
+        "reclaimed": "Total reclaimed space: 1.234GB",
+        "removed_count": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_no_reclaimed_line_degrades_to_0b():
+    """No 'Total reclaimed space:' line in the output -> reclaimed defaults to
+    '0B', but the call still succeeds."""
+    client = _ssh_client(0, "Deleted: sha256:aaa\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        result = await prune_docker_images()
+
+    assert result["success"] is True
+    assert result["reclaimed"] == "Total reclaimed space: 0B"
+    assert result["removed_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_nonzero_exit_raises_with_stderr():
+    client = _ssh_client(1, "", "no such command: nexus-docker-prune")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        with pytest.raises(RuntimeError, match="no such command: nexus-docker-prune"):
+            await prune_docker_images()
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_ssh_exception_raises_and_still_closes():
+    """exec_command raising SSHException (e.g. a dropped connection mid-call)
+    -> RuntimeError, but client.close() must still run (finally block)."""
+    import paramiko as _paramiko
+
+    client = _ssh_client(0)
+    client.exec_command.side_effect = _paramiko.SSHException("connection dropped")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        with pytest.raises(RuntimeError):
+            await prune_docker_images()
+
+    client.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_missing_secret_never_connects():
+    """UNRAID_SSH_PRIVATE_KEY missing (settings property raises) -> RuntimeError
+    mentioning 'UNRAID_SSH_PRIVATE_KEY not configured'; paramiko.SSHClient must
+    NEVER be instantiated -- no connection attempt without a credential."""
+
+    class _FakeSettingsNoKey:
+        @property
+        def unraid_ssh_private_key(self):
+            raise KeyError("UNRAID_SSH_PRIVATE_KEY")
+
+        unraid_ssh_host = "192.168.1.50"
+        unraid_ssh_user = "nexus"
+        unraid_ssh_port = 22
+        unraid_ssh_prune_timeout_s = 60
+
+    with patch("backend.integrations.unraid.paramiko.SSHClient") as mock_ssh_cls, \
+         patch("backend.config.get_settings", return_value=_FakeSettingsNoKey()):
+        from backend.integrations.unraid import prune_docker_images
+        with pytest.raises(RuntimeError, match="UNRAID_SSH_PRIVATE_KEY not configured"):
+            await prune_docker_images()
+
+    mock_ssh_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_sends_sentinel_not_real_command():
+    """The exact string sent to exec_command is the sentinel, never a real
+    docker command -- and the real docker command never appears literally in
+    unraid.py's source (defense against a future 'helpful' hardcode)."""
+    import pathlib as _pathlib
+
+    client = _ssh_client(0, "Total reclaimed space: 0B\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations import unraid
+        await unraid.prune_docker_images()
+
+    sent_cmd = client.exec_command.call_args.args[0]
+    assert sent_cmd == "nexus-docker-prune"
+    assert sent_cmd == unraid._PRUNE_SENTINEL
+
+    source = _pathlib.Path(unraid.__file__).read_text(encoding="utf-8")
+    assert "docker system prune" not in source
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_connect_disables_agent_and_key_lookup():
+    client = _ssh_client(0, "Total reclaimed space: 0B\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        await prune_docker_images()
+
+    kwargs = client.connect.call_args.kwargs
+    assert kwargs["look_for_keys"] is False
+    assert kwargs["allow_agent"] is False
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_key_loaded_from_in_memory_string():
+    """Ed25519Key.from_private_key is used (never from_private_key_file) --
+    confirms the key loads from an in-memory string, never a file path."""
+    client = _ssh_client(0, "Total reclaimed space: 0B\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key") as mock_key, \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        await prune_docker_images()
+
+    mock_key.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_loads_known_hosts_path():
+    client = _ssh_client(0, "Total reclaimed space: 0B\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        await prune_docker_images()
+
+    path_arg = client.load_host_keys.call_args.args[0]
+    assert path_arg.endswith(".unraid_ssh_known_hosts")
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_blocking_call_goes_through_to_thread():
+    """The blocking paramiko call is dispatched via asyncio.to_thread, not
+    called directly on the event loop."""
+    with patch(
+        "backend.integrations.unraid.asyncio.to_thread",
+        new_callable=AsyncMock,
+        return_value=(0, "Total reclaimed space: 0B", ""),
+    ) as mock_to_thread:
+        from backend.integrations import unraid
+        result = await unraid.prune_docker_images()
+
+    assert mock_to_thread.await_args.args[0] is unraid._ssh_prune_sync
+    assert result["success"] is True

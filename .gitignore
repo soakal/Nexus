@@ -12,6 +12,9 @@ nexus.vault
 # Unraid TLS certificate pin store (TOFU known_hosts, host-specific -- not portable across machines/deployments)
 .unraid_known_hosts.json
 
+# Unraid SSH host-key store for the native docker-prune path (TOFU known_hosts, host-specific -- not portable across machines/deployments)
+.unraid_ssh_known_hosts
+
 # Local backups — contain secrets (.vault.key, nexus.vault); NEVER commit
 backups/
 

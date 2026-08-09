@@ -1,9 +1,12 @@
 import asyncio
+import io
 import logging
+import pathlib
 import re
 from dataclasses import dataclass, field
 
 import httpx
+import paramiko
 
 from backend.cache import async_ttl_cache
 from backend.integrations.unraid_tls_pinning import build_transport
@@ -258,3 +261,148 @@ async def restart_docker(name_or_id: str) -> dict:
     if not ok:
         return {"success": False, "stopped": True, "error": f"stopped but failed to restart: {err}"}
     return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Phase 7d — native docker prune (dangling images only) via SSH
+#
+# Live GraphQL introspection during Phase 7c confirmed no prune mutation
+# exists anywhere in Unraid's schema (root or nested) -- pruning has no
+# REST/GraphQL surface at all on this server, only raw SSH, exactly like
+# Hermes's own implementation (hermes-agent/tools/unraid.py, a sibling repo,
+# NOT part of this codebase) already does it.
+#
+# Deliberately DANGLING IMAGES ONLY (`docker image prune -f`), NOT the
+# broader system-wide prune (docker's `system` + `prune` combo) -- Brian
+# keeps some Unraid containers intentionally stopped, and a system-wide
+# prune would delete those containers plus unused volumes/networks along
+# with the images. This scope decision is inherited from the original
+# Hermes implementation, not invented here.
+#
+# The actual shell command is fixed SERVER-SIDE by an SSH forced-command
+# restriction in Unraid's authorized_keys (out of scope for this codebase --
+# installed manually on Unraid). `_PRUNE_SENTINEL` below is intentionally
+# NOT a real, runnable command: this code sends a fixed sentinel string over
+# SSH and relies entirely on the server-side forced-command mapping it to
+# the real prune operation. If that server-side restriction is ever
+# weakened or removed, this fails LOUDLY ("command not found") instead of
+# silently becoming an unrestricted arbitrary-command channel.
+# ---------------------------------------------------------------------------
+
+_PRUNE_SENTINEL = "nexus-docker-prune"          # NOT the real command -- see docstring above
+_SSH_KNOWN_HOSTS = pathlib.Path(".unraid_ssh_known_hosts")
+
+
+def _ssh_prune_sync() -> tuple[int, str, str]:
+    """Blocking, synchronous SSH call -- run ONLY via asyncio.to_thread (never
+    call this directly from a coroutine; paramiko has no async API).
+
+    Returns (exit_status, stdout_text, stderr_text). Raises RuntimeError if
+    UNRAID_SSH_PRIVATE_KEY or unraid_ssh_host isn't configured; any paramiko
+    exception (AuthenticationException, SSHException, BadHostKeyException,
+    socket errors, timeout) propagates as-is -- the caller (prune_docker_images)
+    converts it to a RuntimeError.
+    """
+    from backend.config import get_settings
+    settings = get_settings()
+
+    try:
+        pem = settings.unraid_ssh_private_key
+    except Exception:
+        raise RuntimeError("UNRAID_SSH_PRIVATE_KEY not configured")
+
+    host = settings.unraid_ssh_host
+    if not host:
+        raise RuntimeError("UNRAID_SSH_HOST not configured")
+    port = settings.unraid_ssh_port
+    user = settings.unraid_ssh_user
+
+    # Ed25519, not RSA -- matches the key type Hermes's own SSH credential to
+    # Unraid uses, and loaded from an in-memory string (io.StringIO), never a
+    # file path -- the key material lives only in the vault, never touches disk.
+    key = paramiko.Ed25519Key.from_private_key(io.StringIO(pem))
+
+    client = paramiko.SSHClient()
+    try:
+        client.load_host_keys(str(_SSH_KNOWN_HOSTS))
+    except Exception:
+        # No known_hosts file yet (first run) -- paramiko tolerates a missing/
+        # empty known_hosts file fine, nothing to do here.
+        pass
+    # TOFU (trust-on-first-use), NOT the same as disabling host-key checking.
+    # AutoAddPolicy accepts an unknown host key on first connect and we then
+    # persist it via save_host_keys() below -- every SUBSEQUENT connection is
+    # checked against that persisted key, and a key that changes out from under
+    # us (a real MITM risk) still raises. Do NOT "simplify" this into
+    # StrictHostKeyChecking=no / paramiko.WarningPolicy -- that would silently
+    # accept ANY host key on EVERY connection, forever, with no persistence and
+    # no detection of a changed key.
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    try:
+        client.connect(
+            host,
+            port=port,
+            username=user,
+            pkey=key,
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=10,
+            banner_timeout=10,
+            auth_timeout=10,
+        )
+        # Persist whatever host key TOFU just learned (a no-op on subsequent
+        # connections where the key is already known and unchanged) so the
+        # first-run capture actually survives past this one connection.
+        client.save_host_keys(str(_SSH_KNOWN_HOSTS))
+
+        stdin, stdout, stderr = client.exec_command(
+            _PRUNE_SENTINEL, timeout=settings.unraid_ssh_prune_timeout_s
+        )
+        exit_status = stdout.channel.recv_exit_status()
+        out = stdout.read(65536).decode("utf-8", errors="replace")
+        err = stderr.read(65536).decode("utf-8", errors="replace")
+    finally:
+        client.close()
+
+    return exit_status, out, err
+
+
+async def prune_docker_images() -> dict:
+    """Prune DANGLING Docker images on Unraid over SSH -- deliberately NOT a
+    full system-wide prune (see the module-section docstring above for why).
+
+    Runs the blocking paramiko call in a thread (asyncio.to_thread) since
+    paramiko has no async API. Returns:
+      {"success": True, "reclaimed": "Total reclaimed space: ...", "removed_count": N}
+
+    Raises RuntimeError on any failure -- a non-zero remote exit status, or any
+    SSH-layer exception (auth failure, connection drop, timeout, bad host key).
+    The "not configured" RuntimeErrors from _ssh_prune_sync propagate as-is
+    (never double-wrapped); any other exception is re-raised with context.
+
+    Does NOT call fetch.invalidate() -- pruning dangling images doesn't change
+    any field fetch() returns (docker_containers only lists live containers,
+    not dangling/untagged images).
+    """
+    try:
+        exit_status, out, err = await asyncio.to_thread(_ssh_prune_sync)
+    except RuntimeError as e:
+        if "not configured" in str(e):
+            raise
+        raise RuntimeError(f"docker prune via SSH failed: {e}")
+    except Exception as e:
+        raise RuntimeError(f"docker prune via SSH failed: {e}")
+
+    if exit_status != 0:
+        raise RuntimeError(f"docker prune failed (exit {exit_status}): {err.strip()[:500]}")
+
+    reclaimed = "Total reclaimed space: 0B"
+    removed_count = 0
+    for line in out.splitlines():
+        if "Total reclaimed space:" in line:
+            reclaimed = line.strip()
+        elif line.startswith("Deleted:") or line.startswith("Untagged:"):
+            removed_count += 1
+
+    return {"success": True, "reclaimed": reclaimed, "removed_count": removed_count}

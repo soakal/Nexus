@@ -322,10 +322,37 @@ zero-cost rollback while the native paths prove themselves.**
   path: `{"success": True}`, independently confirmed via a fresh `fetch()` (state `RUNNING`,
   `"Up 19 seconds"` — genuinely fresh, not stale) and a live `HTTP 200` from the actual public
   site.
-- **7d — deliberately out of scope**, unchanged from the original plan: `docker_prune`,
-  `restart_service`, `service_logs` have no REST/GraphQL surface NEXUS's current credentials can
-  reach — Hermes's own implementations use raw SSH. Unlocking these is a credential-scope decision
-  (give NEXUS its own SSH key to Unraid/the LXCs), not an engineering one.
+- **7d — native docker prune via restricted SSH (2026-08-08).** `docker_prune` (dangling images
+  only, `backend/integrations/unraid.py::prune_docker_images`/`_ssh_prune_sync`) now dispatches
+  natively over SSH instead of Hermes's relay, via a new vault secret
+  (`UNRAID_SSH_PRIVATE_KEY`, an Ed25519 key loaded from an in-memory string — never a file path)
+  plus four plain `.env`-overridable settings (`unraid_ssh_host`/`unraid_ssh_user`/
+  `unraid_ssh_port`/`unraid_ssh_prune_timeout_s`). The credential is scoped server-side by an
+  SSH **forced-command restriction** in Unraid's `authorized_keys`
+  (`restrict,from="<nexus-ip>",command="..."` pattern — the key can run exactly one server-side
+  command and nothing else, regardless of what this code sends). This code deliberately sends a
+  fixed sentinel string (`_PRUNE_SENTINEL = "nexus-docker-prune"`), NOT the real `docker image
+  prune -f` command — the forced-command mapping on the Unraid side is what turns that sentinel
+  into the real prune. If that server-side restriction is ever weakened or removed, this fails
+  LOUDLY ("command not found") instead of silently becoming an unrestricted arbitrary-command
+  channel. Host-key verification uses TOFU (trust-on-first-use) via a new
+  `.unraid_ssh_known_hosts` file (paramiko-native known_hosts format, gitignored, host-specific —
+  same pattern as `.unraid_known_hosts.json`/`.unifi_known_hosts.json`): the first connection
+  learns and persists the host key, every later connection is checked against it, and a changed
+  key still raises — this is NOT the same as disabling host-key checking
+  (`StrictHostKeyChecking=no`), which the code's own comments explicitly warn future readers not
+  to "simplify" it into. Wired through the broker (`unraid_docker_prune`, HIGH risk — an agent
+  always needs a human tap), the executor write-tool registry, `POST /api/unraid/docker/prune`,
+  and Telegram's `/prune` command. Dangling images only, deliberately NOT a full system-wide
+  prune — Brian keeps some Unraid containers intentionally stopped, and a system-wide prune would
+  delete those containers plus unused volumes/networks along with the images; this scope decision
+  is inherited from the original Hermes implementation (`hermes-agent/tools/unraid.py`, a sibling
+  repo, not part of this codebase), not invented here. **Shipped but not yet live**: the SSH
+  credential itself has not been installed on Unraid — that's a separate, human-gated step,
+  tracked outside this codebase. `restart_service`/`service_logs` remain out of scope, but for a
+  different reason than before: those are local-to-Hermes'-own-LXC systemd operations (restarting
+  a service ON Hermes's box, reading ITS logs), not a remote-Unraid capability at all — they
+  become moot once Hermes retires, not something NEXUS needs to gain.
 
 ## Open WebUI dependency retired (Phase 6, 2026-07-27)
 Open WebUI (LXC 201 `hermes-webui`, `192.168.1.56`) ran a Pipelines container calling Hermes's

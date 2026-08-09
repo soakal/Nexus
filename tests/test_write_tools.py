@@ -248,14 +248,15 @@ async def test_hermes_command_never_raises_on_broker_exception(eng):
 # ===========================================================================
 
 def test_combined_providers_all_tool_specs():
-    """all_tool_specs() == read specs + 9 write specs (Phase 7a/7b added vm_power/unifi_block/unifi_unblock)."""
+    """all_tool_specs() == read specs + 10 write specs (Phase 7a/7b added
+    vm_power/unifi_block/unifi_unblock; Phase 7d added unraid_docker_prune)."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs, write_tool_names
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 9, (
-        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 10, (
+        f"expected {len(read_specs) + 10} specs, got {len(all_specs)}"
     )
 
 
@@ -272,7 +273,8 @@ def test_combined_providers_all_dispatchers():
 
 
 def test_write_tool_names():
-    """write_tool_names() returns all nine write tool names (Phase 7a/7b added 3)."""
+    """write_tool_names() returns all ten write tool names (Phase 7a/7b added 3;
+    Phase 7d added unraid_docker_prune)."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
@@ -285,7 +287,8 @@ def test_write_tool_names():
     assert "unifi_block" in names
     assert "unifi_unblock" in names
     assert "vm_power" in names
-    assert len(names) == 9
+    assert "unraid_docker_prune" in names
+    assert len(names) == 10
 
 
 # ===========================================================================
