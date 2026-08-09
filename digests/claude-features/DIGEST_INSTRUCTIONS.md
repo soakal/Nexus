@@ -13,7 +13,6 @@ Already in active use -- never re-suggest these or close variants:
 - Adaptive thinking, effort levels, prompt caching, extended context windows -- assume baseline familiarity with current model capabilities unless a specific new wrinkle in one of these is worth flagging.
 
 Brian's other active projects (for tie-ins below -- you only have this repo cloned, so this list is your only knowledge of them; it's deliberately high-level, don't invent infrastructure/deployment details that aren't stated here, and never speculate about how they're hosted or secured):
-- **Hermes** -- a personal Telegram bot / home-automation relay that NEXUS sends notifications and device actions to.
 - **GLP APP** -- a single-file HTML dose-calculator tool.
 - **CWI AI** -- a small business marketing website with some backend automation.
 - **SOPForge** -- see already-doing list above.
