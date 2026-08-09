@@ -178,13 +178,21 @@ async def test_retry_step_durable(eng):
 
     assert result.success is True
 
-    from backend.database import TaskStep
+    from backend.database import AgentTrace, TaskStep, TraceSpan
 
     with Session(eng) as s:
         step = s.exec(select(TaskStep).where(TaskStep.task_id == task_id)).first()
         assert step.prompt == "try harder"
         assert step.status == "done"
         assert step.attempts >= 2  # ran twice, attempts preserved across patch
+
+        trace = s.exec(select(AgentTrace).where(AgentTrace.task_id == task_id)).one()
+        spans = s.exec(
+            select(TraceSpan).where(TraceSpan.trace_id == trace.id, TraceSpan.span_type == "debug_decision")
+        ).all()
+        assert len(spans) == 1
+        assert spans[0].output_summary.startswith("RETRY_STEP")
+        assert "x" in spans[0].output_summary
 
 
 @pytest.mark.asyncio
@@ -222,7 +230,7 @@ async def test_replan_changes_step_count(eng):
 
     assert result.success is True
 
-    from backend.database import TaskStep
+    from backend.database import AgentTrace, TaskStep, TraceSpan
 
     with Session(eng) as s:
         rows = s.exec(select(TaskStep).where(TaskStep.task_id == task_id).order_by(TaskStep.step_index)).all()
@@ -231,6 +239,91 @@ async def test_replan_changes_step_count(eng):
         # done row 1 kept; 3 new pending->done indexed 2,3,4
         assert indices == [1, 2, 3, 4]
         assert rows[0].status == "done" and rows[0].step_index == 1
+
+        trace = s.exec(select(AgentTrace).where(AgentTrace.task_id == task_id)).one()
+        spans = s.exec(
+            select(TraceSpan).where(TraceSpan.trace_id == trace.id, TraceSpan.span_type == "debug_decision")
+        ).all()
+        assert len(spans) == 1
+        assert "REPLAN" in spans[0].output_summary
+        assert "redo" in spans[0].output_summary
+
+
+@pytest.mark.asyncio
+async def test_empty_replan_records_abort_decision(eng):
+    """B7: a REPLAN with zero steps finalizes 'failed'/replan_empty (existing
+    behavior, now pinned) AND records two debug_decision spans -- Opus's raw
+    REPLAN decision, then the code's own empty-replan override to ABORT."""
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "bad-step", status="pending")
+
+    replan_empty = json.dumps({
+        "action": "REPLAN", "reason": "redo", "new_plan": {"steps": []},
+    })
+
+    async def exec_side(*args, **kwargs):
+        return "I cannot complete this task"
+
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
+         patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side):
+        mock_opus.return_value = replan_empty
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is False
+    assert result.reason == "replan_empty"
+
+    from backend.database import AgentTrace, Task, TraceSpan
+
+    with Session(eng) as s:
+        t = s.get(Task, task_id)
+        assert t.status == "failed"
+        result_data = json.loads(t.result_json)
+        assert result_data.get("error") == "replan_empty"
+
+        trace = s.exec(select(AgentTrace).where(AgentTrace.task_id == task_id)).one()
+        spans = s.exec(
+            select(TraceSpan).where(TraceSpan.trace_id == trace.id, TraceSpan.span_type == "debug_decision")
+            .order_by(TraceSpan.id)
+        ).all()
+        assert len(spans) == 2
+        assert spans[1].output_summary == "ABORT: replan_empty"
+
+
+@pytest.mark.asyncio
+async def test_debug_span_failure_does_not_break_retry(eng):
+    """Constraint test: a debug_decision span write failure must not change
+    the retry outcome -- pure best-effort observability."""
+    task_id = _seed_task(eng)
+    _seed_step(eng, task_id, 1, "try", status="pending")
+
+    retry_json = '{"action": "RETRY_STEP", "reason": "x", "new_prompt": "try harder"}'
+
+    call = {"n": 0}
+
+    async def exec_side(*args, **kwargs):
+        call["n"] += 1
+        if call["n"] == 1:
+            return "I cannot complete this task"
+        return "fixed"
+
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock) as mock_opus, \
+         patch("backend.agents.router.run_with_tools", new_callable=AsyncMock, side_effect=exec_side), \
+         patch("backend.agents.router._record_trace_span", side_effect=RuntimeError("span boom")):
+        mock_opus.return_value = retry_json
+        from backend.agents.orchestrator import run_task
+
+        result = await run_task("task", task_id)
+
+    assert result.success is True
+
+    from backend.database import TaskStep
+
+    with Session(eng) as s:
+        step = s.exec(select(TaskStep).where(TaskStep.task_id == task_id)).first()
+        assert step.prompt == "try harder"
+        assert step.status == "done"
 
 
 # ---------------------------------------------------------------------------

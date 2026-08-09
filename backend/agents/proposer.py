@@ -20,11 +20,23 @@ SAFETY CONTRACT (hard, enforced at code level):
     so a HIGH/irreversible action mid-task is still blocked/needs-confirm.
 """
 import asyncio
+import html
 import json
 import logging
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+
+def _esc(s: str, limit: int | None = None) -> str:
+    """Truncate THEN escape -- escaping expands entities (& -> &amp;), so
+    truncating after escaping can cut one in half (a mid-entity cut is
+    rejected outright by Telegram's HTML parser as a 400, which silently
+    drops the whole message). notify_phone sends parse_mode="HTML"."""
+    s = str(s or "")
+    if limit is not None:
+        s = s[:limit]
+    return html.escape(s)
 
 # A source is anomalous only when it has been continuously down for this many
 # consecutive 2-min uptime samples (~10 min). Single-sample blips are ignored.
@@ -582,7 +594,9 @@ async def propose_goals_tick() -> dict:
                     if entry["auto_approved"]:
                         from backend import events
                         await events.notify_phone(
-                            f"NEXUS auto-started a low-risk goal: {title}",
+                            f"NEXUS auto-started a low-risk goal: {_esc(title)}\n"
+                            f"{_esc(description, 200)}\n"
+                            f"Done when: {_esc(success_criteria, 200)}",
                             kind="auto_approved",
                         )
                 except Exception as _ae:
@@ -597,7 +611,10 @@ async def propose_goals_tick() -> dict:
                 from backend import events
                 goal_id = res["goal"]["id"]
                 await events.notify_phone(
-                    f"New goal needs your approval: {title}\nRisk: {risk}",
+                    f"New goal needs your approval: {_esc(title)}\n"
+                    f"Risk: {_esc(risk)} · Confidence: {confidence:.0%}\n"
+                    f"{_esc(description, 200)}\n"
+                    f"Done when: {_esc(success_criteria, 200)}",
                     kind="goal_proposed",
                     buttons=[
                         {"text": "✓ Approve", "callback_data": f"goal:approve:{goal_id}"},

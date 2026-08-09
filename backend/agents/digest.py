@@ -64,6 +64,29 @@ def _db_recent_completed_goals(since: datetime) -> list[dict]:
         return []
 
 
+def _db_recent_failed_goals(since: datetime) -> list[dict]:
+    """Goals that failed in the last 24 h, with their rejection reason."""
+    from sqlmodel import Session, select
+    from backend.database import Goal, engine
+
+    try:
+        with Session(engine) as session:
+            rows = session.exec(
+                select(Goal)
+                .where(Goal.status == "failed")
+                .where(Goal.updated_at >= since)
+                .order_by(Goal.updated_at.desc())
+                .limit(10)
+            ).all()
+            return [
+                {"title": r.title, "rejection_reason": r.rejection_reason}
+                for r in rows
+            ]
+    except Exception as e:
+        logger.debug(f"digest._db_recent_failed_goals failed: {e}")
+        return []
+
+
 def _db_pending_confirm_count() -> int:
     """Count of ActionLog rows with decision == 'needs_confirm'."""
     from sqlmodel import Session, func, select
@@ -137,6 +160,7 @@ async def build_autonomy_digest() -> str:
         calibration_task = outcomes.calibration_summary(30)
         hint_report_task = calibration_mod.hint_report(30)
         proposer_stats_task = asyncio.to_thread(governor.get_proposer_tick_stats, 24)
+        failed_goals_task = asyncio.to_thread(_db_recent_failed_goals, since)
 
         results = await asyncio.gather(
             auto_goals_task,
@@ -148,12 +172,14 @@ async def build_autonomy_digest() -> str:
             calibration_task,
             hint_report_task,
             proposer_stats_task,
+            failed_goals_task,
             return_exceptions=True,
         )
 
         _labels = (
             "auto_goals", "pending_count", "proposed_goals", "completed_goals",
             "spend", "state", "calibration", "hint_report", "proposer_stats",
+            "failed_goals",
         )
         for _label, _r in zip(_labels, results):
             if isinstance(_r, Exception):
@@ -168,6 +194,7 @@ async def build_autonomy_digest() -> str:
         calibration = results[6] if not isinstance(results[6], Exception) else {}
         hint_report = results[7] if not isinstance(results[7], Exception) else None
         proposer_stats = results[8] if not isinstance(results[8], Exception) else None
+        failed_goals = results[9] if not isinstance(results[9], Exception) else []
 
         autonomy_label = "ENABLED" if state.get("autonomy_enabled", True) else "PAUSED"
         daily_cap = state.get("daily_budget_usd", 25.0)
@@ -200,6 +227,21 @@ async def build_autonomy_digest() -> str:
         else:
             completed_line = "Completed (24h): none"
 
+        # B6: failed goals with their rejection reason -- the same "what
+        # actually happened" visibility completed_line gives successes.
+        # rejection_reason is written on every failed goal (goals.py); only
+        # auto-approved-failure notifications page, so this is often the
+        # first place a quiet failure becomes visible at all. Escaped:
+        # rejection_reason can carry verifier free text, sent parse_mode="HTML".
+        if failed_goals:
+            failed_parts = "\n    - " + "\n    - ".join(
+                f"{html.escape(g['title'])}: {html.escape(g['rejection_reason'] or 'no failure reason recorded')}"
+                for g in failed_goals[:5]
+            )
+            failed_line = f"Failed (24h): {len(failed_goals)}{failed_parts}"
+        else:
+            failed_line = "Failed (24h): none"
+
         # Flag calibration (spec §4.4) — per-source:check raised/false_positive
         # counts over the last 30 days, one advisory line matching the
         # Completed (24h) line's style. calibration is {} on an empty table or
@@ -222,7 +264,16 @@ async def build_autonomy_digest() -> str:
         suppressed_hints = hint_report.get("suppressed") if isinstance(hint_report, dict) else None
         suppressed_count = len(suppressed_hints) if isinstance(suppressed_hints, list) else 0
         if suppressed_count > 0:
-            calibration_line += f" | Auto-suppressed: {suppressed_count} rule(s)"
+            def _fmt_suppressed(h):
+                fp = h.get("fp_rate")
+                if isinstance(fp, (int, float)):
+                    return f"{h.get('fingerprint', '?')} (fp {fp:.0%})"
+                return str(h.get("fingerprint", "?"))
+
+            _named = [h for h in suppressed_hints if isinstance(h, dict)][:3]
+            names = ", ".join(_fmt_suppressed(h) for h in _named)
+            extra = f" (+{suppressed_count - 3} more)" if suppressed_count > 3 else ""
+            calibration_line += f" | Auto-suppressed: {suppressed_count} rule(s): {names}{extra}"
 
         # Proposer drop visibility (B9) — what the goal proposer evaluated and
         # silently dropped over the last 24h, so a quiet proposer reads as
@@ -263,6 +314,7 @@ async def build_autonomy_digest() -> str:
             f"Autonomy: {autonomy_label}",
             f"Auto-ran (24h): {auto_ran_line}",
             completed_line,
+            failed_line,
             f"Awaiting your approval: {pending_count} action(s) + {len(proposed_goals)} proposed goal(s)",
             f"  proposed:{proposed_titles}",
             proposer_line,

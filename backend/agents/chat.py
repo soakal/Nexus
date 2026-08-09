@@ -378,6 +378,7 @@ _BUDGET_REACHED_REPLY = (
 async def chat(conversation_id: int | None, user_message: str, *, token_queue=None) -> dict:
     """token_queue: if set (asyncio.Queue), CHAT replies stream tokens into it; None sentinel marks end."""
     from backend.agents.router import (
+        _record_trace_span,
         close_trace,
         haiku,
         open_trace,
@@ -403,6 +404,7 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
     _trace_token = set_trace_context(trace_id)
     _trace_status = "ok"
     _trace_error = None
+    _trace_label = None
 
     try:
         await asyncio.to_thread(_db_add_message, conversation_id, "user", user_message)
@@ -448,6 +450,8 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments â
         # We catch it, reply with a friendly message, and persist normally â€” no
         # exception escapes to FastAPI.
         intent = "CHAT"  # default; reassigned after Haiku classify (guards BudgetExceeded before classify)
+        route_reason = ""
+        _route_started = datetime.utcnow()
         try:
             if _is_status_cmd:
                 raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
@@ -462,10 +466,27 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments â
                     intent = parsed.get("intent", "CHAT")
                     if intent not in ("HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR"):
                         intent = "CHAT"
+                    route_reason = str(parsed.get("reason") or "")[:300]
             except Exception:
                 intent = "CHAT"
 
-            logger.info(f"Chat intent={intent} conversation_id={conversation_id}")
+            logger.info(f"Chat intent={intent} reason={route_reason!r} conversation_id={conversation_id}")
+            _trace_label = f"conv:{conversation_id} intent={intent}"
+
+            # B5: record the routing decision as a trace span (pure observability
+            # -- must never affect dispatch). Placed AFTER the parse block above
+            # completes, never inside it: that block coerces any exception to
+            # intent="CHAT", so a bug in span code placed there could silently
+            # reroute a HOME_CONTROL command to CHAT.
+            try:
+                await asyncio.to_thread(
+                    _record_trace_span, "routing", "chat_route_decision", _route_started,
+                    input_summary=user_message,
+                    output_summary=f"intent={intent} reason={route_reason or 'n/a'}",
+                    trace_id=trace_id,
+                )
+            except Exception as e:
+                logger.warning(f"routing span failed (non-fatal): {e}")
 
             # Build history transcript (exclude the last user message â€” sent separately)
             prior = history[:-1]  # last item is the user message we just persisted
@@ -613,6 +634,7 @@ IMPORTANT: `lock.*` entities are PHYSICAL door locks (deadbolts, August locks, e
 If no entity matches, return:
 {{"entity_id": null, "service": null, "value": null, "option": null}}"""
 
+                        _pick_started = datetime.utcnow()
                         raw_pick = await haiku(pick_prompt, label="chat_lane_pick")
                         entity_id = None
                         service = None
@@ -629,6 +651,19 @@ If no entity matches, return:
                                 option = pick.get("option")
                         except Exception:
                             pass
+
+                        try:
+                            await asyncio.to_thread(
+                                _record_trace_span, "routing", "ha_entity_pick", _pick_started,
+                                input_summary=", ".join(e["entity_id"] for e in controllable),
+                                output_summary=(
+                                    f"entity={entity_id} service={service} value={value} option={option}"
+                                    if entity_id and service else "no entity matched"
+                                ),
+                                trace_id=trace_id,
+                            )
+                        except Exception as e:
+                            logger.warning(f"ha_entity_pick span failed (non-fatal): {e}")
 
                         if not entity_id or not service:
                             reply = "I couldn't identify which device you want to control. Could you be more specific? For example: \"turn off the office light\", \"set the thermostat to 72\", or \"disable the away automation\"."
@@ -1020,7 +1055,7 @@ If a recipient, subject, or body is missing/unclear, return an empty string for 
         # Best-effort trace close, wrapped so a bookkeeping failure here can
         # never mask the real return value / exception from chat().
         try:
-            await asyncio.to_thread(close_trace, trace_id, _trace_status, _trace_error)
+            await asyncio.to_thread(close_trace, trace_id, _trace_status, _trace_error, label=_trace_label)
         except Exception as e:
             logger.warning(f"trace close failed (non-fatal): {e}")
         reset_trace_context(_trace_token)

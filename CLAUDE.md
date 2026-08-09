@@ -582,9 +582,14 @@ silent drops, and homelab alerts that never say when they've cleared.
   uses `StaticPool` (one shared SQLite connection across threads), and this build's 9th concurrent
   `asyncio.to_thread` DB read was enough to occasionally interleave two Sessions' transaction state
   on that one connection, making `get_proposer_tick_stats` spuriously read an existing row as
-  absent. Fixed by serializing that connection's pool checkout/checkin behind an `RLock` in the
-  test fixture only (`make_engine()`) — production is unaffected (a real per-thread pooled
-  connection, no sharing). `build_autonomy_digest`'s `gather(..., return_exceptions=True)` fan-out
+  absent. An initial fix serializing that connection's pool checkout/checkin behind an `RLock`
+  deadlocked outright under real test load and was reverted; the actual fix backs the test fixture
+  with a real tmp-file SQLite engine instead of a single shared in-memory `StaticPool` connection
+  (`make_engine(db_path)`, same pattern `tests/test_db_pragma.py`'s `file_db` fixture already
+  used) — each thread gets its own pooled connection to the same file, matching how production's
+  engine actually behaves, so there's nothing left to race on. Verified clean across 8+ consecutive
+  full runs of `test_autonomy_notify.py` post-fix. `build_autonomy_digest`'s `gather(...,
+  return_exceptions=True)` fan-out
   now also `logger.warning`s any task that came back as an `Exception`, so a degraded digest field
   leaves a trace instead of silently reading identically to "no data yet".
 - **Homelab recovery notices (B10).** `homelab_watch.py`'s edge-alert checks (VM/LXC stopped,
@@ -606,3 +611,73 @@ silent drops, and homelab alerts that never say when they've cleared.
   normal"), not a repeat of the original alert. `_paged_alerts` is in-memory, same restart-loses-it
   tradeoff already documented for the rest of this module's state.
 - Full pytest suite green throughout (backend-only change, no frontend build needed).
+
+## Legibility batches 1+2 — making NEXUS's own behavior easier to read (2026-08-09)
+Two Fable-planned, Sonnet-built batches from the same legibility review that also produced the B9/B10
+proposer/homelab-recovery batch above — batch 1 shipped first but never got a CLAUDE.md entry at the
+time (found as drift while planning batch 2); documented together here since they're one continuous
+theme: NEXUS explaining more of what it's actually doing, with no behavior change to what it does.
+
+**Batch 1 (branch `feat/legibility-batch1`, worktree `nexus-legibility-batch1`, merged before B9/B10):**
+- **B1 — expandable trace spans.** `frontend/src/pages/Traces.jsx` span rows with an `input_summary`/
+  `output_summary` become clickable, expanding a monospace pre-wrap block inline — previously that data
+  existed in the DB (`TraceSpan.input_summary`/`output_summary`) but the page never rendered it.
+- **B2 — span names show the actual model.** `router.py::_record_trace_span` gained an optional `model`
+  kwarg; `_create_sync`/`_create_sync_raw` build `span_name = f"{label} ({model})"` and pass it through,
+  and cost computation now keys off `model or name` — a span used to just say "chat_classify", now says
+  "chat_classify (claude-haiku-4-5)".
+- **B4 — Telegram `/tasks`/`/goals` show WHY something failed.** `telegram_commands.py::_cmd_tasks`
+  imports `worker_pool._summarize_task_result` and appends a failure-reason line only for
+  `status == "failed"`; `_cmd_goals` appends `rejection_reason`/`outcome_summary` via `.get()`.
+- **B8 — completed goals show their outcome in the Safety UI.** `goals.py::_goal_to_dict` gained
+  `"outcome_summary"`; `Safety.jsx` renders it under a completed goal in the page's existing success
+  color (`#5fe0b4`, verified as the real pre-existing token, not invented).
+- Opus verify caught two cosmetic-only findings, both fixed before merge: a dead `stopPropagation()`
+  call in `Traces.jsx` and a truncation-length mismatch (200 vs 300 chars) between the two Telegram
+  commands.
+
+**Batch 2 (branch `feat/legibility-batch2`, worktree `nexus-legibility-batch2`):**
+- **B3 — Telegram goal messages show what's actually being approved.** `proposer.py`'s
+  `goal_proposed`/`auto_approved` notify messages used to be just a title (+ risk, for the approval
+  one) — now both include description, "Done when:" (success_criteria), and confidence (approval
+  message only), each truncated to 200 chars THEN escaped via a new `_esc()` helper — truncating
+  after escaping can cut an HTML entity in half, which Telegram's `parse_mode="HTML"` parser rejects
+  as a 400, silently dropping the whole message (this was a real latent bug: a title containing a
+  literal `&`/`<` already silently killed the notification before this batch, since `events.notify_phone`
+  switches to HTML parse mode whenever `app_base_url` is set — fixed as a side effect of adding the
+  escaping this batch needed anyway).
+- **B5 — chat routing decisions are now traced, not just logged.** `chat.py`'s intent-classify log line
+  gained the Haiku-supplied `reason` field (previously discarded); a new `chat_route_decision`
+  `TraceSpan` (`span_type="routing"`) records `intent`+`reason` for every turn, and a second
+  `ha_entity_pick` span records which HA entity/service a HOME_CONTROL turn resolved to (or "no entity
+  matched") — the parsed decision the code actually acts on, not just the raw LLM prompt/response the
+  existing `chat_lane_pick` `llm_call` span already stored. Both spans are pure observability, written
+  in their own `try/except` + `asyncio.to_thread(_record_trace_span, ...)`, placed strictly AFTER the
+  intent-parse block completes (never inside it — that block coerces any exception to `intent="CHAT"`,
+  so a bug in span code placed there could silently reroute a real HOME_CONTROL command). `router.py`'s
+  `close_trace` gained an optional keyword-only `label` param (backward compatible, every existing
+  positional caller unaffected) so the trace's label can fold in the resolved intent at close time
+  (`"conv:42 intent=CHAT"`) — the intent isn't known yet when `open_trace` runs at turn start.
+- **B6 — the daily digest shows failures, not just successes/suppressions.** New `Failed (24h)` block
+  in `digest.py::build_autonomy_digest` (positioned right after `Completed (24h)`), sourced from a new
+  `_db_recent_failed_goals` helper mirroring the existing completed-goals one; each entry shows
+  `rejection_reason` (or "no failure reason recorded"). The pre-existing `Auto-suppressed: N rule(s)`
+  calibration suffix now NAMES the fingerprints (up to 3, `"(+N more)"` beyond that) with their false-
+  positive rate — previously just a bare count with no way to tell which rules without opening the
+  Safety page. Both additions are `html.escape()`d (free-text rejection reasons, `parse_mode="HTML"`
+  delivery) — the digest's OTHER, pre-existing goal-title interpolations are still NOT escaped, a
+  separate known gap this batch doesn't touch or rely on.
+- **B7 — the orchestrator's retry/replan decisions are traced.** A new `debug_decision` `TraceSpan`
+  records each `_opus_debug` verdict (RETRY_STEP/REPLAN/ABORT + reason) on the durable task loop, plus
+  a second span for the specific case where a REPLAN comes back with zero new steps and the code
+  overrides it to ABORT (`"ABORT: replan_empty"`) — makes the EFFECTIVE terminal decision legible, not
+  just Opus's raw one. Durable path only (`run_task(task_id=...)`); the legacy in-memory loop
+  (`test_orchestrator.py`) is untouched. Deliberately no `try/except` around the `_opus_debug` call
+  itself — its `json.loads` parse failure must keep propagating to the existing generic exception
+  handler exactly as before this batch; only the span WRITE (after the call returns) is best-effort.
+- All four items are pure additive observability — no dispatch/routing/retry logic changed, confirmed
+  by dedicated "span write fails" constraint tests (`test_span_failure_never_breaks_chat`,
+  `test_debug_span_failure_does_not_break_retry`) asserting the real behavior is byte-identical whether
+  or not the new span code succeeds.
+- Full pytest suite green (backend-only change, no frontend build needed for batch 2's items — B1/B8
+  above were the frontend-touching half, already built/merged in batch 1).

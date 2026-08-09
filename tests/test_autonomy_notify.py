@@ -399,7 +399,161 @@ async def test_proposer_auto_approve_fires_phone_alert(eng, monkeypatch):
     notify_phone_mock.assert_awaited_once()
     call_kwargs = notify_phone_mock.await_args
     assert call_kwargs.kwargs.get("kind") == "auto_approved"
-    assert "Archive old recordings" in call_kwargs.args[0]
+    message = call_kwargs.args[0]
+    assert "Archive old recordings" in message
+    assert "Move Channels DVR recordings" in message
+    assert "The stated condition is verifiably resolved." in message
+
+
+@pytest.mark.asyncio
+async def test_proposer_approval_message_includes_details(eng, monkeypatch):
+    """B3: a medium-risk (non-auto-approved) proposal's Telegram message must
+    show description + Done-when + confidence, not just title+risk, and keep
+    the goal:approve/goal:reject buttons."""
+    _seed_state(eng, autonomy=True)
+
+    fake = SimpleNamespace(
+        entities=[], alerts=[], docker_containers=[], array_status="started",
+        storage_used_gb=1.0, storage_total_gb=10.0, recording_now=[],
+        blocked_today=0, blocked_pct=0.0, filtering_enabled=True,
+        summary="Clear, 70F",
+    )
+    for mod_path in (
+        "backend.integrations.homeassistant.fetch",
+        "backend.integrations.unraid.fetch",
+        "backend.integrations.channels_dvr.fetch",
+        "backend.integrations.adguard.fetch",
+        "backend.integrations.weather.fetch",
+    ):
+        monkeypatch.setattr(mod_path, AsyncMock(return_value=fake))
+
+    notify_phone_mock = AsyncMock(return_value=True)
+    opus_response = json.dumps([
+        {
+            "title": "Review stale GitHub PRs",
+            "description": "Check open PRs older than 48 hours and leave review comments.",
+            "success_criteria": "Every PR older than 48h has at least one review comment.",
+            "risk": "medium",
+            "reversibility": "reversible",
+            "confidence": 0.75,
+        }
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)), \
+         patch("backend.config.get_settings") as mock_settings, \
+         patch("backend.events.notify_phone", notify_phone_mock):
+        s = MagicMock()
+        s.proposer_max_per_tick = 3
+        s.goal_ttl_seconds = 86400
+        s.goal_debounce_seconds = 3600
+        s.auto_approve_low_risk = False
+        mock_settings.return_value = s
+
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    assert result["count_proposed"] == 1
+
+    notify_phone_mock.assert_awaited_once()
+    call = notify_phone_mock.await_args
+    assert call.kwargs.get("kind") == "goal_proposed"
+    message = call.args[0]
+    assert "Review stale GitHub PRs" in message
+    assert "Check open PRs older than 48 hours" in message
+    assert "Every PR older than 48h has at least one review comment." in message
+    assert "75%" in message
+    buttons = call.kwargs.get("buttons")
+    assert any(b.get("callback_data", "").startswith("goal:approve:") for b in buttons)
+    assert any(b.get("callback_data", "").startswith("goal:reject:") for b in buttons)
+
+
+@pytest.mark.asyncio
+async def test_proposer_notify_html_escaped(eng, monkeypatch):
+    """B3: a title/description containing HTML-significant characters must be
+    escaped -- notify_phone sends parse_mode='HTML', and an unescaped '<'/'&'
+    would make Telegram reject the whole message as a 400 (silently vanishes)."""
+    _seed_state(eng, autonomy=True)
+
+    fake = SimpleNamespace(
+        entities=[], alerts=[], docker_containers=[], array_status="started",
+        storage_used_gb=1.0, storage_total_gb=10.0, recording_now=[],
+        blocked_today=0, blocked_pct=0.0, filtering_enabled=True,
+        summary="Clear, 70F",
+    )
+    for mod_path in (
+        "backend.integrations.homeassistant.fetch",
+        "backend.integrations.unraid.fetch",
+        "backend.integrations.channels_dvr.fetch",
+        "backend.integrations.adguard.fetch",
+        "backend.integrations.weather.fetch",
+    ):
+        monkeypatch.setattr(mod_path, AsyncMock(return_value=fake))
+
+    notify_phone_mock = AsyncMock(return_value=True)
+    opus_response = json.dumps([
+        {
+            "title": "Check AdGuard & DNS <primary>",
+            "description": "Verify AdGuard & DNS <primary> resolver is healthy.",
+            "success_criteria": "DNS queries succeed.",
+            "risk": "medium",
+            "reversibility": "reversible",
+            "confidence": 0.6,
+        }
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=opus_response)), \
+         patch("backend.config.get_settings") as mock_settings, \
+         patch("backend.events.notify_phone", notify_phone_mock):
+        s = MagicMock()
+        s.proposer_max_per_tick = 3
+        s.goal_ttl_seconds = 86400
+        s.goal_debounce_seconds = 3600
+        s.auto_approve_low_risk = False
+        mock_settings.return_value = s
+
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    notify_phone_mock.assert_awaited_once()
+    message = notify_phone_mock.await_args.args[0]
+    # Title is escaped -- catches a regression that drops _esc() from the
+    # title interpolation specifically (description alone escaping isn't
+    # enough to prove this, since they're separate call sites).
+    assert "Check AdGuard &amp; DNS &lt;primary&gt;" in message
+    assert "Check AdGuard & DNS <primary>" not in message
+    # Description is separately escaped.
+    assert "Verify AdGuard &amp; DNS &lt;primary&gt; resolver is healthy." in message
+    assert "<primary>" not in message
+    assert " & " not in message
+
+
+def test_esc_truncates_before_escaping():
+    """B3: _esc's entire reason for existing is truncate-THEN-escape order --
+    escaping expands entities, so truncating after would risk cutting one in
+    half (Telegram's parse_mode='HTML' rejects a broken entity as a 400,
+    silently dropping the message). Pin the order directly, not just via an
+    end-to-end message that happens not to cross the boundary."""
+    from backend.agents.proposer import _esc
+
+    # An '&' sitting right at the truncation boundary: truncate-first cuts
+    # the raw '&' cleanly (then escapes it whole); escape-first would expand
+    # it to '&amp;' BEFORE truncation, and cutting at 200 mid-entity would
+    # leave a dangling '&amp' fragment.
+    s = ("a" * 199) + "&" + ("b" * 50)
+    result = _esc(s, 200)
+    # Truncate-first: exactly 199 'a's + the raw '&' (now escaped to '&amp;')
+    # -- a well-formed entity, not a dangling fragment like the escape-first
+    # ordering would produce by cutting '&amp;boo...' at char 200.
+    assert result == ("a" * 199) + "&amp;"
+
+    # No limit: escapes the whole string, no truncation.
+    assert _esc("<b>bold</b> & stuff") == "&lt;b&gt;bold&lt;/b&gt; &amp; stuff"
+
+    # None-safe.
+    assert _esc(None) == ""
+    assert _esc(None, 10) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +635,8 @@ async def test_build_autonomy_digest_text(eng):
     assert "1.23" in text or "1.2" in text, f"Missing spend value in digest: {text}"
     # B9.5: no proposer_tick_stats_json seeded -> the zero-tick line renders.
     assert "Proposer (24h): no ticks" in text, f"Missing proposer line in digest: {text}"
+    # B6: no failed goals seeded -> the zero-failed line renders.
+    assert "Failed (24h): none" in text, f"Missing failed-goals line in digest: {text}"
 
 
 @pytest.mark.asyncio
@@ -558,8 +714,76 @@ async def test_build_autonomy_digest_text_with_active_calibration_hint(eng):
     from backend.agents.digest import build_autonomy_digest
     text = await build_autonomy_digest()
 
-    assert "Flag calibration (30d): none | Auto-suppressed: 1 rule(s)" in text, \
-        f"Missing suppression suffix in digest: {text}"
+    assert "Auto-suppressed: 1 rule(s): homelab_watch:garage_open (fp 78%)" in text, \
+        f"Missing named suppression suffix in digest: {text}"
+
+
+@pytest.mark.asyncio
+async def test_build_autonomy_digest_failed_goals_block(eng):
+    """B6: a failed goal's rejection reason renders in a 'Failed (24h)' block,
+    including a distinct fallback line for a failure with no reason recorded."""
+    from backend.database import Goal, SystemState
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            s.add(row)
+        row.autonomy_enabled = True
+
+        s.add(Goal(
+            title="Restart stuck container",
+            description="Restart the stuck plex container.",
+            actor="autonomous", status="failed", risk="low", reversibility="reversible",
+            rejection_reason="verify_rejected: criteria not met",
+            updated_at=datetime.utcnow(),
+        ))
+        s.add(Goal(
+            title="Clear disk space",
+            description="Free up disk space on Unraid.",
+            actor="autonomous", status="failed", risk="low", reversibility="reversible",
+            rejection_reason=None,
+            updated_at=datetime.utcnow(),
+        ))
+        s.commit()
+
+    from backend.agents.digest import build_autonomy_digest
+    text = await build_autonomy_digest()
+
+    assert "Failed (24h): 2" in text, text
+    assert "Restart stuck container" in text
+    assert "verify_rejected: criteria not met" in text
+    assert "Clear disk space" in text
+    assert "no failure reason recorded" in text
+
+
+@pytest.mark.asyncio
+async def test_build_autonomy_digest_suppressed_caps_at_three(eng):
+    """B6: the suppressed-rule name list caps at 3, with a '(+N more)' suffix."""
+    from backend.database import CalibrationHint, SystemState
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            s.add(row)
+        row.autonomy_enabled = True
+
+        for i in range(4):
+            s.add(CalibrationHint(
+                fingerprint=f"homelab_watch:check_{i}",
+                status="active",
+                fp_rate=0.7,
+                first_active_at=datetime.utcnow(),
+                expires_at=datetime.utcnow() + timedelta(days=14),
+            ))
+        s.commit()
+
+    from backend.agents.digest import build_autonomy_digest
+    text = await build_autonomy_digest()
+
+    assert text.count("homelab_watch:check_") == 3
+    assert "(+1 more)" in text
 
 
 # ---------------------------------------------------------------------------

@@ -109,10 +109,14 @@ def open_trace(kind: str, label: str, task_id: int | None = None) -> int | None:
         return None
 
 
-def close_trace(trace_id: int | None, status: str, error: str | None = None) -> None:
+def close_trace(trace_id: int | None, status: str, error: str | None = None, *, label: str | None = None) -> None:
     """Close an AgentTrace row opened by open_trace. No-op when trace_id is
     None (open failed, or never attempted). Best-effort — never raises.
-    Synchronous — callers must invoke this via asyncio.to_thread."""
+    Synchronous — callers must invoke this via asyncio.to_thread.
+
+    `label`, if given, replaces the trace's label at close time (e.g. to fold
+    a routing decision into it — "conv:42 intent=CHAT" — since the intent
+    isn't known yet when open_trace runs at the start of the turn)."""
     if trace_id is None:
         return
     try:
@@ -126,6 +130,8 @@ def close_trace(trace_id: int | None, status: str, error: str | None = None) -> 
                 t.status = status
                 t.ended_at = datetime.utcnow()
                 t.error = error
+                if label is not None:
+                    t.label = label[:200]
                 session.commit()
     except Exception as e:
         logger.warning(f"close_trace failed (non-fatal): {e}")

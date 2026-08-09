@@ -379,7 +379,7 @@ class TraceSpan(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     trace_id: int = Field(index=True)
     parent_span_id: int | None = Field(default=None, index=True)
-    span_type: str            # llm_call | tool_call
+    span_type: str            # llm_call | tool_call | routing | debug_decision
     name: str                 # model name for llm_call, tool name for tool_call
     started_at: datetime = Field(default_factory=datetime.utcnow)
     ended_at: datetime | None = None

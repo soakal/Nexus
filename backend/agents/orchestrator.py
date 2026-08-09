@@ -830,6 +830,7 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
     # attributed to this task. Used by check_budget(task_id, task_start) below.
     from backend.agents.router import (
         TaskAborted,
+        _record_trace_span,
         reset_task_context,
         reset_trace_context,
         set_task_context,
@@ -977,8 +978,25 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
 
                 # 2.2 debug the failure.
                 prior = await asyncio.to_thread(_load_done_outputs, task_id)
+                _debug_started = datetime.utcnow()
                 debug = await _opus_debug(task_prompt, plan, failed, prior)
                 action = debug.get("action") if isinstance(debug, dict) else None
+
+                # B7: record the debug/retry decision as a trace span -- pure
+                # observability, must never change the action chain below. No
+                # try/except around _opus_debug itself: its json.loads parse
+                # failure must keep propagating to the generic handler
+                # (finalizes the task 'error'), unchanged from before this span.
+                _dbg_reason = (str(debug.get("reason") or "")[:300] if isinstance(debug, dict) else "")
+                try:
+                    await asyncio.to_thread(
+                        _record_trace_span, "debug_decision", "orchestrator_debug_decision", _debug_started,
+                        input_summary=f"step {failed[0].index} failed: {str(failed[1])[:500]}",
+                        output_summary=f"{action or 'UNPARSEABLE'}: {_dbg_reason or 'no reason'}",
+                        trace_id=trace_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"debug_decision span failed (non-fatal): {e}")
 
                 if action == "ABORT":
                     break
@@ -990,6 +1008,15 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
                     if not new_steps:
                         # 2.6 empty replan -> ABORT.
                         debug = {"action": "ABORT", "reason": "replan_empty"}
+                        try:
+                            await asyncio.to_thread(
+                                _record_trace_span, "debug_decision", "orchestrator_debug_decision", _debug_started,
+                                input_summary=f"step {failed[0].index} failed: {str(failed[1])[:500]}",
+                                output_summary="ABORT: replan_empty",
+                                trace_id=trace_id,
+                            )
+                        except Exception as e:
+                            logger.warning(f"debug_decision span failed (non-fatal): {e}")
                         break
                     await asyncio.to_thread(_replan_durably, task_id, new_steps)
                     steps = await asyncio.to_thread(_load_steps, task_id)
