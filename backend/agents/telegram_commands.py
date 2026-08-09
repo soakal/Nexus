@@ -282,6 +282,30 @@ async def _cmd_digest(args: str, msg: dict) -> str:
     return await build_autonomy_digest()
 
 
+async def _cmd_prune(args: str, msg: dict) -> str:
+    """Prune dangling Docker images on Unraid (Phase 7d, native SSH, no args).
+
+    Goes through the broker as actor="user" (a Telegram command from an
+    authorized chat IS the human decision, same precedent as every other
+    user-actor command here) — never lets a RuntimeError from the SSH path
+    (missing credential, connection failure, non-zero exit) crash the handler."""
+    from backend.safety.broker import Decision, execute_action
+
+    try:
+        res = await execute_action(
+            actor="user",
+            kind="unraid_docker_prune",
+            target="unraid",
+            payload={},
+        )
+    except Exception as e:
+        return f"Docker prune failed: {e}"
+
+    if res.decision == Decision.EXECUTED and res.result:
+        return res.result.get("reclaimed", "Docker prune completed.")
+    return f"Docker prune failed: {res.error or res.decision.value}"
+
+
 def _mute_kind_menu() -> str:
     """Sorted, human-readable list of every mutable kind for the no-args
     /mute reply. Never-mutable kinds are shown with a marker rather than
@@ -603,6 +627,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "task": (_cmd_task, "Queue a durable task"),
     "tasks": (_cmd_tasks, "List recent tasks"),
     "digest": (_cmd_digest, "Today's autonomy digest"),
+    "prune": (_cmd_prune, "Prune dangling Docker images on Unraid"),
     "mute": (_cmd_mute, "Silence a notification kind"),
     "unmute": (_cmd_unmute, "Un-silence a notification kind"),
     "muted": (_cmd_muted, "List muted notification kinds"),

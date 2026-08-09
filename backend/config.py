@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     unifi_host: str = "https://192.168.1.1"
     unifi_username: str = ""
     unraid_host: str = "192.168.1.1"
+    # Native SSH path for docker prune (Phase 7d) -- deliberately separate from
+    # unraid_host, which feeds the GraphQL API URL, not SSH. Empty default means
+    # _ssh_prune_sync() raises "UNRAID_SSH_HOST not configured" before any network
+    # attempt -- this is shipped-but-not-yet-live until the SSH credential is
+    # installed on Unraid (a separate, human-gated step; see CLAUDE.md Phase 7d).
+    unraid_ssh_host: str = ""
+    unraid_ssh_user: str = "root"
+    unraid_ssh_port: int = 22
+    unraid_ssh_prune_timeout_s: int = 60
     proxmox_host: str = "https://192.168.1.60:8006"
     obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
     brain_mcp_url: str = "http://localhost:8765"
@@ -399,6 +408,16 @@ class Settings(BaseSettings):
     def unraid_api_key(self) -> str:
         from backend.secrets.manager import get_secret
         return get_secret("UNRAID_API_KEY")
+
+    @property
+    def unraid_ssh_private_key(self) -> str:
+        """OpenSSH-format private key (full armor + trailing newline) for the
+        native docker-prune SSH path (Phase 7d). Loud (KeyError propagates) --
+        the caller in backend/integrations/unraid.py wraps this in its own
+        try/except and re-raises RuntimeError("UNRAID_SSH_PRIVATE_KEY not
+        configured"), mirroring unraid_api_key's precedent."""
+        from backend.secrets.manager import get_secret
+        return get_secret("UNRAID_SSH_PRIVATE_KEY")
 
     @property
     def proxmox_token(self) -> str:
