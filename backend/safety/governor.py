@@ -17,7 +17,7 @@ and the orchestrator's per-task brake both wrap these in `asyncio.to_thread`.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -698,3 +698,116 @@ def claim_auth_burst_alert(
         session.add(row)
         session.commit()
         return new
+
+
+_MAX_PROPOSER_TICK_STATS = 16  # ~4 days at the proposer's 6h cadence
+
+
+def record_proposer_tick_stats(stats: dict) -> None:
+    """Sync. Append one goal_proposer tick's stats to the rolling window and
+    trim to the last _MAX_PROPOSER_TICK_STATS entries.
+
+    `stats` is expected to carry proposed/auto_approved/evaluated counts and
+    a `filtered` list of {"title","reason"} -- see propose_goals_tick's
+    return dict. Stamps `at` (naive UTC ISO, matching every other timestamp
+    convention in this module) itself so callers never need to.
+
+    Best-effort by the caller's convention (proposer.py wraps this in its
+    own try/except) -- a malformed pre-existing blob is tolerated here too,
+    degrading to a fresh list rather than raising and losing this tick.
+    """
+    from sqlmodel import Session
+    from backend.database import SystemState, engine
+
+    entry = {
+        "at": datetime.utcnow().isoformat(),
+        "proposed": stats.get("count_proposed", 0),
+        "auto_approved": stats.get("count_auto_approved", 0),
+        "evaluated": len(stats.get("results", []) or []),
+        "filtered": stats.get("filtered") or [],
+    }
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+
+        try:
+            existing = json.loads(row.proposer_tick_stats_json or "[]")
+            if not isinstance(existing, list):
+                existing = []
+        except (ValueError, TypeError):
+            existing = []
+
+        existing.append(entry)
+        existing = existing[-_MAX_PROPOSER_TICK_STATS:]
+
+        row.proposer_tick_stats_json = json.dumps(existing)
+        row.updated_at = datetime.utcnow()
+        session.commit()
+
+
+def get_proposer_tick_stats(hours: int = 24) -> dict | None:
+    """Sync. Aggregate proposer tick stats over the last `hours`.
+
+    Returns None if there is no data at all (unset column, or every stored
+    entry is unparseable/outside the window) so callers can render a clean
+    "no ticks" line rather than a zeroed-out block. Unparseable individual
+    entries are skipped, never raise -- same degrade-gracefully contract as
+    _load_auth_burst_tracked above.
+    """
+    from sqlmodel import Session
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        raw = row.proposer_tick_stats_json if row else None
+
+    if not raw:
+        return None
+    try:
+        entries = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(entries, list):
+        return None
+
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    ticks = proposed = auto_approved = 0
+    filtered_total = 0
+    filtered_by_reason: dict[str, int] = {}
+    filtered_items: list[dict] = []
+
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        try:
+            at = datetime.fromisoformat(str(e.get("at")))
+        except (TypeError, ValueError):
+            continue
+        if at < cutoff:
+            continue
+        ticks += 1
+        proposed += int(e.get("proposed") or 0)
+        auto_approved += int(e.get("auto_approved") or 0)
+        for item in (e.get("filtered") or []):
+            if not isinstance(item, dict):
+                continue
+            reason = str(item.get("reason") or "unknown")
+            filtered_total += 1
+            filtered_by_reason[reason] = filtered_by_reason.get(reason, 0) + 1
+            filtered_items.append({"title": item.get("title"), "reason": reason})
+
+    if ticks == 0:
+        return None
+
+    return {
+        "ticks": ticks,
+        "proposed": proposed,
+        "auto_approved": auto_approved,
+        "filtered_total": filtered_total,
+        "filtered_by_reason": filtered_by_reason,
+        # Newest first, capped -- matches the digest's other "recent items" blocks.
+        "filtered_items": list(reversed(filtered_items))[:5],
+    }

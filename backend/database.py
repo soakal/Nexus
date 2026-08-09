@@ -326,6 +326,14 @@ class SystemState(SQLModel, table=True):
     # live-verified. A change away from 404 is a strong, direct signal
     # independent of whether the GitHub issue itself was ever updated.
     anthropic_balance_watch_last_probe_status: int | None = Field(default=None)
+    # Rolling per-tick stats from the goal proposer (backend/agents/proposer.py),
+    # a JSON LIST of the last 16 ticks: [{"at", "proposed", "auto_approved",
+    # "evaluated", "filtered": [{"title","reason"},...]}, ...]. Surfaces what
+    # the deterministic drop filters (missing success_criteria, night-exempt,
+    # known-hardware-issue) actually caught, in the autonomy digest's
+    # "Proposer (24h)" block — previously computed every tick and discarded.
+    # Same singleton-row *_json TEXT idiom as auth_burst_alert_json above.
+    proposer_tick_stats_json: str | None = Field(default=None)
 
 
 class StateSnapshot(SQLModel, table=True):
@@ -579,6 +587,7 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "anthropic_balance_watch_last_issue_signal", "TEXT")
     _safe_add_column("systemstate", "anthropic_balance_watch_last_comment_count", "INTEGER")
     _safe_add_column("systemstate", "anthropic_balance_watch_last_probe_status", "INTEGER")
+    _safe_add_column("systemstate", "proposer_tick_stats_json", "TEXT")
 
 
 def _ensure_system_state():

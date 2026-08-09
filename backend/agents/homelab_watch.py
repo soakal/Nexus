@@ -32,6 +32,11 @@ _vm_states: dict[str, str] = {}
 _docker_states: dict[str, str] = {}
 # Level-triggered state: currently-active alert keys.
 _active_alerts: set[str] = set()
+# B10: keys whose alert actually paged (notify_phone fired, not suppressed by
+# calibration/dedup) and hasn't recovered yet. A recovery notice only fires
+# for a key in this set — an alert that was suppressed on the way up must not
+# generate an unprompted "all clear" on the way down.
+_paged_alerts: set[str] = set()
 # Garage-open timer (time.monotonic() of when it was first observed open).
 _garage_open_since: float | None = None
 
@@ -42,7 +47,26 @@ def reset() -> None:
     _vm_states.clear()
     _docker_states.clear()
     _active_alerts.clear()
+    _paged_alerts.clear()
     _garage_open_since = None
+
+
+async def _maybe_notify_recovery(key: str, message: str) -> None:
+    """B10: fire an opt-in 'all clear' notice for a key that actually paged.
+    Always clears the paged-tracking for `key` regardless of the flag — a
+    disabled flag must not leak entries into `_paged_alerts` forever."""
+    was_paged = key in _paged_alerts
+    _paged_alerts.discard(key)
+    if not was_paged:
+        return
+    try:
+        from backend.config import get_settings
+        if not get_settings().homelab_recovery_notify_enabled:
+            return
+        from backend import events
+        await events.notify_phone(message, kind="homelab_recovered")
+    except Exception as e:
+        logger.warning(f"_maybe_notify_recovery failed for {key!r} (ignored): {e}")
 
 
 async def _clear_flag_safe(key: str) -> None:
@@ -76,6 +100,7 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
     if not active:
         await _clear_flag_safe(key)
         _active_alerts.discard(key)
+        await _maybe_notify_recovery(key, f"NEXUS: recovered — {key} is back to normal.")
         return False
     if key in _active_alerts:
         return False
@@ -92,6 +117,7 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
             ]
         from backend import events
         await events.notify_phone(message, kind=kind, buttons=buttons)
+        _paged_alerts.add(key)
     return True
 
 
@@ -125,9 +151,15 @@ async def check_proxmox_vms() -> list[str]:
                     kind="homelab_vm_stopped",
                     buttons=[{"text": "▶ Start", "callback_data": f"vm:start:{vmid}"}],
                 )
+                _paged_alerts.add(f"vm:{vmid}")
             fired.append(f"vm:{vmid}")
         elif prev != "running" and status == "running":
             await _clear_flag_safe(f"vm:{vmid}")
+            recovered_name = html.escape(next((vm.get("name") or "" for vm in data.vms if str(vm["vmid"]) == vmid), vmid))
+            await _maybe_notify_recovery(
+                f"vm:{vmid}",
+                f"NEXUS: VM/LXC '{recovered_name}' (id {vmid}) is running again.",
+            )
     _vm_states.clear()
     _vm_states.update(current)
     return fired
@@ -164,9 +196,14 @@ async def check_docker() -> list[str]:
                     kind="homelab_docker_stopped",
                     buttons=buttons,
                 )
+                _paged_alerts.add(f"docker:{name}")
             fired.append(f"docker:{name}")
         elif prev != "RUNNING" and state == "RUNNING":
             await _clear_flag_safe(f"docker:{name}")
+            await _maybe_notify_recovery(
+                f"docker:{name}",
+                f"NEXUS: Docker container '{html.escape(name)}' is running again.",
+            )
     _docker_states.clear()
     _docker_states.update(current)
     return fired

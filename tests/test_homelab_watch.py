@@ -32,6 +32,7 @@ def _settings(**overrides):
     s.homelab_disk_temp_warn_c = 45
     s.homelab_garage_entity_id = "cover.garage_door_garage_door"
     s.homelab_garage_open_minutes = 30
+    s.homelab_recovery_notify_enabled = False
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -105,6 +106,81 @@ async def test_vm_stopped_on_first_observation_never_alerts():
 
 
 @pytest.mark.asyncio
+async def test_vm_recovery_notice_sent_when_enabled():
+    running = _proxmox_data([{"vmid": 101, "name": "plex-lxc", "status": "running", "type": "lxc"}])
+    stopped = _proxmox_data([{"vmid": 101, "name": "plex-lxc", "status": "stopped", "type": "lxc"}])
+    with patch("backend.config.get_settings", return_value=_settings(homelab_recovery_notify_enabled=True)), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock,
+               side_effect=[running, stopped, running]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_proxmox_vms()  # seed: running
+        await homelab_watch.check_proxmox_vms()  # stop: pages
+        await homelab_watch.check_proxmox_vms()  # recover: recovery notice
+
+    assert mock_notify.await_count == 2
+    assert mock_notify.await_args_list[0].kwargs["kind"] == "homelab_vm_stopped"
+    assert mock_notify.await_args_list[1].kwargs["kind"] == "homelab_recovered"
+    assert "plex-lxc" in mock_notify.await_args_list[1].args[0]
+
+
+@pytest.mark.asyncio
+async def test_vm_recovery_notice_not_sent_when_disabled_by_default():
+    """Default settings (homelab_recovery_notify_enabled=False) -> the
+    recovery notice never fires, only the original stop alert."""
+    running = _proxmox_data([{"vmid": 101, "name": "x", "status": "running", "type": "lxc"}])
+    stopped = _proxmox_data([{"vmid": 101, "name": "x", "status": "stopped", "type": "lxc"}])
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock,
+               side_effect=[running, stopped, running]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_proxmox_vms()
+        await homelab_watch.check_proxmox_vms()
+        await homelab_watch.check_proxmox_vms()
+
+    assert mock_notify.await_count == 1
+    assert mock_notify.await_args.kwargs["kind"] == "homelab_vm_stopped"
+
+
+@pytest.mark.asyncio
+async def test_vm_recovery_notice_not_sent_when_original_alert_was_suppressed():
+    """check_proxmox_vms adds to _paged_alerts in its own branch (separate
+    code from _edge_alert's) -- a bug there could let a suppressed stop-alert
+    still trigger an unprompted recovery page. Confirms it doesn't."""
+    running = _proxmox_data([{"vmid": 101, "name": "x", "status": "running", "type": "lxc"}])
+    stopped = _proxmox_data([{"vmid": 101, "name": "x", "status": "stopped", "type": "lxc"}])
+    with patch("backend.config.get_settings", return_value=_settings(homelab_recovery_notify_enabled=True)), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock,
+               side_effect=[running, stopped, running]), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": None, "surface": False}), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_proxmox_vms()  # seed: running
+        await homelab_watch.check_proxmox_vms()  # stop: suppressed, never paged
+        await homelab_watch.check_proxmox_vms()  # recover: must stay silent
+
+    mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_docker_recovery_notice_not_sent_when_original_alert_was_suppressed():
+    """Same guard as the VM test above, for check_docker's own separate
+    _paged_alerts.add() branch."""
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    with patch("backend.config.get_settings", return_value=_settings(homelab_recovery_notify_enabled=True)), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+               side_effect=[running, stopped, running]), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": None, "surface": False}), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()  # seed: running
+        await homelab_watch.check_docker()  # stop: suppressed, never paged
+        await homelab_watch.check_docker()  # recover: must stay silent
+
+    mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_proxmox_fetch_failure_preserves_state_and_recovers():
     """A transient outage must not blank the baseline -- blanking would re-seed
     on recovery and silently swallow the transition that happened during it."""
@@ -140,6 +216,23 @@ async def test_docker_stopped_transition_fires_once_with_restart_button():
     assert fired2 == []
     assert mock_notify.await_args.kwargs["kind"] == "homelab_docker_stopped"
     assert mock_notify.await_args.kwargs["buttons"] == [{"text": "↺ Restart", "callback_data": "docker:restart:plex"}]
+
+
+@pytest.mark.asyncio
+async def test_docker_recovery_notice_sent_when_enabled():
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    with patch("backend.config.get_settings", return_value=_settings(homelab_recovery_notify_enabled=True)), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+               side_effect=[running, stopped, running]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()
+
+    assert mock_notify.await_count == 2
+    assert mock_notify.await_args_list[1].kwargs["kind"] == "homelab_recovered"
+    assert "plex" in mock_notify.await_args_list[1].args[0]
 
 
 @pytest.mark.asyncio
@@ -221,6 +314,48 @@ async def test_array_rearms_after_recovery():
 
     assert fired == ["unraid_array"]
     assert mock_notify.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_array_recovery_notice_sent_when_enabled():
+    bad = _unraid_data(array_status="stopped")
+    good = _unraid_data(array_status="started")
+    with patch("backend.config.get_settings", return_value=_settings(homelab_recovery_notify_enabled=True)), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[bad, good]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_unraid_array()  # pages
+        await homelab_watch.check_unraid_array()  # recovers
+
+    assert mock_notify.await_count == 2
+    assert mock_notify.await_args_list[1].kwargs["kind"] == "homelab_recovered"
+
+
+def test_homelab_recovery_notify_defaults_to_false():
+    """B10's whole safety story rests on this being off by default -- the
+    other recovery tests above all supply their own MagicMock settings, so
+    none of them actually pin the real Settings default. Flipping
+    config.py's default silently would fail no other test."""
+    from backend.config import Settings
+    s = Settings(_env_file=None)
+    assert s.homelab_recovery_notify_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_array_recovery_notice_not_sent_when_original_alert_was_suppressed():
+    """A recovery notice must only follow an alert that actually paged -- if
+    outcomes.record_flag_ex suppressed the original page (dedup/cooldown),
+    the matching recovery must stay silent too, not surprise-page on its own."""
+    bad = _unraid_data(array_status="stopped")
+    good = _unraid_data(array_status="started")
+    with patch("backend.config.get_settings", return_value=_settings(homelab_recovery_notify_enabled=True)), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[bad, good]), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": None, "surface": False}), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_unraid_array()  # suppressed, never paged
+        await homelab_watch.check_unraid_array()  # recovers, must stay silent
+
+    mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

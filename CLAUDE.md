@@ -550,3 +550,59 @@ from before this change stay in the DB untouched — immutable audit trail by co
 fine as free text by `GET /api/safety/actions`. Historical `UptimeSample` rows with
 `source='hermes'` are left to age out via the normal nightly prune, same as any other integration
 that stops being polled.
+
+## Legibility batch — proposer drop visibility + homelab recovery notices (2026-08-09)
+Fable-planned, Sonnet-built (branch `feat/proposer-recovery-notices`, worktree `nexus-b9-b10`) —
+two of the "make NEXUS easier to understand" items from a legibility review: the goal proposer's
+silent drops, and homelab alerts that never say when they've cleared.
+
+- **Proposer drop visibility (B9).** `propose_goals_tick` (`backend/agents/proposer.py`) already
+  computed candidates it filtered out (no `success_criteria`, night-exempt lights, known
+  hardware-issue lights) but only logged them at debug — Brian had no way to see "the proposer ran
+  and considered N things" versus "the proposer did nothing." Each drop site now appends
+  `{"title", "reason"}` to a `filtered` list, returned as `count_filtered`/`filtered` on the tick's
+  result dict. A new `SystemState.proposer_tick_stats_json` column (idempotent ALTER shim, same
+  `_ensure_system_state_columns()` pattern as every other `*_json` singleton-row field) holds a
+  rolling window of the last 16 ticks (`governor.record_proposer_tick_stats`, called best-effort
+  from the tick's success path only — never on the `skipped`/`budget`/`error` early returns, since
+  nothing was evaluated there). `governor.get_proposer_tick_stats(hours=24)` aggregates that window
+  (ticks/proposed/auto_approved/filtered_total/filtered_by_reason/filtered_items, capped at 5 most
+  recent), returning `None` on no data so the digest can render a clean "no ticks" line instead of
+  a zeroed-out block. `digest.build_autonomy_digest` gained a `Proposer (24h)` line between the
+  `proposed:` block and `Spend today:`, showing proposed/auto-approved/filtered counts plus up to 5
+  recent filtered titles — titles are LLM-generated free text and are `html.escape()`d, since
+  `notify_phone` sends `parse_mode="HTML"` (the digest's OTHER goal-title interpolations are NOT
+  escaped, a separate pre-existing gap this line doesn't rely on or inherit). **auto_approved is
+  rendered as its own count, not folded into `proposed`**: `proposer.py` reassigns an
+  auto-approved goal's status away from `"proposed"`, so a tick that auto-approved everything has
+  `proposed=0` — an Opus verify pass caught that without a separate auto-approved figure, a fully
+  autonomous tick would misread as "the proposer did nothing" (regression-tested:
+  `test_build_autonomy_digest_proposer_stats_all_auto_approved`). The same pass also caught a
+  reproducible ~1-in-6 flaky digest test — `tests/test_autonomy_notify.py`'s shared `eng` fixture
+  uses `StaticPool` (one shared SQLite connection across threads), and this build's 9th concurrent
+  `asyncio.to_thread` DB read was enough to occasionally interleave two Sessions' transaction state
+  on that one connection, making `get_proposer_tick_stats` spuriously read an existing row as
+  absent. Fixed by serializing that connection's pool checkout/checkin behind an `RLock` in the
+  test fixture only (`make_engine()`) — production is unaffected (a real per-thread pooled
+  connection, no sharing). `build_autonomy_digest`'s `gather(..., return_exceptions=True)` fan-out
+  now also `logger.warning`s any task that came back as an `Exception`, so a degraded digest field
+  leaves a trace instead of silently reading identically to "no data yet".
+- **Homelab recovery notices (B10).** `homelab_watch.py`'s edge-alert checks (VM/LXC stopped,
+  Docker container stopped, Unraid array unhealthy, disk temp, garage open, backup failed) already
+  auto-cleared their `OutcomeFlag` on recovery but never told Brian the thing came back — a stopped
+  VM paged once, then silence forever whether it was fixed in 30 seconds or never. New opt-in flag
+  `homelab_recovery_notify_enabled` (default `False` — this is a NEW notification class, off by
+  default so nobody gets an unasked-for second page per incident) gates a new `homelab_recovered`
+  notify kind (registered in `events.NOTIFY_KINDS`, individually `/mute`-able like every other
+  `homelab_*` kind, deliberately not on `_NEVER_MUTABLE_NOTIFY_KINDS`). A module-level `_paged_alerts`
+  set tracks which alert keys actually fired `notify_phone` (not ones suppressed by calibration/
+  dedup) — `_maybe_notify_recovery(key, message)` only sends when `key` is in that set, so a
+  suppressed alert's eventual recovery stays silent too (an unprompted "all clear" for something
+  that was never announced as broken would be confusing, not helpful), and always clears the
+  tracking entry regardless of the flag so a disabled flag can't leak entries forever. Wired into
+  the shared `_edge_alert` helper (covers array/disk-temp/garage/backup) and individually into
+  `check_proxmox_vms`/`check_docker` (their own transition-triggered logic, not `_edge_alert`-based).
+  Recovery text is a distinct, less alarming message ("... is running again" / "... is back to
+  normal"), not a repeat of the original alert. `_paged_alerts` is in-memory, same restart-loses-it
+  tradeoff already documented for the rest of this module's state.
+- Full pytest suite green throughout (backend-only change, no frontend build needed).

@@ -335,6 +335,11 @@ class Settings(BaseSettings):
     homelab_disk_temp_warn_c: int = 45
     homelab_garage_entity_id: str = "cover.garage_door_garage_door"
     homelab_garage_open_minutes: int = 30
+    # B10: opt-in "all clear" notice once a homelab_watch alert that actually
+    # paged (not one suppressed by calibration/dedup) clears. Default False —
+    # this is a new, previously-nonexistent notification; Brian opts in
+    # explicitly rather than getting a second page per incident unasked.
+    homelab_recovery_notify_enabled: bool = False
 
     # Monthly watch for whether Anthropic has shipped a public API-credit-
     # balance endpoint yet (backend/agents/anthropic_balance_watch.py) — no

@@ -10,6 +10,7 @@ default; the function NEVER raises.  All sync DB helpers are invoked via
 asyncio.to_thread — no Session/ORM crosses an await boundary.
 """
 import asyncio
+import html
 import logging
 from datetime import datetime, timedelta
 
@@ -135,6 +136,7 @@ async def build_autonomy_digest() -> str:
         state_task = asyncio.to_thread(governor.get_system_state)
         calibration_task = outcomes.calibration_summary(30)
         hint_report_task = calibration_mod.hint_report(30)
+        proposer_stats_task = asyncio.to_thread(governor.get_proposer_tick_stats, 24)
 
         results = await asyncio.gather(
             auto_goals_task,
@@ -145,8 +147,17 @@ async def build_autonomy_digest() -> str:
             state_task,
             calibration_task,
             hint_report_task,
+            proposer_stats_task,
             return_exceptions=True,
         )
+
+        _labels = (
+            "auto_goals", "pending_count", "proposed_goals", "completed_goals",
+            "spend", "state", "calibration", "hint_report", "proposer_stats",
+        )
+        for _label, _r in zip(_labels, results):
+            if isinstance(_r, Exception):
+                logger.warning(f"digest gather task {_label!r} failed (degrading): {_r}")
 
         auto_goals = results[0] if not isinstance(results[0], Exception) else []
         pending_count = results[1] if not isinstance(results[1], Exception) else 0
@@ -156,6 +167,7 @@ async def build_autonomy_digest() -> str:
         state = results[5] if not isinstance(results[5], Exception) else {}
         calibration = results[6] if not isinstance(results[6], Exception) else {}
         hint_report = results[7] if not isinstance(results[7], Exception) else None
+        proposer_stats = results[8] if not isinstance(results[8], Exception) else None
 
         autonomy_label = "ENABLED" if state.get("autonomy_enabled", True) else "PAUSED"
         daily_cap = state.get("daily_budget_usd", 25.0)
@@ -212,6 +224,40 @@ async def build_autonomy_digest() -> str:
         if suppressed_count > 0:
             calibration_line += f" | Auto-suppressed: {suppressed_count} rule(s)"
 
+        # Proposer drop visibility (B9) — what the goal proposer evaluated and
+        # silently dropped over the last 24h, so a quiet proposer reads as
+        # "nothing qualified" instead of "nothing ran". Filtered titles are
+        # LLM-generated free text and must be escaped for Telegram's HTML
+        # parse mode (matches how the digest is delivered — see notify_phone's
+        # parse_mode="HTML" — though note the pre-existing goal-title lines
+        # elsewhere in this function are NOT escaped; this block doesn't rely
+        # on any such precedent, it escapes because it must).
+        # `proposed` counts only goals still awaiting approval — an
+        # auto-approved goal's entry["status"] is reassigned to
+        # "auto_approved" in proposer.py, so it's excluded from `proposed`
+        # and must be rendered separately or a fully-auto-approved tick would
+        # misread as "did nothing".
+        if proposer_stats:
+            reason_parts = ", ".join(
+                f"{reason}: {count}"
+                for reason, count in proposer_stats["filtered_by_reason"].items()
+            )
+            proposer_line = (
+                f"Proposer (24h): {proposer_stats['ticks']} tick(s), "
+                f"{proposer_stats['proposed']} proposed, "
+                f"{proposer_stats['auto_approved']} auto-approved, "
+                f"{proposer_stats['filtered_total']} filtered"
+            )
+            if reason_parts:
+                proposer_line += f" ({html.escape(reason_parts)})"
+            if proposer_stats["filtered_items"]:
+                proposer_line += "\n    - " + "\n    - ".join(
+                    f"{html.escape(str(it.get('title') or '(untitled)'))}: {html.escape(str(it.get('reason') or 'unknown'))}"
+                    for it in proposer_stats["filtered_items"]
+                )
+        else:
+            proposer_line = "Proposer (24h): no ticks"
+
         lines = [
             f"NEXUS autonomy digest — {date_str}",
             f"Autonomy: {autonomy_label}",
@@ -219,6 +265,7 @@ async def build_autonomy_digest() -> str:
             completed_line,
             f"Awaiting your approval: {pending_count} action(s) + {len(proposed_goals)} proposed goal(s)",
             f"  proposed:{proposed_titles}",
+            proposer_line,
             f"Spend today: ${spend:.2f} / ${daily_cap:.2f}",
             calibration_line,
         ]

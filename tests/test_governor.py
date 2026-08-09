@@ -966,3 +966,79 @@ def test_never_mutable_kinds_are_all_real_kinds():
     from backend.events import NOTIFY_KINDS
     from backend.safety.governor import _NEVER_MUTABLE_NOTIFY_KINDS
     assert _NEVER_MUTABLE_NOTIFY_KINDS <= NOTIFY_KINDS
+
+
+# ---------------------------------------------------------------------------
+# Proposer tick stats (drop visibility)
+# ---------------------------------------------------------------------------
+
+def test_proposer_tick_stats_record_and_get_roundtrip(eng):
+    from backend.safety import governor
+
+    governor.record_proposer_tick_stats({
+        "count_proposed": 2, "count_auto_approved": 1,
+        "results": [{}, {}],
+        "filtered": [{"title": "Dropped goal", "reason": "night_exempt"}],
+    })
+
+    stats = governor.get_proposer_tick_stats(24)
+    assert stats["ticks"] == 1
+    assert stats["proposed"] == 2
+    assert stats["auto_approved"] == 1
+    assert stats["filtered_total"] == 1
+    assert stats["filtered_by_reason"] == {"night_exempt": 1}
+    assert stats["filtered_items"][0]["title"] == "Dropped goal"
+
+
+def test_proposer_tick_stats_excludes_entries_outside_window(eng):
+    from backend.safety import governor
+    from backend.database import SystemState
+
+    old_at = (datetime.utcnow() - timedelta(hours=48)).isoformat()
+    with Session(eng) as s:
+        s.add(SystemState(id=1, proposer_tick_stats_json=json.dumps([
+            {"at": old_at, "proposed": 5, "auto_approved": 0, "evaluated": 5, "filtered": []},
+        ])))
+        s.commit()
+
+    assert governor.get_proposer_tick_stats(24) is None
+
+
+def test_proposer_tick_stats_trimmed_to_16_entries(eng):
+    from backend.safety import governor
+
+    for i in range(17):
+        governor.record_proposer_tick_stats({
+            "count_proposed": i, "count_auto_approved": 0, "results": [], "filtered": [],
+        })
+
+    with Session(eng) as s:
+        from backend.database import SystemState
+        row = s.get(SystemState, 1)
+        entries = json.loads(row.proposer_tick_stats_json)
+    assert len(entries) == 16
+    # The oldest (proposed=0) tick was trimmed; the newest (proposed=16) survives.
+    assert entries[-1]["proposed"] == 16
+    assert all(e["proposed"] != 0 for e in entries)
+
+
+def test_proposer_tick_stats_tolerates_corrupt_json(eng):
+    from backend.safety import governor
+    from backend.database import SystemState
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1, proposer_tick_stats_json="{not valid json"))
+        s.commit()
+
+    # A malformed pre-existing blob must not block recording a fresh tick.
+    governor.record_proposer_tick_stats({
+        "count_proposed": 1, "count_auto_approved": 0, "results": [{}], "filtered": [],
+    })
+    stats = governor.get_proposer_tick_stats(24)
+    assert stats["ticks"] == 1
+    assert stats["proposed"] == 1
+
+
+def test_get_proposer_tick_stats_none_when_column_unset(eng):
+    from backend.safety import governor
+    assert governor.get_proposer_tick_stats(24) is None

@@ -500,6 +500,7 @@ async def propose_goals_tick() -> dict:
         # Propose each valid item; auto-approve if policy permits.
         # ------------------------------------------------------------------
         results_list = []
+        filtered: list[dict] = []
         for item in proposals:
             title = str(item.get("title") or "").strip()
             description = str(item.get("description") or "").strip()
@@ -507,9 +508,10 @@ async def propose_goals_tick() -> dict:
             if not title or not description or not success_criteria:
                 # A goal without a checkable done-condition can never be
                 # honestly completed — drop it (conservative).
-                logger.debug(
+                logger.info(
                     "proposer: dropped goal without success_criteria: %r", title
                 )
+                filtered.append({"title": title[:80] or "(untitled)", "reason": "no_success_criteria"})
                 continue
 
             # Deterministic backstop — never rely on the LLM alone to honor the
@@ -521,6 +523,7 @@ async def propose_goals_tick() -> dict:
                     logger.info(
                         "proposer: dropped night-exempt light goal: %r", title
                     )
+                    filtered.append({"title": title[:80], "reason": "night_exempt"})
                     continue
 
             # Deterministic backstop for the known-hardware-issue porch lights
@@ -531,6 +534,7 @@ async def propose_goals_tick() -> dict:
                 logger.info(
                     "proposer: dropped known-hardware-issue light goal: %r", title
                 )
+                filtered.append({"title": title[:80], "reason": "hardware_issue"})
                 continue
 
             risk = str(item.get("risk") or "medium")
@@ -606,16 +610,32 @@ async def propose_goals_tick() -> dict:
         count_proposed = sum(1 for r in results_list if r["status"] == "proposed")
         count_auto_approved = sum(1 for r in results_list if r.get("auto_approved") is True)
         logger.info(
-            "goal_proposer tick done: %d proposed, %d auto-approved, %d total evaluated",
+            "goal_proposer tick done: %d proposed, %d auto-approved, %d filtered, %d total evaluated",
             count_proposed,
             count_auto_approved,
+            len(filtered),
             len(results_list),
         )
+        try:
+            await asyncio.to_thread(
+                governor.record_proposer_tick_stats,
+                {
+                    "count_proposed": count_proposed,
+                    "count_auto_approved": count_auto_approved,
+                    "results": results_list,
+                    "filtered": filtered,
+                },
+            )
+        except Exception as e:
+            logger.debug("record_proposer_tick_stats failed (best-effort): %s", e)
+
         return {
             "status": "ok",
             "results": results_list,
             "count_proposed": count_proposed,
             "count_auto_approved": count_auto_approved,
+            "count_filtered": len(filtered),
+            "filtered": filtered,
         }
 
     except Exception as e:

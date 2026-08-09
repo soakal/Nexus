@@ -178,6 +178,8 @@ async def test_happy_path_two_proposals(eng, monkeypatch):
 
     assert result["status"] == "ok"
     assert result["count_proposed"] == 2
+    assert result["count_filtered"] == 0
+    assert result["filtered"] == []
 
     goals = _all_goals(eng)
     assert len(goals) == 2
@@ -187,6 +189,14 @@ async def test_happy_path_two_proposals(eng, monkeypatch):
 
     # SAFETY: no Task rows (auto-approve disabled).
     assert _all_tasks(eng) == []
+
+    # B9.4: a successful tick persists its stats for the digest to read back.
+    from backend.safety import governor
+    tick_stats = governor.get_proposer_tick_stats(24)
+    assert tick_stats is not None
+    assert tick_stats["ticks"] == 1
+    assert tick_stats["proposed"] == 2
+    assert tick_stats["filtered_total"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +514,8 @@ async def test_proposal_without_success_criteria_dropped(eng, monkeypatch):
     assert result["count_proposed"] == 1
     titles = [g.title for g in _all_goals(eng)]
     assert titles == ["Complete goal"]
+    assert result["count_filtered"] == 1
+    assert result["filtered"][0]["reason"] == "no_success_criteria"
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +853,8 @@ async def test_night_exempt_light_goal_dropped(eng, monkeypatch):
     goals_rows = _all_goals(eng)
     assert len(goals_rows) == 1
     assert "Docker" in goals_rows[0].title
+    assert result["count_filtered"] == 1
+    assert result["filtered"][0]["reason"] == "night_exempt"
 
 
 # ---------------------------------------------------------------------------
@@ -896,6 +910,8 @@ async def test_known_hardware_issue_light_goal_dropped(eng, monkeypatch):
     assert len(goals_rows) == 1
     assert "Docker" in goals_rows[0].title
     assert not any("porch" in g.title.lower() for g in goals_rows)
+    assert result["count_filtered"] == 1
+    assert result["filtered"][0]["reason"] == "hardware_issue"
 
 
 @pytest.mark.asyncio

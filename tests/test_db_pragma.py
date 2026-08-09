@@ -120,6 +120,31 @@ def test_ensure_system_state_columns_adds_policy_columns(file_db):
     assert "policy_forbid_kinds" in cols()
 
 
+def test_ensure_system_state_columns_adds_proposer_tick_stats(file_db):
+    """Proposer-drop-visibility column follows the same idempotent-shim
+    contract as every other SystemState *_json column above."""
+    bd, eng = file_db
+
+    with eng.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE systemstate ("
+            "id INTEGER PRIMARY KEY, autonomy_enabled BOOLEAN, "
+            "daily_budget_usd REAL, per_task_budget_usd REAL, updated_at TEXT)"
+        ))
+
+    def cols():
+        with eng.connect() as conn:
+            return {row[1] for row in conn.execute(text("PRAGMA table_info(systemstate)"))}
+
+    assert "proposer_tick_stats_json" not in cols()
+
+    bd._ensure_system_state_columns()
+    assert "proposer_tick_stats_json" in cols()
+
+    bd._ensure_system_state_columns()
+    assert "proposer_tick_stats_json" in cols()
+
+
 def test_ensure_actionlog_columns_adds_confirmed_at(file_db):
     """Feature 3 Phase 1: ActionLog.confirmed_at follows the same idempotent-
     shim contract as judge_verdict/judge_reason above it."""

@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 # Register all table metadata before any test runs.
 import backend.database  # noqa: F401
@@ -27,19 +26,28 @@ import backend.database  # noqa: F401
 # Shared engine fixture
 # ---------------------------------------------------------------------------
 
-def make_engine():
+def make_engine(db_path):
+    # File-backed (not in-memory StaticPool): build_autonomy_digest fans out
+    # several concurrent asyncio.to_thread DB reads, and StaticPool hands
+    # every one of those threads the SAME underlying DBAPI connection --
+    # concurrent Sessions sharing one connection can interleave BEGIN/COMMIT
+    # and corrupt each other's transaction state, intermittently making a
+    # real row read back as None (reproduced, ~1-in-6 flaky). A tmp-file
+    # engine gives each thread its OWN pooled connection to the same file,
+    # matching how production's engine actually behaves -- no sharing, no
+    # race, no lock needed. tests/test_db_pragma.py's `file_db` fixture uses
+    # the same pattern for the same reason.
     eng = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
     SQLModel.metadata.create_all(eng)
     return eng
 
 
 @pytest.fixture
-def eng(monkeypatch):
-    e = make_engine()
+def eng(tmp_path, monkeypatch):
+    e = make_engine(tmp_path / "test_autonomy_notify.db")
     monkeypatch.setattr("backend.database.engine", e)
     return e
 
@@ -471,6 +479,55 @@ async def test_build_autonomy_digest_text(eng):
     # Must contain spend line
     assert "$" in text, f"Missing spend figure in digest: {text}"
     assert "1.23" in text or "1.2" in text, f"Missing spend value in digest: {text}"
+    # B9.5: no proposer_tick_stats_json seeded -> the zero-tick line renders.
+    assert "Proposer (24h): no ticks" in text, f"Missing proposer line in digest: {text}"
+
+
+@pytest.mark.asyncio
+async def test_build_autonomy_digest_proposer_stats(eng):
+    """B9.5: a persisted proposer tick renders a 'Proposer (24h)' block with
+    filtered reasons and titles, HTML-escaped since notify_phone sends
+    parse_mode='HTML'."""
+    from backend.safety import governor
+
+    governor.record_proposer_tick_stats({
+        "count_proposed": 1,
+        "count_auto_approved": 2,
+        "results": [{"status": "proposed"}, {"status": "auto_approved"}, {"status": "auto_approved"}],
+        "filtered": [
+            {"title": "Turn off garage light <night>", "reason": "night_exempt"},
+        ],
+    })
+
+    from backend.agents.digest import build_autonomy_digest
+    text = await build_autonomy_digest()
+
+    assert "Proposer (24h): 1 tick(s), 1 proposed, 2 auto-approved, 1 filtered" in text, text
+    assert "night_exempt: 1" in text, text
+    assert "Turn off garage light &lt;night&gt;" in text, text
+    assert "<night>" not in text
+
+
+@pytest.mark.asyncio
+async def test_build_autonomy_digest_proposer_stats_all_auto_approved(eng):
+    """Regression: a tick that auto-approves EVERY candidate has
+    count_proposed==0 (proposer.py reassigns status to 'auto_approved',
+    excluding it from 'proposed'). Without rendering auto_approved
+    separately, this tick would misleadingly read as '0 proposed, 0
+    filtered' -- indistinguishable from the proposer doing nothing."""
+    from backend.safety import governor
+
+    governor.record_proposer_tick_stats({
+        "count_proposed": 0,
+        "count_auto_approved": 3,
+        "results": [{"status": "auto_approved"}] * 3,
+        "filtered": [],
+    })
+
+    from backend.agents.digest import build_autonomy_digest
+    text = await build_autonomy_digest()
+
+    assert "Proposer (24h): 1 tick(s), 0 proposed, 3 auto-approved, 0 filtered" in text, text
 
 
 @pytest.mark.asyncio
