@@ -388,11 +388,19 @@ class TaskWorkerPool:
         # autonomously-generated task and skip/park it when autonomy is disabled.
         while True:
             task_id = await self._queue.get()
+            _worker_ok = True
+            _worker_began = False
             try:
                 prompt = await asyncio.to_thread(_load_task_prompt, task_id)
                 if prompt is None:
                     # Task row deleted (e.g. cancelled) before we picked it up.
                     continue
+                try:
+                    from backend import activity
+                    activity.begin(f"worker:{worker_id}", "worker", prompt[:200])
+                    _worker_began = True
+                except Exception:
+                    pass
                 handle = asyncio.ensure_future(run_task(prompt, task_id))
                 self._inflight[task_id] = handle
                 try:
@@ -406,6 +414,7 @@ class TaskWorkerPool:
                     # Otherwise the task itself was cancelled (request_cancel).
                     logger.info(f"Task {task_id} cancelled in worker {worker_id}")
                 except Exception as e:  # noqa: BLE001
+                    _worker_ok = False
                     logger.warning(f"Task {task_id} failed in worker {worker_id}: {e}")
                     try:
                         await asyncio.to_thread(_finalize_failed, task_id, str(e))
@@ -418,6 +427,12 @@ class TaskWorkerPool:
             finally:
                 self._inflight.pop(task_id, None)
                 self._queue.task_done()
+                if _worker_began:
+                    try:
+                        from backend import activity
+                        activity.end(f"worker:{worker_id}", _worker_ok)
+                    except Exception:
+                        pass
 
 
 _pool: TaskWorkerPool | None = None

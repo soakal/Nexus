@@ -359,6 +359,12 @@ async def poll_once(offset: int | None) -> int | None:
         timeout=settings.telegram_poll_timeout_s,
         allowed_updates=["callback_query", "message"],
     )
+    if updates:
+        try:
+            from backend import activity
+            activity.pulse("loop:telegram_poller", "update", f"{len(updates)} update(s)")
+        except Exception:
+            pass
     max_age = getattr(settings, "telegram_command_max_age_s", 300)
     new_offset = offset
     for update in updates:

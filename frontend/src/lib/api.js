@@ -41,6 +41,15 @@ export function wsStateUrl() {
 
 export const wsStateProtocols = wsLogsProtocols
 
+// Third separate socket, for the Pulse page — same reasoning as /ws/state
+// above: activity deltas fire at up to 4/s (coalesced server-side) and must
+// not spam the log viewer or the dashboard-state feed.
+export function wsActivityUrl() {
+  return `${WS_BASE}/ws/agent-activity`
+}
+
+export const wsActivityProtocols = wsLogsProtocols
+
 const BASE = `${_base}/api`
 
 function getKey() {
@@ -73,6 +82,7 @@ export const api = {
   sources: { status: () => req('GET', '/sources/status') },
   dashboard: { state: () => req('GET', '/dashboard/state') },
   agents: { runs: (q) => req('GET', `/agents/runs${q ? `?q=${encodeURIComponent(q)}` : ''}`) },
+  activity: { snapshot: () => req('GET', '/activity') },
   channels: { get: () => req('GET', '/channels/'), record: (id) => req('POST', '/channels/record', { program_id: id }) },
   adguard: {
     get: () => req('GET', '/adguard/'),

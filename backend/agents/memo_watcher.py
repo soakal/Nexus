@@ -101,6 +101,11 @@ class _MemoHandler:
         if isinstance(event, FileCreatedEvent):
             path = event.src_path
             if any(path.lower().endswith(ext) for ext in (".m4a", ".wav", ".mp3")):
+                try:
+                    from backend import activity
+                    activity.pulse("loop:memo_watcher", "memo_detected", os.path.basename(path))
+                except Exception:
+                    pass
                 asyncio.run_coroutine_threadsafe(
                     _debounced_process(path), self.loop
                 )

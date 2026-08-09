@@ -53,6 +53,7 @@ def _brain_mcp_spawn_env(token: str | None) -> dict | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _bo_proc: list = [None]  # mutable slot for the Brain Organizer MCP server subprocess
+    _activity_broadcaster_task: list = [None]  # mutable slot for the Pulse broadcast loop
 
     # Startup
     from backend.database import create_db_and_tables
@@ -143,6 +144,14 @@ async def lifespan(app: FastAPI):
             from backend.agents import telegram_poller
             telegram_poller.start()
 
+            # Pulse activity broadcaster (backend/activity.py) — coalescing
+            # 250ms loop pushing live agent/worker/job status over
+            # /ws/agent-activity. Reference kept in the mutable slot (same
+            # weak-ref-avoidance reasoning as prime_task above) so it survives
+            # to the shutdown block for a clean cancel.
+            from backend import activity
+            _activity_broadcaster_task[0] = asyncio.create_task(activity.run_activity_broadcaster())
+
             # Brain Organizer MCP server — optional, only starts if the module is installed
             try:
                 import subprocess
@@ -211,6 +220,11 @@ async def lifespan(app: FastAPI):
     try:
         from backend.agents import telegram_poller
         await telegram_poller.stop()
+    except Exception:
+        pass
+    try:
+        if _activity_broadcaster_task[0] is not None:
+            _activity_broadcaster_task[0].cancel()
     except Exception:
         pass
 
@@ -368,3 +382,47 @@ async def websocket_state(websocket: WebSocket):
             await websocket.receive_text()
     except Exception:
         state_ws_manager.disconnect(websocket)
+
+
+@app.websocket("/ws/agent-activity")
+async def websocket_agent_activity(websocket: WebSocket):
+    # Same handshake auth as /ws/logs/ws/state above, own broadcaster (see
+    # backend/activity.py's coalescing broadcast loop + api/agents.py's
+    # activity_ws_manager). Sends a full snapshot immediately on connect so
+    # the Pulse page paints without waiting for the next 250ms broadcast tick.
+    import hmac
+    provided = ""
+    accept_subprotocol = None
+    subprotocols = websocket.scope.get("subprotocols", []) or []
+    if len(subprotocols) >= 2 and subprotocols[0] == "nexus-api-key":
+        provided = subprotocols[1]
+        accept_subprotocol = "nexus-api-key"
+    if not provided:
+        provided = websocket.query_params.get("key", "")
+    try:
+        from backend.config import get_settings
+        expected = get_settings().nexus_api_key
+    except Exception:
+        expected = ""
+    if not provided or not expected or not hmac.compare_digest(provided, expected):
+        await websocket.close(code=1008)
+        return
+    from backend.api.agents import activity_ws_manager
+    await activity_ws_manager.connect(websocket, subprotocol=accept_subprotocol)
+    try:
+        import json
+        from backend import activity
+        await websocket.send_text(json.dumps({"type": "activity.snapshot", **activity.snapshot()}))
+        while True:
+            await websocket.receive_text()
+    except Exception:
+        activity_ws_manager.disconnect(websocket)
+
+
+@app.get("/api/activity")
+async def get_activity(_=Depends(require_api_key)):
+    # REST fallback for the Pulse page's initial paint (before the socket
+    # opens) and as a poll fallback. Reads the in-memory registry only — no
+    # DB, no LLM. Same shape as the websocket's "activity.snapshot" message.
+    from backend import activity
+    return activity.snapshot()

@@ -76,6 +76,17 @@ def reset_span_stack_context(token) -> None:
     _current_span_stack.reset(token)
 
 
+# Trace-id -> kind cache for open_trace/close_trace's activity bookkeeping
+# ONLY (never read by anything DB-related). Lets close_trace's activity
+# cleanup fire even if the DB read at close time fails (SQLite lock
+# contention, etc) -- coupling the in-memory cleanup to a DB read succeeding
+# would leave a phantom "running" Pulse entry for up to sweep_stale's 24h
+# backstop on a transient failure that has nothing to do with activity.py.
+# Self-cleaning: close_trace pops its entry, so this never outlives a trace
+# whose close_trace call actually runs.
+_open_trace_kinds: dict[int, str] = {}
+
+
 def open_trace(kind: str, label: str, task_id: int | None = None) -> int | None:
     """Open an AgentTrace row for a traced single-shot entry point (chat/briefing/
     proposer/voice). Generic counterpart to orchestrator._open_trace (which stays
@@ -103,10 +114,23 @@ def open_trace(kind: str, label: str, task_id: int | None = None) -> int | None:
             session.add(trace)
             session.commit()
             session.refresh(trace)
-            return trace.id
+            trace_id = trace.id
     except Exception as e:
         logger.warning(f"open_trace failed (non-fatal): {e}")
         return None
+
+    try:
+        from backend import activity
+        # Suffixed with trace_id (not just kind) -- two concurrent traces of
+        # the SAME kind (two overlapping chat turns, one web + one Telegram)
+        # would otherwise share one Pulse board entry and clobber each
+        # other's started_at/label, with whichever finishes first wrongly
+        # marking the shared entry idle while the other is still running.
+        _open_trace_kinds[trace_id] = kind
+        activity.begin(f"trace:{kind}:{trace_id}", "trace", label)
+    except Exception:
+        pass
+    return trace_id
 
 
 def close_trace(trace_id: int | None, status: str, error: str | None = None, *, label: str | None = None) -> None:
@@ -119,6 +143,19 @@ def close_trace(trace_id: int | None, status: str, error: str | None = None, *, 
     isn't known yet when open_trace runs at the start of the turn)."""
     if trace_id is None:
         return
+
+    try:
+        from backend import activity
+        kind = _open_trace_kinds.pop(trace_id, None)
+        if kind is not None:
+            # Removed, not end()'d -- a per-instance trace:{kind}:{trace_id}
+            # entry is one-shot (trace_id never repeats), so ending it into
+            # "ok"/"error" instead of removing it would grow _entries by one
+            # row forever, unbounded, for the life of the process.
+            activity.remove(f"trace:{kind}:{trace_id}")
+    except Exception:
+        pass
+
     try:
         from sqlmodel import Session
 
@@ -321,9 +358,9 @@ def _record_trace_span(
 ) -> None:
     """Best-effort: insert a TraceSpan row for one LLM/tool call within a trace.
 
-    No-op when `trace_id` is None -- the common case for calls made outside a
-    traced entry point (traced entry points such as chat/briefing are wired in
-    a later council w-observability step). Whole body is wrapped in
+    The DB write is a no-op when `trace_id` is None -- the common case for
+    calls made outside a traced entry point -- but the Pulse ticker pulse
+    below still fires either way (see its own note). Whole body is wrapped in
     try/except-everything, mirroring `_record_spend`: a logging failure must
     NEVER crash the LLM response.
 
@@ -343,9 +380,12 @@ def _record_trace_span(
     (the real model id) is what `_compute_cost` prices from, falling back to
     `name` when omitted so tool_call spans and pre-label callers are
     unaffected.
+
+    Also feeds the Pulse ticker (backend/activity.py) -- unconditionally,
+    even when trace_id is None, so LLM/tool activity from call sites with no
+    traced entry point (mail_drafts, facts, wiki_ingest, telegram_commands,
+    ...) still shows up live without touching those modules.
     """
-    if trace_id is None:
-        return
     try:
         tokens_in = tokens_out = None
         cost_usd = None
@@ -362,12 +402,26 @@ def _record_trace_span(
                 except (TypeError, ValueError):
                     pass  # unparseable usage -- span still recorded, sans tokens/cost
 
+        ended_at = datetime.utcnow()
+        duration_ms = int((ended_at - started_at).total_seconds() * 1000) if started_at else None
+
+        try:
+            from backend import activity
+            _bits = [span_type, name]
+            if duration_ms is not None:
+                _bits.append(f"{duration_ms}ms")
+            if cost_usd:
+                _bits.append(f"${cost_usd:.4f}")
+            activity.pulse(span_type, span_type, " · ".join(_bits))
+        except Exception:
+            pass
+
+        if trace_id is None:
+            return
+
         from sqlmodel import Session
 
         from backend.database import TraceSpan, engine
-
-        ended_at = datetime.utcnow()
-        duration_ms = int((ended_at - started_at).total_seconds() * 1000) if started_at else None
 
         with Session(engine) as session:
             session.add(TraceSpan(

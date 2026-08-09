@@ -40,6 +40,12 @@ ws_manager = WebSocketManager()
 # and vice versa (see backend/state_workers.py's module docstring).
 state_ws_manager = WebSocketManager()
 
+# Separate instance for /ws/agent-activity (the Pulse page) — same reasoning
+# as state_ws_manager above: activity deltas fire at up to 4/s (coalesced by
+# backend/activity.py's broadcaster) and must not spam the log viewer or the
+# dashboard-state feed.
+activity_ws_manager = WebSocketManager()
+
 
 @router.get("/runs")
 async def list_runs(

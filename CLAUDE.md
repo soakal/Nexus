@@ -681,3 +681,180 @@ theme: NEXUS explaining more of what it's actually doing, with no behavior chang
   or not the new span code succeeds.
 - Full pytest suite green (backend-only change, no frontend build needed for batch 2's items — B1/B8
   above were the frontend-touching half, already built/merged in batch 1).
+
+## Pulse — real-time agent/worker activity page (2026-08-09)
+Fable-planned, Sonnet-built (branch `feat/pulse-activity`, worktree `nexus-pulse`) — the last of the
+legibility-review recommendations: a live "what is NEXUS doing right now" view. Fable explicitly
+argued against a node graph (the call graph is shallow/static — nothing to watch change) and a live
+timeline/Gantt (that's what Traces.jsx already is, post-hoc; real-time the axis is 99% empty since
+most of NEXUS's ~29 scheduled jobs run for milliseconds every few minutes) in favor of a **status
+board + coalesced event ticker**, matching how the system actually behaves: mostly idle, with an
+honest "last ran 90s ago, 840ms, OK" answer that also makes a stalled job visible at a glance — the
+one thing no log stream shows.
+
+- **`backend/activity.py`** — a new in-memory, thread-safe, process-local registry. Zero DB writes,
+  zero LLM calls, zero new tables — everything durable already exists (`AgentTrace`/`TraceSpan`/
+  `TaskStep`/`SpendLog`); this is purely a live snapshot, lost on restart, same accepted tradeoff as
+  `homelab_watch.py`'s in-memory state. `ActivityEntry` dataclass (`actor_id`, `actor_type` —
+  `job|worker|loop|trace|task` — `label`, `status` — `running|idle|ok|error` — `started_at`,
+  `last_run_at`, `last_duration_ms`, `last_error`, `detail`, `seq`) plus a 200-row `deque` ticker
+  ring. Three mutators — `begin`/`end`/`pulse` — plus `update_detail`/`remove`/`sweep_stale` (a
+  24h-idle backstop, piggybacked every ~60 broadcaster ticks, not a liveness mechanism), all
+  lock-guarded, sync, and **never raise** — same best-effort contract as `events.publish`. This
+  matters concretely: `router._record_trace_span` runs inside a `run_in_executor` worker thread (the
+  same reason `SpendLog`/`TraceSpan` writes are sync-not-`to_thread` there), so every mutator had to
+  be safe to call from a non-loop thread with no `await` anywhere in the module.
+- **Coalescing broadcaster** (`activity.run_activity_broadcaster()`, started/cancelled in `main.py`'s
+  lifespan next to the worker pool): wakes every 250ms, broadcasts ONE delta message only if
+  something changed AND at least one client is connected — an unwatched Pulse page costs a 250ms
+  timer wake and nothing else. Caps outbound traffic at ≤4 msg/s regardless of internal event rate,
+  and is what lets a `run_in_executor`-thread mutation reach a browser without any
+  `call_soon_threadsafe` plumbing (the poll picks up thread-side writes on its own next tick).
+- **Third `WebSocketManager`** (`activity_ws_manager` in `backend/api/agents.py`, alongside
+  `ws_manager`/`state_ws_manager` — same "must not share a connection list" reasoning as
+  `/ws/state`'s own module docstring) backing a new `/ws/agent-activity` route (`main.py`, cloned
+  auth handshake from `/ws/state`) that sends a full `activity.snapshot` immediately on connect, then
+  `activity.delta` messages from the broadcaster. `GET /api/activity` (Bearer-gated) is the REST
+  fallback for the page's first paint and a poll-fallback path — reads memory only, no DB.
+  Deliberately NOT reusing `/ws/logs`: that feed is nearly dead today (its only two publishers are
+  the broker's terminal-action broadcast and the autonomy on/off toggle, and its one consumer,
+  `AgentLog.jsx`, appends every raw message unfiltered) — Pulse's ~4/s coalesced deltas would have
+  spammed it exactly the way `state_ws_manager` already exists to avoid for `/ws/state`.
+- **Backend wiring — 6 choke points instead of ~28 per-module edits.** Because NEXUS already funnels
+  almost everything through a handful of shared functions, only 2 agent files needed direct
+  touching beyond the choke points themselves:
+  1. **`backend/scheduler.py`** — one `APScheduler` event listener
+     (`_register_activity_listener()`, called from `setup_scheduler()`, guarded by a module flag
+     since `setup_scheduler()` runs once per test file against the SAME module-level `scheduler`
+     singleton — without the guard a full pytest run would stack up dozens of duplicate listeners)
+     covers **every** registered job — present and future, zero per-job code — via
+     `EVENT_JOB_SUBMITTED/EXECUTED/ERROR/MISSED`. A `_TICKER_QUIET_JOBS` frozenset (the four
+     `state_refresh_*s` jobs, `retry_deliveries`, `secret_fallback_drain`) keeps high-frequency
+     housekeeping off the ticker while their board status still updates — otherwise a 30s job would
+     dominate the 200-row ring.
+  2. **`router.open_trace`/`close_trace`** and **`orchestrator._open_trace`/`_close_trace`** —
+     `begin()`/`end()` a `trace:{kind}` entry (one of five: chat/briefing/orchestrator/proposer/
+     voice) around every traced entry point. The orchestrator's durable path additionally
+     `begin()`s/`remove()`s a per-task `task:{id}` entry (removed on finalize at the `run_task()`
+     call site, not inside `_close_trace`, since only that call site still has `task_id` in scope).
+  3. **`router._record_trace_span`** — a `pulse()` call was moved to fire **unconditionally**, even
+     when `trace_id is None` (the common case for calls outside a traced entry point) — this is how
+     `mail_drafts`/`facts`/`wiki_ingest`/`telegram_commands` LLM activity shows up in the ticker with
+     zero changes to those modules, since every LLM call already carries a mandatory `label=`
+     (`test_spend_report.py::test_no_unlabeled_llm_calls_in_agents`). Only the DB `TraceSpan` write
+     stays gated on `trace_id`.
+  4. **`worker_pool._worker_loop`** — `begin()`/`end()` a `worker:{id}` entry around task pickup
+     (2 workers by default); **`orchestrator`'s durable step loop** calls `update_detail()` on the
+     step-running transition with `{step_index, total_steps, description}` for the Now-Running strip's
+     progress bar.
+  5. **`telegram_poller.poll_once`** pulses once per non-empty `getUpdates` batch (never per empty
+     poll — that's a heartbeat, not activity); **`memo_watcher._MemoHandler.dispatch`** pulses on each
+     detected memo file (runs on the watchdog `Observer`'s own OS thread, not the loop — safe, since
+     `activity.pulse` is a plain thread-safe sync call).
+  6. **`broker._publish_action`** (the existing terminal-outcome broadcast helper) pulses
+     `kind decision · target` alongside its pre-existing `events.publish` call.
+- **`frontend/src/pages/Pulse.jsx`** (new page, NAV entry under SYSTEMS, `Radar` icon — `Activity` was
+  already taken by Uptime): three stacked zones —
+  1. **Now Running** — one row per `running` task/trace/worker entry: pulsing dot, label, a
+     client-ticked elapsed timer, and for `task:*` entries a step progress bar off `detail`.
+  2. **Actors** — a responsive grid grouped by type (Workers / Loops / Scheduled jobs / Tasks,
+     `trace:*` entries deliberately have no dedicated board card — they're fully covered by the Now
+     Running strip already): "last ran 2m ago · 840ms · OK", red + error snippet on the last failure.
+  3. **Live Ticker** — the event ring, newest first, pause-on-hover (buffers incoming deltas in a
+     ref while the mouse is over it, flushes on mouse-leave — the board above keeps updating live
+     regardless, only the ticker list itself pins in place).
+  A third `wsActivityUrl()`/`wsActivityProtocols()` pair in `api.js` (same authenticated-subprotocol
+  pattern as `wsStateUrl`/`wsStateProtocols` — **not** the older keyless `wsLogsUrl`/`ws.js` pattern,
+  which Fable's original spec flagged as having a live pre-existing auth bug of its own, left
+  untouched here as a separate follow-up). Header chip reuses `GET /api/safety/status` for an
+  "autonomy ON/PAUSED · $X today" readout — zero new backend for that one line.
+- **Cost/perf discipline**: no `Session`/DB usage anywhere in `backend/activity.py` (grepped and
+  confirmed — the point of the whole design), no new LLM calls, mutators are microsecond dict/deque
+  ops under a lock, the broadcaster is pure-async and skips all work when nobody's connected, every
+  string field is truncated (200-char labels/errors/summaries, 80-char event names — same discipline
+  as `open_trace`'s existing `label[:200]`), and the ring is hard-capped at 200 by construction
+  (`deque(maxlen=200)`).
+- **Test coverage**: `test_activity_registry.py` (registry unit tests incl. a `ThreadPoolExecutor`
+  concurrency test mutating from 6 threads while repeatedly snapshotting, and a "poisoned dict"
+  injection test pinning that every mutator degrades silently rather than raising),
+  `test_activity_ws.py` (snapshot-on-connect shape, auth reject/accept parity with `/ws/logs`/
+  `/ws/state`, REST fallback), `test_activity_wiring.py` (the scheduler listener's idempotent
+  registration guard + all four event codes + the quiet-jobs ticker exclusion, the worker loop's
+  busy/idle transition observed mid-run via a stubbed `run_task`, `open_trace`/`close_trace` +
+  orchestrator's `_open_trace`/`_close_trace` entry lifecycle, `_record_trace_span`'s unconditional
+  pulse — including a constraint test proving a poisoned `activity.pulse` can't block the underlying
+  `TraceSpan` DB write — and the broker's terminal-outcome pulse, again with its own
+  pulse-failure-doesn't-break-the-real-broadcast constraint test). Full pytest suite green;
+  `npm run build` clean.
+- **Opus verify pass — 1 blocking + 3 should-fix, all fixed before merge:**
+  1. **BLOCKING — `_pending_events` grew unbounded whenever nobody was watching Pulse** (the normal
+     state ~100% of the time, since the broadcaster's `if not activity_ws_manager.active: continue`
+     guard skips `drain_dirty()` entirely with no client connected). Measured ~2MB per 5000 pulses,
+     forever, for the life of the process — then the first connecting client would trigger one
+     `json.dumps`/`send_text` of the ENTIRE backlog on the event loop, exactly the stall class this
+     repo's CLAUDE.md calls its #1 hard-won rule. Fixed by making it a `deque(maxlen=200)`, same cap
+     as `_ring`. Root cause of the miss: `run_activity_broadcaster()` itself had zero real test
+     execution (both "broadcaster" tests reimplemented its logic inline instead of calling it) —
+     fixed with two tests that actually run the coroutine, plus a direct unit regression test
+     (`test_pending_events_bounded_even_when_never_drained`).
+  2. **Removals were never broadcast to a connected client.** `remove()`/`sweep_stale()` drop an
+     entry from the registry immediately, but `drain_dirty()` only ever emitted entries still
+     present — so a finished `task:{id}` showed as permanently "running" in any Pulse tab left open
+     (self-healing only on reload/reconnect, via the full-replace `activity.snapshot`). Fixed with a
+     third delta channel, `removed: [actor_id, ...]` (a `_removed` set, drained/cleared alongside
+     `_dirty`/`_pending_events`; `begin()` discards a pending removal if an actor is re-begun before
+     the removal was ever drained). `Pulse.jsx` deletes those ids from its `entries` state on each
+     `activity.delta`.
+  3. **`close_trace`'s activity cleanup was gated on the DB read succeeding at CLOSE time** — `kind`
+     was read from the `AgentTrace` row inside the same session that persists status/error, so a
+     transient DB failure (SQLite lock contention, not exotic — `busy_timeout` is 30s, not never-
+     blocks) skipped `activity.end()` entirely, leaving a phantom "running" entry for up to
+     `sweep_stale`'s 24h backstop. Fixed with a small `_open_trace_kinds: dict[int, str]` cache in
+     `router.py`, populated at open time and `.pop()`'d at close — the activity cleanup no longer
+     needs the DB read to succeed at all (own regression test:
+     `test_close_trace_activity_cleanup_independent_of_db_read_failure`, patches `sqlmodel.Session`
+     to raise and confirms the board entry is still removed).
+  4. **Shared actor ids raced across concurrent runs.** `trace:{kind}` (no trace_id) meant two
+     overlapping traces of the same kind — two concurrent chat turns (web + Telegram), or two
+     concurrent durable orchestrator runs (`NEXUS_TASK_WORKERS` defaults to **2**) — clobbered one
+     shared board entry: whichever finished first would `end()`/mark it idle while the other was
+     still genuinely running, and duration would be measured off the wrong start time. Fixed two
+     ways: `router.py`'s generic `open_trace`/`close_trace` now key on `trace:{kind}:{trace_id}`
+     (unique per instance, `remove()`'d on close rather than `end()`'d — a one-shot per-call entry
+     left as "ok" forever would grow `_entries` by one row per chat/briefing/proposer/voice call,
+     unboundedly, for the process lifetime) instead of the shared `trace:{kind}`; orchestrator's
+     `_open_trace` DROPPED its own separate `trace:orchestrator` entry entirely rather than
+     rekeying it — `task:{task_id}` was already a unique per-run identity carrying strictly more
+     information (step progress), so the shared key was pure redundant race surface, not a needed
+     feature. Own regression test:
+     `test_open_trace_two_concurrent_same_kind_traces_dont_collide`.
+  - Two nitpicks folded in: `worker_pool._worker_loop` no longer calls `activity.end()` for a
+    picked-up task_id whose row was already deleted (never `begin()`'d), which used to stamp a
+    fresh "ok" run on the pre-existing `worker:{id}` entry for a task that never ran; the frontend's
+    ticker pause-buffer is now capped at 200 (`.slice(-200)`) to match the server-side ring, so
+    parking the cursor over it for a long time can't grow it unbounded.
+  - Second verify-adjacent pass re-ran the full suite green (1899+ tests) and rebuilt the frontend
+    clean after all of the above.
+- **A targeted follow-up verify pass on the four fixes above confirmed all four correct — and found
+  ONE more real bug, an interaction between fixes #2 and #4.** `_removed` (the new removal channel
+  from fix #2) has no cap of its own, and fix #4 turned trace actor ids into unique-per-instance
+  strings (`trace:{kind}:{trace_id}`, `remove()`'d rather than `end()`'d) — so every completed chat/
+  briefing/proposer/voice trace and durable task now feeds a NEW string into `_removed` forever,
+  reintroducing the exact fix-#1 defect (unbounded growth while nobody has Pulse open, a first-
+  connect burst dump) through a different channel. Measured empirically (not just reasoned about):
+  5000 begin/remove cycles with no client connected left `_removed` at 5000 entries (~800KB), and the
+  first connecting client would have received one 94KB `json.dumps`/`send_text` burst on the event
+  loop. Fixed with `activity.discard_undelivered()` — called from the broadcaster's existing
+  no-clients branch (`if not activity_ws_manager.active: discard_undelivered(); continue`) — which
+  clears `_pending_events` and `_removed` without touching `_entries`/`_dirty` (a later connecting
+  client gets a full authoritative `snapshot()` on connect regardless, making anything accumulated
+  while nobody was watching redundant by construction; `_dirty` isn't a leak vector on its own since
+  `remove()` already discards from it). Three new regression tests:
+  `test_removed_leaks_unbounded_without_discard_undelivered` (proves the raw bug empirically, same
+  discipline as the fix-#1 regression test), `test_discard_undelivered_clears_pending_and_removed_not_entries`,
+  and a strengthened `test_broadcaster_real_loop_skips_send_when_no_clients_connected` that runs the
+  REAL broadcast loop (not a reimplementation) and asserts `_removed`/`_pending_events` are actually
+  empty afterward — this is exactly the kind of interaction-between-fixes bug a narrower "did each
+  fix work in isolation" check can miss, which is why this follow-up pass was scoped to specifically
+  scrutinize fix #2 × fix #4's interaction rather than re-deriving the whole feature. Full suite
+  re-run green a third time after this fix; frontend unaffected (backend-only change).

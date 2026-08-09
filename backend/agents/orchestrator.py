@@ -540,10 +540,23 @@ def _open_trace(task_id: int, label: str) -> int | None:
             session.add(trace)
             session.commit()
             session.refresh(trace)
-            return trace.id
+            trace_id = trace.id
     except Exception as e:
         logger.warning(f"_open_trace failed (non-fatal): {e}")
         return None
+
+    try:
+        from backend import activity
+        # No separate "trace:orchestrator" board entry -- task:{task_id} is
+        # already a unique per-run identity (unlike router.py's generic
+        # open_trace, which has no natural per-instance id to key on other
+        # than trace_id itself). A second shared "trace:orchestrator" key
+        # here would race across NEXUS_TASK_WORKERS' concurrent durable
+        # runs the same way the old shared key did before this fix.
+        activity.begin(f"task:{task_id}", "task", label)
+    except Exception:
+        pass
+    return trace_id
 
 
 def _close_trace(trace_id: int | None, status: str, error: str | None = None) -> None:
@@ -910,6 +923,15 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
                         return TaskResult(success=False, reason="cancelled")
 
                     await asyncio.to_thread(_mark_step_running, s["id"])
+                    try:
+                        from backend import activity
+                        activity.update_detail(f"task:{task_id}", {
+                            "step_index": s["step_index"],
+                            "total_steps": len(steps),
+                            "description": s["description"],
+                        })
+                    except Exception:
+                        pass
 
                     step_obj = Step(index=s["step_index"], prompt=s["prompt"], description=s["description"])
                     t_start = time.time()
@@ -1074,6 +1096,11 @@ async def run_task(task_prompt: str, task_id: int | None = None) -> TaskResult:
             await asyncio.to_thread(_close_trace, trace_id, _trace_status, _trace_error)
         except Exception as e:
             logger.warning(f"trace close failed (non-fatal): {e}")
+        try:
+            from backend import activity
+            activity.remove(f"task:{task_id}")
+        except Exception:
+            pass
         reset_trace_context(_trace_token)
         # Unbind the task-id contextvar on EVERY exit path (return / exception).
         reset_task_context(_ctx_token)

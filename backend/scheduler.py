@@ -491,7 +491,68 @@ async def _infisical_soak_reminder():
         logger.error(f"Infisical soak reminder job error: {e}")
 
 
+# Pulse ticker noise control (backend/activity.py) — job completions still
+# update the actor board via begin()/end() regardless, this only trims which
+# jobs also write a ticker line. High-frequency housekeeping jobs would
+# otherwise dominate the 200-row ring and drown out anything worth watching.
+_TICKER_QUIET_JOBS = frozenset({
+    "state_refresh_30s", "state_refresh_60s", "state_refresh_300s", "state_refresh_600s",
+    "retry_deliveries", "secret_fallback_drain",
+})
+
+_activity_listener_registered = False
+
+
+def _register_activity_listener() -> None:
+    """Wire one APScheduler event listener into backend/activity.py, covering
+    every registered job (present and future) with zero per-job code. Guarded
+    by a module flag since setup_scheduler() runs once per test file against
+    this SAME module-level `scheduler` singleton — without the guard, a full
+    pytest run would stack up dozens of duplicate listeners."""
+    global _activity_listener_registered
+    if _activity_listener_registered:
+        return
+    try:
+        from apscheduler.events import (
+            EVENT_JOB_ERROR,
+            EVENT_JOB_EXECUTED,
+            EVENT_JOB_MISSED,
+            EVENT_JOB_SUBMITTED,
+        )
+        from backend import activity
+
+        def _on_job_event(event) -> None:
+            # Sync callback (APScheduler dispatches on the loop) -- must stay
+            # pure dict/deque ops via activity's own locking, never await.
+            try:
+                job_id = event.job_id
+                actor_id = f"job:{job_id}"
+                if event.code == EVENT_JOB_SUBMITTED:
+                    activity.begin(actor_id, "job", job_id)
+                elif event.code == EVENT_JOB_EXECUTED:
+                    activity.end(actor_id, True)
+                    if job_id not in _TICKER_QUIET_JOBS:
+                        activity.pulse(actor_id, "job_done", f"{job_id} ok")
+                elif event.code == EVENT_JOB_ERROR:
+                    err = str(getattr(event, "exception", "") or "")[:200]
+                    activity.end(actor_id, False, err)
+                    activity.pulse(actor_id, "job_error", f"{job_id} failed: {err}")
+                elif event.code == EVENT_JOB_MISSED:
+                    activity.pulse(actor_id, "job_missed", f"{job_id} missed its scheduled run")
+            except Exception as ex:
+                logger.debug(f"activity job-event handling failed (ignored): {ex}")
+
+        scheduler.add_listener(
+            _on_job_event,
+            EVENT_JOB_SUBMITTED | EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED,
+        )
+        _activity_listener_registered = True
+    except Exception as e:
+        logger.warning(f"Pulse activity listener registration failed (non-fatal): {e}")
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
+    _register_activity_listener()
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
         _run_briefing,

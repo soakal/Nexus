@@ -744,6 +744,11 @@ async def _publish_action(
         "judge_verdict": judge_verdict,
         "judge_reason": judge_reason,
     })
+    try:
+        from backend import activity
+        activity.pulse("broker", "action", f"{kind} {getattr(decision, 'value', str(decision))} · {target}")
+    except Exception:
+        pass
 
 
 async def execute_action(

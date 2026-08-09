@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
   Tv2, Home, Activity, Bot, ShieldCheck, Brain, Mail as MailIcon,
-  Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints, Flag,
+  Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints, Flag, Radar,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
 import CommandPalette from './components/CommandPalette'
@@ -24,6 +24,7 @@ import Safety from './pages/Safety'
 import Flags from './pages/Flags'
 import Facts from './pages/Facts'
 import Traces from './pages/Traces'
+import Pulse from './pages/Pulse'
 import { API_BASE } from './lib/api'
 
 const NAV = [
@@ -38,6 +39,7 @@ const NAV = [
   { to: '/uptime',   icon: Activity,         label: 'Uptime',         group: 'SYSTEMS'  },
   { to: '/agents',   icon: Bot,              label: 'Agents',         group: 'SYSTEMS'  },
   { to: '/traces',   icon: Waypoints,        label: 'Traces',         group: 'SYSTEMS'  },
+  { to: '/pulse',    icon: Radar,            label: 'Pulse',          group: 'SYSTEMS'  },
   { to: '/safety',   icon: ShieldCheck,      label: 'Safety',         group: 'SYSTEMS'  },
   { to: '/flags',    icon: Flag,             label: 'Flags',          group: 'SYSTEMS'  },
   { to: '/facts',    icon: Brain,            label: 'Facts',          group: 'SYSTEMS'  },
@@ -434,6 +436,7 @@ export default function App() {
             <Route path="/uptime" element={<Uptime />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/traces" element={<Traces />} />
+            <Route path="/pulse" element={<Pulse />} />
             <Route path="/safety" element={<Safety />} />
             <Route path="/flags" element={<Flags />} />
             <Route path="/facts" element={<Facts />} />
