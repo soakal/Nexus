@@ -499,13 +499,18 @@ def _ssh_client(exit_status: int, stdout_text: str = "", stderr_text: str = ""):
     """Mock a paramiko.SSHClient instance: .connect()/.close()/.load_host_keys()/
     .save_host_keys()/.set_missing_host_key_policy() are all no-op MagicMocks;
     .exec_command() returns (stdin, stdout, stderr) mocks where stdout carries
-    both .read() and .channel.recv_exit_status()."""
+    both .read() and .channel.recv_exit_status().
+
+    .read() uses side_effect (content once, then b"" forever) rather than a
+    fixed return_value -- unraid._drain() loops calling .read() until it gets
+    a falsy chunk (draining to real EOF, matching real paramiko/socket
+    behavior), and a fixed return_value would make that loop spin forever."""
     client = MagicMock()
     stdout_mock = MagicMock()
-    stdout_mock.read.return_value = stdout_text.encode("utf-8")
+    stdout_mock.read.side_effect = [stdout_text.encode("utf-8"), b""] + [b""] * 8
     stdout_mock.channel.recv_exit_status.return_value = exit_status
     stderr_mock = MagicMock()
-    stderr_mock.read.return_value = stderr_text.encode("utf-8")
+    stderr_mock.read.side_effect = [stderr_text.encode("utf-8"), b""] + [b""] * 8
     stdin_mock = MagicMock()
     client.exec_command.return_value = (stdin_mock, stdout_mock, stderr_mock)
     return client
@@ -678,6 +683,22 @@ async def test_prune_docker_images_loads_known_hosts_path():
         await prune_docker_images()
 
     path_arg = client.load_host_keys.call_args.args[0]
+    assert path_arg.endswith(".unraid_ssh_known_hosts")
+
+
+@pytest.mark.asyncio
+async def test_prune_docker_images_persists_learned_host_key():
+    """save_host_keys() must actually be called after a successful connect --
+    without it, TOFU never persists past one connection and every call
+    silently re-trust-on-first-use forever instead of pinning."""
+    client = _ssh_client(0, "Total reclaimed space: 0B\n", "")
+    with patch("backend.integrations.unraid.paramiko.SSHClient", return_value=client), \
+         patch("backend.integrations.unraid.paramiko.Ed25519Key.from_private_key"), \
+         patch("backend.config.get_settings", return_value=_fake_settings()):
+        from backend.integrations.unraid import prune_docker_images
+        await prune_docker_images()
+
+    path_arg = client.save_host_keys.call_args.args[0]
     assert path_arg.endswith(".unraid_ssh_known_hosts")
 
 

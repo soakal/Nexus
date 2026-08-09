@@ -291,6 +291,25 @@ async def restart_docker(name_or_id: str) -> dict:
 
 _PRUNE_SENTINEL = "nexus-docker-prune"          # NOT the real command -- see docstring above
 _SSH_KNOWN_HOSTS = pathlib.Path(".unraid_ssh_known_hosts")
+_MAX_SSH_OUTPUT_BYTES = 65536
+
+
+def _drain(stream) -> str:
+    """Read a paramiko ChannelFile to genuine EOF, keeping only the first
+    _MAX_SSH_OUTPUT_BYTES. Must fully drain (not just bounded-read) so the
+    channel window empties and recv_exit_status() can't hang -- see the
+    comment at its call site in _ssh_prune_sync.
+    """
+    chunks = []
+    total = 0
+    while True:
+        chunk = stream.read(_MAX_SSH_OUTPUT_BYTES)
+        if not chunk:
+            break
+        if total < _MAX_SSH_OUTPUT_BYTES:
+            chunks.append(chunk)
+            total += len(chunk)
+    return b"".join(chunks)[:_MAX_SSH_OUTPUT_BYTES].decode("utf-8", errors="replace")
 
 
 def _ssh_prune_sync() -> tuple[int, str, str]:
@@ -326,9 +345,13 @@ def _ssh_prune_sync() -> tuple[int, str, str]:
     try:
         client.load_host_keys(str(_SSH_KNOWN_HOSTS))
     except Exception:
-        # No known_hosts file yet (first run) -- paramiko tolerates a missing/
-        # empty known_hosts file fine, nothing to do here.
-        pass
+        # A missing known_hosts file is expected on first run -- paramiko
+        # tolerates that fine. But if the file EXISTS and still failed to
+        # load (corrupt/unreadable), that's silently discarding a real TOFU
+        # pin and re-accepting whatever host key shows up next as new --
+        # worth a log line so that's distinguishable from a genuine first run.
+        if _SSH_KNOWN_HOSTS.exists():
+            logger.warning("Could not load %s (exists but unreadable) -- treating as first-use", _SSH_KNOWN_HOSTS)
     # TOFU (trust-on-first-use), NOT the same as disabling host-key checking.
     # AutoAddPolicy accepts an unknown host key on first connect and we then
     # persist it via save_host_keys() below -- every SUBSEQUENT connection is
@@ -359,9 +382,18 @@ def _ssh_prune_sync() -> tuple[int, str, str]:
         stdin, stdout, stderr = client.exec_command(
             _PRUNE_SENTINEL, timeout=settings.unraid_ssh_prune_timeout_s
         )
+        # Read BOTH streams to EOF before calling recv_exit_status() -- paramiko's
+        # own docs warn that calling recv_exit_status() first can hang forever if
+        # the remote's output is larger than the channel window, since nothing is
+        # ever draining it to free that window. A single bounded .read(65536) call
+        # doesn't fully drain a larger stream either (it returns early, leaving the
+        # rest un-drained) -- these loops keep reading to genuine EOF, only capping
+        # what's actually kept in memory. In practice `docker image prune -f`'s
+        # stdout/stderr are tiny, so reading them sequentially (not concurrently)
+        # carries negligible deadlock risk here -- not a general-purpose SSH client.
+        out = _drain(stdout)
+        err = _drain(stderr)
         exit_status = stdout.channel.recv_exit_status()
-        out = stdout.read(65536).decode("utf-8", errors="replace")
-        err = stderr.read(65536).decode("utf-8", errors="replace")
     finally:
         client.close()
 
@@ -401,7 +433,7 @@ async def prune_docker_images() -> dict:
     removed_count = 0
     for line in out.splitlines():
         if "Total reclaimed space:" in line:
-            reclaimed = line.strip()
+            reclaimed = line.strip()[:200]
         elif line.startswith("Deleted:") or line.startswith("Untagged:"):
             removed_count += 1
 
