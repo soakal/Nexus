@@ -163,7 +163,7 @@ async def test_infisical_soak_reminder_never_raises(monkeypatch):
 
     monkeypatch.setattr("backend.database.engine", _make_isolated_engine())
 
-    with patch("backend.events.notify_phone", new_callable=AsyncMock, side_effect=Exception("hermes down")):
+    with patch("backend.events.notify_phone", new_callable=AsyncMock, side_effect=Exception("telegram down")):
         await _infisical_soak_reminder()  # must not raise
 
 

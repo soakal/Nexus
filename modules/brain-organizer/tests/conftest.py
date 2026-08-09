@@ -30,11 +30,10 @@ def _no_real_secrets_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     test process. send_telegram_notification() reads TELEGRAM_BOT_TOKEN/
     TELEGRAM_CHAT_ID straight from the environment -- so without this, any
     failure-path test (e.g. test_raw_file_kept_on_failure) fires a REAL POST
-    to the real Telegram bot. This is the exact same class of bug that
-    previously produced the "note.md"/"bad.md" Telegram spam via a leaked
-    HERMES_HOST/HERMES_WEBHOOK_SECRET (now retired) -- the new Telegram
-    secrets get the identical treatment. Strip them for every test,
-    unconditionally.
+    to the real Telegram bot. A real incident already produced "note.md"/
+    "bad.md" Telegram spam from a leaked test secret this way -- treat every
+    live credential the module reads with the same suspicion. Strip them for
+    every test, unconditionally.
     """
     for var in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(var, raising=False)

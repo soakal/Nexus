@@ -35,7 +35,7 @@ def eng(monkeypatch):
 
 
 def _patched_integrations():
-    """Context managers for every integration fetch/sonnet/facts/obsidian/hermes
+    """Context managers for every integration fetch/sonnet/facts/obsidian
     dependency run_briefing pulls in, mirroring tests/test_briefing.py."""
     from backend.integrations.homeassistant import HAData
     from backend.integrations.unifi import UniFiData

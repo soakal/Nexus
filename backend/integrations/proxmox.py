@@ -104,7 +104,6 @@ _POWER_OPS = {"start": "start", "reboot": "reboot", "stop": "shutdown"}
 async def set_vm_power(vmid: int, action: str) -> dict:
     """Start/reboot/gracefully-shut-down a Proxmox VM or LXC.
 
-    Phase 7b of the Hermes decoupling -- native, not via Hermes's relay.
     Resolves vmid against fetch() to get both `node` and `type` (qemu vs
     lxc) rather than assuming either, since the API path differs:
     /nodes/{node}/qemu/{vmid}/... vs /nodes/{node}/lxc/{vmid}/....

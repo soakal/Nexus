@@ -106,10 +106,6 @@ def test_f3_unlisted_ha_domain_user_actor_always_allowed(domain):
     assert decide(Actor.USER, risk, reversibility, confirmed=False) == Decision.ALLOWED
 
 
-def test_classify_hermes_relay_is_high():
-    assert classify("hermes_relay", {"message": "restart jellyfin"}) == (Risk.HIGH, Reversibility.UNKNOWN)
-
-
 def test_classify_unknown_kind_is_unclassifiable():
     assert classify("totally_new_thing", {}) == (Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN)
 
@@ -370,29 +366,6 @@ async def test_chat_home_control_routes_through_broker(eng):
     assert action_logs[0].kind == "ha_service"
 
 
-@pytest.mark.asyncio
-async def test_chat_hermes_routes_through_broker(eng):
-    from backend.agents import chat as chat_mod
-
-    intent_json = json.dumps({"intent": "HERMES", "reason": "x"})
-
-    async def fake_haiku(prompt, *a, **k):
-        return intent_json
-
-    with patch("backend.agents.router.haiku", new=fake_haiku), \
-         patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="ok done") as rl:
-        out = await chat_mod.chat(None, "Hermes restart jellyfin")
-
-    assert out["reply"] == "ok done"
-    rl.assert_awaited_once()
-
-    logs = _all_logs(eng)
-    action_logs = [l for l in logs if l.kind == "hermes_relay"]
-    assert len(action_logs) == 1
-    assert action_logs[0].decision == "executed"
-    assert action_logs[0].risk == "high"
-
-
 # ---------------------------------------------------------------------------
 # /api/safety/actions endpoint
 # ---------------------------------------------------------------------------
@@ -475,13 +448,13 @@ def test_policy_endpoints_get_and_delete(safety_client, auth_headers):
     eng = safety_client._engine
     with patch("backend.database.engine", eng):
         governor.add_auto_allow_kind("ha_service")
-        governor.add_forbidden_kind("hermes_relay")
+        governor.add_forbidden_kind("unraid_docker_prune")
 
     resp = safety_client.get("/api/safety/policy", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["auto_allow"] == ["ha_service"]
-    assert data["forbid"] == ["hermes_relay"]
+    assert data["forbid"] == ["unraid_docker_prune"]
 
     # No auth -> 401
     resp = safety_client.get("/api/safety/policy")
@@ -493,7 +466,7 @@ def test_policy_endpoints_get_and_delete(safety_client, auth_headers):
     assert resp.json()["auto_allow"] == []
 
     # Un-forbid.
-    resp = safety_client.delete("/api/safety/policy/forbid/hermes_relay", headers=auth_headers)
+    resp = safety_client.delete("/api/safety/policy/forbid/unraid_docker_prune", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["forbid"] == []
 
@@ -526,275 +499,27 @@ def test_safety_confirm_404_and_409(safety_client, auth_headers):
     assert body["status"] in ("executed", "failed")
 
 
-# ===========================================================================
-# Tier 1.4 — Hermes structured allowlist + free-text relay quarantine
-# ===========================================================================
-
-# --- Item 2: classify("hermes_action") per verb ---
-
-def test_classify_hermes_action_per_verb():  # AC2.1
-    assert classify("hermes_action", {"verb": "proxmox_status"}) == (Risk.LOW, Reversibility.REVERSIBLE)
-    assert classify("hermes_action", {"verb": "adguard_control"}) == (Risk.MEDIUM, Reversibility.REVERSIBLE_BY_INVERSE)
-    assert classify("hermes_action", {"verb": "restart_service"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
-    assert classify("hermes_action", {"verb": "vm_action"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
-    # Tier C batch 2 verbs (all HIGH so agent -> needs_confirm; none IRREVERSIBLE)
-    assert classify("hermes_action", {"verb": "pve_refresh_updates"}) == (Risk.HIGH, Reversibility.REVERSIBLE)
-    assert classify("hermes_action", {"verb": "docker_prune"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
-    assert classify("hermes_action", {"verb": "unifi_block_client"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
-    assert classify("hermes_action", {"verb": "unifi_unblock_client"}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
-    # unknown / missing verb -> unclassifiable
-    assert classify("hermes_action", {"verb": "bogus"}) == (Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN)
-    assert classify("hermes_action", {}) == (Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN)
-
-
-# --- Item 2: execute_action with kind="hermes_action" ---
-
-@pytest.mark.asyncio
-async def test_user_hermes_action_executes_and_logs(eng):  # AC2.2
-    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
-               return_value={"ok": True, "response": "done", "intent": "restart_service"}) as rl:
-        res = await execute_action(
-            actor="user", kind="hermes_action", target="hermes",
-            payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
-        )
-    assert res.decision == Decision.EXECUTED
-    assert res.risk == Risk.HIGH
-    assert res.result["command"] == "restart jellyfin"
-    assert res.result["response"] == "done"
-    rl.assert_awaited_once()
-    assert rl.await_args.args[0] == "restart jellyfin"
-
-    logs = _all_logs(eng)
-    action_logs = [l for l in logs if l.kind == "hermes_action"]
-    assert len(action_logs) == 1
-    assert action_logs[0].decision == "executed"
-    assert action_logs[0].risk == "high"
-
-
-@pytest.mark.asyncio
-async def test_agent_low_hermes_action_executes(eng):  # AC2.3 — autonomy ON (no SystemState row -> default True)
-    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
-               return_value={"ok": True, "response": "pong", "intent": "proxmox_status"}) as rl:
-        res = await execute_action(
-            actor="agent", kind="hermes_action", target="hermes",
-            payload={"verb": "proxmox_status", "args": {}},
-        )
-    assert res.decision == Decision.EXECUTED
-    assert res.risk == Risk.LOW
-    rl.assert_awaited_once()
-    assert rl.await_args.args[0] == "check proxmox"
-
-
-@pytest.mark.asyncio
-async def test_agent_high_hermes_action_needs_confirm_then_confirmed(eng):  # AC2.4
-    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
-               return_value={"ok": True, "response": "ok", "intent": "restart_service"}) as rl:
-        res = await execute_action(
-            actor="agent", kind="hermes_action", target="hermes",
-            payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
-        )
-        assert res.decision == Decision.NEEDS_CONFIRM
-        assert rl.call_count == 0
-
-        res2 = await execute_action(
-            actor="agent", kind="hermes_action", target="hermes",
-            payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
-            confirmed=True,
-        )
-    assert res2.decision == Decision.EXECUTED
-    rl.assert_awaited_once()
-    assert rl.await_args.args[0] == "restart jellyfin"
-
-
-@pytest.mark.asyncio
-async def test_user_hermes_action_bad_args_fails_no_escape(eng):  # AC2.5
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock) as rl:
-        res = await execute_action(
-            actor="user", kind="hermes_action", target="hermes",
-            payload={"verb": "restart_service", "args": {}},  # missing name
-        )
-    # build_command raised ValueError -> recorded FAILED, no re-raise, no relay.
-    assert res.decision == Decision.FAILED
-    assert res.error  # error string set
-    assert rl.call_count == 0
-    logs = _all_logs(eng)
-    assert [l for l in logs if l.kind == "hermes_action"][0].decision == "failed"
-
-
-@pytest.mark.asyncio
-async def test_hermes_action_injection_blocked(eng):
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock) as rl:
-        res = await execute_action(
-            actor="user", kind="hermes_action", target="hermes",
-            payload={"verb": "vm_action", "args": {"vm": "200; rm -rf /", "action": "stop"}},
-        )
-    assert res.decision == Decision.FAILED
-    assert rl.call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_hermes_action_idempotency_replay(eng):  # AC2.8
-    with patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
-               return_value={"ok": True, "response": "ok", "intent": "restart_service"}) as rl:
-        res1 = await execute_action(
-            actor="user", kind="hermes_action", target="hermes",
-            payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
-            idempotency_key="hk1",
-        )
-        res2 = await execute_action(
-            actor="user", kind="hermes_action", target="hermes",
-            payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
-            idempotency_key="hk1",
-        )
-    assert res1.decision == Decision.EXECUTED and res1.replayed is False
-    assert res2.decision == Decision.EXECUTED and res2.replayed is True
-    assert rl.call_count == 1
-    assert len([l for l in _all_logs(eng) if l.kind == "hermes_action"]) == 1
-
-
-# --- Item 3: decide(kind="hermes_relay") quarantine ---
-
-def test_decide_agent_hermes_relay_forbidden_unconfirmed():  # AC3.1
-    assert decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, confirmed=False, kind="hermes_relay") == Decision.FORBIDDEN
-
-
-def test_decide_agent_hermes_relay_forbidden_even_confirmed():  # AC3.1
-    assert decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, confirmed=True, kind="hermes_relay") == Decision.FORBIDDEN
-
-
-def test_decide_autonomous_hermes_relay_forbidden():
-    assert decide(Actor.AUTONOMOUS, Risk.HIGH, Reversibility.UNKNOWN, confirmed=True, kind="hermes_relay") == Decision.FORBIDDEN
-
-
-def test_decide_user_hermes_relay_allowed():  # AC3.6
-    assert decide(Actor.USER, Risk.HIGH, Reversibility.UNKNOWN, confirmed=False, kind="hermes_relay") == Decision.ALLOWED
-
-
 def test_decide_agent_high_no_kind_unchanged():  # AC3.7
     assert decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, confirmed=False) == Decision.NEEDS_CONFIRM
 
 
 @pytest.mark.asyncio
-async def test_agent_hermes_relay_forbidden_no_dispatch(eng):  # AC3.4
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock) as rl:
-        res = await execute_action(
-            actor="agent", kind="hermes_relay", target="hermes",
-            payload={"message": "restart jellyfin now"},
-        )
-    assert res.decision == Decision.FORBIDDEN
-    assert rl.call_count == 0
-    logs = _all_logs(eng)
-    relay_logs = [l for l in logs if l.kind == "hermes_relay"]
-    assert len(relay_logs) == 1
-    assert relay_logs[0].decision == "forbidden"
+async def test_hermes_action_kind_no_longer_dispatches(eng):
+    """hermes_action was removed from the broker entirely — it's now just an
+    unregistered kind, UNCLASSIFIABLE risk. Must never reach EXECUTED."""
+    res = await execute_action(
+        actor="agent", kind="hermes_action", target="hermes",
+        payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
+    )
+    assert res.decision == Decision.NEEDS_CONFIRM
 
-
-@pytest.mark.asyncio
-async def test_user_hermes_relay_executes_raw_message(eng):  # AC3.7
-    with patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="ok") as rl:
-        res = await execute_action(
-            actor="user", kind="hermes_relay", target="hermes",
-            payload={"message": "some free text"},
-        )
-    assert res.decision == Decision.EXECUTED
-    rl.assert_awaited_once_with("some free text")
-
-
-# --- Item 4: chat HERMES branch routes to structured allowlist ---
-
-@pytest.mark.asyncio
-async def test_chat_hermes_known_verb_routes_structured(eng):  # AC4.1
-    from backend.agents import chat as chat_mod
-
-    intent_json = json.dumps({"intent": "HERMES", "reason": "x"})
-    verb_json = json.dumps({"verb": "restart_service", "args": {"name": "jellyfin"}})
-
-    async def fake_haiku(prompt, *a, **k):
-        if "Classify this user message" in prompt:
-            return intent_json
-        return verb_json  # the verb-pick prompt
-
-    with patch("backend.agents.router.haiku", new=fake_haiku), \
-         patch("backend.integrations.hermes.relay_action", new_callable=AsyncMock,
-               return_value={"ok": True, "response": "restarted", "intent": "restart_service"}) as rl:
-        out = await chat_mod.chat(None, "restart jellyfin")
-
-    assert out["reply"] == "restarted"
-    rl.assert_awaited_once()
-    assert rl.await_args.args[0] == "restart jellyfin"
-
-    logs = _all_logs(eng)
-    assert len([l for l in logs if l.kind == "hermes_action" and l.decision == "executed"]) == 1
-    assert len([l for l in logs if l.kind == "hermes_relay"]) == 0
-
-
-@pytest.mark.asyncio
-async def test_chat_hermes_unrecognized_falls_back_to_relay(eng):  # AC4.2
-    from backend.agents import chat as chat_mod
-
-    intent_json = json.dumps({"intent": "HERMES", "reason": "x"})
-    verb_json = json.dumps({"verb": "unknown", "args": {}})
-
-    async def fake_haiku(prompt, *a, **k):
-        if "Classify this user message" in prompt:
-            return intent_json
-        return verb_json
-
-    with patch("backend.agents.router.haiku", new=fake_haiku), \
-         patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="relayed") as rl:
-        out = await chat_mod.chat(None, "do something weird to hermes")
-
-    assert out["reply"] == "relayed"
-    rl.assert_awaited_once_with("do something weird to hermes")
-    logs = _all_logs(eng)
-    assert len([l for l in logs if l.kind == "hermes_relay"]) == 1
-    assert len([l for l in logs if l.kind == "hermes_action"]) == 0
-
-
-@pytest.mark.asyncio
-async def test_chat_hermes_known_verb_invalid_args_falls_back(eng):  # AC4.3
-    from backend.agents import chat as chat_mod
-
-    intent_json = json.dumps({"intent": "HERMES", "reason": "x"})
-    # known verb but empty/invalid args -> validate_args fails -> fallback relay
-    verb_json = json.dumps({"verb": "restart_service", "args": {}})
-
-    async def fake_haiku(prompt, *a, **k):
-        if "Classify this user message" in prompt:
-            return intent_json
-        return verb_json
-
-    with patch("backend.agents.router.haiku", new=fake_haiku), \
-         patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="relayed") as rl:
-        out = await chat_mod.chat(None, "restart the thing")
-
-    assert out["reply"] == "relayed"
-    rl.assert_awaited_once_with("restart the thing")
-    logs = _all_logs(eng)
-    assert len([l for l in logs if l.kind == "hermes_relay"]) == 1
-    assert len([l for l in logs if l.kind == "hermes_action"]) == 0
-
-
-@pytest.mark.asyncio
-async def test_chat_hermes_invalid_json_falls_back(eng):  # AC4.4
-    from backend.agents import chat as chat_mod
-
-    intent_json = json.dumps({"intent": "HERMES", "reason": "x"})
-
-    async def fake_haiku(prompt, *a, **k):
-        if "Classify this user message" in prompt:
-            return intent_json
-        return "this is not json at all"
-
-    with patch("backend.agents.router.haiku", new=fake_haiku), \
-         patch("backend.integrations.hermes.relay", new_callable=AsyncMock, return_value="relayed") as rl:
-        out = await chat_mod.chat(None, "hermes do a barrel roll")
-
-    assert out["reply"] == "relayed"
-    rl.assert_awaited_once_with("hermes do a barrel roll")
-    logs = _all_logs(eng)
-    assert len([l for l in logs if l.kind == "hermes_relay"]) == 1
-    assert len([l for l in logs if l.kind == "hermes_action"]) == 0
+    res2 = await execute_action(
+        actor="agent", kind="hermes_action", target="hermes",
+        payload={"verb": "restart_service", "args": {"name": "jellyfin"}},
+        confirmed=True,
+    )
+    assert res2.decision == Decision.FAILED
+    assert "no dispatcher" in (res2.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -857,8 +582,8 @@ async def test_policy_promote_rejects_never_promotable_even_if_matching(eng):
         s.commit()
 
     res = await execute_action(
-        actor="user", kind="policy_promote", target="hermes_relay",
-        payload={"kind": "hermes_relay"},
+        actor="user", kind="policy_promote", target="policy_promote",
+        payload={"kind": "policy_promote"},
     )
     assert res.decision == Decision.FAILED
 

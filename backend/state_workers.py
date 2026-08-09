@@ -109,7 +109,6 @@ COLLECTOR_GROUPS: dict[int, tuple[Collector, ...]] = {
     ),
     60: (
         _source("obsidian", 60),
-        _source("hermes", 60),
         _source("channels_dvr", 60),
         Collector("dashboard.channels", 120, lambda: _fetch("channels_dvr")),
         Collector("dashboard.proxmox_maintenance", 120, _proxmox_maintenance),

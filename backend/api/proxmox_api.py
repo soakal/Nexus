@@ -39,10 +39,10 @@ async def get_proxmox_maintenance(_=Depends(require_api_key)):
 
 @router.post("/vm/{vmid}/power")
 async def vm_power(vmid: int, body: VmPowerAction, _=Depends(require_api_key)):
-    """Start/stop/reboot a Proxmox VM or LXC (broker-gated, Phase 7b).
+    """Start/stop/reboot a Proxmox VM or LXC (broker-gated).
 
-    Native, not via Hermes's relay — see backend/safety/broker.py's
-    vm_power dispatcher and backend/integrations/proxmox.py::set_vm_power.
+    See backend/safety/broker.py's vm_power dispatcher and
+    backend/integrations/proxmox.py::set_vm_power.
     """
     from backend.safety.broker import Decision, execute_action
 

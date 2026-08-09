@@ -276,8 +276,8 @@ def test_protonmail_module_never_calls_delete_emails():
 
 
 # ---------------------------------------------------------------------------
-# format_inbox_summary / inbox_summary — replaces the old Gmail-via-Hermes
-# summary on the Today page and (removed from) the briefing prompt
+# format_inbox_summary / inbox_summary — the Today page inbox summary
+# (removed from the briefing prompt)
 # ---------------------------------------------------------------------------
 
 def test_format_inbox_summary_lists_unread():

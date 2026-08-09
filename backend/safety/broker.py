@@ -1,7 +1,7 @@
 """Policy-gated action broker — the single chokepoint for side-effecting writes.
 
 Every action that changes the state of an external system (turning a Home
-Assistant device on/off, relaying a command to the Hermes production bot, ...)
+Assistant device on/off, restarting a Docker container on Unraid, ...)
 MUST go through `execute_action`. The broker:
 
   1. classifies the action's RISK and REVERSIBILITY (`classify`),
@@ -134,21 +134,6 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # not silently execute.
         return Risk.HIGH, Reversibility.UNKNOWN
 
-    if kind == "hermes_relay":
-        # A relay posts raw natural language straight to a live PRODUCTION bot
-        # that can restart LXCs, open the garage, send Telegram messages, etc.
-        # The effect (and thus its reversibility) is unknowable from here, so it
-        # is HIGH by construction. Tier 1.4 quarantines this for non-user actors
-        # in `decide` (FORBIDDEN); the classification itself is unchanged.
-        return Risk.HIGH, Reversibility.UNKNOWN
-
-    if kind == "hermes_action":
-        # A structured allowlist verb — classification comes from the verb spec.
-        # Lazy import to avoid a load cycle (hermes_actions imports Risk/Reversibility
-        # from this module at its top).
-        from backend.safety import hermes_actions
-        return hermes_actions.classify_verb((payload or {}).get("verb", ""))
-
     if kind == "channels_record":
         # Trigger a DVR recording — low blast radius, deletable via the inverse.
         return Risk.LOW, Reversibility.REVERSIBLE_BY_INVERSE
@@ -159,27 +144,23 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
     if kind == "unraid_docker_prune":
-        # Phase 7d of the Hermes decoupling — native SSH, not via Hermes's
-        # relay. Deletes dangling Docker images only (never containers/
-        # volumes/networks — see unraid.py's prune_docker_images docstring),
-        # but it's still a live SSH command against production infra, so it's
-        # HIGH and always needs a human tap for an agent/autonomous actor.
-        # The inverse (re-pull an image) is available, so not IRREVERSIBLE.
+        # Native SSH command. Deletes dangling Docker images only (never
+        # containers/volumes/networks — see unraid.py's prune_docker_images
+        # docstring), but it's still a live SSH command against production
+        # infra, so it's HIGH and always needs a human tap for an agent/
+        # autonomous actor. The inverse (re-pull an image) is available, so
+        # not IRREVERSIBLE.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
     if kind == "vm_power":
-        # Phase 7b of the Hermes decoupling — native, not via Hermes's relay.
-        # Same band Hermes's own vm_action verb already carries
-        # (hermes_actions.py) — starting/stopping/rebooting a VM or LXC is
-        # HIGH, always needs a human tap for an agent/autonomous actor.
+        # Starting/stopping/rebooting a VM or LXC is HIGH, always needs a
+        # human tap for an agent/autonomous actor.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
     if kind in ("unifi_block", "unifi_unblock"):
-        # Phase 7a of the Hermes decoupling — native, not via Hermes's relay.
-        # Same band Hermes's own unifi_block_client/unifi_unblock_client verbs
-        # already carry: HIGH so an agent always needs a human tap. The inverse
-        # is clean (block <-> unblock), but the blast radius includes Brian's
-        # own phone/NEXUS host/tailnet path if the wrong MAC is targeted — a
+        # HIGH so an agent always needs a human tap. The inverse is clean
+        # (block <-> unblock), but the blast radius includes Brian's own
+        # phone/NEXUS host/tailnet path if the wrong MAC is targeted — a
         # self-lockout risk an agent must never trigger unsupervised.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
@@ -235,7 +216,6 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
 # Kinds that may NEVER be auto-allowed by policy, whatever the persisted
 # override state says. Hardcoded, not configurable — this is the floor.
 _NEVER_PROMOTABLE = frozenset({
-    "hermes_relay",    # already quarantined to humans (Tier 1.4) — see below
     "policy_promote",  # the promotion mechanism must never promote itself
 })
 
@@ -255,10 +235,7 @@ def decide(
     a dispatch outcome.
 
     `kind` is optional (default None keeps the positional decide() callers/tests
-    working). When `kind == "hermes_relay"` a NON-user actor is FORBIDDEN outright:
-    free-text relay to the live Hermes bot is quarantined to humans only (Tier
-    1.4). `confirmed` is NOT an escape hatch for it — an agent must use the
-    structured `hermes_action` allowlist instead.
+    working).
 
     `policy` (Feature 3 — Confirm-Policy Learner) is an optional
     `{"auto_allow": set[str], "forbid": set[str]}` dict of kinds a human has
@@ -280,14 +257,9 @@ def decide(
     forbid = (policy or {}).get("forbid") or set()
     auto_allow = (policy or {}).get("auto_allow") or set()
 
-    # A demotion always beats a promotion, checked BEFORE the hermes_relay/
-    # irreversibility/risk logic below — fail-safe if a kind somehow ends up
-    # in both lists.
+    # A demotion always beats a promotion, checked BEFORE the irreversibility/
+    # risk logic below — fail-safe if a kind somehow ends up in both lists.
     if kind in forbid:
-        return Decision.FORBIDDEN
-
-    # Free-text Hermes relay is forbidden for agent/autonomous, confirmed or not.
-    if kind == "hermes_relay":
         return Decision.FORBIDDEN
 
     # agent / autonomous — evaluate irreversibility FIRST: an irreversible action
@@ -323,44 +295,10 @@ async def _dispatch_ha_service(target: str, payload: dict) -> dict:
     return result
 
 
-async def _dispatch_hermes_relay(target: str, payload: dict) -> dict:
-    from backend.integrations import hermes
-
-    # NOTE: relay() returns a plain str and swallows its own errors INTO that
-    # string ("Hermes is not reachable right now: ..."). So from the broker's
-    # point of view a relay always "succeeds" — distinguishing a real Hermes-side
-    # failure from a normal response is the Tier 1.4 relay-quarantine follow-up.
-    r = await hermes.relay(payload["message"])
-    return {"response": r}
-
-
-async def _dispatch_hermes_action(target: str, payload: dict) -> dict:
-    """Build a phrase from the structured allowlist verb, then relay it.
-
-    `build_command` validates the verb + args and raises ValueError on anything
-    invalid/unknown — that propagates up to the dispatch try/except in
-    `execute_action`, which records the action FAILED (never re-raises).
-    """
-    from backend.integrations import hermes
-    from backend.safety import hermes_actions
-
-    command = hermes_actions.build_command(payload["verb"], payload.get("args") or {})
-    # Use the structured relay (Tier 1.4 follow-up, now unblocked by the Hermes #2
-    # response contract): it returns {"ok", "response", "intent"} so a Hermes-side
-    # action failure (e.g. Proxmox 500 → "error: ...") is no longer swallowed into
-    # a success string. Raise on ok=False so execute_action records this FAILED.
-    # Forward the broker idempotency key (if any) so a retry racing our own dedup
-    # can't double-execute on Hermes (Hermes-side #7).
-    result = await hermes.relay_action(command, idempotency_key=payload.get("idempotency_key"))
-    if not result.get("ok", True):
-        raise RuntimeError(f"Hermes action failed: {result.get('response')}")
-    return {"command": command, "response": result.get("response"), "intent": result.get("intent")}
-
-
 async def _dispatch_channels_record(target: str, payload: dict) -> dict:
     """Trigger a Channels DVR recording for the given program_id.
 
-    Calls channels_dvr.trigger_recording directly from this PC — NOT via Hermes.
+    Calls channels_dvr.trigger_recording directly from this PC.
     """
     from backend.integrations import channels_dvr
 
@@ -372,7 +310,7 @@ async def _dispatch_channels_record(target: str, payload: dict) -> dict:
 async def _dispatch_unraid_docker(target: str, payload: dict) -> dict:
     """Restart a Docker container on Unraid.
 
-    Calls unraid.restart_docker directly from this PC — NOT via Hermes.
+    Calls unraid.restart_docker directly from this PC.
     restart_docker already returns a rich dict ({"success": ...}, optionally
     with "stopped": True on a stop-succeeded/start-failed half-restart) —
     surfaced as-is, not re-wrapped, so that state isn't lost.
@@ -383,10 +321,7 @@ async def _dispatch_unraid_docker(target: str, payload: dict) -> dict:
 
 
 async def _dispatch_unraid_docker_prune(target: str, payload: dict) -> dict:
-    """Prune dangling Docker images on Unraid over native SSH.
-
-    Calls unraid.prune_docker_images directly from this PC — NOT via Hermes.
-    """
+    """Prune dangling Docker images on Unraid over native SSH."""
     from backend.integrations import unraid
 
     return await unraid.prune_docker_images()
@@ -395,9 +330,9 @@ async def _dispatch_unraid_docker_prune(target: str, payload: dict) -> dict:
 async def _dispatch_vm_power(target: str, payload: dict) -> dict:
     """Start/reboot/gracefully-shut-down a Proxmox VM or LXC.
 
-    Calls proxmox.set_vm_power directly from this PC — NOT via Hermes.
-    Validates action here (not just inside set_vm_power) so an invalid
-    action is a clean ValueError -> recorded FAILED, never an HTTP call.
+    Calls proxmox.set_vm_power directly from this PC. Validates action here
+    (not just inside set_vm_power) so an invalid action is a clean
+    ValueError -> recorded FAILED, never an HTTP call.
     """
     from backend.integrations import proxmox
 
@@ -409,30 +344,21 @@ async def _dispatch_vm_power(target: str, payload: dict) -> dict:
 
 
 async def _dispatch_unifi_block(target: str, payload: dict) -> dict:
-    """Block a client from the UniFi network by MAC address.
-
-    Calls unifi.block_client directly from this PC — NOT via Hermes.
-    """
+    """Block a client from the UniFi network by MAC address."""
     from backend.integrations import unifi
 
     return await unifi.block_client(payload["mac"])
 
 
 async def _dispatch_unifi_unblock(target: str, payload: dict) -> dict:
-    """Unblock a client on the UniFi network by MAC address.
-
-    Calls unifi.unblock_client directly from this PC — NOT via Hermes.
-    """
+    """Unblock a client on the UniFi network by MAC address."""
     from backend.integrations import unifi
 
     return await unifi.unblock_client(payload["mac"])
 
 
 async def _dispatch_obsidian_task(target: str, payload: dict) -> dict:
-    """Check off a task in an Obsidian vault note.
-
-    Calls obsidian.complete_task directly from this PC — NOT via Hermes.
-    """
+    """Check off a task in an Obsidian vault note."""
     from backend.integrations import obsidian
 
     await obsidian.complete_task(payload["note_path"], payload["task_text"])
@@ -440,9 +366,9 @@ async def _dispatch_obsidian_task(target: str, payload: dict) -> dict:
 
 
 async def _dispatch_send_notification(target: str, payload: dict) -> dict:
-    """Send a phone (Telegram) notification to the owner via Hermes.
+    """Send a phone (Telegram) notification to the owner.
 
-    Wraps events.notify_phone. A delivery failure (e.g. Hermes down or a 401)
+    Wraps events.notify_phone. A delivery failure (e.g. Telegram down or a 401)
     returns delivered=False; we RAISE so execute_action records the action FAILED
     — this gives the verifier an honest success/failure signal to ground against
     instead of silently "succeeding" on an undelivered message.
@@ -451,7 +377,7 @@ async def _dispatch_send_notification(target: str, payload: dict) -> dict:
 
     delivered = await events.notify_phone(payload["content"], kind="agent_message")
     if not delivered:
-        raise RuntimeError("notification not delivered (Hermes unreachable or auth failed)")
+        raise RuntimeError("notification not delivered (Telegram unreachable or auth failed)")
     return {"delivered": True}
 
 
@@ -520,8 +446,6 @@ async def _dispatch_policy_promote(target: str, payload: dict) -> dict:
 
 _DISPATCHERS = {
     "ha_service": _dispatch_ha_service,
-    "hermes_relay": _dispatch_hermes_relay,
-    "hermes_action": _dispatch_hermes_action,
     "channels_record": _dispatch_channels_record,
     "unraid_docker": _dispatch_unraid_docker,
     "unraid_docker_prune": _dispatch_unraid_docker_prune,
@@ -1091,15 +1015,8 @@ async def execute_action(
             error=error,
         )
 
-    # Forward the broker idempotency key to the hermes_action dispatcher (so it can
-    # set the Hermes Idempotency-Key header). Non-mutating: only a local copy for
-    # this dispatch carries the extra field; the caller's payload is untouched.
-    dispatch_payload = payload
-    if kind == "hermes_action" and idempotency_key:
-        dispatch_payload = {**payload, "idempotency_key": idempotency_key}
-
     try:
-        result = await dispatcher(target, dispatch_payload)
+        result = await dispatcher(target, payload)
     except Exception as e:  # never re-raise — record the failure and return it
         logger.warning(f"Action dispatch failed kind={kind} target={target}: {e}")
         await asyncio.to_thread(

@@ -253,38 +253,29 @@ async def _github_status(_input: dict) -> str:
         return _truncate(f"github_status unavailable: {e}")
 
 
-async def _hermes_status(_input: dict) -> str:
-    try:
-        from backend.integrations import hermes
-        status = await hermes.get_status()
-        summary = (
-            f"Hermes: alive={_safe(status, 'alive', False)}, "
-            f"last_seen={_safe(status, 'last_seen', None)}, "
-            f"pending_actions={_safe(status, 'pending_actions', 0)}"
-        )
-        return _truncate(summary)
-    except Exception as e:
-        return _truncate(f"hermes_status unavailable: {e}")
-
-
 async def _proxmox_updates(_input: dict) -> str:
     try:
-        from backend.integrations import hermes
-        # Read-only: relays the "proxmox updates" intent to Hermes, which queries
-        # the Proxmox apt/update API and returns a pending-update summary string.
-        result = await hermes.relay("proxmox updates")
-        return _truncate(result if isinstance(result, str) else str(result))
+        from backend.integrations import proxmox
+        data = await proxmox.fetch_updates()
+        count = data.get("count", 0)
+        packages = ", ".join(data.get("packages") or [])
+        summary = f"Proxmox updates: {count} pending"
+        if packages:
+            summary += f" ({packages})"
+        return _truncate(summary)
     except Exception as e:
         return _truncate(f"proxmox_updates unavailable: {e}")
 
 
 async def _proxmox_backups(_input: dict) -> str:
     try:
-        from backend.integrations import hermes
-        # Read-only: relays "backup status" to Hermes, which queries the PVE
-        # tasks API for the latest vzdump job outcome.
-        result = await hermes.relay("backup status")
-        return _truncate(result if isinstance(result, str) else str(result))
+        from backend.integrations import proxmox
+        data = await proxmox.fetch_backups()
+        status = data.get("status", "unknown")
+        summary = f"Proxmox backups: latest={status}"
+        if data.get("detail"):
+            summary += f" ({data['detail']})"
+        return _truncate(summary)
     except Exception as e:
         return _truncate(f"proxmox_backups unavailable: {e}")
 
@@ -422,20 +413,14 @@ READ_TOOLS: list[ReadTool] = [
         dispatch=_github_status,
     ),
     ReadTool(
-        name="hermes_status",
-        description="Read the Hermes homelab bot status: alive, last seen, pending actions. READ ONLY — does not command Hermes.",
-        input_schema=_NO_ARGS_SCHEMA,
-        dispatch=_hermes_status,
-    ),
-    ReadTool(
         name="proxmox_updates",
-        description="Read pending Proxmox (PVE) system updates: how many apt packages are upgradable on the node, via Hermes. READ ONLY — does not install anything.",
+        description="Read pending Proxmox (PVE) system updates: how many apt packages are upgradable on the node. READ ONLY — does not install anything.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_proxmox_updates,
     ),
     ReadTool(
         name="proxmox_backups",
-        description="Read the status of the latest Proxmox vzdump VM backup job via Hermes. READ ONLY.",
+        description="Read the status of the latest Proxmox vzdump VM backup job. READ ONLY.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_proxmox_backups,
     ),

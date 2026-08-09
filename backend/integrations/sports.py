@@ -1,7 +1,7 @@
-"""Tigers/Lions last-game scores for the homelab digest (Phase 3).
+"""Tigers/Lions last-game scores for the homelab digest.
 
-Ported from hermes-agent/sports.py. Both are unauthenticated public HTTP
-GETs (MLB Stats API, ESPN's site API) -- no vault secret needed.
+Unauthenticated public HTTP GETs (MLB Stats API, ESPN's site API) -- no
+vault secret needed.
 """
 import datetime
 import logging

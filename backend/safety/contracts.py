@@ -10,8 +10,7 @@ catches this failure mode. backend/agents/watchdog.py::check_integration_contrac
 reads the registry below on a schedule and pages when a real consumer's field
 would be lying.
 
-Everything in this module is PURE: no I/O, no await, no DB. Same contract as
-backend/safety/hermes_actions.py ("PURE: no I/O, no await, no DB").
+Everything in this module is PURE: no I/O, no await, no DB — a pure registry.
 
 `consumer` on every FieldContract is REQUIRED and non-blank by convention
 (enforced by tests/test_contract_canary.py::test_every_contract_names_a_consumer)
@@ -240,7 +239,6 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
 EXCLUDED: dict[str, str] = {
     "speedtest": "no fetch(); run_speedtest() downloads 25MB + uploads 5MB per call — a canary must not trigger that on a schedule",
     "protonmail": "no fetch(); reads are parameterised (list_recent), and inbox_summary() never raises — it returns the error as a string, so it's unassertable",
-    "hermes": "no fetch() — it's now a pure action-relay bridge + liveness probe (get_status/health_check), not a data integration with a shape to protect",
 }
 
 

@@ -73,7 +73,7 @@ def _decision_to_str(res) -> str:
     if d == Decision.EXECUTED:
         summary = ""
         if res.result:
-            # hermes_action results carry "response"; ha results are simple dicts
+            # some dispatch results carry "response"; ha results are simple dicts
             resp_text = res.result.get("response") or str(res.result)
             # Truncate the inner detail before embedding it
             summary = _wtruncate(str(resp_text))
@@ -125,45 +125,10 @@ async def _home_control(input: dict) -> str:  # noqa: A002
         return f"home_control error: {e}"
 
 
-async def _hermes_command(input: dict) -> str:  # noqa: A002
-    try:
-        verb = (input or {}).get("verb", "")
-        args = (input or {}).get("args") or {}
-
-        from backend.safety import hermes_actions
-
-        if not hermes_actions.is_allowed(verb):
-            allowed_names = ", ".join(
-                v["verb"] for v in hermes_actions.allowed_verbs()
-            )
-            return _wtruncate(
-                f"unknown verb. Allowed verbs: {allowed_names}"
-            )
-
-        err = hermes_actions.validate_args(verb, args)
-        if err:
-            return f"invalid args: {err}"
-
-        key = _idem_key_for("hermes_command", {"verb": verb, "args": args})
-
-        from backend.safety.broker import execute_action
-        res = await execute_action(
-            actor="agent",
-            kind="hermes_action",
-            target="hermes",
-            payload={"verb": verb, "args": args},
-            idempotency_key=key,
-        )
-        return _wtruncate(_decision_to_str(res))
-    except Exception as e:
-        return f"hermes_command error: {e}"
-
-
 async def _channels_record(input: dict) -> str:  # noqa: A002
     """Trigger a Channels DVR recording by program_id.
 
     Goes through the safety broker (Risk.LOW → agent ALLOWED automatically).
-    Dispatches DIRECT from this PC — not via Hermes.
     """
     try:
         program_id = (input or {}).get("program_id", "")
@@ -194,7 +159,7 @@ async def _unraid_docker_restart(input: dict) -> str:  # noqa: A002
 
     Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM;
     a human must confirm before the restart executes).
-    Dispatches DIRECT from this PC — not via Hermes.
+    Dispatches direct from this PC.
     """
     try:
         container_id = (input or {}).get("container_id", "")
@@ -238,7 +203,7 @@ async def _unraid_docker_prune(input: dict) -> str:  # noqa: A002
 
     Goes through the safety broker (Risk.HIGH — agent gets NEEDS_CONFIRM;
     a human must confirm before the prune executes). Dispatches direct from
-    this PC over native SSH, not via Hermes.
+    this PC over native SSH.
     """
     try:
         key = _idem_key_for("unraid_docker_prune", {})
@@ -261,7 +226,7 @@ async def _vm_power(input: dict) -> str:  # noqa: A002
 
     Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM;
     a human must confirm before the power action executes).
-    Dispatches DIRECT from this PC — not via Hermes.
+    Dispatches direct from this PC.
     """
     try:
         vmid_raw = (input or {}).get("vmid")
@@ -294,7 +259,7 @@ async def _unifi_block(input: dict) -> str:  # noqa: A002
     Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM;
     a human must confirm before the block executes — a wrong MAC is a
     self-lockout risk).
-    Dispatches DIRECT from this PC — not via Hermes.
+    Dispatches direct from this PC.
     """
     try:
         mac = (input or {}).get("mac", "")
@@ -321,7 +286,7 @@ async def _unifi_unblock(input: dict) -> str:  # noqa: A002
     """Unblock a client on the UniFi network by MAC address.
 
     Goes through the safety broker (Risk.HIGH → agent gets NEEDS_CONFIRM).
-    Dispatches DIRECT from this PC — not via Hermes.
+    Dispatches direct from this PC.
     """
     try:
         mac = (input or {}).get("mac", "")
@@ -348,7 +313,7 @@ async def _obsidian_complete_task(input: dict) -> str:  # noqa: A002
     """Check off a task in an Obsidian vault note.
 
     Goes through the safety broker (Risk.LOW → agent ALLOWED automatically).
-    Dispatches DIRECT from this PC — not via Hermes.
+    Dispatches direct from this PC.
     """
     try:
         note_path = (input or {}).get("note_path", "")
@@ -382,7 +347,7 @@ async def _obsidian_complete_task(input: dict) -> str:  # noqa: A002
 
 
 async def _send_notification(input: dict) -> str:  # noqa: A002
-    """Send a phone (Telegram) notification to the owner via Hermes.
+    """Send a phone (Telegram) notification to the owner.
 
     Goes through the safety broker (Risk.LOW reversible → agent ALLOWED, but
     per-verb throttled and kill-switch-gated). This is the tool that makes a
@@ -442,34 +407,11 @@ WRITE_TOOLS: list[ReadTool] = [
         dispatch=_home_control,
     ),
     ReadTool(
-        name="hermes_command",
-        description=(
-            "Command the Hermes homelab bot via a structured allowlisted verb "
-            "(e.g. restart a service). Goes through the safety broker; risky verbs "
-            "are refused without confirmation. Call with the verb and its required args."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "verb": {
-                    "type": "string",
-                    "description": "Allowlisted Hermes verb, e.g. 'proxmox_status', 'adguard_control'",
-                },
-                "args": {
-                    "type": "object",
-                    "description": "Verb-specific arguments (see allowed_verbs for required/enum args)",
-                },
-            },
-            "required": ["verb"],
-        },
-        dispatch=_hermes_command,
-    ),
-    ReadTool(
         name="channels_record",
         description=(
             "Trigger a Channels DVR recording for a program by program_id. "
             "Goes through the safety broker (LOW risk — auto-allowed for agents). "
-            "Dispatches direct from this PC, not via Hermes."
+            "Dispatches direct from this PC."
         ),
         input_schema={
             "type": "object",
@@ -489,7 +431,7 @@ WRITE_TOOLS: list[ReadTool] = [
             "Restart a Docker container on Unraid by container_id. "
             "Goes through the safety broker (HIGH risk — needs human confirmation "
             "before the restart executes for an agent). "
-            "Dispatches direct from this PC, not via Hermes."
+            "Dispatches direct from this PC."
         ),
         input_schema={
             "type": "object",
@@ -510,7 +452,7 @@ WRITE_TOOLS: list[ReadTool] = [
             "never containers/volumes/networks. "
             "Goes through the safety broker (HIGH risk — needs human confirmation "
             "before the prune executes for an agent). "
-            "Dispatches direct from this PC over native SSH, not via Hermes."
+            "Dispatches direct from this PC over native SSH."
         ),
         input_schema={"type": "object", "properties": {}, "required": []},
         dispatch=_unraid_docker_prune,
@@ -521,7 +463,7 @@ WRITE_TOOLS: list[ReadTool] = [
             "Start, stop, or reboot a Proxmox VM or LXC by vmid. "
             "Goes through the safety broker (HIGH risk — needs human confirmation "
             "before the action executes for an agent). "
-            "Dispatches direct from this PC, not via Hermes."
+            "Dispatches direct from this PC."
         ),
         input_schema={
             "type": "object",
@@ -547,7 +489,7 @@ WRITE_TOOLS: list[ReadTool] = [
             "Goes through the safety broker (HIGH risk — needs human confirmation "
             "before the block executes for an agent; a wrong MAC risks locking out "
             "a real device). "
-            "Dispatches direct from this PC, not via Hermes."
+            "Dispatches direct from this PC."
         ),
         input_schema={
             "type": "object",
@@ -567,7 +509,7 @@ WRITE_TOOLS: list[ReadTool] = [
             "Unblock a client on the UniFi network by MAC address. "
             "Goes through the safety broker (HIGH risk — needs human confirmation "
             "before the unblock executes for an agent). "
-            "Dispatches direct from this PC, not via Hermes."
+            "Dispatches direct from this PC."
         ),
         input_schema={
             "type": "object",
@@ -586,7 +528,7 @@ WRITE_TOOLS: list[ReadTool] = [
         description=(
             "Check off an open task (- [ ] ...) in an Obsidian vault note. "
             "Goes through the safety broker (LOW risk — auto-allowed for agents). "
-            "Dispatches direct from this PC, not via Hermes."
+            "Dispatches direct from this PC."
         ),
         input_schema={
             "type": "object",

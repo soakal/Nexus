@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     channels_host: str = "http://localhost:8089"
     adguard_host: str = "http://localhost:3000"
     adguard_user: str = "admin"
-    hermes_host: str = "http://localhost:9000"
     github_username: str = ""
     briefing_time: str = "07:00"
     briefing_timezone: str = "America/Detroit"
@@ -84,7 +83,7 @@ class Settings(BaseSettings):
     # everything else (medium/high risk, irreversible, human-proposed) still needs human approval.
     auto_approve_low_risk: bool = True
 
-    # Phone notification settings (via Hermes->Telegram).
+    # Phone notification settings (via Telegram).
     phone_notifications_enabled: bool = True   # gate for all notify_phone calls
     autonomy_digest_enabled: bool = True        # send a daily autonomy summary
     autonomy_digest_time: str = "20:00"         # 24h HH:MM for the daily digest job
@@ -212,13 +211,6 @@ class Settings(BaseSettings):
     # actually met. False ignores criteria and marks the goal completed mechanically.
     success_criteria_eval_enabled: bool = True
 
-    # /api/trigger HMAC signing (Tier 1.6 autonomy ingress hardening).
-    # trigger_hmac_required=False: backward-compatible — Bearer-only callers still work.
-    # trigger_hmac_required=True: every call must carry a valid X-Timestamp / X-Signature.
-    # trigger_hmac_window_s: replay window in seconds (default 5 minutes).
-    trigger_hmac_required: bool = False
-    trigger_hmac_window_s: int = 300
-
     # CORS allowlist — localhost + RFC1918 private LAN + Tailscale (CGNAT 100.64.0.0/10
     # = 100.64-127.x.x, and *.ts.net MagicDNS) so remote access over Tailscale works;
     # public origins stay blocked. Any port. Override in .env to add a hostname.
@@ -230,7 +222,7 @@ class Settings(BaseSettings):
     step_watchdog_enabled: bool = True
     step_hung_timeout_s: int = 600  # seconds before a running step with no live worker is reaped
 
-    # Scheduler stall watchdog + Hermes dead-letter alert (Tier 3 blind-spot removal).
+    # Scheduler stall watchdog + dead-letter alert (Tier 3 blind-spot removal).
     # watchdog_enabled: master gate for both checks (scheduler stall + dead-letter).
     # scheduler_stall_grace_s: a scheduler job overdue by more than this is flagged stalled.
     # dead_letter_attempts: PendingDelivery rows at/above this attempt count are dead-lettered.
@@ -322,9 +314,9 @@ class Settings(BaseSettings):
     # not a real limit on ordinary sessions.
     council_postmortem_max_files: int = 200
 
-    # NEXUS-native Telegram (Phase 1 Hermes decoupling) — own bot, separate from
-    # Hermes's. telegram_poll_timeout_s is Telegram's long-poll wait, capped at 50
-    # by their API. calendar_days_ahead matches gcal.py's existing 7-day window.
+    # NEXUS-native Telegram bot. telegram_poll_timeout_s is Telegram's long-poll
+    # wait, capped at 50 by their API. calendar_days_ahead matches gcal.py's
+    # existing 7-day window.
     telegram_poll_enabled: bool = True
     telegram_poll_timeout_s: int = 25
     calendar_days_ahead: int = 7
@@ -334,14 +326,11 @@ class Settings(BaseSettings):
     # their own idempotency already covers replay.
     telegram_command_max_age_s: int = 300
 
-    # Phase 2c homelab watcher (backend/agents/homelab_watch.py) — the NEXUS-
-    # native port of Hermes's watcher.py 60s loop, so alerts keep firing even
-    # if Hermes's bot process is ever stopped. Interval is hardcoded at 60s in
-    # scheduler.py (matches retry_deliveries/record_uptime); only thresholds
-    # are tunable here. 45C matches Hermes's DISK_TEMP_WARN; 30 min matches
-    # its garage-open rule. Explicitly NOT built: doorbell/camera (declined by
-    # Brian) and NEXUS's own liveness check (a process can't monitor its own
-    # death — needs external monitoring).
+    # Homelab watcher (backend/agents/homelab_watch.py) — 60s edge-alert loop.
+    # Interval is hardcoded at 60s in scheduler.py (matches retry_deliveries/
+    # record_uptime); only thresholds are tunable here. Explicitly NOT built:
+    # doorbell/camera (declined by Brian) and NEXUS's own liveness check (a
+    # process can't monitor its own death — needs external monitoring).
     homelab_watch_enabled: bool = True
     homelab_disk_temp_warn_c: int = 45
     homelab_garage_entity_id: str = "cover.garage_door_garage_door"
@@ -382,10 +371,9 @@ class Settings(BaseSettings):
     calibration_override_days: int = 90           # how long Brian's un-suppress is sticky
     calibration_suppress_high_severity: bool = False  # THE guardrail — do not flip lightly
 
-    # Phase 3 of the Hermes decoupling: a proactive daily homelab-status
-    # digest (Proxmox/Unraid/UniFi/AdGuard/Channels DVR/HA/sports), ported
-    # from Hermes's own 8am cron (main.py:daily_digest). Scheduled 5 minutes
-    # after briefing_time, not independently configurable.
+    # A proactive daily homelab-status digest (Proxmox/Unraid/UniFi/AdGuard/
+    # Channels DVR/HA/sports). Scheduled 5 minutes after briefing_time, not
+    # independently configurable.
     homelab_digest_enabled: bool = True
 
     # Secret properties via vault (lazy)
@@ -443,11 +431,6 @@ class Settings(BaseSettings):
     def openrouter_api_key(self) -> str:
         from backend.secrets.manager import get_secret
         return get_secret("OPENROUTER_API_KEY")
-
-    @property
-    def hermes_webhook_secret(self) -> str:
-        from backend.secrets.manager import get_secret
-        return get_secret("HERMES_WEBHOOK_SECRET")
 
     @property
     def nexus_api_key(self) -> str:

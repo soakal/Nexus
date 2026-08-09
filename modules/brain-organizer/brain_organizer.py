@@ -2291,9 +2291,8 @@ def synthesize_wiki(
 
 
 # ---------------------------------------------------------------------------
-# Telegram notifications (NEXUS's own bot — moved off the old Hermes relay
-# 2026-07-27; this module never routed through backend/events.py's
-# notify_phone, so Phase 1's Telegram migration didn't touch it until now)
+# Telegram notifications (NEXUS's own bot; this module never routed through
+# backend/events.py's notify_phone, so it has its own direct sender)
 # ---------------------------------------------------------------------------
 
 def send_telegram_notification(

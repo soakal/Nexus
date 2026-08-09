@@ -61,7 +61,7 @@ def main() -> None:
     sub.add_parser("list", help="List secret names (no values)")
 
     p_set = sub.add_parser("set", help="Set a secret value (masked prompt)")
-    p_set.add_argument("key", help="Secret name, e.g. HERMES_WEBHOOK_SECRET")
+    p_set.add_argument("key", help="Secret name, e.g. ANTHROPIC_API_KEY")
 
     p_del = sub.add_parser("delete", help="Delete a secret from the vault")
     p_del.add_argument("key", help="Secret name to remove")

@@ -11,7 +11,7 @@ const STEPS = [
   {
     title: 'AI Models',
     fields: [
-      { key: 'OPENROUTER_API_KEY', label: 'OpenRouter API Key', placeholder: 'sk-or-...', hint: 'Used for Hermes and fallback models' },
+      { key: 'OPENROUTER_API_KEY', label: 'OpenRouter API Key', placeholder: 'sk-or-...', hint: 'Used for fallback models' },
     ],
   },
   {
@@ -48,12 +48,6 @@ const STEPS = [
       { key: 'TELEGRAM_CHAT_ID', label: 'Telegram Chat ID', placeholder: '', hint: 'Message the bot, then read chat.id from getUpdates' },
       { key: 'GOOGLE_CALENDAR_ICAL_URL', label: 'Google Calendar iCal URL', placeholder: '' },
       { key: 'APPLE_CALENDAR_ICAL_URL', label: 'Apple Calendar iCal URL (optional)', placeholder: '' },
-    ],
-  },
-  {
-    title: 'Agent Bridge (Hermes)',
-    fields: [
-      { key: 'HERMES_WEBHOOK_SECRET', label: 'Hermes Webhook Secret', placeholder: '' },
     ],
   },
 ]

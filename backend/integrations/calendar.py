@@ -1,10 +1,8 @@
 """iCal calendar reader (Google + optional Apple/iCloud feeds).
 
-Ported from hermes-agent's tools/gcal.py — pure iCal-over-HTTPS + RRULE
-expansion, no OAuth. Fetches directly via httpx instead of going through
-Hermes's /hermes/calendar hop (Phase 1 Hermes decoupling).
+Pure iCal-over-HTTPS + RRULE expansion, no OAuth. Fetches directly via httpx.
 
-Two bugs fixed during the port (not present in the original, do not re-add):
+Two bugs fixed during an earlier port (do not re-add):
   - the no-pad strftime flag (percent, dash, then I or d) is glibc-only and
     raises ValueError on Windows.
   - date.today() reads the PROCESS timezone; briefing_timezone is used instead
@@ -369,7 +367,7 @@ async def _load(days_ahead: int) -> CalendarData:
     return CalendarData(events=events, summary=summary, feeds_ok=feeds_ok, feeds_total=feeds_total)
 
 
-@async_ttl_cache(120)  # matches hermes.get_calendar()'s prior TTL
+@async_ttl_cache(120)  # matches the dashboard poll pattern
 async def fetch() -> CalendarData:
     """Raises RuntimeError when no feed is configured, or when every configured
     feed fails — never silently returns an empty-looking calendar for either
@@ -413,8 +411,7 @@ async def health_check() -> bool:
 
 async def get_today_events() -> str:
     """String-returning convenience for consumers that render calendar text
-    directly (briefing/today) — degrades to a string instead of raising,
-    matching hermes.get_calendar()'s prior string-tolerant contract."""
+    directly (briefing/today) — degrades to a string instead of raising."""
     try:
         data = await fetch()
         return data.summary

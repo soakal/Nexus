@@ -14,7 +14,6 @@ def test_decide_unchanged_without_policy():
     assert decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, True) == Decision.ALLOWED
     assert decide(Actor.AGENT, Risk.LOW, Reversibility.REVERSIBLE, False) == Decision.ALLOWED
     assert decide(Actor.AUTONOMOUS, Risk.HIGH, Reversibility.IRREVERSIBLE, False) == Decision.FORBIDDEN
-    assert decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, False, kind="hermes_relay") == Decision.FORBIDDEN
     assert decide(Actor.AGENT, Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN, False) == Decision.NEEDS_CONFIRM
 
 
@@ -62,12 +61,6 @@ def test_auto_allow_cannot_override_unclassifiable():
     assert result == Decision.NEEDS_CONFIRM
 
 
-def test_auto_allow_cannot_override_hermes_relay_quarantine():
-    policy = {"auto_allow": {"hermes_relay"}, "forbid": set()}
-    result = decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, False, kind="hermes_relay", policy=policy)
-    assert result == Decision.FORBIDDEN
-
-
 def test_policy_promote_never_promotes_itself():
     # _NEVER_PROMOTABLE guard — even if someone hand-edited the CSV to include
     # "policy_promote" itself, decide() must never auto-allow it.
@@ -88,11 +81,11 @@ def test_forbid_demotes_low_risk_kind():
     assert result == Decision.FORBIDDEN
 
 
-def test_forbid_applies_before_hermes_relay_check():
+def test_forbid_applies_before_irreversibility_check():
     # Order sanity: forbid is checked first regardless of which later branch
     # would otherwise have applied.
-    policy = {"auto_allow": set(), "forbid": {"hermes_relay"}}
-    result = decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, True, kind="hermes_relay", policy=policy)
+    policy = {"auto_allow": set(), "forbid": {"vm_power"}}
+    result = decide(Actor.AGENT, Risk.HIGH, Reversibility.UNKNOWN, True, kind="vm_power", policy=policy)
     assert result == Decision.FORBIDDEN
 
 

@@ -13,7 +13,7 @@ router = APIRouter()
 # is added here without a matching contracts.py entry.
 REGISTRY_NAMES = (
     "homeassistant", "unifi", "unraid", "obsidian", "github", "openrouter",
-    "weather", "channels_dvr", "adguard", "hermes", "proxmox", "protonmail",
+    "weather", "channels_dvr", "adguard", "proxmox", "protonmail",
     "calendar",
 )
 
@@ -25,7 +25,6 @@ async def sources_status(_=Depends(require_api_key)):
         calendar,
         channels_dvr,
         github,
-        hermes,
         homeassistant,
         obsidian,
         openrouter,
@@ -46,7 +45,6 @@ async def sources_status(_=Depends(require_api_key)):
         "weather": weather,
         "channels_dvr": channels_dvr,
         "adguard": adguard,
-        "hermes": hermes,
         "proxmox": proxmox,
         "protonmail": protonmail,
         "calendar": calendar,

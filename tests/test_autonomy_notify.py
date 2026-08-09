@@ -63,10 +63,10 @@ def _seed_state(eng, autonomy: bool = True):
 async def test_notify_phone_disabled_returns_false():
     """When phone_notifications_enabled=False, notify_phone returns False and
     telegram.notify is NOT awaited."""
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", telegram_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = False
         s.app_base_url = ""
@@ -76,7 +76,7 @@ async def test_notify_phone_disabled_returns_false():
         result = await notify_phone("test message", kind="autonomy_alert")
 
     assert result is False
-    hermes_notify_mock.assert_not_awaited()
+    telegram_notify_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -84,13 +84,13 @@ async def test_notify_phone_disabled_returns_false():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_notify_phone_enabled_calls_hermes():
+async def test_notify_phone_enabled_calls_telegram():
     """When phone_notifications_enabled=True and app_base_url="" (no deep-link),
     notify_phone awaits telegram.notify exactly once with the correct type and content."""
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", telegram_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = ""  # deep-link disabled for this test
@@ -100,8 +100,8 @@ async def test_notify_phone_enabled_calls_hermes():
         result = await notify_phone("hello phone", kind="needs_confirm")
 
     assert result is True
-    hermes_notify_mock.assert_awaited_once()
-    call_payload = hermes_notify_mock.await_args[0][0]
+    telegram_notify_mock.assert_awaited_once()
+    call_payload = telegram_notify_mock.await_args[0][0]
     assert call_payload["type"] == "needs_confirm"
     assert call_payload["content"] == "hello phone"
     assert "timestamp" in call_payload
@@ -112,7 +112,7 @@ async def test_notify_phone_enabled_calls_hermes():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_notify_phone_best_effort_on_hermes_error():
+async def test_notify_phone_best_effort_on_telegram_error():
     """If telegram.notify raises, notify_phone must return False and NOT re-raise."""
     with patch("backend.config.get_settings") as mock_settings, \
          patch("backend.integrations.telegram.notify", side_effect=RuntimeError("boom")):
@@ -134,9 +134,9 @@ async def test_notify_phone_best_effort_on_hermes_error():
 
 @pytest.mark.asyncio
 async def test_notify_phone_respects_runtime_mute():
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock), \
+         patch("backend.integrations.telegram.notify", telegram_notify_mock), \
          patch("backend.safety.governor.get_muted_notify_kinds", return_value={"budget_warn"}):
         s = MagicMock()
         s.phone_notifications_enabled = True
@@ -148,7 +148,7 @@ async def test_notify_phone_respects_runtime_mute():
         result = await notify_phone("over budget", kind="budget_warn")
 
     assert result is False
-    hermes_notify_mock.assert_not_awaited()
+    telegram_notify_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -156,9 +156,9 @@ async def test_notify_phone_mute_db_failure_still_sends():
     """A DB hiccup reading muted_notify_kinds must degrade to 'not muted',
     never to a silently dropped alert — this gates auth_burst/contract_breach/
     budget_warn/needs_confirm, the pages documented as un-suppressible."""
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock), \
+         patch("backend.integrations.telegram.notify", telegram_notify_mock), \
          patch("backend.safety.governor.get_muted_notify_kinds", side_effect=Exception("database is locked")):
         s = MagicMock()
         s.phone_notifications_enabled = True
@@ -170,14 +170,14 @@ async def test_notify_phone_mute_db_failure_still_sends():
         result = await notify_phone("40 auth failures from one client", kind="auth_burst")
 
     assert result is True
-    hermes_notify_mock.assert_awaited_once()
+    telegram_notify_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_notify_phone_unmuted_kind_still_sends():
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock), \
+         patch("backend.integrations.telegram.notify", telegram_notify_mock), \
          patch("backend.safety.governor.get_muted_notify_kinds", return_value={"budget_warn"}):
         s = MagicMock()
         s.phone_notifications_enabled = True
@@ -189,7 +189,7 @@ async def test_notify_phone_unmuted_kind_still_sends():
         result = await notify_phone("goal proposed", kind="goal_proposed")
 
     assert result is True
-    hermes_notify_mock.assert_awaited_once()
+    telegram_notify_mock.assert_awaited_once()
 
 
 def test_notify_kinds_registry_covers_every_call_site():

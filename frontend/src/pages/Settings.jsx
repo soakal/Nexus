@@ -105,10 +105,6 @@ const SECTIONS = [
     ],
   },
   {
-    title: 'Agent Bridge',
-    secrets: [{ key: 'HERMES_WEBHOOK_SECRET', label: 'Hermes Webhook Secret' }],
-  },
-  {
     title: 'NEXUS System',
     secrets: [{ key: 'NEXUS_API_KEY', label: 'NEXUS API Key (rotates all sessions)', noDelete: true }],
   },
@@ -259,8 +255,8 @@ export default function Settings() {
             <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '10px' }}>New Credential</div>
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
               {[
-                { key: 'service', label: 'Service name', placeholder: 'e.g. hermes, nas' },
-                { key: 'host', label: 'Host / IP', placeholder: '192.168.1.55' },
+                { key: 'service', label: 'Service name', placeholder: 'e.g. nas, proxmox' },
+                { key: 'host', label: 'Host / IP', placeholder: '192.168.1.x' },
                 { key: 'user', label: 'Username', placeholder: 'root' },
                 { key: 'port', label: 'Port (optional)', placeholder: '22' },
               ].map(({ key, label, placeholder }) => (

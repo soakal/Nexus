@@ -291,51 +291,6 @@ async def resolve_flag_route(
     return {"id": flag_id, "status": result}
 
 
-@router.get("/hermes-actions")
-async def hermes_actions_list(_=Depends(require_api_key)):
-    """Pure read of the Hermes structured-verb allowlist -- no DB, no I/O.
-    Lets the frontend show what NEXUS can command Hermes to do instead of
-    guess-and-fail against unrecognized phrasing."""
-    from backend.safety import hermes_actions
-    return {"verbs": hermes_actions.allowed_verbs()}
-
-
-@router.post("/hermes-actions/execute")
-async def hermes_actions_execute(
-    payload: dict = Body(...),
-    _=Depends(require_api_key),
-):
-    """Directly dispatch a known Hermes verb (e.g. `vm_action`) from a UI button
-    click, instead of routing through chat's Haiku verb-pick. Same actor="user"
-    path chat.py's HERMES branch already uses -- a click here IS the human
-    decision, so it is allowed immediately (still fully audit-logged) rather
-    than gated as an agent/autonomous action would be."""
-    from backend.safety import hermes_actions
-    from backend.safety.broker import Decision, execute_action
-
-    verb = payload.get("verb", "")
-    args = payload.get("args") or {}
-    if not isinstance(args, dict):
-        raise HTTPException(status_code=400, detail="args must be an object")
-
-    error = hermes_actions.validate_args(verb, args)
-    if error:
-        raise HTTPException(status_code=400, detail=error)
-
-    res = await execute_action(
-        actor="user",
-        kind="hermes_action",
-        target="hermes",
-        payload={"verb": verb, "args": args},
-    )
-    return {
-        "ok": res.decision == Decision.EXECUTED,
-        "decision": res.decision.value,
-        "response": (res.result or {}).get("response") if res.result else None,
-        "error": res.error,
-    }
-
-
 @router.post("/actions/{action_id}/confirm")
 async def confirm_action(
     action_id: int,

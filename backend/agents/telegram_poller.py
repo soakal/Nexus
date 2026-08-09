@@ -1,8 +1,7 @@
 """Long-poll Telegram getUpdates for inline-button callbacks AND (Phase 2a)
 text commands/chat.
 
-Polling, not a webhook — same choice Hermes made (main.py's run_polling), and
-it means NEXUS needs no inbound exposure. Runs as an asyncio task on the
+Polling, not a webhook — NEXUS needs no inbound exposure. Runs as an asyncio task on the
 lifespan loop, NOT a daemon thread: the poll is a single idle httpx socket
 (pure async I/O), so it never blocks the loop, and the forced Windows
 SelectorEventLoop handles sockets fine (its limits are subprocess transports,
@@ -26,10 +25,8 @@ branch it dispatches through the broker with hardcodes actor="user", which
 the broker always-allows with NO confirm gate and NO kill-switch check
 (both are agent/autonomous-only guards). That's the intended trust model —
 a chat_id that passes IS Brian, same as a valid Bearer key — but it means
-this authorization check is the ONLY gate in front of the three highest-
-trust things NEXUS can do: HOME_CONTROL, a free-text hermes_relay (which
-broker.py forbids to agents even when "confirmed" — this is the one path
-where a human can still use it), and TASK intent's full orchestrator
+this authorization check is the ONLY gate in front of the two highest-
+trust things NEXUS can do: HOME_CONTROL, and TASK intent's full orchestrator
 plan+execute loop. A hole here is not "an inconvenience", it's full control.
 """
 import asyncio
@@ -61,8 +58,8 @@ _AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resol
 
 async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool, str]:
     """Returns (definitive, human_result). definitive=False means an internal/
-    dispatch error -> alert popup, KEEP the buttons (parity with Hermes's
-    transport-error handling)."""
+    dispatch error -> alert popup, KEEP the buttons (the outcome is unknown,
+    so the button must stay usable for a retry)."""
     try:
         if namespace == "goal":
             from backend.agents import goals
@@ -125,10 +122,10 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
                 actor="user", kind="unraid_docker", target=str(obj_id),
                 payload={"container_id": str(obj_id)},
             )
-            # _dispatch_unraid_docker does NOT raise on a failed restart (unlike
-            # _dispatch_hermes_action) -- it returns {"success": False} and the
-            # broker still records EXECUTED. Success must be read off the
-            # result, not the decision, or a failed restart would show ✓.
+            # _dispatch_unraid_docker does NOT raise on a failed restart -- it
+            # returns {"success": False} and the broker still records
+            # EXECUTED. Success must be read off the result, not the
+            # decision, or a failed restart would show ✓.
             if res.decision == Decision.EXECUTED:
                 result = res.result or {}
                 if result.get("success"):
@@ -303,8 +300,8 @@ async def _handle_message(msg: dict) -> None:
 async def handle_callback(cq: dict) -> None:
     """Parse -> authorize -> dispatch -> answerCallbackQuery -> editMessageText.
 
-    answerCallbackQuery is SINGLE-USE per query — answered exactly once, after
-    the outcome is known, mirroring Hermes's prior discipline.
+    answerCallbackQuery is SINGLE-USE per query — answered exactly once,
+    after the outcome is known.
     """
     cq_id = cq.get("id")
     data = cq.get("data") or ""

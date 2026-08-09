@@ -6,7 +6,7 @@ Provides:
   - SQLite integrity check
   - Phone alert on any failure
 
-All backups are LOCAL ONLY — no network, no Hermes relay, no SFTP.
+All backups are LOCAL ONLY — no network, no SFTP.
 The backups/ directory is gitignored so secrets are never committed.
 """
 import asyncio

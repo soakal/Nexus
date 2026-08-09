@@ -107,8 +107,8 @@ def _clean_subject(subject: str, cap: int = 60) -> str:
 def format_inbox_summary(raw_result, limit: int = 7) -> str:
     """Pure formatter: list_recent()'s JSON text (or an Exception, from a
     gather(..., return_exceptions=True) call) -> a compact plain-text unread
-    summary, same shape as the old Gmail-via-Hermes summary it replaces on
-    the Today page's Inbox card (see inbox_summary() below). Never raises."""
+    summary for the Today page's Inbox card (see inbox_summary() below).
+    Never raises."""
     if isinstance(raw_result, Exception):
         return "(Proton Mail unavailable)"
     try:
@@ -135,7 +135,7 @@ def format_inbox_summary(raw_result, limit: int = 7) -> str:
 async def inbox_summary(limit: int = 7) -> str:
     """Gmail-shaped plain-text unread summary. Best-effort, never raises.
 
-    Cached (matches the TTL the old hermes.get_gmail() used) -- the Today
+    Cached (120s) -- the Today
     page polls on a timer, tab-focus, AND visibility-change, so an uncached
     call here would open a fresh MCP session + IMAP search on every one of
     those. Note: async_ttl_cache ignores call arguments (single shared

@@ -25,12 +25,12 @@ async def restart_container(container_id: str, _=Depends(require_api_key)):
 
 @router.post("/docker/prune")
 async def prune_images(_=Depends(require_api_key)):
-    """Prune dangling Docker images on Unraid (broker-gated, Phase 7d).
+    """Prune dangling Docker images on Unraid over native SSH (broker-gated).
 
-    Native SSH, not via Hermes's relay — see backend/safety/broker.py's
-    unraid_docker_prune dispatcher and backend/integrations/unraid.py's
-    prune_docker_images. Unlike restart_container above, this route goes
-    through the broker (actor="user") rather than dispatching directly.
+    See backend/safety/broker.py's unraid_docker_prune dispatcher and
+    backend/integrations/unraid.py's prune_docker_images. Unlike
+    restart_container above, this route goes through the broker
+    (actor="user") rather than dispatching directly.
     """
     from backend.safety.broker import Decision, execute_action
 

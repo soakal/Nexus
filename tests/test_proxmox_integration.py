@@ -38,7 +38,7 @@ async def test_fetch_parses_cluster_resources():
         {"type": "node", "node": "pve", "status": "online", "cpu": 0.25,
          "mem": 8 * _GIB, "maxmem": 32 * _GIB},
         {"type": "qemu", "vmid": 101, "name": "win11", "status": "running"},
-        {"type": "lxc", "vmid": 200, "name": "hermes", "status": "running"},
+        {"type": "lxc", "vmid": 200, "name": "jellyfin-vm", "status": "running"},
         {"type": "storage", "disk": 100 * _GIB, "maxdisk": 500 * _GIB},
         {"type": "storage", "disk": 50 * _GIB, "maxdisk": 500 * _GIB},
     ]
@@ -279,7 +279,7 @@ async def test_fetch_backups_http_error_raises():
 
 
 # ---------------------------------------------------------------------------
-# Phase 7b — set_vm_power (native, not via Hermes)
+# set_vm_power (native)
 # ---------------------------------------------------------------------------
 
 def _post_client(resp):
@@ -311,7 +311,7 @@ async def test_set_vm_power_stop_maps_to_shutdown_lxc():
     """action='stop' must map to Proxmox's graceful 'shutdown' op, and the
     URL must use /lxc/ for an lxc-typed vmid, never assumed as qemu."""
     from backend.integrations.proxmox import ProxmoxData
-    fake_data = ProxmoxData(vms=[{"vmid": 200, "name": "hermes", "status": "running", "type": "lxc", "node": "pve"}])
+    fake_data = ProxmoxData(vms=[{"vmid": 200, "name": "jellyfin-vm", "status": "running", "type": "lxc", "node": "pve"}])
     resp = _get_response({"data": "UPID:pve:..."})
 
     with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=fake_data) as mock_fetch, \

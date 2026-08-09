@@ -3,7 +3,7 @@
 Builds and delivers a concise summary of what NEXUS ran autonomously, what is
 awaiting human approval, today's spend, and the current autonomy state.
 
-Sent once daily via events.notify_phone (-> Hermes -> Telegram).
+Sent once daily via events.notify_phone (-> Telegram).
 
 Best-effort throughout: any sub-fetch failure degrades that line to a safe
 default; the function NEVER raises.  All sync DB helpers are invoked via

@@ -783,8 +783,8 @@ async def test_docker_restart_failure_alerts_and_keeps_buttons():
 
 @pytest.mark.asyncio
 async def test_vm_start_dispatches_via_native_vm_power():
-    """Phase 7b: vm:start:<vmid> now dispatches the native vm_power kind
-    (proxmox.set_vm_power directly), not the Hermes relay bridge -- vmid is
+    """vm:start:<vmid> dispatches the native vm_power kind
+    (proxmox.set_vm_power directly) -- vmid is
     coerced to int (the 'vm' namespace isn't in _INT_ID_NAMESPACES, so
     obj_id arrives as a string from callback_data)."""
     from backend.safety.broker import ActionResult, Decision, Risk, Reversibility

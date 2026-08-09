@@ -459,7 +459,7 @@ def test_unifi_data_defaults():
 
 
 # ---------------------------------------------------------------------------
-# Phase 7a — block/unblock (native, not via Hermes)
+# block/unblock (native)
 # ---------------------------------------------------------------------------
 
 def test_normalize_mac_accepts_various_formats():

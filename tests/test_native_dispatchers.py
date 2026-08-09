@@ -1,4 +1,4 @@
-"""Tests for the three non-Hermes broker write dispatchers + executor write tools.
+"""Tests for the native broker write dispatchers + executor write tools.
 
 Covers:
   1. classify bands (channels_record LOW, unraid_docker HIGH, obsidian_task LOW).
@@ -573,15 +573,15 @@ async def test_obsidian_complete_task_never_raises_on_broker_exception(eng):
 # ===========================================================================
 
 def test_all_tool_specs_length():
-    """all_tool_specs() == read specs + 10 write specs (Phase 7a/7b added
+    """all_tool_specs() == read specs + 9 write specs (Phase 7a/7b added
     vm_power/unifi_block/unifi_unblock; Phase 7d added unraid_docker_prune)."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 10, (
-        f"expected {len(read_specs) + 10} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 9, (
+        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
     )
 
 
@@ -599,11 +599,10 @@ def test_all_dispatchers_contains_new_kinds():
     assert "unraid_docker_prune" in disp, "all_dispatchers must contain 'unraid_docker_prune'"
     # Existing ones must still be present
     assert "home_control" in disp
-    assert "hermes_command" in disp
 
 
 def test_write_tool_names_includes_new_tools():
-    """write_tool_names() includes all ten write tools (Phase 7a/7b added 3;
+    """write_tool_names() includes all nine write tools (Phase 7a/7b added 3;
     Phase 7d added unraid_docker_prune)."""
     from backend.agents.write_tools import write_tool_names
 
@@ -615,10 +614,9 @@ def test_write_tool_names_includes_new_tools():
     assert "unifi_unblock" in names
     assert "vm_power" in names
     assert "home_control" in names
-    assert "hermes_command" in names
     assert "send_notification" in names
     assert "unraid_docker_prune" in names
-    assert len(names) == 10
+    assert len(names) == 9
 
 
 # ===========================================================================
@@ -627,7 +625,7 @@ def test_write_tool_names_includes_new_tools():
 
 @pytest.mark.asyncio
 async def test_broker_channels_record_dispatches_direct(eng):
-    """execute_action(kind='channels_record') calls channels_dvr.trigger_recording (not hermes)."""
+    """execute_action(kind='channels_record') calls channels_dvr.trigger_recording."""
     _seed_state(eng, autonomy=True)
 
     from backend.safety.broker import execute_action, Decision
@@ -650,7 +648,7 @@ async def test_broker_channels_record_dispatches_direct(eng):
 
 @pytest.mark.asyncio
 async def test_broker_unraid_docker_dispatches_direct(eng):
-    """execute_action(kind='unraid_docker') calls unraid.restart_docker (not hermes)."""
+    """execute_action(kind='unraid_docker') calls unraid.restart_docker."""
     _seed_state(eng, autonomy=True)
 
     from backend.safety.broker import execute_action, Decision
@@ -674,7 +672,7 @@ async def test_broker_unraid_docker_dispatches_direct(eng):
 
 @pytest.mark.asyncio
 async def test_broker_vm_power_dispatches_direct(eng):
-    """execute_action(kind='vm_power') calls proxmox.set_vm_power (not hermes)."""
+    """execute_action(kind='vm_power') calls proxmox.set_vm_power."""
     _seed_state(eng, autonomy=True)
 
     from backend.safety.broker import execute_action, Decision
@@ -720,7 +718,7 @@ async def test_broker_vm_power_invalid_action_fails_cleanly(eng):
 
 @pytest.mark.asyncio
 async def test_broker_unifi_block_dispatches_direct(eng):
-    """execute_action(kind='unifi_block') calls unifi.block_client (not hermes)."""
+    """execute_action(kind='unifi_block') calls unifi.block_client."""
     _seed_state(eng, autonomy=True)
 
     from backend.safety.broker import execute_action, Decision
@@ -743,7 +741,7 @@ async def test_broker_unifi_block_dispatches_direct(eng):
 
 @pytest.mark.asyncio
 async def test_broker_unifi_unblock_dispatches_direct(eng):
-    """execute_action(kind='unifi_unblock') calls unifi.unblock_client (not hermes)."""
+    """execute_action(kind='unifi_unblock') calls unifi.unblock_client."""
     _seed_state(eng, autonomy=True)
 
     from backend.safety.broker import execute_action, Decision
@@ -766,7 +764,7 @@ async def test_broker_unifi_unblock_dispatches_direct(eng):
 
 @pytest.mark.asyncio
 async def test_broker_obsidian_task_dispatches_direct(eng):
-    """execute_action(kind='obsidian_task') calls obsidian.complete_task (not hermes)."""
+    """execute_action(kind='obsidian_task') calls obsidian.complete_task."""
     _seed_state(eng, autonomy=True)
 
     from backend.safety.broker import execute_action, Decision

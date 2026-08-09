@@ -425,12 +425,11 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
 User message: "{user_message}"
 
 Return exactly:
-{{"intent": "HOME_CONTROL|TASK|CHAT|HERMES|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR", "reason": "brief reason"}}
+{{"intent": "HOME_CONTROL|TASK|CHAT|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR", "reason": "brief reason"}}
 
 HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, open/close/stop a garage door or cover, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
 CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) searching or reading your notes/vault ("search my vault for X", "what do my notes say about X", "find X in my brain") is CHAT — vault is searched automatically; (3) anything about the user's calendar, schedule, appointments, or when an event is happening is CALENDAR, not CHAT. The chat can also search the web.
-HERMES = a request that targets the Hermes homelab bot specifically — controlling Proxmox VMs/LXCs, Jellyfin, restarting a service, sending a Telegram message, or changing/extending Hermes itself; or anything the user explicitly addresses to "Hermes".
 NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status".
 MAIL = a question about the user's own email/inbox — "any new email?", "unread emails?", "what did X email me about?", "read the email from X", "what's in my inbox". Reading/searching email, not sending.
@@ -461,7 +460,7 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments �
                 if start >= 0 and end > start:
                     parsed = json.loads(raw_intent[start:end])
                     intent = parsed.get("intent", "CHAT")
-                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "HERMES", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR"):
+                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR"):
                         intent = "CHAT"
             except Exception:
                 intent = "CHAT"
@@ -697,71 +696,6 @@ If no entity matches, return:
                 else:
                     reply = f"I wasn't able to complete that task: {result.reason}"
 
-            elif intent == "HERMES":
-                from backend.safety import hermes_actions
-                from backend.safety.broker import Decision, execute_action
-
-                # Haiku verb-pick: map the request onto the structured allowlist. A
-                # known verb with valid args goes through the structured `hermes_action`
-                # path; anything else falls back to free-text relay (kind="hermes_relay"),
-                # which is allowed only because this is a USER action.
-                menu = json.dumps(hermes_actions.allowed_verbs())
-                verb_prompt = f"""The user wants the Hermes homelab bot to do something.
-
-User request: "{user_message}"
-
-Pick the single best matching verb from this allowlist (verb, risk, reversibility,
-required_args, enum_args):
-{menu}
-
-Return JSON only:
-{{"verb": "<one of the allowlist verbs above, or 'unknown'>", "args": {{...}}}}
-
-Fill `args` with every required_arg and enum_arg the chosen verb needs (enum_args
-must use one of the listed values). If nothing matches, return:
-{{"verb": "unknown", "args": {{}}}}"""
-
-                verb = "unknown"
-                args: dict = {}
-                try:
-                    raw_verb = await haiku(verb_prompt, label="chat_hermes_verb")
-                    vs = raw_verb.find("{")
-                    ve = raw_verb.rfind("}") + 1
-                    if vs >= 0 and ve > vs:
-                        vd = json.loads(raw_verb[vs:ve])
-                        verb = vd.get("verb", "unknown")
-                        args = vd.get("args") or {}
-                        if not isinstance(args, dict):
-                            args = {}
-                except BudgetExceeded:
-                    raise  # budget brake reaches the outer handler
-                except Exception:
-                    verb, args = "unknown", {}
-
-                if hermes_actions.is_allowed(verb) and hermes_actions.validate_args(verb, args) is None:
-                    res = await execute_action(
-                        actor="user",
-                        kind="hermes_action",
-                        target="hermes",
-                        payload={"verb": verb, "args": args},
-                    )
-                else:
-                    # Fallback: free-text relay (user-only path, behaviour unchanged).
-                    res = await execute_action(
-                        actor="user",
-                        kind="hermes_relay",
-                        target="hermes",
-                        payload={"message": user_message},
-                    )
-
-                # actor=user always allows, so relay still runs; its return string flows
-                # back via res.result["response"] — user-visible reply is unchanged.
-                reply = (
-                    (res.result or {}).get("response")
-                    if res.decision == Decision.EXECUTED
-                    else (res.error or "Hermes action could not be completed.")
-                )
-
             elif intent == "NOTE":
                 import httpx as _httpx
                 from backend.config import get_settings as _get_settings
@@ -814,16 +748,15 @@ If they're saving something from the conversation, use the relevant prior assist
                     reply = f"Couldn't save the note: {e}"
 
             elif intent == "STATUS":
-                from backend.integrations import unifi, unraid, channels_dvr, hermes
+                from backend.integrations import unifi, unraid, channels_dvr
 
                 status_results = await asyncio.gather(
                     unifi.fetch(),
                     unraid.fetch(),
                     channels_dvr.fetch(),
-                    hermes.get_status(),
                     return_exceptions=True,
                 )
-                unifi_d, unraid_d, channels_d, hermes_d = status_results
+                unifi_d, unraid_d, channels_d = status_results
 
                 lines = []
 
@@ -851,12 +784,6 @@ If they're saving something from the conversation, use the relevant prior assist
                     rec_now = channels_d.recording_now
                     rec_str = ", ".join(r.get("title", "?") for r in rec_now) if rec_now else "idle"
                     lines.append(f"Channels: recording {rec_str}")
-
-                # Hermes
-                if isinstance(hermes_d, Exception):
-                    lines.append("Hermes: unavailable")
-                else:
-                    lines.append("Hermes: online" if hermes_d.alive else "Hermes: offline")
 
                 reply = "\n".join(lines)
 

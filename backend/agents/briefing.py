@@ -799,13 +799,10 @@ async def run_briefing() -> str:
             from backend.integrations.telegram import notify
             delivered = await notify({"type": "briefing", "content": briefing_text, "timestamp": datetime.utcnow().isoformat()})
             if delivered:
-                # Column name kept as-is (delivered_to_hermes) -- renaming it needs
-                # a migration for zero benefit; it now means "delivered via NEXUS's
-                # own Telegram notify path".
                 with Session(engine) as session:
                     b = session.get(Briefing, briefing_id)
                     if b:
-                        b.delivered_to_hermes = True
+                        b.delivered = True
                         session.commit()
         except Exception as e:
             logger.warning(f"Telegram delivery failed: {e}")

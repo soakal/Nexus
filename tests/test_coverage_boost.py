@@ -159,7 +159,6 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # Far-future so the one-off infisical_soak_reminder job always registers,
     # regardless of the real current date.
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
-    monkeypatch.setattr(sched_mod, "HERMES_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     # Baseline was 25 jobs (this assumes modules/brain-organizer/venv exists,
@@ -170,10 +169,11 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # too) +4 "state_refresh_{30,60,300,600}s" (2026-08-05, see
     # backend/state_workers.py -- one job per COLLECTOR_GROUPS interval,
     # registered via register_state_workers()) +1 "anthropic_balance_watch"
-    # (2026-08-05, monthly) = 30. These deltas landed as separate commits;
-    # if any flips back off, drop this count and its id below deliberately,
-    # not as a side effect of an unrelated change.
-    assert mock_add.call_count == 30
+    # (2026-08-05, monthly) -1 "hermes_soak_reminder" (removed 2026-08-09,
+    # Hermes fully decommissioned) = 29. These deltas landed as separate
+    # commits; if any flips back off, drop this count and its id below
+    # deliberately, not as a side effect of an unrelated change.
+    assert mock_add.call_count == 29
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
@@ -204,7 +204,6 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "brain_organizer",
         "wiki_fragmentation_report",
         "infisical_soak_reminder",
-        "hermes_soak_reminder",
         "facts_digest",
         "calibration_recompute",
         "anthropic_balance_watch",
@@ -216,19 +215,18 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     (see backend/agents/watchdog.py::run_watchdog) rather than registering its
     own scheduler job — matches the same choice already made for
     check_budget_warning. If a future change moves it to its own job, this
-    test and test_setup_scheduler_adds_jobs's call_count==30 must both be
+    test and test_setup_scheduler_adds_jobs's call_count==29 must both be
     updated together, deliberately."""
     from datetime import datetime
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
-    monkeypatch.setattr(sched_mod, "HERMES_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 30
+    assert mock_add.call_count == 29
 
 
 # ---------------------------------------------------------------------------

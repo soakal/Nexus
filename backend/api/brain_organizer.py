@@ -129,7 +129,6 @@ async def brain_organizer_run(_=Depends(require_api_key)):
         for attr, var in [
             ("anthropic_api_key", "ANTHROPIC_API_KEY"),
             ("openrouter_api_key", "OPENROUTER_API_KEY"),
-            ("hermes_host", "HERMES_HOST"),
         ]:
             try:
                 val = getattr(s, attr, None)

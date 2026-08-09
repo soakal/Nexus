@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { api, API_BASE } from '../lib/api'
+import { api } from '../lib/api'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusDot from '../components/StatusDot'
@@ -8,14 +8,14 @@ import GhostButton from '../components/GhostButton'
 import TextInput from '../components/TextInput'
 
 function ProxmoxSection() {
-  const [vms, setVms] = useState([])          // live list of VM/LXC names from Proxmox
-  const [pending, setPending] = useState({})  // { name: 'start'|'stop'|'reboot'|null }
+  const [vms, setVms] = useState([])          // live [{vmid, name}] from Proxmox
+  const [pending, setPending] = useState({})  // { vmid: 'start'|'stop'|'reboot'|null }
   const [toast, setToast] = useState(null)    // { msg, ok }
   const toastTimer = useRef(null)
 
   useEffect(() => {
     api.proxmox.get()
-      .then((d) => setVms((d?.vms || []).map((v) => v.name || String(v.vmid))))
+      .then((d) => setVms((d?.vms || []).map((v) => ({ vmid: v.vmid, name: v.name || String(v.vmid) }))))
       .catch(() => {})
   }, [])
 
@@ -25,57 +25,20 @@ function ProxmoxSection() {
     toastTimer.current = setTimeout(() => setToast(null), 3500)
   }
 
-  const sendCmd = async (name, action) => {
-    // stop/reboot are disruptive (Hermes is a live production bot per CLAUDE.md,
-    // and any of these can knock a VM Brian's actively using offline) -- start
-    // is harmless, so only gate the two destructive actions.
+  const sendCmd = async (vmid, name, action) => {
+    // stop/reboot can knock a VM Brian's actively using offline -- start is
+    // harmless, so only gate the two destructive actions.
     if (action !== 'start' && !window.confirm(`${action === 'stop' ? 'Stop' : 'Reboot'} ${name}?`)) {
       return
     }
-    setPending((p) => ({ ...p, [name]: action }))
+    setPending((p) => ({ ...p, [vmid]: action }))
     try {
-      const key = localStorage.getItem('nexus_api_key') || ''
-      const message = `${action} ${name}`
-      const res = await fetch(`${API_BASE}/api/chat/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-        body: JSON.stringify({ message }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      // Parse the SSE stream (same shape Chat.jsx reads) instead of just
-      // draining it -- a misrouted/failed command still gets HTTP 200, so
-      // the reply text is the only signal that anything actually happened.
-      const reader = res.body.getReader()
-      let buf = ''
-      let tokenText = ''
-      let doneReply = null
-      const dec = new TextDecoder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += dec.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop()
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const raw = line.slice(6)
-          if (raw === '[DONE]') continue
-          let event
-          try { event = JSON.parse(raw) } catch { continue }
-          if (event.type === 'token') tokenText += event.text
-          else if (event.type === 'done' && event.reply) doneReply = event.reply
-        }
-      }
-      const reply = (doneReply || tokenText).trim()
-      // No hard ok/error contract at this endpoint (unlike Hermes's REST API) --
-      // same best-effort heuristic Hermes itself uses: a leading "error"/"sorry"/
-      // "couldn't" reads as a failure that must not show a green "sent" toast.
-      const looksFailed = /^(error|sorry|i couldn'?t|i can'?t|i wasn'?t able)/i.test(reply)
-      showToast(reply ? `${action} ${name}: ${reply}` : `${action} ${name}: sent`, !looksFailed)
+      await api.proxmox.vmPower(vmid, action)
+      showToast(`${action} ${name}: sent`, true)
     } catch (e) {
       showToast(`${action} ${name}: ${e.message}`, false)
     } finally {
-      setPending((p) => { const n = { ...p }; delete n[name]; return n })
+      setPending((p) => { const n = { ...p }; delete n[vmid]; return n })
     }
   }
 
@@ -114,10 +77,10 @@ function ProxmoxSection() {
         )}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {vms.map((name) => {
-          const busy = !!pending[name]
+        {vms.map(({ vmid, name }) => {
+          const busy = !!pending[vmid]
           return (
-            <div key={name} style={{
+            <div key={vmid} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
               padding: '10px 14px', borderRadius: '11px',
               background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
@@ -128,14 +91,14 @@ function ProxmoxSection() {
                   <button
                     key={action}
                     disabled={busy}
-                    onClick={() => sendCmd(name, action)}
+                    onClick={() => sendCmd(vmid, name, action)}
                     style={{
                       ...btnStyle(action),
                       opacity: busy ? 0.5 : 1,
                       cursor: busy ? 'not-allowed' : 'pointer',
                     }}
                   >
-                    {busy && pending[name] === action ? '…' : action}
+                    {busy && pending[vmid] === action ? '…' : action}
                   </button>
                 ))}
               </div>

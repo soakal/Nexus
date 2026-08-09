@@ -1,6 +1,6 @@
 """Tests for Tier 2.4 write tools (backend/agents/write_tools.py).
 
-Covers: home_control and hermes_command dispatchers, decision-to-string mapping,
+Covers: home_control and native write dispatchers, decision-to-string mapping,
 broker gating (EXECUTED / FORBIDDEN / NEEDS_CONFIRM), input validation, never-raise
 guarantee, combined provider functions, and config gating.
 """
@@ -158,54 +158,6 @@ async def test_home_control_bad_input_no_broker(eng):
 
 
 # ===========================================================================
-# Test 5: hermes_command unknown verb → "unknown verb" + lists allowed verbs
-# ===========================================================================
-
-@pytest.mark.asyncio
-async def test_hermes_command_unknown_verb(eng):
-    """An unknown verb returns a helpful error listing allowed verbs; broker not called."""
-    from backend.agents.write_tools import _hermes_command
-    from backend.safety.hermes_actions import allowed_verbs
-
-    with patch(
-        "backend.safety.broker.execute_action",
-        new_callable=AsyncMock,
-    ) as mock_broker:
-        result = await _hermes_command({"verb": "totally_fake_verb", "args": {}})
-
-    assert "unknown verb" in result.lower(), f"expected 'unknown verb', got: {result!r}"
-    # At least one known verb name should appear in the result
-    allowed_names = [v["verb"] for v in allowed_verbs()]
-    assert any(name in result for name in allowed_names), (
-        f"expected at least one allowed verb name in result; got: {result!r}"
-    )
-    mock_broker.assert_not_awaited()
-
-
-# ===========================================================================
-# Test 6: hermes_command valid LOW-risk verb EXECUTED
-# ===========================================================================
-
-@pytest.mark.asyncio
-async def test_hermes_command_low_risk_verb_executed(eng):
-    """proxmox_status is LOW risk, no required args → ALLOWED for agent → 'OK'."""
-    _seed_state(eng, autonomy=True)
-
-    from backend.agents.write_tools import _hermes_command
-
-    with patch(
-        "backend.integrations.hermes.relay_action",
-        new_callable=AsyncMock,
-        return_value={"ok": True, "response": "proxmox is healthy", "intent": "proxmox_status"},
-    ) as rl:
-        result = await _hermes_command({"verb": "proxmox_status", "args": {}})
-
-    assert result.startswith("OK"), f"expected 'OK …', got: {result!r}"
-    rl.assert_awaited_once()
-    assert rl.await_args.args[0] == "check proxmox"
-
-
-# ===========================================================================
 # Test 7: Dispatch never raises — force execute_action to raise, assert error string
 # ===========================================================================
 
@@ -226,60 +178,41 @@ async def test_home_control_never_raises_on_broker_exception(eng):
     assert "error" in result.lower() or "catastrophic" in result.lower()
 
 
-@pytest.mark.asyncio
-async def test_hermes_command_never_raises_on_broker_exception(eng):
-    """hermes_command also never raises — returns error string on unexpected exception."""
-    _seed_state(eng, autonomy=True)
-
-    from backend.agents.write_tools import _hermes_command
-
-    with patch(
-        "backend.safety.broker.execute_action",
-        side_effect=RuntimeError("kaboom"),
-    ):
-        result = await _hermes_command({"verb": "proxmox_status", "args": {}})
-
-    assert isinstance(result, str)
-    assert "error" in result.lower() or "kaboom" in result.lower()
-
-
 # ===========================================================================
 # Test 8: Combined providers — all_tool_specs, all_dispatchers, write_tool_names
 # ===========================================================================
 
 def test_combined_providers_all_tool_specs():
-    """all_tool_specs() == read specs + 10 write specs (Phase 7a/7b added
+    """all_tool_specs() == read specs + 9 write specs (Phase 7a/7b added
     vm_power/unifi_block/unifi_unblock; Phase 7d added unraid_docker_prune)."""
     from backend.agents.tools import tool_specs
     from backend.agents.write_tools import all_tool_specs, write_tool_names
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 10, (
-        f"expected {len(read_specs) + 10} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 9, (
+        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
     )
 
 
 def test_combined_providers_all_dispatchers():
-    """all_dispatchers() contains home_control, hermes_command, plus all read names."""
+    """all_dispatchers() contains home_control plus all read names."""
     from backend.agents.tools import dispatcher_map
     from backend.agents.write_tools import all_dispatchers, write_tool_names
 
     read_names = set(dispatcher_map().keys())
     all_disp = all_dispatchers()
     assert "home_control" in all_disp
-    assert "hermes_command" in all_disp
     assert read_names.issubset(set(all_disp.keys()))
 
 
 def test_write_tool_names():
-    """write_tool_names() returns all ten write tool names (Phase 7a/7b added 3;
+    """write_tool_names() returns all nine write tool names (Phase 7a/7b added 3;
     Phase 7d added unraid_docker_prune)."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
     assert "home_control" in names
-    assert "hermes_command" in names
     assert "channels_record" in names
     assert "unraid_docker_restart" in names
     assert "obsidian_complete_task" in names
@@ -288,7 +221,7 @@ def test_write_tool_names():
     assert "unifi_unblock" in names
     assert "vm_power" in names
     assert "unraid_docker_prune" in names
-    assert len(names) == 10
+    assert len(names) == 9
 
 
 # ===========================================================================
@@ -304,9 +237,7 @@ def test_config_gating_planner_block():
     write_block = all_planner_block()
 
     assert "home_control" in write_block, "all_planner_block must advertise home_control"
-    assert "hermes_command" in write_block, "all_planner_block must advertise hermes_command"
     assert "home_control" not in read_block, "read-only planner block must NOT contain home_control"
-    assert "hermes_command" not in read_block, "read-only planner block must NOT contain hermes_command"
 
 
 # ===========================================================================
@@ -360,33 +291,6 @@ async def test_home_control_actor_is_agent(eng):
             await _home_control({"entity_id": "light.office", "service": "turn_on"})
             call_kwargs = mock_ea.call_args
             # actor may be positional or keyword
-            if call_kwargs.args:
-                actor_val = call_kwargs.args[0]
-            else:
-                actor_val = call_kwargs.kwargs.get("actor")
-            assert str(actor_val) == "agent", f"expected actor='agent', got {actor_val!r}"
-
-
-@pytest.mark.asyncio
-async def test_hermes_command_actor_is_agent(eng):
-    """hermes_command also passes actor='agent' to execute_action."""
-    _seed_state(eng, autonomy=True)
-
-    from backend.agents.write_tools import _hermes_command
-    from backend.safety.broker import execute_action as real_ea
-
-    with patch(
-        "backend.integrations.hermes.relay_action",
-        new_callable=AsyncMock,
-        return_value={"ok": True, "response": "ok", "intent": "proxmox_status"},
-    ):
-        with patch(
-            "backend.safety.broker.execute_action",
-            side_effect=real_ea,
-            wraps=real_ea,
-        ) as mock_ea:
-            await _hermes_command({"verb": "proxmox_status", "args": {}})
-            call_kwargs = mock_ea.call_args
             if call_kwargs.args:
                 actor_val = call_kwargs.args[0]
             else:
@@ -575,48 +479,6 @@ async def test_idem_keys_differ_across_steps(eng):
     assert key_step1 != key_step2, (
         f"step 1 and step 2 keys must differ; got {key_step1!r} and {key_step2!r}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 16: Hermes command idempotency key threading
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_hermes_command_idem_key_threading(eng):
-    """_hermes_command passes idempotency_key when write context is set."""
-    _seed_state(eng, autonomy=True)
-
-    from backend.agents.write_tools import (
-        _hermes_command,
-        set_write_context,
-        reset_write_context,
-    )
-
-    captured_keys = []
-
-    from backend.safety.broker import execute_action as real_ea
-
-    async def capturing_ea(*args, **kwargs):
-        captured_keys.append(kwargs.get("idempotency_key"))
-        return await real_ea(*args, **kwargs)
-
-    with patch("backend.safety.broker.execute_action", side_effect=capturing_ea):
-        with patch(
-            "backend.integrations.hermes.relay_action",
-            new_callable=AsyncMock,
-            return_value={"ok": True, "response": "proxmox is healthy", "intent": "proxmox_status"},
-        ):
-            # Without context → None
-            await _hermes_command({"verb": "proxmox_status", "args": {}})
-            assert captured_keys[-1] is None
-
-            # With context → non-None key
-            tok = set_write_context(3, 1)
-            try:
-                await _hermes_command({"verb": "proxmox_status", "args": {}})
-                assert captured_keys[-1] is not None and len(captured_keys[-1]) > 0
-            finally:
-                reset_write_context(tok)
 
 
 # ===========================================================================

@@ -243,26 +243,6 @@ $weatherLon = Read-Host "      Your longitude [-83.04]"
 if (-not $weatherLon) { $weatherLon = "-83.04" }
 Write-EnvLine "WEATHER_LON" $weatherLon
 
-# -- Agent Bridge --
-Write-Host "`n      -- Agent Bridge -----------------------------------" -ForegroundColor DarkCyan
-$hermesHost = Read-Host "      Hermes host [http://192.168.1.x:5000]"
-if ($hermesHost) { Write-EnvLine "HERMES_HOST" $hermesHost }
-
-$hermesSecret = Get-SecureInput "      Hermes webhook secret"
-if ($hermesSecret.Length -gt 0) { Set-VaultSecret "HERMES_WEBHOOK_SECRET" $hermesSecret }
-
-$hermesSSHHost = Read-Host "      Hermes SSH host/IP [192.168.1.55]"
-if (-not $hermesSSHHost) { $hermesSSHHost = "192.168.1.55" }
-$hermesSSHUser = Read-Host "      Hermes SSH user [root]"
-if (-not $hermesSSHUser) { $hermesSSHUser = "root" }
-$hermesSSHPass = Get-SecureInput "      Hermes SSH password [Enter to skip]"
-if ($hermesSSHPass.Length -gt 0) {
-    Set-VaultSecret "cred:hermes:host" $hermesSSHHost
-    Set-VaultSecret "cred:hermes:user" $hermesSSHUser
-    Set-VaultSecret "cred:hermes:password" $hermesSSHPass
-    Write-OK "Hermes SSH credentials saved (used for automated deploys)"
-} else { Write-Warn "Skipped Hermes SSH credentials" }
-
 # -- NEXUS System --
 Write-Host "`n      -- NEXUS System -----------------------------------" -ForegroundColor DarkCyan
 $briefingTime = Read-Host "      Briefing time (24h) [07:00]"

@@ -196,7 +196,7 @@ def _save_ledger(vault: Path, seen: set) -> None:
 
 
 def _known_wikis(vault: Path) -> list[str]:
-    """Return existing wiki page stems (e.g. ['AdGuard', 'Hermes'])."""
+    """Return existing wiki page stems (e.g. ['AdGuard', 'NEXUS'])."""
     wiki_dir = vault / _WIKI_DIR
     if not wiki_dir.exists():
         return []

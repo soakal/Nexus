@@ -99,7 +99,7 @@ class Briefing(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     content: str
     context_json: str | None = None
-    delivered_to_hermes: bool = False
+    delivered: bool = False
     obsidian_path: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -203,7 +203,7 @@ class Fact(SQLModel, table=True):
 class ActionLog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     actor: str               # user | agent | autonomous
-    kind: str                # ha_service | hermes_relay | ...
+    kind: str                # ha_service | vm_power | ...
     target: str
     payload_json: str
     risk: str                # low | medium | high | unclassifiable
@@ -750,6 +750,30 @@ def _ensure_outcomeflag_columns():
     _safe_add_column("outcomeflag", "suppressed_reason", "VARCHAR")
 
 
+def _ensure_briefing_columns():
+    """Rename Briefing.delivered_to_hermes -> delivered (2026-08-09, Hermes
+    fully decommissioned). The column was write-only (never read anywhere),
+    so this is a pure rename, not a data migration. Idempotent + race-safe,
+    same discipline as _safe_add_column: a concurrent boot that already
+    renamed it is a no-op, not a failure."""
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(briefing)"))}
+            if "delivered" in cols:
+                return  # already renamed (or a fresh DB created it directly)
+            if "delivered_to_hermes" in cols:
+                conn.execute(text("ALTER TABLE briefing RENAME COLUMN delivered_to_hermes TO delivered"))
+                conn.commit()
+                return
+            # Neither column present (pre-Briefing-table DB, unlikely but cheap to guard).
+            conn.execute(text("ALTER TABLE briefing ADD COLUMN delivered BOOLEAN DEFAULT 0"))
+            conn.commit()
+    except Exception as e:
+        if "duplicate column" in str(e).lower():
+            return  # a racing boot renamed/added it first — fine, idempotent
+        logger.warning(f"_ensure_briefing_columns failed: {e}")
+
+
 def _ensure_processedmail_columns():
     """Idempotently add columns introduced after ProcessedMailId originally
     shipped (2026-07-23, same day — this table already exists in Brian's live
@@ -788,6 +812,7 @@ def create_db_and_tables():
     _ensure_processedmail_columns()
     _ensure_outcomeflag_columns()
     _ensure_outcomeflag_index()
+    _ensure_briefing_columns()
 
 
 def get_session():

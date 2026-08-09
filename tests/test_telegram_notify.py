@@ -9,7 +9,7 @@ from backend.integrations import telegram
 
 
 # ---------------------------------------------------------------------------
-# chunk_text — ported verbatim from hermes-agent's telegram_chunk.py
+# chunk_text
 # ---------------------------------------------------------------------------
 
 def test_chunk_text_passthrough_under_limit():
@@ -222,7 +222,7 @@ async def test_get_updates_success_returns_result_list():
 
 
 # ---------------------------------------------------------------------------
-# deliver_pending — relocated queue mechanics (mirrors old test_hermes_bridge.py)
+# deliver_pending — queue mechanics
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -249,8 +249,9 @@ async def test_deliver_pending_failure_increments():
 
 @pytest.mark.asyncio
 async def test_deliver_pending_legacy_action_type_dropped():
-    """A row from the now-dead hermes.action() can't be replayed to Telegram —
-    it should drop (delivered_ids) rather than dead-letter forever."""
+    """A row of a legacy, no-longer-produced delivery type can't be replayed
+    to Telegram — it should drop (delivered_ids) rather than dead-letter
+    forever."""
     pending = [{"id": 3, "payload_json": '{"message": "restart vm"}', "delivery_type": "action"}]
     with patch("httpx.AsyncClient") as mock_client_cls, \
          patch("backend.integrations.telegram._load_pending", return_value=pending), \

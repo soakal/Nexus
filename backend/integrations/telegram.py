@@ -1,12 +1,9 @@
-"""Direct Telegram Bot API transport (replaces the Hermes /hermes/notify hop).
+"""Direct Telegram Bot API transport. No telegram library — the Bot API is
+plain JSON over HTTPS, via httpx.
 
-NEXUS has its own bot (separate token from Hermes's — Phase 1 Hermes
-decoupling). No telegram library — the Bot API is plain JSON over HTTPS,
-exactly as Hermes did it, via httpx.
-
-Also owns the PendingDelivery retry queue, relocated wholesale from
-hermes.py: it must move with notify() since three other modules depend on
-it (scheduler.py, api/safety.py, agents/watchdog.py).
+Also owns the PendingDelivery retry queue — it lives here alongside notify()
+since three other modules depend on it (scheduler.py, api/safety.py,
+agents/watchdog.py).
 """
 import asyncio
 import json
@@ -27,7 +24,7 @@ LIMIT = 4000  # headroom under Telegram's 4096 hard limit, for parse_mode entity
 # transport errors are retryable.
 _TERMINAL_STATUS_CODES = {400, 401, 403, 404}
 
-# Pending-delivery retry policy (relocated from hermes.py, unchanged). The
+# Pending-delivery retry policy. The
 # scheduler calls deliver_pending() every 60s; these bound how aggressively a
 # failing row is retried and when it is given up on.
 _BACKOFF_BASE_SECONDS = 60      # first retry waits ~60s after the first failure
@@ -42,8 +39,7 @@ class TelegramConflict(Exception):
 def chunk_text(text: str, limit: int = LIMIT) -> list[str]:
     """Split on paragraph boundaries, then lines, then hard-split.
 
-    Every returned chunk is <= limit. Preserves order; drops nothing. Ported
-    verbatim from hermes-agent's tools/telegram_chunk.py.
+    Every returned chunk is <= limit. Preserves order; drops nothing.
     """
     text = text or ""
     if len(text) <= limit:
@@ -135,7 +131,7 @@ async def answer_callback_query(cq_id: str, text: str | None = None, show_alert:
 
 async def edit_message_text(chat_id, message_id: int, text: str) -> bool:
     """Edits WITHOUT reply_markup — omitting it removes the inline keyboard,
-    matching Hermes's prior single-use-button behavior. Never raises."""
+    so a tapped button becomes single-use. Never raises."""
     try:
         resp = await _call(
             "editMessageText",
@@ -310,8 +306,8 @@ async def _send_payload(payload: dict) -> tuple[bool, bool]:
 
 
 async def notify(payload: dict) -> bool:
-    """Drop-in replacement for hermes.notify() — same payload shape (content/
-    message/text, parse_mode, buttons). NEVER raises.
+    """Send a phone notification. Payload shape: content/message/text,
+    parse_mode, buttons. NEVER raises.
 
     401/403/404/400 and a missing secret are TERMINAL — logged at ERROR and
     NOT queued (a byte-identical retry cannot succeed). 429/5xx/transport
@@ -477,9 +473,9 @@ async def deliver_pending() -> None:
     for delivery in pending:
         if delivery["delivery_type"] != "notify":
             # Only "notify" rows are ever queued going forward. A row of any
-            # other type is a legacy hermes.action() row (that function is
-            # now dead) and cannot be replayed to Telegram — drop it rather
-            # than dead-lettering forever.
+            # other type is a legacy row type that is no longer produced and
+            # cannot be replayed to Telegram — drop it rather than
+            # dead-lettering forever.
             logger.warning(
                 f"Retry delivery id={delivery['id']} has unsupported "
                 f"delivery_type={delivery['delivery_type']!r} — dropping"

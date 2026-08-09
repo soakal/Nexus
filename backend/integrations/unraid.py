@@ -266,18 +266,16 @@ async def restart_docker(name_or_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # Phase 7d — native docker prune (dangling images only) via SSH
 #
-# Live GraphQL introspection during Phase 7c confirmed no prune mutation
-# exists anywhere in Unraid's schema (root or nested) -- pruning has no
-# REST/GraphQL surface at all on this server, only raw SSH, exactly like
-# Hermes's own implementation (hermes-agent/tools/unraid.py, a sibling repo,
-# NOT part of this codebase) already does it.
+# Live GraphQL introspection confirmed no prune mutation exists anywhere in
+# Unraid's schema (root or nested) -- pruning has no REST/GraphQL surface at
+# all on this server, only raw SSH.
 #
 # Deliberately DANGLING IMAGES ONLY (`docker image prune -f`), NOT the
 # broader system-wide prune (docker's `system` + `prune` combo) -- Brian
 # keeps some Unraid containers intentionally stopped, and a system-wide
 # prune would delete those containers plus unused volumes/networks along
-# with the images. This scope decision is inherited from the original
-# Hermes implementation, not invented here.
+# with the images. This scope decision is inherited from the prior
+# implementation, not invented here.
 #
 # The actual shell command is fixed SERVER-SIDE by an SSH forced-command
 # restriction in Unraid's authorized_keys (out of scope for this codebase --
@@ -336,8 +334,7 @@ def _ssh_prune_sync() -> tuple[int, str, str]:
     port = settings.unraid_ssh_port
     user = settings.unraid_ssh_user
 
-    # Ed25519, not RSA -- matches the key type Hermes's own SSH credential to
-    # Unraid uses, and loaded from an in-memory string (io.StringIO), never a
+    # Ed25519, not RSA, loaded from an in-memory string (io.StringIO), never a
     # file path -- the key material lives only in the vault, never touches disk.
     key = paramiko.Ed25519Key.from_private_key(io.StringIO(pem))
 

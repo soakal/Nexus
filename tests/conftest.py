@@ -14,7 +14,6 @@ os.environ.setdefault("UNRAID_HOST", "192.168.1.1")
 os.environ.setdefault("CHANNELS_HOST", "http://localhost:8089")
 os.environ.setdefault("ADGUARD_HOST", "http://localhost:3000")
 os.environ.setdefault("ADGUARD_USER", "admin")
-os.environ.setdefault("HERMES_HOST", "http://localhost:9000")
 os.environ.setdefault("GITHUB_USERNAME", "testuser")
 
 # Mock secrets so vault isn't required in tests
@@ -27,7 +26,6 @@ MOCK_SECRETS = {
     "OPENWEATHER_API_KEY": "test-weather-key",
     "OPENROUTER_API_KEY": "test-openrouter-key",
     "ADGUARD_PASS": "test-adguard-pass",
-    "HERMES_WEBHOOK_SECRET": "test-hermes-secret",
     "NEXUS_API_KEY": "test-nexus-key",
     "PROTONMAIL_MCP_URL": "http://test-mcp:8080/mcp",
     "PROTONMAIL_ACCOUNT": "test-proton-account",

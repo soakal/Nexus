@@ -3,7 +3,7 @@ r"""Seed the 6 starter monitoring goals into NEXUS (status='proposed').
 All are read-only (risk=low, reversibility=reversible) and recurring (daily). The
 `description` is the task prompt the agent runs on approval, written to use the
 existing read-only native tools (unraid_status, channels_status,
-homeassistant_status, adguard_status, unifi_status, hermes_status).
+homeassistant_status, adguard_status, unifi_status).
 
 Run from the repo root:
     .\venv\Scripts\python.exe seed_starter_goals.py
@@ -50,7 +50,7 @@ STARTER_GOALS = [
         "description": (
             "Review the health of all homelab integrations using the status tools "
             "(homeassistant_status, unraid_status, unifi_status, adguard_status, "
-            "channels_status, hermes_status). Report any integration that is currently "
+            "channels_status). Report any integration that is currently "
             "down or has been flapping, and summarize overall availability."
         ),
         "success_criteria": "All integrations reachable; any outage or flapping integration is flagged.",

@@ -1,9 +1,7 @@
-"""NEXUS-native homelab alert watcher (Phase 2c of the Hermes decoupling).
-
-Ports Hermes's watcher.py 60s edge-alert loop onto NEXUS's own integrations, so
-these pages keep firing even if Hermes's bot process is ever stopped. Covers:
-VM/LXC stopped, Docker container stopped, Unraid array unhealthy, disk temp
-over threshold, garage door left open, and a failed vzdump backup.
+"""NEXUS-native homelab alert watcher — a 60s edge-alert loop over NEXUS's own
+integrations. Covers: VM/LXC stopped, Docker container stopped, Unraid array
+unhealthy, disk temp over threshold, garage door left open, and a failed
+vzdump backup.
 
 Deliberately NOT built here: doorbell/camera alerts (declined by Brian — needs
 a separate 5s poll + send_photo, not worth it yet), and NEXUS's own liveness
@@ -17,11 +15,11 @@ only once it clears. State is process-local/in-memory (not DB-persisted) — its
 entire useful lifetime is the 60s until the next tick, so a restart losing it
 is an acceptable, cheap tradeoff (see reset()).
 
-Latches on ATTEMPT, not confirmed delivery — unlike Hermes's watcher, which
-blocked on delivery confirmation because it had no retry path. NEXUS's
-notify_phone already hands off to the PendingDelivery retry queue + dead-letter
-watchdog, so blocking a scheduler tick on Telegram delivery would be strictly
-worse. A muted kind still latches — muting must not replay a stale alert.
+Latches on ATTEMPT, not confirmed delivery — blocking on delivery confirmation
+would need its own retry path. NEXUS's notify_phone already hands off to the
+PendingDelivery retry queue + dead-letter watchdog, so blocking a scheduler
+tick on Telegram delivery would be strictly worse. A muted kind still
+latches — muting must not replay a stale alert.
 """
 import html
 import logging

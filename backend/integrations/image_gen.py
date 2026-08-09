@@ -1,9 +1,8 @@
-"""Text-to-image via Pollinations.ai (Hermes Phase 8 port).
+"""Text-to-image via Pollinations.ai.
 
-Ported from hermes-agent/image_gen.py. Unauthenticated public API — no vault
-secret, no NEXUS_API_KEY equivalent. Modeled on sports.py: no
-@async_ttl_cache (every prompt is unique, caching would be actively wrong),
-one outer try/except, never raises.
+Unauthenticated public API — no vault secret, no NEXUS_API_KEY equivalent.
+Modeled on sports.py: no @async_ttl_cache (every prompt is unique, caching
+would be actively wrong), one outer try/except, never raises.
 """
 import logging
 from urllib.parse import quote

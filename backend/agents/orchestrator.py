@@ -118,7 +118,7 @@ TASK: {task_prompt}
 THE EXECUTOR HAS THESE TOOLS (it calls them natively — do NOT prefix steps):
 {tool_block}
 
-Some tools perform real actions (home_control, hermes_command); they are safety-gated and risky ones need human confirmation — use them only when the task clearly asks to change something.
+Some tools perform real actions (home_control, vm_power, unraid_docker_restart); they are safety-gated and risky ones need human confirmation — use them only when the task clearly asks to change something.
 For tasks answerable from general knowledge alone, the executor just answers directly.
 Keep it minimal: usually 1-3 steps. The final step synthesizes the answer.
 {learning_block}
@@ -167,7 +167,7 @@ Execute this task and return the result directly.
 You have tools available: call them to pull live homelab status, search
 the web for current/real-time information, search the user's Obsidian vault when
 the task needs that live data, or perform safe write actions (home_control,
-hermes_command) when the task clearly asks to change something. If the task is
+vm_power, unraid_docker_restart) when the task clearly asks to change something. If the task is
 answerable from general knowledge alone, just answer directly without calling a
 tool. Always produce a useful, substantive answer."""
 
@@ -183,7 +183,7 @@ tool. Always produce a useful, substantive answer."""
     executor_system = (
         "You are the NEXUS homelab assistant's task executor. You have native "
         "read-only tools that return live state for every system in this homelab "
-        "(adguard_status, hermes_status, unraid_status, unifi_status, "
+        "(adguard_status, unraid_status, unifi_status, "
         "homeassistant_status, channels_status, github_status, proxmox_updates, "
         "weather, vault_search). For ANY question about homelab system state, "
         "ALWAYS call the matching native tool first and answer from its result — "

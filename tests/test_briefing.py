@@ -316,7 +316,7 @@ Focus on your priorities."""
          patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
          patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_opus, \
          patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock) as mock_create_note, \
-         patch("backend.integrations.telegram.notify", new_callable=AsyncMock) as mock_hermes, \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock) as mock_telegram, \
          patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
          patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
          patch("backend.database.engine"), \
@@ -341,7 +341,7 @@ Focus on your priorities."""
         ag.return_value = AdGuardData()
         mock_opus.return_value = mock_briefing_text
         mock_create_note.return_value = "NEXUS/Briefings/2024-01-01.md"
-        mock_hermes.return_value = True
+        mock_telegram.return_value = True
 
         from backend.agents.briefing import run_briefing
         result = await run_briefing()

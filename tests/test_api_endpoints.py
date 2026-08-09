@@ -133,13 +133,12 @@ def test_sources_status_all_healthy(app_client, auth_headers):
          patch("backend.integrations.weather.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.channels_dvr.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.adguard.health_check", new_callable=AsyncMock, return_value=True), \
-         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.calendar.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.get("/api/sources/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         for name in ("homeassistant", "unifi", "unraid", "obsidian", "github",
-                     "openrouter", "weather", "channels_dvr", "adguard", "hermes", "calendar"):
+                     "openrouter", "weather", "channels_dvr", "adguard", "calendar"):
             assert name in data
             assert data[name]["healthy"] is True
             assert "last_checked" in data[name]
@@ -155,7 +154,6 @@ def test_sources_status_some_unhealthy(app_client, auth_headers):
          patch("backend.integrations.weather.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.channels_dvr.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.adguard.health_check", new_callable=AsyncMock, return_value=True), \
-         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.calendar.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.get("/api/sources/status", headers=auth_headers)
         assert resp.status_code == 200
@@ -174,7 +172,6 @@ def test_sources_status_exception_is_unhealthy(app_client, auth_headers):
          patch("backend.integrations.weather.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.channels_dvr.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.adguard.health_check", new_callable=AsyncMock, return_value=True), \
-         patch("backend.integrations.hermes.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.calendar.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.get("/api/sources/status", headers=auth_headers)
         assert resp.status_code == 200
@@ -321,53 +318,6 @@ def test_proxmox_maintenance_unauthorized(app_client):
     assert resp.status_code in (401, 403)
 
 
-def test_hermes_actions_execute_happy_path(app_client, auth_headers):
-    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
-    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec:
-        mock_exec.return_value = ActionResult(
-            decision=Decision.EXECUTED, risk=Risk.HIGH,
-            reversibility=Reversibility.REVERSIBLE_BY_INVERSE, log_id=1,
-            result={"response": "rebooting processforge"},
-        )
-        resp = app_client.post(
-            "/api/safety/hermes-actions/execute",
-            json={"verb": "vm_action", "args": {"vm": "processforge", "action": "reboot"}},
-            headers=auth_headers,
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["ok"] is True
-        assert body["decision"] == "executed"
-        assert body["response"] == "rebooting processforge"
-        mock_exec.assert_awaited_once_with(
-            actor="user", kind="hermes_action", target="hermes",
-            payload={"verb": "vm_action", "args": {"vm": "processforge", "action": "reboot"}},
-        )
-
-
-def test_hermes_actions_execute_rejects_unknown_verb(app_client, auth_headers):
-    resp = app_client.post(
-        "/api/safety/hermes-actions/execute",
-        json={"verb": "not_a_real_verb", "args": {}},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 400
-
-
-def test_hermes_actions_execute_rejects_bad_args(app_client, auth_headers):
-    resp = app_client.post(
-        "/api/safety/hermes-actions/execute",
-        json={"verb": "vm_action", "args": {"vm": "processforge", "action": "not_a_real_action"}},
-        headers=auth_headers,
-    )
-    assert resp.status_code == 400
-
-
-def test_hermes_actions_execute_unauthorized(app_client):
-    resp = app_client.post("/api/safety/hermes-actions/execute", json={"verb": "vm_action", "args": {}})
-    assert resp.status_code in (401, 403)
-
-
 def test_adguard_toggle(app_client, auth_headers):
     with patch("backend.integrations.adguard.set_filtering", new_callable=AsyncMock):
         resp = app_client.post("/api/adguard/filter", json={"enabled": False}, headers=auth_headers)
@@ -400,10 +350,10 @@ def test_unraid_get(app_client, auth_headers):
 
 
 # ---------------------------------------------------------------------------
-# Hermes trigger
+# /api/trigger
 # ---------------------------------------------------------------------------
 
-def test_hermes_trigger_briefing(app_client, auth_headers):
+def test_trigger_briefing(app_client, auth_headers):
     with patch("backend.agents.briefing.run_briefing", new_callable=AsyncMock) as mock_briefing:
         mock_briefing.return_value = "Briefing text"
         resp = app_client.post("/api/trigger", json={"task_name": "briefing", "parameters": {}}, headers=auth_headers)
@@ -451,7 +401,7 @@ def test_today_home_state_degrades_quietly_on_ha_failure(app_client, auth_header
     assert body["alert_count"] == 0
 
 
-def test_hermes_trigger_status(app_client, auth_headers):
+def test_trigger_status(app_client, auth_headers):
     with patch("backend.integrations.homeassistant.health_check", new_callable=AsyncMock, return_value=True), \
          patch("backend.integrations.unraid.health_check", new_callable=AsyncMock, return_value=True):
         resp = app_client.post("/api/trigger", json={"task_name": "status", "parameters": {}}, headers=auth_headers)
@@ -462,18 +412,18 @@ def test_hermes_trigger_status(app_client, auth_headers):
         assert "unraid" in body["result"]
 
 
-def test_hermes_trigger_unknown_task(app_client, auth_headers):
+def test_trigger_unknown_task(app_client, auth_headers):
     resp = app_client.post("/api/trigger", json={"task_name": "nonexistent", "parameters": {}}, headers=auth_headers)
     assert resp.status_code == 404
 
 
-def test_hermes_trigger_requires_auth(app_client):
+def test_trigger_requires_auth(app_client):
     """/api/trigger is now Bearer-required (Tier 1.6) — no key -> 401."""
     resp = app_client.post("/api/trigger", json={"task_name": "briefing", "parameters": {}})
     assert resp.status_code == 401
 
 
-def test_hermes_trigger_council_postmortem(app_client, auth_headers):
+def test_trigger_council_postmortem(app_client, auth_headers):
     """Council-loop's run-loop.ps1 POSTs here at driver exit (Phase 2c hookup)
     -- pins the parameter plumbing that POST depends on: 'since' must reach
     run_postmortem unchanged."""
@@ -489,23 +439,6 @@ def test_hermes_trigger_council_postmortem(app_client, auth_headers):
         assert body["ok"] is True
         assert body["result"] == {"ok": True, "findings": []}
         mock_pm.assert_awaited_once_with(since="2026-07-27T00:00:00Z")
-
-
-# ---------------------------------------------------------------------------
-# Safety: Hermes capabilities (pure read of the structured-verb allowlist)
-# ---------------------------------------------------------------------------
-
-def test_hermes_actions_endpoint_requires_auth(app_client):
-    resp = app_client.get("/api/safety/hermes-actions")
-    assert resp.status_code == 401
-
-
-def test_hermes_actions_endpoint_lists_verbs(app_client, auth_headers):
-    resp = app_client.get("/api/safety/hermes-actions", headers=auth_headers)
-    assert resp.status_code == 200
-    verbs = resp.json()["verbs"]
-    assert len(verbs) > 0
-    assert any(v["verb"] == "restart_service" for v in verbs)
 
 
 # ---------------------------------------------------------------------------

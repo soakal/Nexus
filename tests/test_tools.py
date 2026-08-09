@@ -239,23 +239,6 @@ async def test_github_status_normal_and_raise():
 
 
 @pytest.mark.asyncio
-async def test_hermes_status_normal_and_raise():
-    from backend.agents import tools
-
-    status = MagicMock()
-    status.alive = True
-    status.last_seen = None
-    status.pending_actions = 3
-    with patch("backend.integrations.hermes.get_status", new=AsyncMock(return_value=status)):
-        out = await tools._hermes_status({})
-    assert "alive=True" in out and "pending_actions=3" in out
-
-    with patch("backend.integrations.hermes.get_status", new=AsyncMock(side_effect=Exception("x"))):
-        out = await tools._hermes_status({})
-    assert out.startswith("hermes_status unavailable:")
-
-
-@pytest.mark.asyncio
 async def test_open_flags_normal_empty_and_raise():
     from backend.agents import tools
 
@@ -281,14 +264,15 @@ async def test_open_flags_normal_empty_and_raise():
 async def test_proxmox_updates_passthrough_and_raise():
     from backend.agents import tools
 
-    # Relays "proxmox updates" to Hermes; returns its response string verbatim.
-    with patch("backend.integrations.hermes.relay",
-               new=AsyncMock(return_value="3 pending update(s) on pve: libc6, openssl")) as rl:
+    with patch(
+        "backend.integrations.proxmox.fetch_updates",
+        new=AsyncMock(return_value={"node": "pve", "count": 2, "packages": ["libc6", "openssl"]}),
+    ) as fu:
         out = await tools._proxmox_updates({})
-    assert "3 pending update(s)" in out
-    rl.assert_awaited_once_with("proxmox updates")
+    assert "2 pending" in out and "libc6" in out
+    fu.assert_awaited_once()
 
-    with patch("backend.integrations.hermes.relay", new=AsyncMock(side_effect=Exception("x"))):
+    with patch("backend.integrations.proxmox.fetch_updates", new=AsyncMock(side_effect=Exception("x"))):
         out = await tools._proxmox_updates({})
     assert out.startswith("proxmox_updates unavailable:")
 
@@ -339,8 +323,8 @@ async def test_all_dispatchers_never_raise_on_error():
         "backend.integrations.channels_dvr.fetch",
         "backend.integrations.weather.fetch",
         "backend.integrations.github.fetch",
-        "backend.integrations.hermes.get_status",
-        "backend.integrations.hermes.relay",
+        "backend.integrations.proxmox.fetch_updates",
+        "backend.integrations.proxmox.fetch_backups",
         "backend.integrations.obsidian.vault_search",
         "backend.integrations.web_search.search",
         "backend.integrations.protonmail.list_recent",
@@ -409,7 +393,7 @@ def test_dispatcher_map_keys_match_registry():
     assert set(dmap.keys()) == {t.name for t in READ_TOOLS}
     expected = {
         "homeassistant_status", "homeassistant_temperatures", "unraid_status", "unifi_status",
-        "adguard_status", "channels_status", "weather", "github_status", "hermes_status",
+        "adguard_status", "channels_status", "weather", "github_status",
         "proxmox_updates", "proxmox_backups", "vault_search", "ddg_search",
         "protonmail_inbox", "protonmail_read_email", "protonmail_status",
         "open_flags",

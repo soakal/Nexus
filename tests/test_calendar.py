@@ -16,8 +16,7 @@ def _today() -> date:
 
 
 # ---------------------------------------------------------------------------
-# Regression guard — the exact bug that was almost ported verbatim from
-# hermes-agent's gcal.py: %-I / %-d strftime flags are glibc-only and raise
+# Regression guard: %-I / %-d strftime flags are glibc-only and raise
 # ValueError on Windows.
 # ---------------------------------------------------------------------------
 

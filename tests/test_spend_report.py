@@ -188,10 +188,10 @@ def safety_client(tmp_path, monkeypatch):
 async def test_notify_phone_appends_deep_link_when_base_url_set():
     """With app_base_url set, the payload content must end with
     'Open: {base}/safety'."""
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", telegram_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = "http://192.168.1.119:3000"
@@ -201,8 +201,8 @@ async def test_notify_phone_appends_deep_link_when_base_url_set():
         result = await notify_phone("budget alert", kind="x")
 
     assert result is True
-    hermes_notify_mock.assert_awaited_once()
-    call_payload = hermes_notify_mock.await_args[0][0]
+    telegram_notify_mock.assert_awaited_once()
+    call_payload = telegram_notify_mock.await_args[0][0]
     assert 'href="http://192.168.1.119:3000/safety"' in call_payload["content"]
     assert call_payload["content"].startswith("budget alert")
     assert call_payload.get("parse_mode") == "HTML"
@@ -211,10 +211,10 @@ async def test_notify_phone_appends_deep_link_when_base_url_set():
 @pytest.mark.asyncio
 async def test_notify_phone_no_deep_link_when_base_url_blank():
     """With app_base_url='', the content must NOT contain 'Open:'."""
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", telegram_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = ""
@@ -224,7 +224,7 @@ async def test_notify_phone_no_deep_link_when_base_url_blank():
         result = await notify_phone("hi", kind="autonomy_alert")
 
     assert result is True
-    call_payload = hermes_notify_mock.await_args[0][0]
+    call_payload = telegram_notify_mock.await_args[0][0]
     assert "Open:" not in call_payload["content"]
     assert call_payload["content"] == "hi"
 
@@ -232,10 +232,10 @@ async def test_notify_phone_no_deep_link_when_base_url_blank():
 @pytest.mark.asyncio
 async def test_notify_phone_deep_link_strips_trailing_slash():
     """A base URL with a trailing slash must still produce a clean deep-link."""
-    hermes_notify_mock = AsyncMock(return_value=True)
+    telegram_notify_mock = AsyncMock(return_value=True)
 
     with patch("backend.config.get_settings") as mock_settings, \
-         patch("backend.integrations.telegram.notify", hermes_notify_mock):
+         patch("backend.integrations.telegram.notify", telegram_notify_mock):
         s = MagicMock()
         s.phone_notifications_enabled = True
         s.app_base_url = "http://192.168.1.119:3000/"
@@ -244,7 +244,7 @@ async def test_notify_phone_deep_link_strips_trailing_slash():
         from backend.events import notify_phone
         await notify_phone("msg", kind="test")
 
-    call_payload = hermes_notify_mock.await_args[0][0]
+    call_payload = telegram_notify_mock.await_args[0][0]
     assert 'href="http://192.168.1.119:3000/safety"' in call_payload["content"]
     assert call_payload.get("parse_mode") == "HTML"
     # Must not have double-slash.

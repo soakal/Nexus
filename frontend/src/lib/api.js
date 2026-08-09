@@ -155,8 +155,6 @@ export const api = {
     confirmAction: (id) => req('POST', `/safety/actions/${id}/confirm`),
     pendingActions: (limit) => req('GET', `/safety/actions?decision=needs_confirm&limit=${limit || 20}`),
     clearDeadLetters: () => req('DELETE', '/safety/deliveries/dead'),
-    hermesActions: () => req('GET', '/safety/hermes-actions'),
-    executeHermesAction: (verb, args) => req('POST', '/safety/hermes-actions/execute', { verb, args }),
     flags: (limit, status, source) => req('GET', `/safety/flags?limit=${limit || 200}${status ? `&status=${encodeURIComponent(status)}` : ''}${source ? `&source=${encodeURIComponent(source)}` : ''}`),
     flagsCalibration: (days) => req('GET', `/safety/flags/calibration?days=${days || 30}`),
     createFlag: (check, summary, detail, severity) => req('POST', '/safety/flags', { check, summary, detail: detail || null, severity: severity || 'medium' }),

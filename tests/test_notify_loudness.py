@@ -8,8 +8,7 @@ Covers:
 
 notify()/deliver_pending() failure-classification tests (401/403/404/400 don't
 queue, 429/5xx/transport errors do) live in test_telegram_notify.py, since that
-logic moved from backend.integrations.hermes to backend.integrations.telegram
-(Phase 1 Hermes decoupling).
+logic lives in backend.integrations.telegram.
 """
 import logging
 from unittest.mock import MagicMock, patch
@@ -133,7 +132,7 @@ class TestSafetyStatusNotifyChannel:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("secret_name", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"])
-def test_hermes_auth_secrets_covered_by_startup_check(secret_name, caplog):
+def test_telegram_auth_secrets_covered_by_startup_check(secret_name, caplog):
     """Any secret used for Telegram notify auth must be caught by validate() if missing."""
     from backend.config import Settings
     s = Settings()

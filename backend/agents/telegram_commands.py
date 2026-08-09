@@ -7,10 +7,9 @@ transcription (wired in telegram_poller.py, dispatches through this same
 module once transcribed).
 
 Used by telegram_poller.py for every non-callback inbound message. Bare text
-(no leading "/") is treated as a chat message — matches how Hermes's bot
-behaved, so there's no new habit to learn; /nx is kept as an explicit alias
-for the same handler. Every handler is wrapped by dispatch() so one handler's
-exception can never kill the poll loop.
+(no leading "/") is treated as a chat message; /nx is kept as an explicit
+alias for the same handler. Every handler is wrapped by dispatch() so one
+handler's exception can never kill the poll loop.
 
 Deliberately NOT built here: /model (no NEXUS equivalent — its model tiers
 are .env-configured, not chat-switchable) and the background homelab alert
@@ -40,8 +39,7 @@ def _chat_id(msg: dict):
 
 
 async def _cmd_chat(args: str, msg: dict) -> str:
-    """Bare text and /nx both land here — NEXUS's own chat(), in-process
-    (Hermes's /nx made an HTTP round-trip to the same endpoint)."""
+    """Bare text and /nx both land here — NEXUS's own chat(), in-process."""
     import asyncio
     from backend.agents.chat import chat
     from backend.safety import governor

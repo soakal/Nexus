@@ -1,16 +1,11 @@
-"""NEXUS-native homelab daily digest (Phase 3 of the Hermes decoupling).
+"""NEXUS-native homelab daily digest -- a proactive homelab-status report,
+distinct from homelab_watch.py, which is edge-triggered (alerts on problems
+only) -- this one always sends, once a day.
 
-Ports Hermes's main.py:daily_digest() 8am cron onto NEXUS's own integrations,
-so this proactive homelab-status report survives Hermes's bot process ever
-being stopped. Distinct from homelab_watch.py, which is edge-triggered
-(alerts on problems only) -- this one always sends, once a day.
-
-Deliberately NOT ported: weather and calendar (backend/agents/briefing.py's
+Deliberately NOT included: weather and calendar (backend/agents/briefing.py's
 morning_briefing already covers both, 5 minutes earlier -- this job is
-scheduled at briefing_time+5) and Jellyfin now-playing (Hermes itself only
-shows that section when something IS playing, which at 8am is effectively
-never, and NEXUS has no native Jellyfin integration -- only the kept Hermes
-action-relay bridge).
+scheduled at briefing_time+5) and Jellyfin now-playing (NEXUS has no native
+Jellyfin integration).
 """
 import html
 import logging
@@ -31,8 +26,7 @@ def _now() -> datetime:
         tz = None
     return datetime.now(tz)
 
-# Mirrors hermes-agent/main.py's _HA_IGNORE_PREFIXES/_HA_IGNORE_SUBSTRINGS --
-# entities that are chronically unavailable and not actionable, so the daily
+# Entities that are chronically unavailable and not actionable, so the daily
 # unavailable-count doesn't drown in noise from iPads/Alexas/identify buttons.
 _HA_IGNORE_PREFIXES = (
     "button.",
@@ -198,7 +192,7 @@ async def _run_section(name: str, coro) -> str:
 
 
 def _format_now() -> str:
-    """Windows-safe equivalent of Hermes's '%-d'/'%-I' (glibc-only, crashes on
+    """Windows-safe equivalent of '%-d'/'%-I' (glibc-only, crashes on
     Windows) -- plain ints instead of the strftime no-pad flag."""
     now = _now()
     return f"{now:%A, %B} {now.day} {now:%Y} {now.hour % 12 or 12}:{now:%M %p}"

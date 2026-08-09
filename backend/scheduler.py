@@ -19,16 +19,6 @@ _ORGANIZER_OUTPUT_CHARS = 2000
 # tests/test_infisical_soak_reminder.py once Phase 6 (Fernet vault
 # retirement) ships.
 INFISICAL_SOAK_REMINDER_AT = datetime(2026, 8, 5, 9, 0)
-
-# One-off: fires once the ~1-week soak on Hermes's now-dead REST endpoints
-# (/hermes/notify, /hermes/calendar, /hermes/gmail, /hermes/capabilities,
-# the goal/safety Telegram callback handlers, and the /gmail command) has
-# passed since it started 2026-07-27. Unlike the Infisical soak above, this
-# one previously had NO hard trigger at all -- just prose in CLAUDE.md.
-# Safe to delete this constant, the _hermes_soak_reminder job, its
-# registration block below, and tests/test_hermes_soak_reminder.py once
-# that Hermes-side cleanup pass actually ships.
-HERMES_SOAK_REMINDER_AT = datetime(2026, 8, 3, 9, 0)
 scheduler = AsyncIOScheduler(
     job_defaults={
         "coalesce": True,        # collapse a backlog of missed runs into one
@@ -78,7 +68,7 @@ async def _record_uptime():
         from sqlmodel import Session
         from backend.database import UptimeSample, engine
         from backend.integrations import (
-            adguard, calendar, channels_dvr, github, hermes, homeassistant,
+            adguard, calendar, channels_dvr, github, homeassistant,
             obsidian, openrouter, protonmail, proxmox, unifi, unraid, weather,
         )
         import time
@@ -87,7 +77,7 @@ async def _record_uptime():
             "homeassistant": homeassistant, "unifi": unifi, "unraid": unraid,
             "obsidian": obsidian, "github": github, "openrouter": openrouter,
             "weather": weather, "channels_dvr": channels_dvr, "adguard": adguard,
-            "hermes": hermes, "proxmox": proxmox, "protonmail": protonmail,
+            "proxmox": proxmox, "protonmail": protonmail,
             "calendar": calendar,
         }
 
@@ -501,23 +491,6 @@ async def _infisical_soak_reminder():
         logger.error(f"Infisical soak reminder job error: {e}")
 
 
-async def _hermes_soak_reminder():
-    try:
-        from backend import events
-        await events.notify_phone(
-            "NEXUS reminder: the ~1-week soak on Hermes's dead REST endpoints "
-            "(since 2026-07-27) has passed. Time to do the Hermes-side cleanup "
-            "pass: remove /hermes/notify, /hermes/calendar, /hermes/gmail, "
-            "/hermes/capabilities, the goal/safety Telegram callback handlers "
-            "in main.py, and the /gmail command. This needs your live "
-            "confirmation before any Hermes deploy, same as always.",
-            kind="soak_reminder",
-        )
-        logger.info("Hermes soak reminder sent")
-    except Exception as e:
-        logger.error(f"Hermes soak reminder job error: {e}")
-
-
 def setup_scheduler(briefing_time: str, timezone: str):
     hour, minute = briefing_time.split(":")
     scheduler.add_job(
@@ -564,8 +537,8 @@ def setup_scheduler(briefing_time: str, timezone: str):
     )
     scheduler.add_job(
         _record_speedtest,
-        # 3h, not 30m: each test saturates the link (~1.5-5.5s ping) and was
-        # tripping Hermes's 5s-timeout liveness watcher into false NEXUS-down alerts.
+        # 3h, not 30m: each test saturates the link (~1.5-5.5s ping), too
+        # disruptive to run more often.
         IntervalTrigger(hours=3),
         id="record_speedtest",
         replace_existing=True,
@@ -777,22 +750,4 @@ def setup_scheduler(briefing_time: str, timezone: str):
     except Exception as e:
         logger.warning(f"Infisical soak reminder registration skipped: {e}")
 
-    try:
-        tz = ZoneInfo(timezone)
-        fire_at = HERMES_SOAK_REMINDER_AT.replace(tzinfo=tz)
-        if datetime.now(tz) < fire_at:
-            scheduler.add_job(
-                _hermes_soak_reminder,
-                DateTrigger(run_date=HERMES_SOAK_REMINDER_AT, timezone=timezone),
-                id="hermes_soak_reminder",
-                replace_existing=True,
-            )
-            logger.info(
-                "Hermes soak reminder registered: fires once at %s %s",
-                HERMES_SOAK_REMINDER_AT, timezone,
-            )
-        else:
-            logger.info("Hermes soak reminder window passed — not registering")
-    except Exception as e:
-        logger.warning(f"Hermes soak reminder registration skipped: {e}")
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")
