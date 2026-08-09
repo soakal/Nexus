@@ -288,6 +288,12 @@ export default function Pulse() {
           <Eyebrow>Live Ticker</Eyebrow>
           {paused && <span style={{ fontSize: '11px', color: '#8a96ad' }}>paused — hover to pin, move away to resume</span>}
         </div>
+        {/* Rows below need flexShrink:0 -- a column flex container with
+            maxHeight + overflow:hidden children lets the browser shrink
+            every child toward 0 height to "fit" instead of overflowing and
+            scrolling, since overflow:hidden resets a flex item's automatic
+            min-height to 0. Found live: real ticker data was in the DOM
+            with correct text/color but rendered at height:0px, invisible. */}
         <div
           onMouseEnter={() => setPaused(true)}
           onMouseLeave={() => setPaused(false)}
@@ -300,7 +306,7 @@ export default function Pulse() {
             <div style={{ color: '#5d6982' }}>No activity yet.</div>
           ) : (
             tickerRows.map((ev, i) => (
-              <div key={`${ev.ts}-${i}`} style={{ color: '#c8d0e0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <div key={`${ev.ts}-${i}`} style={{ color: '#c8d0e0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0 }}>
                 <span style={{ color: '#5d6982' }}>{new Date(ev.ts.endsWith('Z') ? ev.ts : ev.ts + 'Z').toLocaleTimeString()}</span>
                 {' · '}
                 <span style={{ color: '#8a96ad' }}>{ev.event}</span>
