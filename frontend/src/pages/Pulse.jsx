@@ -73,7 +73,10 @@ export default function Pulse() {
   }, [paused])
 
   useEffect(() => {
-    api.safety.status().then(setAutonomy).catch(() => {})
+    const loadAutonomy = () => api.safety.status().then(setAutonomy).catch(() => {})
+    loadAutonomy()
+    const t = setInterval(loadAutonomy, 30000)
+    return () => clearInterval(t)
   }, [])
 
   useEffect(() => {

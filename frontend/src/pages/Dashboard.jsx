@@ -233,7 +233,7 @@ export default function Dashboard() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '9px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               <StatusPill
-                tone="green"
+                tone={online === (total || 10) ? 'green' : 'amber'}
                 label={`${online} / ${total || 10} online`}
               />
               <PrimaryButton
@@ -302,20 +302,6 @@ export default function Dashboard() {
             </div>
           </Card>
         )}
-
-        {/* Sources */}
-        <Card style={{ flex: '1 1 150px', display: 'flex', flexDirection: 'column', gap: '14px', justifyContent: 'space-between' }}>
-          <Eyebrow>Sources</Eyebrow>
-          <div>
-            <div style={{ fontSize: '30px', fontWeight: 700 }}>
-              {online}<span style={{ fontSize: '17px', color: '#5d6982', fontWeight: 500 }}>/{total || 10}</span>
-            </div>
-            <div style={{ fontSize: '12px', color: online === (total || 10) ? '#5fe0b4' : '#fb7185', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <StatusDot color={online === (total || 10) ? '#34d399' : '#fb7185'} size={6} glow={false} />
-              {online === (total || 10) ? 'All online' : `${(total || 10) - online} offline`}
-            </div>
-          </div>
-        </Card>
 
         {/* Blocked */}
         <Card style={{ flex: '1 1 150px', display: 'flex', flexDirection: 'column', gap: '14px', justifyContent: 'space-between' }}>

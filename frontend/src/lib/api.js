@@ -19,11 +19,6 @@ export const WS_BASE = _base
   ? _base.replace(/^http/, 'ws')
   : `wss://${window.location.host}`
 
-// The live-feed WS URL (no key in the URL — see wsLogsProtocols).
-export function wsLogsUrl() {
-  return `${WS_BASE}/ws/logs`
-}
-
 // Pass the API key as a WebSocket subprotocol instead of a query param so it
 // never appears in the URL (and therefore never in server access logs). The
 // server validates subprotocols[1] after the "nexus-api-key" sentinel and echoes

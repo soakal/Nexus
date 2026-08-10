@@ -320,9 +320,9 @@ export default function App() {
               flex: 'none',
             }}
           >
-            <StatusDot color="#34d399" size={8} pulse />
+            <StatusDot color={apiOk ? '#34d399' : '#fb7185'} size={8} pulse={apiOk} />
             <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}>
-              {apiOk ? 'All systems online' : 'Systems degraded'}
+              {apiOk ? 'NEXUS connected' : 'NEXUS unreachable'}
             </span>
           </div>
         </aside>
@@ -395,7 +395,7 @@ export default function App() {
               NEXUS
             </span>
             <span style={{ flex: 1 }} />
-            <StatusDot color="#34d399" size={8} />
+            <StatusDot color={apiOk ? '#34d399' : '#fb7185'} size={8} />
           </div>
 
           {/* Auth/vault warning banner */}

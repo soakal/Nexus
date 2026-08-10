@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { api, wsLogsUrl, wsLogsProtocols } from '../lib/api'
+import { useState, useEffect, useCallback } from 'react'
+import { api } from '../lib/api'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import StatusDot from '../components/StatusDot'
@@ -208,8 +208,6 @@ export default function Safety() {
   const [budgetErr, setBudgetErr]       = useState('')
 
   // New sections state
-  const [events, setEvents]               = useState([])
-  const [wsConnected, setWsConnected]     = useState(false)
   const [pendingActions, setPendingActions] = useState([])
   const [confirmingId, setConfirmingId]   = useState(null)
   const [confirmErrors, setConfirmErrors] = useState({})
@@ -238,12 +236,6 @@ export default function Safety() {
   const FALLBACK_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]
   const [categories, setCategories]       = useState(FALLBACK_CATEGORIES)
   const [categoryFilter, setCategoryFilter] = useState('all')
-
-  // WebSocket refs
-  const wsRef       = useRef(null)
-  const wsAliveRef  = useRef(true)
-  const reconnTimer = useRef(null)
-  const backfilledRef = useRef(false)
 
   // ---------------------------------------------------------------------------
   // REST load (10s poll)
@@ -274,21 +266,6 @@ export default function Safety() {
   }, [])
 
   useEffect(() => {
-    if (backfilledRef.current || !actions || actions.length === 0) return
-    backfilledRef.current = true
-    const seeded = actions.slice(0, 15).map(a => ({
-      type: 'action',
-      actor: a.actor,
-      kind: a.kind,
-      target: a.target,
-      decision: a.decision,
-      _t: a.created_at ? new Date(a.created_at.endsWith('Z') ? a.created_at : a.created_at + 'Z').getTime() : Date.now(),
-      _backfill: true,
-    }))
-    setEvents(prev => (prev.length === 0 ? seeded : prev))
-  }, [actions])
-
-  useEffect(() => {
     load()
     const timer = setInterval(load, 10000)
     const onVis = () => { if (!document.hidden) load() }
@@ -300,55 +277,6 @@ export default function Safety() {
       window.removeEventListener('focus', onVis)
     }
   }, [load])
-
-  // ---------------------------------------------------------------------------
-  // WebSocket — live event feed
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    wsAliveRef.current = true
-
-    function connect() {
-      if (!wsAliveRef.current) return
-      const ws = new WebSocket(wsLogsUrl(), wsLogsProtocols())
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        if (wsAliveRef.current) setWsConnected(true)
-      }
-
-      ws.onmessage = (e) => {
-        try {
-          const evt = JSON.parse(e.data)
-          setEvents(prev => [{ ...evt, _t: Date.now() }, ...prev].slice(0, 20))
-        } catch {
-          // ignore unparseable frames
-        }
-      }
-
-      ws.onclose = () => {
-        setWsConnected(false)
-        if (wsAliveRef.current) {
-          reconnTimer.current = setTimeout(connect, 3000)
-        }
-      }
-
-      ws.onerror = () => {
-        ws.close()
-      }
-    }
-
-    connect()
-
-    return () => {
-      wsAliveRef.current = false
-      clearTimeout(reconnTimer.current)
-      if (wsRef.current) {
-        wsRef.current.onclose = null
-        wsRef.current.close()
-        wsRef.current = null
-      }
-    }
-  }, [])
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -766,73 +694,7 @@ export default function Safety() {
       </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* 3. Live Activity                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      <Card>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-          <Eyebrow>Live Activity</Eyebrow>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-            <StatusDot color={wsConnected ? '#34d399' : '#8a96ad'} size={7} glow={wsConnected} />
-            <span style={{ fontSize: '12px', color: wsConnected ? '#5fe0b4' : '#8a96ad' }}>
-              {wsConnected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
-        </div>
-
-        {events.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Waiting for activity...</span>
-        ) : (
-          <div>
-            {events.map((evt, idx) => (
-              <div key={`${evt._t}-${idx}`} style={rowStyle}>
-                {evt.type === 'action' ? (
-                  <>
-                    <Badge label={evt.decision || 'event'} t={tone(evt.decision)} />
-                    {evt.judge_verdict != null && (
-                      <Badge label={`judge: ${evt.judge_verdict}`} t={tone(evt.judge_verdict)} />
-                    )}
-                    <span style={{ fontSize: '12px', color: '#8a96ad' }}>
-                      {[evt.actor, evt.kind].filter(Boolean).join(' / ')}
-                    </span>
-                    <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982', flex: 'none' }}>
-                      {relativeTime(new Date(evt._t).toISOString())}
-                    </span>
-                    {evt.target && (
-                      <span style={{
-                        width: '100%', fontSize: '13px', color: '#dbe3f0',
-                        fontFamily: "'JetBrains Mono', monospace",
-                        overflowWrap: 'anywhere', lineHeight: 1.45,
-                      }}>
-                        {evt.target}
-                      </span>
-                    )}
-                    {evt.judge_reason && (
-                      <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
-                        Judge: {evt.judge_reason}
-                      </div>
-                    )}
-                  </>
-                ) : evt.type === 'autonomy' ? (
-                  <>
-                    <Badge label={evt.enabled ? 'autonomy on' : 'autonomy off'} t={tone(evt.enabled ? 'allowed' : 'denied')} />
-                    <span style={{ flex: 1 }} />
-                    <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
-                      {relativeTime(new Date(evt._t).toISOString())}
-                    </span>
-                  </>
-                ) : (
-                  <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
-                    {JSON.stringify(evt)}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {/* ------------------------------------------------------------------ */}
-      {/* 4. Pending Confirmations (only if any)                               */}
+      {/* 3. Pending Confirmations (only if any)                               */}
       {/* ------------------------------------------------------------------ */}
       {pendingActions?.length > 0 && (
         <Card>
@@ -891,7 +753,7 @@ export default function Safety() {
       )}
 
       {/* ------------------------------------------------------------------ */}
-      {/* 5. Goals                                                             */}
+      {/* 4. Goals                                                             */}
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Goals</Eyebrow>
@@ -1250,7 +1112,7 @@ export default function Safety() {
       </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* 6. Verifications                                                     */}
+      {/* 5. Verifications                                                     */}
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Recent Verdicts</Eyebrow>
@@ -1306,7 +1168,7 @@ export default function Safety() {
       </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* 7. Metering Health                                                   */}
+      {/* 6. Metering Health                                                   */}
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Metering Health</Eyebrow>
@@ -1382,7 +1244,7 @@ export default function Safety() {
       </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* 8. Today's Spend                                                     */}
+      {/* 7. Today's Spend                                                     */}
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '10px' }}>Today's Spend</Eyebrow>
@@ -1394,7 +1256,7 @@ export default function Safety() {
       </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* 9. Budget Caps Editor                                                */}
+      {/* 8. Budget Caps Editor                                                */}
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Budget Caps</Eyebrow>
@@ -1458,7 +1320,7 @@ export default function Safety() {
       </Card>
 
       {/* ------------------------------------------------------------------ */}
-      {/* 10. Recent Actions                                                   */}
+      {/* 9. Recent Actions                                                    */}
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Recent Actions</Eyebrow>
