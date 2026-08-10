@@ -68,8 +68,8 @@ def test_no_duplicate_collector_keys():
 
 def test_state_ws_manager_is_distinct_from_logs_ws_manager():
     # A real bug found by review: /ws/state sharing /ws/logs's broadcaster
-    # would leak state.updated JSON into the Safety/Traces log viewer
-    # (AgentLog.jsx renders every incoming message with zero type filtering).
+    # would leak state.updated JSON into the Tasks page's log viewer
+    # (TaskCard.jsx renders every incoming message with zero type filtering).
     # This must stay two separate WebSocketManager instances, not two names
     # for the same one.
     from backend.api.agents import state_ws_manager, ws_manager

@@ -195,9 +195,9 @@ export default function Settings() {
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
           <Eyebrow>API Keys &amp; Tokens</Eyebrow>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             {backupStatus && (
-              <span style={{ fontSize: '11px', color: backupStatus.ok ? '#5fe0b4' : '#fb7185' }}>
+              <span style={{ fontSize: '11px', color: backupStatus.ok ? '#5fe0b4' : '#fb7185', overflowWrap: 'anywhere' }}>
                 {backupStatus.ok ? `Backed up to ${backupStatus.dest}` : `Backup failed: ${backupStatus.error}`}
               </span>
             )}

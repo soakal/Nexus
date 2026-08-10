@@ -3,6 +3,8 @@
 Covers:
   - auth is enforced on both endpoints
   - list shape + newest-first ordering + ?kind= filter
+  - ?q= free-text search (label + span input/output) incl. LIKE-escape correctness
+  - per-trace span_count/total_cost_usd/total_tokens_in/total_tokens_out aggregates
   - single-trace shape with spans ordered by started_at
   - 404 when the trace does not exist
 """
@@ -39,10 +41,17 @@ def _seed_trace(eng, kind="orchestrator", label="test run", started_at=None, sta
         return row.id
 
 
-def _seed_span(eng, trace_id, span_type="llm_call", name="claude-sonnet-4-6", started_at=None):
+def _seed_span(
+    eng, trace_id, span_type="llm_call", name="claude-sonnet-4-6", started_at=None,
+    input_summary=None, output_summary=None, tokens_in=None, tokens_out=None, cost_usd=None,
+):
     from backend.database import TraceSpan
     with Session(eng) as s:
-        row = TraceSpan(trace_id=trace_id, span_type=span_type, name=name)
+        row = TraceSpan(
+            trace_id=trace_id, span_type=span_type, name=name,
+            input_summary=input_summary, output_summary=output_summary,
+            tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd,
+        )
         if started_at is not None:
             row.started_at = started_at
         s.add(row)
@@ -125,6 +134,108 @@ def test_list_traces_limit_capped_at_200(traces_client, auth_headers):
     # without erroring (the internal cap is exercised, not directly observable
     # via this response since fewer than 200 rows exist).
     assert resp.json() == []
+
+
+def test_list_traces_q_matches_label(traces_client, auth_headers):
+    _seed_trace(traces_client._engine, label="proxmox vm restart")
+    _seed_trace(traces_client._engine, label="unrelated chat turn")
+
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": "proxmox"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["label"] == "proxmox vm restart"
+
+
+def test_list_traces_q_matches_span_input_output(traces_client, auth_headers):
+    matching_id = _seed_trace(traces_client._engine, label="no hit in label")
+    _seed_span(traces_client._engine, matching_id, input_summary="restart the plex container")
+    other_id = _seed_trace(traces_client._engine, label="also no hit")
+    _seed_span(traces_client._engine, other_id, output_summary="unrelated output")
+
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": "plex"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["id"] == matching_id
+
+
+def test_list_traces_q_and_kind_combine_with_and(traces_client, auth_headers):
+    # A voice trace whose span mentions "secret" must NOT match a q=secret,kind=chat
+    # search — kind and q must AND together, not OR.
+    voice_id = _seed_trace(traces_client._engine, kind="voice", label="voice run")
+    _seed_span(traces_client._engine, voice_id, input_summary="contains the word secret")
+    chat_id = _seed_trace(traces_client._engine, kind="chat", label="chat run")
+    _seed_span(traces_client._engine, chat_id, input_summary="also contains secret")
+
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": "secret", "kind": "chat"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["id"] == chat_id
+
+
+def test_list_traces_q_underscore_is_literal(traces_client, auth_headers):
+    _seed_trace(traces_client._engine, label="100% done")
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": "1_0"})
+    assert resp.json() == []
+
+
+def test_list_traces_q_percent_is_literal(traces_client, auth_headers):
+    _seed_trace(traces_client._engine, label="100% done")
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": "1%d"})
+    assert resp.json() == []
+    resp2 = traces_client.get("/api/traces", headers=auth_headers, params={"q": "100%"})
+    assert len(resp2.json()) == 1
+
+
+def test_list_traces_q_backslash_escaped_before_percent(traces_client, auth_headers):
+    # Escaping backslash AFTER percent/underscore would turn a literal '\%' the
+    # escaping itself just inserted into an unescaped-looking sequence, letting
+    # '%' act as a wildcard again. Escaping backslash FIRST avoids that.
+    _seed_trace(traces_client._engine, label=r"path C:\temp\x")
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": r"C:\%temp"})
+    assert resp.json() == []
+    resp2 = traces_client.get("/api/traces", headers=auth_headers, params={"q": r"C:\temp"})
+    assert len(resp2.json()) == 1
+
+
+def test_list_traces_q_blank_behaves_like_omitted(traces_client, auth_headers):
+    _seed_trace(traces_client._engine, label="anything")
+    resp = traces_client.get("/api/traces", headers=auth_headers, params={"q": "   "})
+    assert len(resp.json()) == 1
+
+
+def test_list_traces_aggregates_no_spans(traces_client, auth_headers):
+    _seed_trace(traces_client._engine, label="no spans")
+    body = traces_client.get("/api/traces", headers=auth_headers).json()
+    assert body[0]["span_count"] == 0
+    assert body[0]["total_cost_usd"] is None
+    assert body[0]["total_tokens_in"] is None
+    assert body[0]["total_tokens_out"] is None
+
+
+def test_list_traces_aggregates_all_null_span_values(traces_client, auth_headers):
+    trace_id = _seed_trace(traces_client._engine, label="spans with no metering data")
+    _seed_span(traces_client._engine, trace_id)  # tokens/cost all default None
+    body = traces_client.get("/api/traces", headers=auth_headers).json()
+    row = next(r for r in body if r["id"] == trace_id)
+    assert row["span_count"] == 1
+    assert row["total_cost_usd"] is None
+    assert row["total_tokens_in"] is None
+    assert row["total_tokens_out"] is None
+
+
+def test_list_traces_aggregates_summed_across_spans(traces_client, auth_headers):
+    trace_id = _seed_trace(traces_client._engine, label="metered run")
+    _seed_span(traces_client._engine, trace_id, tokens_in=100, tokens_out=50, cost_usd=0.02)
+    _seed_span(traces_client._engine, trace_id, tokens_in=200, tokens_out=75, cost_usd=0.03)
+    body = traces_client.get("/api/traces", headers=auth_headers).json()
+    row = next(r for r in body if r["id"] == trace_id)
+    assert row["span_count"] == 2
+    assert row["total_tokens_in"] == 300
+    assert row["total_tokens_out"] == 125
+    assert abs(row["total_cost_usd"] - 0.05) < 1e-9
 
 
 def test_get_trace_with_spans_ordered_by_started_at(traces_client, auth_headers):

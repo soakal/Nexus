@@ -681,7 +681,7 @@ export default function Safety() {
               {showAllSecrets && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' }}>
                   {rows.map(r => (
-                    <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
+                    <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', flexWrap: 'wrap' }}>
                       <span style={{ color: '#8a96ad' }}>{r.name}</span>
                       <Badge label={r.days === null ? 'unknown' : `${r.days}d ago`} t={toneStaleness(r.days)} />
                     </div>
@@ -936,14 +936,14 @@ export default function Safety() {
 
                 {/* Failed: reason */}
                 {g.status === 'failed' && g.rejection_reason && (
-                  <div style={{ fontSize: '12px', color: '#fb7185', marginTop: '4px' }}>
+                  <div style={{ fontSize: '12px', color: '#fb7185', marginTop: '4px', overflowWrap: 'anywhere' }}>
                     {g.rejection_reason}
                   </div>
                 )}
 
                 {/* Completed: outcome */}
                 {g.status === 'completed' && g.outcome_summary && (
-                  <div style={{ fontSize: '12px', color: '#5fe0b4', marginTop: '4px' }}>
+                  <div style={{ fontSize: '12px', color: '#5fe0b4', marginTop: '4px', overflowWrap: 'anywhere' }}>
                     {g.outcome_summary}
                   </div>
                 )}

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
-  Tv2, Home, Activity, Bot, ShieldCheck, Brain, Mail as MailIcon,
+  Tv2, Home, Activity, ShieldCheck, Brain, Mail as MailIcon,
   Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints, Flag, Radar,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
@@ -14,7 +14,6 @@ import Briefing from './pages/Briefing'
 import Today from './pages/Today'
 import Tasks from './pages/Tasks'
 import Chat from './pages/Chat'
-import Agents from './pages/Agents'
 import Media from './pages/Media'
 import Uptime from './pages/Uptime'
 import HomeAssistant from './pages/HomeAssistant'
@@ -37,7 +36,6 @@ const NAV = [
   { to: '/ha',       icon: Home,             label: 'Home Assistant', group: 'SYSTEMS'  },
   { to: '/mail',     icon: MailIcon,         label: 'Mail',           group: 'SYSTEMS'  },
   { to: '/uptime',   icon: Activity,         label: 'Uptime',         group: 'SYSTEMS'  },
-  { to: '/agents',   icon: Bot,              label: 'Agents',         group: 'SYSTEMS'  },
   { to: '/traces',   icon: Waypoints,        label: 'Traces',         group: 'SYSTEMS'  },
   { to: '/pulse',    icon: Radar,            label: 'Pulse',          group: 'SYSTEMS'  },
   { to: '/safety',   icon: ShieldCheck,      label: 'Safety',         group: 'SYSTEMS'  },
@@ -434,7 +432,6 @@ export default function App() {
             <Route path="/ha" element={<HomeAssistant />} />
             <Route path="/mail" element={<Mail />} />
             <Route path="/uptime" element={<Uptime />} />
-            <Route path="/agents" element={<Agents />} />
             <Route path="/traces" element={<Traces />} />
             <Route path="/pulse" element={<Pulse />} />
             <Route path="/safety" element={<Safety />} />

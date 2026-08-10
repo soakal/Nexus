@@ -16,13 +16,13 @@ function renderMessageContent(content) {
     if (!listItems.length) return
     if (listType === 'ul') {
       elements.push(
-        <ul key={`list-${key}`} style={{ listStyleType: 'disc', paddingLeft: '20px', fontSize: '14px', lineHeight: '1.6', margin: '4px 0' }}>
+        <ul key={`list-${key}`} style={{ listStyleType: 'disc', paddingLeft: '20px', fontSize: '14px', lineHeight: '1.6', margin: '4px 0', overflowWrap: 'anywhere' }}>
           {listItems.map((item, i) => <li key={i} style={{ marginBottom: '2px' }}>{renderInline(item)}</li>)}
         </ul>
       )
     } else if (listType === 'ol') {
       elements.push(
-        <ol key={`list-${key}`} style={{ listStyleType: 'decimal', paddingLeft: '20px', fontSize: '14px', lineHeight: '1.6', margin: '4px 0' }}>
+        <ol key={`list-${key}`} style={{ listStyleType: 'decimal', paddingLeft: '20px', fontSize: '14px', lineHeight: '1.6', margin: '4px 0', overflowWrap: 'anywhere' }}>
           {listItems.map((item, i) => <li key={i} style={{ marginBottom: '2px' }}>{renderInline(item)}</li>)}
         </ol>
       )
@@ -60,7 +60,7 @@ function renderMessageContent(content) {
     } else {
       flushList(idx)
       elements.push(
-        <p key={`p-${idx}`} style={{ fontSize: '14px', lineHeight: '1.6', margin: '2px 0' }}>{renderInline(line)}</p>
+        <p key={`p-${idx}`} style={{ fontSize: '14px', lineHeight: '1.6', margin: '2px 0', overflowWrap: 'anywhere' }}>{renderInline(line)}</p>
       )
     }
   })
@@ -312,14 +312,14 @@ export default function Chat() {
       display: 'flex',
       flexDirection: 'column',
       gap: 'var(--gap)',
-      minHeight: 'calc(100vh - 4px)',
+      minHeight: '100%',
     }}>
       {/* Page header */}
       <ScreenHeader
         section="Chat"
         title="Assistant"
         right={
-          <div style={{ display: 'flex', flexDirection: 'row', gap: '10px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'row', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
             <GhostButton
               onClick={startNewChat}
               disabled={sending}
@@ -434,7 +434,7 @@ export default function Chat() {
                 }}
               >
                 {msg.role === 'user' ? (
-                  <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5' }}>{msg.content}</p>
+                  <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.5', overflowWrap: 'anywhere' }}>{msg.content}</p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     {renderMessageContent(msg.content)}

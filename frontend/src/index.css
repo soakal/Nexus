@@ -144,6 +144,7 @@ body {
 .hud-input::placeholder { color: #4d7c96; }
 @media (max-width: 767px) {
   .hud-input { font-size: 16px; }
+  input, select, textarea { font-size: 16px !important; }
 }
 .page-header {
   font-family: 'Orbitron', sans-serif;

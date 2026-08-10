@@ -188,9 +188,9 @@ export default function Mail() {
           <div key={e.email_id}>
             <div
               onClick={() => toggleExpand(e.email_id)}
-              style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer', flexWrap: 'wrap' }}
             >
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: '13px', color: '#cdd6e6', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {shortSender(e.sender)}
                 </span>

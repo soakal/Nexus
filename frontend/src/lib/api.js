@@ -76,7 +76,6 @@ export const api = {
   },
   sources: { status: () => req('GET', '/sources/status') },
   dashboard: { state: () => req('GET', '/dashboard/state') },
-  agents: { runs: (q) => req('GET', `/agents/runs${q ? `?q=${encodeURIComponent(q)}` : ''}`) },
   activity: { snapshot: () => req('GET', '/activity') },
   channels: { get: () => req('GET', '/channels/'), record: (id) => req('POST', '/channels/record', { program_id: id }) },
   adguard: {
@@ -187,7 +186,7 @@ export const api = {
     dismiss: (id) => req('POST', `/facts/${id}/dismiss`),
   },
   traces: {
-    list: (limit, kind) => req('GET', `/traces?limit=${limit || 50}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`),
+    list: (limit, kind, q) => req('GET', `/traces?limit=${limit || 50}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
     get: (id) => req('GET', `/traces/${id}`),
   },
   protonmail: {

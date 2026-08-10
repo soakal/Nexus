@@ -136,6 +136,7 @@ export default function Facts() {
             color: '#94a6c0',
             marginTop: '12px',
             whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
           }}>
             {recallResult.result
               ? recallResult.result
@@ -202,7 +203,7 @@ export default function Facts() {
               >
                 {/* Left: fact content + meta */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '4px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '4px', overflowWrap: 'anywhere' }}>
                     {f.subject}{' '}
                     <span style={{ color: '#5d6982', fontWeight: 400 }}>·</span>{' '}
                     {f.predicate}{' '}
@@ -270,7 +271,7 @@ export default function Facts() {
                       background: 'none',
                       border: 'none',
                       cursor: dismissingId === f.id ? 'not-allowed' : 'pointer',
-                      padding: '2px 4px',
+                      padding: '8px 10px',
                       opacity: dismissingId === f.id ? 0.5 : 1,
                       fontFamily: 'inherit',
                     }}

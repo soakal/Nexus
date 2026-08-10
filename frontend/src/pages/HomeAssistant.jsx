@@ -43,7 +43,7 @@ function ProxmoxSection() {
   }
 
   const btnStyle = (variant) => ({
-    padding: '4px 10px',
+    padding: '9px 14px',
     borderRadius: '7px',
     fontSize: '11px',
     fontWeight: 600,
@@ -63,7 +63,7 @@ function ProxmoxSection() {
 
   return (
     <Card>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
         <Eyebrow>Proxmox VMs / LXCs</Eyebrow>
         {toast && (
           <span style={{
@@ -71,6 +71,7 @@ function ProxmoxSection() {
             background: toast.ok ? 'rgba(52,211,153,0.1)' : 'rgba(251,113,133,0.1)',
             color: toast.ok ? '#34d399' : '#fb7185',
             border: toast.ok ? '1px solid rgba(52,211,153,0.25)' : '1px solid rgba(251,113,133,0.25)',
+            overflowWrap: 'anywhere',
           }}>
             {toast.msg}
           </span>
@@ -81,11 +82,11 @@ function ProxmoxSection() {
           const busy = !!pending[vmid]
           return (
             <div key={vmid} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
               padding: '10px 14px', borderRadius: '11px',
               background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
             }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0' }}>{name}</span>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0', minWidth: 0, overflowWrap: 'anywhere' }}>{name}</span>
               <div style={{ display: 'flex', gap: '6px' }}>
                 {['start', 'stop', 'reboot'].map((action) => (
                   <button
@@ -325,10 +326,10 @@ function EntityRow({ entity, onAction, busy }) {
         padding: '22px 14px', borderRadius: '14px',
         background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '18px', flexWrap: 'wrap', justifyContent: 'center' }}>
           <button disabled={!canSetTemp} onClick={() => setTemp(target - 1)} style={roundBtn(!canSetTemp)}>−</button>
 
-          <div style={{ position: 'relative', width: '240px', height: '240px' }}>
+          <div style={{ position: 'relative', width: 'min(240px,100%)', height: 'auto', aspectRatio: '1' }}>
             <svg viewBox="0 0 240 240" style={{ position: 'absolute', inset: 0, display: 'block' }}>
               <circle cx={C} cy={C} r="118" fill={disc} style={{ transition: 'fill 0.3s' }} />
               {ticks.map((d, i) => {

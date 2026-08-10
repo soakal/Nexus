@@ -187,7 +187,11 @@ export default function Pulse() {
   const tickerRows = [...events].reverse()
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
+    <div style={{
+      width: '100%', maxWidth: '1100px', margin: '0 auto',
+      padding: 'clamp(16px,3vw,32px)',
+      display: 'flex', flexDirection: 'column', gap: 'var(--gap)',
+    }}>
       <ScreenHeader
         section="Systems"
         title="Pulse"

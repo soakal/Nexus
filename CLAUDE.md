@@ -4,13 +4,83 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Agents page removed, Traces gained search + richer detail, mobile pass (2026-08-09, branch
+`feat/traces-detail-mobile`, worktree `nexus-traces-mobile`)** — Fable-planned, Sonnet-built,
+Opus-verified. Follows directly from the frontend-dedup batch below: with `Pulse.jsx`'s ticker
+already covering "Live Feed" and `Traces.jsx` already showing more per-run detail than "Run
+History" (cost/tokens/model name/expandable input-output), the Agents page had nothing left that
+wasn't duplicated elsewhere — confirmed by checking what `AgentRun` (the table Run History reads)
+is even still written by: only `orchestrator.py`/`worker_pool.py`, a strict subset of what
+`AgentTrace`/`TraceSpan` already capture for those same runs. The one capability Run History had
+that Traces lacked — free-text search — was folded into Traces instead of lost.
+- **Removed:** `frontend/src/pages/Agents.jsx` + its two now-orphaned children
+  (`components/AgentLog.jsx`, `components/RunHistory.jsx`, confirmed zero other importers), all
+  `App.jsx` references (import, NAV entry, route, the now-unused `Bot` icon import), the dead
+  `api.agents.runs` client in `lib/api.js`, and a `/agents` entry in `CommandPalette.jsx` that
+  Fable's original audit missed (caught by the Writer's own grep pass). `GET /api/agents/runs`
+  and the `AgentRun` table themselves were deliberately left in place — backend removal was out of
+  scope, they're just UI-orphaned now (still exercised by their own tests).
+- **`GET /api/traces` (`backend/api/traces.py`) gained `?q=`** — case-insensitive, matches the
+  trace's own `label` OR any of its spans' `input_summary`/`output_summary` (an uncorrelated
+  subquery over `TraceSpan`, evaluated before pagination/limit — has to be, since "does any span
+  match" can't be known from the trace row alone), AND-combined with the existing `?kind=` filter.
+  `%`/`_` are escaped as literals and — the one place a wrong order would silently corrupt
+  results — **backslash is escaped BEFORE percent/underscore**, so a literal backslash in the
+  search text can't accidentally un-escape a percent the escaping itself just inserted. Verified
+  by Opus running real escape-discrimination cases against a live SQLite DB, not just reasoning
+  about it, then pinned as regression tests in `tests/test_traces_api.py`
+  (`test_list_traces_q_underscore_is_literal`/`_percent_is_literal`/`_backslash_escaped_before_percent`).
+  Each list row also gained `span_count`/`total_cost_usd`/`total_tokens_in`/`total_tokens_out`,
+  aggregated via one grouped `SUM`/`COUNT` query over the returned trace ids — the three totals
+  are `None` (not `0`) when a trace has no spans or every span's value was NULL, per this repo's
+  established `None`="unknown" vs `0`="confirmed zero" convention (see UniFi `alerts=None`).
+- **`Traces.jsx`** gained a 300ms-debounced search box (reusing the existing `?kind=` select's
+  header row) and a restructured two-line collapsed row (status/kind/span-count/cost/duration/age
+  on line 1, full-width label on line 2 — the old single-line layout couldn't fit all of that at
+  375px) plus an expanded-view summary strip (span count + summed tokens/cost) above the existing
+  per-span list. One real bug caught and fixed mid-implementation (not by a separate review pass):
+  the client-side token-sum `reduce` seeded its accumulator with `null` and added directly
+  (`null + number = NaN` in JS on the first hit) — fixed to `(a ?? 0) + val`, matching the cost
+  reduce's already-correct pattern.
+- **Mobile-friendliness pass across 8 pages**, each getting concrete `flexWrap`/`overflowWrap:
+  'anywhere'`/tap-target-`padding` fixes found by actually reading each page against a ~375px
+  viewport budget, not generic advice: `Pulse.jsx` (was the only page missing the standard
+  `maxWidth:1100px` page-container wrapper — cards sat flush against the screen edge), `Chat.jsx`
+  (header wrap, message/list overflow, `minHeight:'calc(100vh - 4px)'` → `'100%'` so the composer
+  isn't below the fold on mobile Safari), `HomeAssistant.jsx` (the thermostat dial was a genuinely
+  broken control on narrow screens — fixed `width:240px;height:240px` on a flex item next to two
+  `flexShrink:0` buttons meant ONLY the dial could shrink, stretching the circular SVG into an
+  ellipse; fixed with `width:'min(240px,100%)', height:'auto', aspectRatio:'1'`, confirmed by Opus
+  to resolve to a definite height since every child is `position:absolute` and contributes no
+  content height — plus VM-row/Proxmox-header wrap and button tap-target sizing), `Facts.jsx`
+  (subject/value + recall-result overflow, Dismiss button tap-target), `Mail.jsx` (inbox row
+  wrap), `Settings.jsx`+`SecretField.jsx` (backup-status overflow, Edit/Test/Remove tap-targets),
+  `Dashboard.jsx` (VM-action select + "+N more" button tap-targets), `Safety.jsx` (two
+  `overflowWrap` instances the original Safety pass missed, secret-rotation row wrap),
+  `BriefingPanel.jsx` (list/paragraph overflow), and a global `index.css` mobile media rule
+  forcing 16px on all `input`/`select`/`textarea` (prevents iOS Safari's focus-zoom on every
+  <16px form field in the app — Chat, Tasks, Facts, Mail, Settings, Safety, Flags, and the new
+  Traces search all benefit).
+- Full pytest suite: 1904 passed, 1 skipped, 3 failed — all 3 confirmed pre-existing/unrelated
+  (two assert a hardcoded scheduler job count of 29 that's actually 28, one is a proposer test
+  that's time-of-day-flaky and happened to run at night); `git diff --stat master -- backend/`
+  shows only `traces.py` changed, confirming neither `scheduler.py` nor `proposer.py` were touched.
+  `npm run build` clean. Opus verify: PASS on all 5 reviewed areas (backend SQL correctness
+  verified by executing real escape/aggregate cases against a live DB rather than just reading the
+  code, frontend NaN-fix correctness, mobile CSS reasoning, exhaustive stale-reference grep, and a
+  general diff read) — recommended adding the `?q=`/aggregate regression tests (done, see above)
+  and fixing 4 stale doc comments still naming the deleted `AgentLog.jsx` (done: `state_workers.py`,
+  `tests/test_state_workers.py`, two spots in this file).
+
 **Frontend duplicate-info cleanup (2026-08-09, branch `feat/frontend-dedup`, worktree
 `nexus-frontend-dedup`)** — Fable audit of all 16 frontend pages found 4 redundancies, Sonnet-built,
 Opus-verified. `Pulse.jsx`'s header autonomy chip now polls `api.safety.status()` every 30s instead
 of once on mount (was a stale-forever value). `Safety.jsx`'s "Live Activity" card — a `/ws/logs`
 feed duplicating the new Pulse page's own ticker — removed outright along with its websocket
 plumbing (`wsLogsUrl`/`wsLogsProtocols` import, connect/reconnect effect, backfill effect, refs);
-`/ws/logs` itself is untouched (still serves `AgentLog.jsx`/`TaskCard.jsx`). `Dashboard.jsx`'s
+`/ws/logs` itself is untouched (at the time, still served `AgentLog.jsx`/`TaskCard.jsx` — `AgentLog.jsx`
+was removed in the Agents-page-removal batch further down; `/ws/logs` now serves only `TaskCard.jsx`).
+`Dashboard.jsx`'s
 "Sources" KPI card removed — duplicated the "System Sources" section already on the same page.
 `App.jsx`'s sidebar-footer and mobile-top-bar `StatusDot`s were hardcoded green regardless of real
 health; both now reflect the page's existing `apiOk` state (green+pulsing/red), and the footer text
@@ -735,9 +805,11 @@ one thing no log stream shows.
   `activity.delta` messages from the broadcaster. `GET /api/activity` (Bearer-gated) is the REST
   fallback for the page's first paint and a poll-fallback path — reads memory only, no DB.
   Deliberately NOT reusing `/ws/logs`: that feed is nearly dead today (its only two publishers are
-  the broker's terminal-action broadcast and the autonomy on/off toggle, and its one consumer,
-  `AgentLog.jsx`, appends every raw message unfiltered) — Pulse's ~4/s coalesced deltas would have
-  spammed it exactly the way `state_ws_manager` already exists to avoid for `/ws/state`.
+  the broker's terminal-action broadcast and the autonomy on/off toggle, and at the time its one
+  consumer, `AgentLog.jsx` — since removed in the Agents-page-removal batch further down, leaving
+  `TaskCard.jsx` as the sole consumer — appended every raw message unfiltered) — Pulse's ~4/s
+  coalesced deltas would have spammed it exactly the way `state_ws_manager` already exists to avoid
+  for `/ws/state`.
 - **Backend wiring — 6 choke points instead of ~28 per-module edits.** Because NEXUS already funnels
   almost everything through a handful of shared functions, only 2 agent files needed direct
   touching beyond the choke points themselves:

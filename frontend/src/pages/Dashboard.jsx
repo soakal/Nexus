@@ -615,7 +615,7 @@ export default function Dashboard() {
             {(unraid.docker_containers?.length || 0) > 2 && (
               <button
                 onClick={() => setDockerOpen(v => !v)}
-                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
+                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
               >
                 {dockerOpen ? 'Show less' : `+${unraid.docker_containers.length - 2} more`}
               </button>
@@ -683,7 +683,7 @@ export default function Dashboard() {
                     value=""
                     disabled={vmActionBusy === v.vmid}
                     onChange={(e) => { const action = e.target.value; e.target.value = ''; if (action) runVmAction(v.vmid, v.name, action) }}
-                    style={{ fontSize: '11px', background: 'rgba(255,255,255,0.04)', color: '#8a96ad', border: '1px solid rgba(120,160,220,0.12)', borderRadius: '6px', padding: '2px 4px' }}
+                    style={{ fontSize: '12px', background: 'rgba(255,255,255,0.04)', color: '#8a96ad', border: '1px solid rgba(120,160,220,0.12)', borderRadius: '6px', padding: '7px 8px' }}
                   >
                     <option value="">&hellip;</option>
                     {v.status === 'running' ? (
@@ -701,7 +701,7 @@ export default function Dashboard() {
             {(proxmox.vms?.length || 0) > 4 && (
               <button
                 onClick={() => setProxmoxVmsOpen(v => !v)}
-                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
+                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
               >
                 {proxmoxVmsOpen ? 'Show less' : `+${proxmox.vms.length - 4} more`}
               </button>
@@ -749,7 +749,7 @@ export default function Dashboard() {
                 {(mail.emails?.length || 0) > 3 && (
                   <button
                     onClick={() => setMailOpen(v => !v)}
-                    style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 0 0', textAlign: 'left' }}
+                    style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
                   >
                     {mailOpen ? 'Show less' : `+${mail.emails.length - 3} more`}
                   </button>

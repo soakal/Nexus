@@ -11,6 +11,7 @@ function renderBody(lines) {
     lineHeight: 1.6,
     margin: 0,
     paddingLeft: 20,
+    overflowWrap: 'anywhere',
   }
 
   function flushList(key) {
@@ -54,7 +55,7 @@ function renderBody(lines) {
     } else {
       flushList(idx)
       elements.push(
-        <p key={`p-${idx}`} style={{ color: '#aab4c7', fontSize: 13, lineHeight: 1.6, margin: 0 }}>
+        <p key={`p-${idx}`} style={{ color: '#aab4c7', fontSize: 13, lineHeight: 1.6, margin: 0, overflowWrap: 'anywhere' }}>
           {renderInline(line)}
         </p>
       )

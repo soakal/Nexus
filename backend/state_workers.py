@@ -6,7 +6,7 @@ slow/down integration from creating overlapping work.
 
 Broadcasts go through `state_ws_manager` (backend/api/agents.py), a SEPARATE
 WebSocketManager instance from the one `/ws/logs` uses — sharing a broadcaster
-would leak `state.updated` JSON into the Safety/Traces log viewer (AgentLog.jsx
+would leak `state.updated` JSON into the Tasks page's log viewer (TaskCard.jsx
 pushes every incoming message straight into its displayed log list with no
 type filtering) and leak real log lines into `/ws/state` clients.
 """

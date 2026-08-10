@@ -3,6 +3,7 @@ import { api } from '../lib/api'
 import Card from '../components/Card'
 import Eyebrow from '../components/Eyebrow'
 import ScreenHeader from '../components/ScreenHeader'
+import TextInput from '../components/TextInput'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,7 +85,7 @@ const selectStyle = {
 }
 
 const rowStyle = {
-  display: 'flex', alignItems: 'center', gap: '12px',
+  display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '6px',
   padding: '11px 14px', borderRadius: '11px',
   background: 'rgba(255,255,255,0.022)',
   border: '1px solid rgba(120,160,220,0.08)',
@@ -110,17 +111,24 @@ export default function Traces() {
   const [traces, setTraces] = useState(null)
   const [loadError, setLoadError] = useState(null)
   const [kindFilter, setKindFilter] = useState('all')
+  const [q, setQ] = useState('')
+  const [debouncedQ, setDebouncedQ] = useState('')
   const [expandedId, setExpandedId] = useState(null)
   const [spansById, setSpansById] = useState({})
   const [spansLoadingId, setSpansLoadingId] = useState(null)
   const [spansErrors, setSpansErrors] = useState({})
   const [expandedSpanId, setExpandedSpanId] = useState(null)
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 300)
+    return () => clearTimeout(t)
+  }, [q])
+
   const load = useCallback(() => {
-    api.traces.list(50, kindFilter === 'all' ? null : kindFilter)
+    api.traces.list(50, kindFilter === 'all' ? null : kindFilter, debouncedQ || null)
       .then(t => { setTraces(t); setLoadError(null) })
       .catch(err => setLoadError(err?.message || 'Failed to load traces.'))
-  }, [kindFilter])
+  }, [kindFilter, debouncedQ])
 
   useEffect(() => {
     load()
@@ -157,6 +165,12 @@ export default function Traces() {
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
           <Eyebrow>Recent Traces</Eyebrow>
+          <TextInput
+            placeholder="Search traces…"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            style={{ flex: '1 1 180px', minWidth: 0, padding: '7px 10px', fontSize: '13px' }}
+          />
           <select
             value={kindFilter}
             onChange={e => setKindFilter(e.target.value)}
@@ -173,30 +187,45 @@ export default function Traces() {
         ) : traces === null ? (
           <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
         ) : traces.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No traces yet.</span>
+          <span style={{ fontSize: '13px', color: '#5d6982' }}>
+            {debouncedQ ? `No traces match "${debouncedQ}".` : 'No traces yet.'}
+          </span>
         ) : (
           <div>
             {traces.map(t => (
               <div key={t.id}>
                 <div style={rowStyle} onClick={() => toggleExpand(t.id)}>
-                  <Badge label={t.status || 'unknown'} t={toneStatus(t.status)} />
-                  <span style={{ fontSize: '12px', color: '#8a96ad' }}>{t.kind}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <Badge label={t.status || 'unknown'} t={toneStatus(t.status)} />
+                    <span style={{ fontSize: '12px', color: '#8a96ad' }}>{t.kind}</span>
+                    <span style={{ flex: 1 }} />
+                    {t.span_count != null && (
+                      <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                        {t.span_count === 0 ? 'no spans' : `${t.span_count} span${t.span_count === 1 ? '' : 's'}`}
+                      </span>
+                    )}
+                    {fmtUsd(t.total_cost_usd) && (
+                      <span style={{ fontSize: '11px', color: 'var(--accent)' }}>
+                        {fmtUsd(t.total_cost_usd)}
+                      </span>
+                    )}
+                    <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace", flex: 'none' }}>
+                      {fmtMs(traceDurationMs(t.started_at, t.ended_at))}
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                      {relativeTime(t.started_at)}
+                    </span>
+                  </div>
                   <span style={{
-                    flex: 1, fontSize: '13px', color: '#dbe3f0',
+                    fontSize: '13px', color: '#dbe3f0',
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>
                     {t.label || `trace #${t.id}`}
                   </span>
-                  <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace", flex: 'none' }}>
-                    {fmtMs(traceDurationMs(t.started_at, t.ended_at))}
-                  </span>
-                  <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
-                    {relativeTime(t.started_at)}
-                  </span>
                 </div>
 
                 {t.status && t.status.toLowerCase() === 'error' && t.error && (
-                  <div style={{ fontSize: '12px', color: '#fb7185', margin: '-2px 0 6px 14px' }}>
+                  <div style={{ fontSize: '12px', color: '#fb7185', margin: '-2px 0 6px 14px', overflowWrap: 'anywhere' }}>
                     {t.error}
                   </div>
                 )}
@@ -210,7 +239,26 @@ export default function Traces() {
                     ) : (spansById[t.id] || []).length === 0 ? (
                       <span style={{ fontSize: '12px', color: '#5d6982' }}>No spans recorded.</span>
                     ) : (
-                      spansById[t.id].map(s => {
+                      <>
+                        {(() => {
+                          const spans = spansById[t.id]
+                          const tin = spans.reduce((a, s) => (s.tokens_in != null ? (a ?? 0) + s.tokens_in : a), null)
+                          const tout = spans.reduce((a, s) => (s.tokens_out != null ? (a ?? 0) + s.tokens_out : a), null)
+                          const cost = spans.reduce((a, s) => (s.cost_usd != null ? (a ?? 0) + s.cost_usd : a), null)
+                          const tokenStr = (tin != null || tout != null) ? `${tin ?? 0}in / ${tout ?? 0}out` : null
+                          const costStr = fmtUsd(cost)
+                          return (
+                            <div style={{
+                              fontSize: '11px', color: '#8a96ad', fontFamily: "'JetBrains Mono', monospace",
+                              marginBottom: '6px', display: 'flex', gap: '10px', flexWrap: 'wrap',
+                            }}>
+                              <span>{spans.length} span{spans.length === 1 ? '' : 's'}</span>
+                              {tokenStr && <span>{tokenStr}</span>}
+                              {costStr && <span>{costStr}</span>}
+                            </div>
+                          )
+                        })()}
+                        {spansById[t.id].map(s => {
                         const hasDetail = !!(s.input_summary || s.output_summary)
                         const isOpen = expandedSpanId === s.id
                         return (
@@ -244,7 +292,7 @@ export default function Traces() {
                               </span>
                             )}
                             {s.error && (
-                              <span style={{ fontSize: '11px', color: '#fb7185', flexBasis: '100%' }}>
+                              <span style={{ fontSize: '11px', color: '#fb7185', flexBasis: '100%', overflowWrap: 'anywhere' }}>
                                 {s.error}
                               </span>
                             )}
@@ -284,7 +332,8 @@ export default function Traces() {
                             )}
                           </div>
                         )
-                      })
+                      })}
+                      </>
                     )}
                   </div>
                 )}

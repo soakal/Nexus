@@ -109,7 +109,7 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
 
           <button
             onClick={() => setEditing(true)}
-            style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer' }}
+            style={{ fontSize: '12px', fontWeight: 600, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 10px' }}
           >
             Edit
           </button>
@@ -117,7 +117,7 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
           <button
             onClick={test}
             disabled={loading}
-            style={{ fontSize: '12px', color: '#8a96ad', background: 'none', border: 'none', cursor: 'pointer' }}
+            style={{ fontSize: '12px', color: '#8a96ad', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 10px' }}
           >
             {loading ? '...' : 'Test'}
           </button>
@@ -125,7 +125,7 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
           {onDelete && (
             <button
               onClick={onDelete}
-              style={{ fontSize: '12px', color: '#fb7185', background: 'none', border: 'none', cursor: 'pointer' }}
+              style={{ fontSize: '12px', color: '#fb7185', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 10px' }}
             >
               Remove
             </button>
