@@ -4,6 +4,24 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Frontend duplicate-info cleanup (2026-08-09, branch `feat/frontend-dedup`, worktree
+`nexus-frontend-dedup`)** — Fable audit of all 16 frontend pages found 4 redundancies, Sonnet-built,
+Opus-verified. `Pulse.jsx`'s header autonomy chip now polls `api.safety.status()` every 30s instead
+of once on mount (was a stale-forever value). `Safety.jsx`'s "Live Activity" card — a `/ws/logs`
+feed duplicating the new Pulse page's own ticker — removed outright along with its websocket
+plumbing (`wsLogsUrl`/`wsLogsProtocols` import, connect/reconnect effect, backfill effect, refs);
+`/ws/logs` itself is untouched (still serves `AgentLog.jsx`/`TaskCard.jsx`). `Dashboard.jsx`'s
+"Sources" KPI card removed — duplicated the "System Sources" section already on the same page.
+`App.jsx`'s sidebar-footer and mobile-top-bar `StatusDot`s were hardcoded green regardless of real
+health; both now reflect the page's existing `apiOk` state (green+pulsing/red), and the footer text
+changed from "All systems online"/"Systems degraded" to "NEXUS connected"/"NEXUS unreachable". Opus
+verify passed all 4 as specced and caught two minor follow-on gaps in the same pass, both fixed:
+Dashboard's header `StatusPill` was hardcoded `tone="green"` (harmless while the Sources card also
+showed live red/offline state below it, but became the page's only top-of-page health signal once
+that card was removed) — now `amber` when `online !== total`; and `wsLogsUrl` in `lib/api.js` was
+left dead (Safety.jsx was its last consumer) — removed. Full public-repo infra-leak check clean,
+merged to `master`, pushed, frontend rebuilt, NEXUS restarted and confirmed healthy.
+
 **Housekeeping (2026-08-05):** the parent `Agentic os\` folder (which holds this repo) had two
 stale founding docs from before NEXUS existed — `AGENTIC_OS_PROMPT.md` (the original bootstrap
 build prompt, referenced an old model and a since-retired Hermes-webhook briefing path) and
