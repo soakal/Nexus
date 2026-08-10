@@ -296,6 +296,15 @@ export default function Traces() {
                                 {s.error}
                               </span>
                             )}
+                            {hasDetail && !isOpen && (
+                              <span style={{
+                                flexBasis: '100%', fontSize: '11px', color: '#5d6982',
+                                fontFamily: "'JetBrains Mono', monospace",
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              }}>
+                                {(s.input_summary || s.output_summary).replace(/\s+/g, ' ').slice(0, 160)}
+                              </span>
+                            )}
                             {isOpen && (
                               <div style={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
                                 {s.input_summary && (

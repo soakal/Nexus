@@ -238,6 +238,11 @@ export default function Pulse() {
                       </div>
                     </div>
                   ) : null}
+                  {e.actor_type === 'trace' && e.detail?.last_span ? (
+                    <div style={{ marginTop: '4px', fontSize: '11px', color: '#8a96ad', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      last: {e.detail.last_span}{e.detail.duration_ms != null ? ` · ${fmtMs(e.detail.duration_ms)}` : ''}
+                    </div>
+                  ) : null}
                 </div>
                 <div style={{ fontSize: '12px', color: '#8a96ad', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>
                   {fmtElapsed(e.started_at, nowTick)}
@@ -267,16 +272,21 @@ export default function Pulse() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                       <StatusDot color={statusColor(e.status)} pulse={e.status === 'running'} size={7} />
                       <span style={{ fontSize: '12px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {e.actor_id.replace(/^(job|worker|loop):/, '')}
+                        {e.actor_id.replace(/^(job|worker|loop|task):/, '')}
                       </span>
                     </div>
                     <div style={{ fontSize: '11px', color: '#8a96ad' }}>
                       {e.status === 'running'
-                        ? `running · ${fmtElapsed(e.started_at, nowTick)}`
+                        ? `running${e.actor_type === 'worker' && e.detail?.task_id ? ` · task #${e.detail.task_id}` : ''} · ${fmtElapsed(e.started_at, nowTick)}`
                         : e.last_run_at
                           ? `last ran ${relativeTime(e.last_run_at)} · ${fmtMs(e.last_duration_ms)} · ${e.status === 'error' ? 'ERROR' : 'OK'}`
                           : 'no data yet'}
                     </div>
+                    {e.label && e.label !== e.actor_id.replace(/^(job|worker|loop|task):/, '') ? (
+                      <div style={{ fontSize: '11px', color: '#8a96ad', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {e.label}
+                      </div>
+                    ) : null}
                     {e.status === 'error' && e.last_error ? (
                       <div style={{ fontSize: '11px', color: '#fb7185', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {e.last_error}

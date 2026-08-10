@@ -4,6 +4,70 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Traces discoverability + Pulse detail wiring (2026-08-10, branch `feat/traces-pulse-detail`,
+worktree `nexus-traces-pulse-detail`)** — Fable-planned, Sonnet-built, following a read-only
+investigation (querying the live `nexus.db` + reading the real code, not guessing) into why Brian
+didn't see "detailed information" in Traces or Pulse. Two different root causes:
+- **Traces was a discoverability problem, not a bug.** All 686 real spans in the live DB carried
+  input/output text, and the UI already rendered it — but detail was two clicks deep (expand trace
+  row → click the small `›` chevron on a span row). Fixed with a one-line, CSS-truncated preview
+  (`input_summary`/`output_summary`, whitespace-collapsed, sliced to 160 chars) shown directly on
+  every collapsed span row that `hasDetail` — so scanning needs zero clicks, full text still needs
+  one. Considered and rejected auto-expanding every span on trace-open: would unroll up to 1000
+  chars × N spans per trace, turning a 10-span orchestrator trace into a wall of text.
+- **Pulse's `detail` field was a genuine, unwired gap.** `backend/activity.py`'s `ActivityEntry.detail`
+  was written by exactly ONE call site in the whole codebase (`orchestrator.py`'s task step loop) —
+  every other actor type (`worker:{id}`, `job:{id}`, `trace:{kind}:{id}`) never had it populated,
+  and `Pulse.jsx` had exactly one render slot for it (the task progress bar). Extended per actor
+  type, with an explicit reasoned skip for one: `worker:{id}` now calls
+  `activity.update_detail(f"worker:{worker_id}", {"task_id": task_id})` right after `begin()` (own
+  try/except, NOT chained into begin's — see bug below) so a running/idle worker card can show
+  which task it picked up (the prompt was already in `label`, just never rendered on board cards —
+  half the gap was frontend-only); `router._record_trace_span` now also calls `update_detail` on
+  `trace:{kind}:{trace_id}` with `{last_span, span_type, duration_ms}` for every completed span,
+  keyed off the existing `_open_trace_kinds` map (populated only by `router.open_trace`, so
+  orchestrator `task:{id}` entries — which don't go through that map — can never be clobbered);
+  `job:{id}` (scheduled jobs) deliberately got NO new detail — APScheduler's event only carries
+  `job_id`, runs are millisecond-scale, and "last ran Xm ago · Yms · OK" is already the complete
+  story; wiring detail would mean touching ~29 job functions and breaking the one-listener
+  choke-point design B9/B10 established. `Pulse.jsx` gained two render slots: the Actors board's
+  worker cards show `· task #N` in the running-status line plus a label line (prompt text) when the
+  entry's `label` differs from its stripped actor id (so job cards, whose `label` IS the job id,
+  stay byte-identical); the Now Running strip shows a `last: {span_name} · {duration}` line for
+  `trace:*` entries. No `backend/activity.py` changes, no DB changes, no wire-format changes — its
+  `snapshot()`/`drain_dirty()` already `asdict()`'d `detail` for the one working case, confirmed
+  before writing any code so nobody re-investigates that question later.
+- **One real bug self-caught while writing the worker_pool.py change, before it ever reached
+  Opus:** the initial edit called `activity.update_detail(...)` INSIDE the same try/except as
+  `activity.begin(...)`, with `_worker_began = True` placed after both calls — so a poisoned
+  `update_detail` (or any future exception between them) would skip `_worker_began = True`
+  entirely, and since `_worker_loop`'s `finally` only calls `activity.end()` when `_worker_began`
+  is true, the worker's Pulse entry would get stuck "running" forever. Fixed by splitting into two
+  independent try/excepts — `_worker_began = True` now only depends on `begin()` succeeding, never
+  on `update_detail`. Regression-tested (`test_worker_loop_poisoned_update_detail_does_not_block_task`).
+- 25 tests added/extended in `tests/test_activity_wiring.py` (worker detail + label assertions on
+  the existing busy/idle test, a new deleted-task-never-begins test, the poisoned-update_detail
+  constraint test above, and 4 new router-side tests: detail populated correctly, 200-char
+  truncation, no-op + no entry created for an unknown/orchestrator trace_id, and a
+  poisoned-update_detail-doesn't-break-pulse-or-DB-write constraint test matching the file's
+  existing pattern for `activity.pulse`).
+- **Opus verify caught a real gap in the worker_pool.py regression test above — proven, not just
+  argued.** `test_worker_loop_poisoned_update_detail_does_not_block_task` only asserted
+  `mock_run.assert_awaited_once()`, which is true under BOTH the fixed code and the original buggy
+  ordering (the task runs either way — the exception is swallowed before `run_task` is ever
+  reached, not after). The verifier reintroduced the original shared-try/except ordering and ran
+  the test suite: all 3 worker tests still passed. Fixed by adding the actual discriminating
+  assertion — `worker:0`'s entry must read `status == "ok"` after the run (fails with `"stuck as
+  'running'"` on the buggy ordering, passes on the fix). Also fixed a minor inconsistency the same
+  pass surfaced: the Actors board's card-title regex (`Pulse.jsx`, stripping `job|worker|loop:`
+  prefixes) didn't strip `task:`, so a `task:{id}` card's title read literally `"task:42"` while
+  the new label-line comparison (which DOES strip `task:`) would then always find a mismatch and
+  show a label line the title regex never anticipated — aligned both regexes to strip the same four
+  prefixes. Two other verifier notes accepted as-is, not fixed: idle worker cards show the last
+  picked-up task's prompt indefinitely (matches Fable's own flagged open question, no complaint to
+  resolve); Now Running re-sorts on every span since `update_detail` bumps `seq` (inherent to the
+  existing seq-ordering design, not a regression this batch introduced).
+
 **Agents page removed, Traces gained search + richer detail, mobile pass (2026-08-09, branch
 `feat/traces-detail-mobile`, worktree `nexus-traces-mobile`)** — Fable-planned, Sonnet-built,
 Opus-verified. Follows directly from the frontend-dedup batch below: with `Pulse.jsx`'s ticker

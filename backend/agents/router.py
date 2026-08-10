@@ -416,6 +416,19 @@ def _record_trace_span(
         except Exception:
             pass
 
+        try:
+            if trace_id is not None:
+                _kind = _open_trace_kinds.get(trace_id)
+                if _kind is not None:
+                    from backend import activity
+                    activity.update_detail(f"trace:{_kind}:{trace_id}", {
+                        "last_span": str(name)[:200],
+                        "span_type": span_type,
+                        "duration_ms": duration_ms,
+                    })
+        except Exception:
+            pass
+
         if trace_id is None:
             return
 

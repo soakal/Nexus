@@ -401,6 +401,10 @@ class TaskWorkerPool:
                     _worker_began = True
                 except Exception:
                     pass
+                try:
+                    activity.update_detail(f"worker:{worker_id}", {"task_id": task_id})
+                except Exception:
+                    pass
                 handle = asyncio.ensure_future(run_task(prompt, task_id))
                 self._inflight[task_id] = handle
                 try:

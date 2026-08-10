@@ -155,6 +155,8 @@ async def test_worker_loop_marks_busy_then_idle_around_run_task():
         async def _slow_run_task(*a, **kw):
             e = {e["actor_id"]: e for e in activity.snapshot()["entries"]}.get("worker:0")
             seen_status_during_run["status"] = e["status"] if e else None
+            seen_status_during_run["detail"] = e["detail"] if e else None
+            seen_status_during_run["label"] = e["label"] if e else None
             return SimpleNamespace(success=True)
 
         mock_run.side_effect = _slow_run_task
@@ -172,8 +174,70 @@ async def test_worker_loop_marks_busy_then_idle_around_run_task():
             pass
 
     assert seen_status_during_run["status"] == "running"
+    assert seen_status_during_run["detail"] == {"task_id": 1}
+    assert seen_status_during_run["label"] == "do the thing"
     e = {e["actor_id"]: e for e in activity.snapshot()["entries"]}["worker:0"]
     assert e["status"] == "ok"
+    assert e["started_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_deleted_task_never_begins_or_sets_detail():
+    """A task row deleted before pickup (prompt is None) must not create a
+    worker entry at all -- begin()/update_detail() are both skipped on that
+    early-continue path."""
+    from backend.agents.worker_pool import TaskWorkerPool
+    import asyncio
+
+    pool = TaskWorkerPool(size=1)
+    with patch("backend.agents.worker_pool._load_task_prompt", return_value=None):
+        await pool._queue.put(1)
+        task = asyncio.create_task(pool._worker_loop(0))
+        await pool._queue.join()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert "worker:0" not in {e["actor_id"] for e in activity.snapshot()["entries"]}
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_poisoned_update_detail_does_not_block_task():
+    """Constraint test: a poisoned activity.update_detail must not prevent
+    the worker from actually running the task, AND must not leave the
+    worker's Pulse entry stuck "running" forever. begin() and update_detail()
+    are in separate try/excepts specifically so _worker_began only depends on
+    begin() succeeding -- a shared try/except (the original, self-caught bug
+    in this batch) would skip `_worker_began = True` whenever update_detail
+    raised, and since the loop's `finally` only calls activity.end() when
+    _worker_began is true, the entry would never transition out of "running".
+    `mock_run.assert_awaited_once()` alone does NOT catch that bug (the task
+    still runs either way) -- the status assertion below is the one that
+    actually discriminates the fix from the original ordering."""
+    from backend.agents.worker_pool import TaskWorkerPool
+    import asyncio
+
+    pool = TaskWorkerPool(size=1)
+    with patch("backend.agents.worker_pool._load_task_prompt", return_value="do the thing"), \
+         patch("backend.agents.orchestrator.run_task", new_callable=AsyncMock) as mock_run, \
+         patch("backend.agents.worker_pool._notify_task_finished", new_callable=AsyncMock), \
+         patch.object(activity, "update_detail", side_effect=RuntimeError("boom")):
+
+        mock_run.return_value = SimpleNamespace(success=True)
+        await pool._queue.put(1)
+        task = asyncio.create_task(pool._worker_loop(0))
+        await pool._queue.join()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    mock_run.assert_awaited_once()
+    e = {e["actor_id"]: e for e in activity.snapshot()["entries"]}["worker:0"]
+    assert e["status"] == "ok", f"worker entry stuck as {e['status']!r} -- end() never ran"
     assert e["started_at"] is None
 
 
@@ -409,6 +473,93 @@ def test_record_trace_span_activity_failure_does_not_break_db_write(monkeypatch)
 
     with patch.object(activity, "pulse", side_effect=RuntimeError("boom")):
         _record_trace_span("llm_call", "chat_classify", datetime.utcnow(), trace_id=trace_id)
+
+    with Session(eng) as s:
+        spans = s.exec(select(TraceSpan).where(TraceSpan.trace_id == trace_id)).all()
+        assert len(spans) == 1
+
+
+def test_record_trace_span_updates_trace_detail_with_last_span(monkeypatch):
+    """B2 (Pulse detail spec): a completed span updates the trace's Pulse
+    entry with the span it just finished, keyed off _open_trace_kinds (only
+    populated by router.open_trace -- orchestrator trace_ids are NOT in this
+    map, so this must never touch the task progress-bar detail)."""
+    import backend.database as db
+    from sqlmodel import SQLModel, create_engine
+    from sqlmodel.pool import StaticPool
+    from datetime import datetime, timedelta
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr(db, "engine", eng)
+
+    from backend.agents.router import open_trace, close_trace, _record_trace_span
+
+    trace_id = open_trace("chat", "conv:1")
+    started = datetime.utcnow() - timedelta(milliseconds=42)
+    _record_trace_span("llm_call", "chat_classify (claude-haiku-4-5)", started, trace_id=trace_id)
+
+    actor_id = f"trace:chat:{trace_id}"
+    e = {e["actor_id"]: e for e in activity.snapshot()["entries"]}[actor_id]
+    assert e["detail"]["last_span"] == "chat_classify (claude-haiku-4-5)"
+    assert e["detail"]["span_type"] == "llm_call"
+    assert e["detail"]["duration_ms"] is not None
+
+    close_trace(trace_id, "ok")
+    assert actor_id not in {e["actor_id"] for e in activity.snapshot()["entries"]}
+
+
+def test_record_trace_span_detail_name_truncated_to_200_chars():
+    from backend.agents.router import _record_trace_span, _open_trace_kinds
+    from datetime import datetime
+
+    fake_trace_id = 999001
+    actor_id = f"trace:chat:{fake_trace_id}"
+    _open_trace_kinds[fake_trace_id] = "chat"
+    activity.begin(actor_id, "trace", "conv:test")
+    try:
+        long_name = "x" * 500
+        _record_trace_span("llm_call", long_name, datetime.utcnow(), trace_id=fake_trace_id)
+        e = {e["actor_id"]: e for e in activity.snapshot()["entries"]}[actor_id]
+        assert len(e["detail"]["last_span"]) == 200
+    finally:
+        _open_trace_kinds.pop(fake_trace_id, None)
+
+
+def test_record_trace_span_detail_noop_for_unknown_trace_id():
+    """A trace_id not in _open_trace_kinds (e.g. an orchestrator trace, which
+    only router.open_trace populates) must not create a stray entry or raise."""
+    from backend.agents.router import _record_trace_span
+    from datetime import datetime
+
+    before = {e["actor_id"] for e in activity.snapshot()["entries"]}
+    _record_trace_span("llm_call", "some_call", datetime.utcnow(), trace_id=999999)
+    after = {e["actor_id"] for e in activity.snapshot()["entries"]}
+    assert after == before
+
+
+def test_record_trace_span_detail_failure_does_not_break_pulse_or_db(monkeypatch):
+    """Constraint test: a poisoned update_detail must not suppress the ticker
+    pulse or the TraceSpan DB write -- its own independent try/except."""
+    import backend.database as db
+    from sqlmodel import SQLModel, create_engine, Session, select
+    from sqlmodel.pool import StaticPool
+    from datetime import datetime
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr(db, "engine", eng)
+
+    from backend.agents.router import open_trace, _record_trace_span
+    from backend.database import TraceSpan
+
+    trace_id = open_trace("chat", "conv:1")
+
+    with patch.object(activity, "update_detail", side_effect=RuntimeError("boom")):
+        _record_trace_span("llm_call", "chat_classify", datetime.utcnow(), trace_id=trace_id)
+
+    events = activity.snapshot()["events"]
+    assert len(events) >= 1  # ticker pulse still fired
 
     with Session(eng) as s:
         spans = s.exec(select(TraceSpan).where(TraceSpan.trace_id == trace_id)).all()
