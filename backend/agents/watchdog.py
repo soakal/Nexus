@@ -427,10 +427,58 @@ async def check_deferred_flags() -> list[int]:
         return []
 
 
+async def check_deploy_drift(*, cooldown_s: int) -> bool:
+    """Detect a stale NEXUS process serving old code after a git pull with no
+    restart. Compares the SHA captured once at boot (backend/version.py) to
+    the repo's live HEAD, re-read fresh on every tick — restart-safe by
+    construction, since a fresh boot always re-captures a matching SHA.
+
+    Gated by settings.deploy_drift_check_enabled. Uses the plain in-memory
+    _should_alert debounce (not the DB-backed dead-letter one — a drift
+    condition only matters while this process is still running the old code).
+
+    Best-effort: any exception returns False without propagating. Returns
+    whether drift was detected on this tick (independent of whether the
+    alert itself was debounced).
+    """
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "deploy_drift_check_enabled", False):
+            return False
+
+        from backend import version
+        running = version.running_sha()
+        current = await asyncio.to_thread(version.get_git_head)
+
+        if running is None or current is None:
+            return False
+        if running == current:
+            return False
+
+        msg = (
+            f"⚠️ Deploy drift: NEXUS is running {running[:12]} but the repo is at "
+            f"{current[:12]}. A git pull happened without a restart — restart NEXUS "
+            "to serve current code."
+        )
+
+        if _should_alert("deploy_drift", cooldown_s):
+            from backend.agents import outcomes
+            from backend import events
+            d = await outcomes.record_flag_ex("watchdog", "deploy_drift", msg, severity="medium")
+            if d["surface"]:
+                await events.notify_phone(msg, kind="deploy_drift")
+
+        return True
+    except Exception as exc:
+        logger.warning(f"check_deploy_drift error (ignored): {exc}")
+        return False
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all six checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all seven checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -449,6 +497,7 @@ async def run_watchdog() -> dict:
         auth_bursts = await check_auth_failure_burst()
         contract_breaches = await check_integration_contracts()
         deferred_swept = await check_deferred_flags()
+        drift = await check_deploy_drift(cooldown_s=cooldown_s)
 
         return {
             "stalled": stalled,
@@ -457,6 +506,7 @@ async def run_watchdog() -> dict:
             "auth_bursts": auth_bursts,
             "contract_breaches": contract_breaches,
             "deferred_swept": deferred_swept,
+            "deploy_drift": drift,
         }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
@@ -467,4 +517,5 @@ async def run_watchdog() -> dict:
             "auth_bursts": [],
             "contract_breaches": [],
             "deferred_swept": [],
+            "deploy_drift": False,
         }
