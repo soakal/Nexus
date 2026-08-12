@@ -232,6 +232,12 @@ class Settings(BaseSettings):
     dead_letter_attempts: int = 8
     watchdog_alert_cooldown_s: int = 3600
 
+    # Deploy-drift check — pages when the repo HEAD has moved but the running
+    # process was booted from an older commit (stale process after a git pull
+    # without a restart). Runs inside the 5-min watchdog job, so it shares
+    # watchdog_enabled's gate. Reuses watchdog_alert_cooldown_s for repeat alerts.
+    deploy_drift_check_enabled: bool = True
+
     # Budget early-warning — a single phone alert per local day when spend
     # crosses budget_warn_pct of the daily cap. Runs inside the same 5-min
     # watchdog job (see run_watchdog), so it shares watchdog_enabled's gate.

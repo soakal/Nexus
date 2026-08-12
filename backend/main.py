@@ -105,6 +105,18 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Secret store warm-up skipped: {e}")
 
+            # Capture the running commit SHA once, at boot (backend/version.py) —
+            # the deploy-drift watchdog check compares this against the repo's
+            # live HEAD every 5 minutes to catch a stale process serving old code
+            # after a git pull with no restart. Best-effort: a failure here just
+            # degrades that check to a permanent no-op, never blocks boot.
+            try:
+                from backend import version
+                boot_sha = await asyncio.to_thread(version.capture_running_sha)
+                logger.info(f"Running SHA at boot: {boot_sha or 'unknown (no .git resolution)'}")
+            except Exception as e:
+                logger.warning(f"Could not capture running SHA (deploy-drift check degrades to no-op): {e}")
+
             from backend.scheduler import scheduler, setup_scheduler
             setup_scheduler(settings.briefing_time, settings.briefing_timezone)
             scheduler.start()

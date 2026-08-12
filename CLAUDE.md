@@ -4,6 +4,113 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Deploy-drift check — watchdog's 7th check (2026-08-11, branch `feat/deploy-drift-gitleaks-cleanup`,
+worktree `nexus-deploy-drift-gitleaks-cleanup`)** — closes the exact failure mode this repo's
+"Restart After Council Build" feedback note already names: a `git pull` lands but nobody restarts
+the running process, which then keeps serving old code indefinitely with no signal anywhere that
+it's happened. New leaf module `backend/version.py` (pure stdlib, sync, no subprocess/asyncio, no
+imports from the rest of `backend/`) reads the repo's git HEAD straight off disk — loose ref,
+packed-refs (skipping `#`/`^` lines), or detached HEAD — always returning either a 40-char
+lowercase hex SHA or `None`, never raising. `main.py`'s lifespan calls
+`version.capture_running_sha()` once at boot, inside the existing `if vault_ok:` block right before
+`setup_scheduler(...)`; `watchdog.check_deploy_drift()` — the new 7th check inside the same 5-min
+`run_watchdog()` job, gated by a new `deploy_drift_check_enabled` flag sharing `watchdog_enabled`'s
+gate and reusing `watchdog_alert_cooldown_s` (no new cooldown setting) — re-reads HEAD fresh on
+every tick and compares it to the boot-captured SHA, paging (kind `deploy_drift`, individually
+`/mute`-able, not on `_NEVER_MUTABLE_NOTIFY_KINDS`) via the plain in-memory `_should_alert` debounce
+(not the DB-backed dead-letter one — a drift condition only matters while this specific process is
+still running the old code, so it doesn't need to survive a restart the way the dead-letter cooldown
+does). Restart-safe by construction: a fresh boot always re-captures a matching SHA, so the alert
+self-clears the moment someone actually restarts. `GET /api/safety/status` gained a `running_sha`
+field (`str | None`, never coerced to `""`).
+- **Deliberately NOT done (scope decisions, not oversights):** no Pulse/activity surfacing —
+  `ActivityEntry.actor_type` (`job | worker | loop | trace | task`) has no actor representing "the
+  app" as a whole, and inventing a synthetic one solely to carry a static boot-time SHA would be the
+  first non-lifecycle entry in that registry and would mislead more than it'd inform; surfacing is
+  `running_sha` on `/api/safety/status` + the watchdog phone alert + the `OutcomeFlag` row, full
+  stop. No frontend changes. **Worktree checkouts are explicitly out of scope**: a real git worktree
+  has a `.git` FILE (a `gitdir:` pointer), not a directory — `get_git_head()` returns `None` for one
+  by construction (checked and documented in the module's own docstring), and the deploy-drift check
+  silently no-ops there rather than raising or misreporting. Production runs from a normal checkout,
+  not a worktree, so this isn't a real gap — just a documented boundary.
+- New `tests/test_version.py` (pure-filesystem, `tmp_path`-based, no DB/app) plus 8 new cases
+  appended to `tests/test_watchdog.py` covering no-drift, drift-detected (asserting the message
+  carries both 12-char SHA prefixes), calibration-suppressed-still-returns-True, cooldown-debounce,
+  both unknown-SHA no-op cases, disabled-flag no-op, and the `run_watchdog()` result-dict key.
+  `tests/test_governor.py::test_safety_pause_resume_status` extended to assert `running_sha` is one
+  of the now-six documented `/api/safety/status` keys. Full suite: 1941 passed, 1 skipped, 3 failed —
+  all 3 confirmed pre-existing/unrelated (the two hardcoded scheduler-job-count-29-vs-28 tests in
+  `tests/test_coverage_boost.py`, and `tests/test_proposer.py::test_known_hardware_issue_light_goal_dropped`,
+  which is the documented time-of-day-flaky proposer test — it ran at night this pass, tripping the
+  night-exemption filter before the hardware-issue filter ever got a chance to fire).
+
+**Gitleaks CI on the public repo (2026-08-11, branch `feat/deploy-drift-gitleaks-cleanup`,
+worktree `nexus-deploy-drift-gitleaks-cleanup`)** — new `.github/workflows/gitleaks.yml` runs
+`gitleaks/gitleaks-action@v2` on every push to `master` and every pull request (no branch
+protection exists, and feature work merges to master locally then pushes, so a PR-only trigger
+would miss the real merge path). New `.gitleaks.toml` at repo root extends gitleaks' default rule
+set and allowlists only what's deliberately public: the `tailfa52c.ts.net` tailnet suffix, LAN
+(`192.168.1.x`) and Tailscale CGNAT (`100.x.x.x`) addresses, and a path allowlist for
+`CLAUDE-SECURITY-*/` exercise-fixture directories — see 33e5bdd for why those infra values are
+public on purpose and must not be scrubbed. `CLAUDE.md` and `README.md` are deliberately NOT
+path-allowlisted wholesale, so a real secret pasted into either still gets caught. No
+`.gitleaksignore`, no pre-commit hook, no `GITLEAKS_LICENSE`. Local validation this session was
+config-syntax-only (`yaml.safe_load` + `tomllib` both passed) — no `gitleaks` binary was present
+on this host, so the first real scan of current history happens as the first GitHub Actions run
+after this merges and pushes. Future sessions: read `.gitleaks.toml`'s own header comment before
+touching the allowlist.
+
+**Cleanup of contaminated production calibration data (2026-08-11, branch
+`feat/deploy-drift-gitleaks-cleanup`, worktree `nexus-deploy-drift-gitleaks-cleanup`)** — the
+contamination: `pytest` runs from the repo root were writing real rows into the live `nexus.db`
+because `backend/database.py`'s `DB_PATH` was cwd-relative, so a bare `pytest` invocation from
+the repo root pointed straight at production — synthetic `homelab_watch:docker:plex`/`plex;evil`/
+`plex<b>`/`plex`+80-`a` calibration-loop test fingerprints (the 4th fingerprint's length is
+`tests/test_homelab_watch.py`'s own `long_name = "a" * 80` fixture — "pushes `docker:restart:<name>`
+past Telegram's 64-byte limit") leaked into the real `OutcomeFlag` and `CalibrationHint` tables.
+**Prevention already shipped 2026-08-09**, before this task: this
+worktree's own `tests/conftest.py::_isolate_test_database` (session-scoped autouse fixture)
+repoints `backend.database`'s engine/`DB_PATH` at a throwaway temp-file DB before any test runs,
+so no future `pytest` invocation can write into the live DB again — that part is done and live,
+not pending. This task is the cleanup of the contamination that already happened before that fix
+existed. New `tools/cleanup_calibration_contamination.py` (plain stdlib `sqlite3`, zero imports
+from `backend/` — deliberately not `backend.database`, since importing the backend would
+reconstruct the exact same cwd-relative-`DB_PATH` bug class that caused this contamination in the
+first place) is dry-run by default, requires an explicit `--confirm` to delete anything, and
+refuses to touch the DB at all (exit 2, before either the dry-run or confirm branch) unless a
+hard count-verification gate confirms the live DB still matches the 2026-08-11 investigation
+exactly (88 `OutcomeFlag` rows, 22 per fingerprint, source `homelab_watch`, created in a specific
+2026-08-02 date window; 4 `CalibrationHint` rows with ids exactly `{3,4,5,6}`). Never wired into
+anything — no scheduler job, no migration shim, no conftest hook, confirmed by a regression test
+that greps the script's own source for `import backend`/`from backend`. New
+`tests/test_cleanup_calibration_contamination.py` (6 cases, all against a `tmp_path` SQLite file,
+never the real DB) covers dry-run-deletes-nothing, confirm-deletes-exactly-the-matching-rows-and-
+decoys-survive, a stale-count mismatch refusing before any delete, a hint-id mismatch refusing
+before any delete, a missing `--db` path refusing, and the no-backend-import guard. Full suite:
+1947 passed, 1 skipped, 3 failed — same 3 pre-existing/unrelated failures Task 1 already
+documented above (unchanged by this task). **The first dry run against the real live `nexus.db`
+(pointed at explicitly via `--db`, since this worktree has no `nexus.db` of its own) found a count
+mismatch — 66/88 `OutcomeFlag` rows and 3/4 `CalibrationHint` ids (`{3,4,6}`, missing `5`) — but the
+live DB had NOT actually drifted.** Read-only verification against the live DB (`SELECT id,
+fingerprint, length(fingerprint) FROM outcomeflag WHERE fingerprint LIKE 'homelab_watch:docker:a%'`)
+found the real contaminated fingerprint is `"homelab_watch:docker:" + "a"*80` (total length 101,
+confirmed on rows id 10/28/43/58/73, 22 total) — matching `tests/test_homelab_watch.py:252`'s real
+fixture, `long_name = "a" * 80`, exactly. The script's own `FINGERPRINTS` constant had a transcription
+typo (`84` instead of `80`) from the original 2026-08-11 investigation/spec, not a real DB drift.
+`CalibrationHint id=5` was independently confirmed to hold that same 80-`a` fingerprint with
+`status='expired'`, `created_at`/`updated_at` timestamps identical (to the second) to ids 3/4/6 —
+proving it belongs to the same contamination batch, so `EXPECTED_HINT_IDS={3,4,5,6}` was already
+correct and needed no change. Fixed by correcting `FINGERPRINTS`' 4th entry from `"a"*84` to `"a"*80`
+in `tools/cleanup_calibration_contamination.py` (the sibling test file imports `FINGERPRINTS` from
+the script directly rather than hardcoding its own count, so no separate test fix was needed). Full
+`tests/test_cleanup_calibration_contamination.py` suite re-run green (6/6) after the fix. **Re-run
+dry run against the live `nexus.db` post-fix: exit 0, reports the full 88 `OutcomeFlag` / 4
+`CalibrationHint` rows with zero `MISMATCH:` lines** — "DRY RUN — no changes made." confirmed, zero
+writes. **The live `--confirm` run against `nexus.db` is still PENDING BRIAN'S OWN EXECUTION** — only
+`--db`-pointed dry-run reads have happened in this repo across both passes (confirmed zero writes
+each time); the fingerprint/id set is now verified correct, so whoever runs `--confirm` next does
+not need to re-derive it, just run it.
+
 **Traces discoverability + Pulse detail wiring (2026-08-10, branch `feat/traces-pulse-detail`,
 worktree `nexus-traces-pulse-detail`)** — Fable-planned, Sonnet-built, following a read-only
 investigation (querying the live `nexus.db` + reading the real code, not guessing) into why Brian

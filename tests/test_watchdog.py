@@ -1032,3 +1032,183 @@ async def test_run_watchdog_includes_deferred_swept_key(eng):
         result2 = await watchdog.run_watchdog()
     assert result2["deferred_swept"] == []
     assert {"stalled", "dead_letters", "budget_warn_fired", "auth_bursts", "contract_breaches"} <= result2.keys()
+
+
+# ---------------------------------------------------------------------------
+# check_deploy_drift (Task 1 — deploy-drift check, spec §1.5)
+# ---------------------------------------------------------------------------
+
+def _drift_settings(**overrides):
+    from backend.config import Settings
+    defaults = dict(watchdog_enabled=True, deploy_drift_check_enabled=True,
+                     watchdog_alert_cooldown_s=3600)
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_no_drift_same_sha():
+    from backend.agents import watchdog
+
+    sha = "a" * 40
+    settings = _drift_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=sha), \
+         patch("backend.version.get_git_head", return_value=sha), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is False
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_detected_alerts_with_both_shas(eng):
+    from backend.agents import watchdog
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings()
+    notify_mock = AsyncMock(return_value=True)
+    record_flag_ex_mock = AsyncMock(return_value={"id": 1, "surface": True, "reason": None})
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex", record_flag_ex_mock), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is True
+    record_flag_ex_mock.assert_awaited_once()
+    assert record_flag_ex_mock.await_args.args[0] == "watchdog"
+    assert record_flag_ex_mock.await_args.args[1] == "deploy_drift"
+    assert record_flag_ex_mock.await_args.kwargs["severity"] == "medium"
+
+    notify_mock.assert_awaited_once()
+    assert notify_mock.await_args.kwargs["kind"] == "deploy_drift"
+    body = notify_mock.await_args.args[0]
+    assert running[:12] in body
+    assert current[:12] in body
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_suppressed_flag_still_returns_true():
+    """A calibration-suppressed record_flag_ex (surface=False) still means
+    drift WAS detected on this tick -- check_deploy_drift returns True either
+    way; only the phone page is gated on d['surface']."""
+    from backend.agents import watchdog
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings()
+    notify_mock = AsyncMock(return_value=True)
+    record_flag_ex_mock = AsyncMock(return_value={"id": 1, "surface": False, "reason": "suppressed"})
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex", record_flag_ex_mock), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is True
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_cooldown_single_page_across_two_calls():
+    from backend.agents import watchdog
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings()
+    notify_mock = AsyncMock(return_value=True)
+    record_flag_ex_mock = AsyncMock(return_value={"id": 1, "surface": True, "reason": None})
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex", record_flag_ex_mock), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired1 = await watchdog.check_deploy_drift(cooldown_s=3600)
+        fired2 = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    # Drift is still "detected" on both calls...
+    assert fired1 is True
+    assert fired2 is True
+    # ...but the phone page (and the flag write it gates on) only fires once.
+    notify_mock.assert_called_once()
+    record_flag_ex_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_unknown_running_sha_noop():
+    from backend.agents import watchdog
+
+    settings = _drift_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=None), \
+         patch("backend.version.get_git_head", return_value="a" * 40), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is False
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_unknown_current_sha_noop():
+    from backend.agents import watchdog
+
+    settings = _drift_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value="a" * 40), \
+         patch("backend.version.get_git_head", return_value=None), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is False
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_disabled_flag_noop():
+    from backend.agents import watchdog
+
+    settings = _drift_settings(deploy_drift_check_enabled=False)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value="a" * 40), \
+         patch("backend.version.get_git_head", return_value="b" * 40), \
+         patch("backend.events.notify_phone", notify_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is False
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_includes_deploy_drift_key(eng):
+    from backend.agents import watchdog
+
+    settings = _drift_settings()
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [])
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+    assert "deploy_drift" in result
+
+    # Also present in the outer-exception fallback path.
+    with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
+        result2 = await watchdog.run_watchdog()
+    assert result2["deploy_drift"] is False

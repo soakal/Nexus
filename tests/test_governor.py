@@ -573,12 +573,12 @@ def test_safety_pause_resume_status(safety_client, auth_headers):
     with Session(eng) as s:
         assert s.get(SystemState, 1).autonomy_enabled is False
 
-    # status returns the five documented keys.
+    # status returns the six documented keys.
     resp = safety_client.get("/api/safety/status", headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
     for key in ("autonomy_enabled", "today_spend_usd", "daily_budget_usd",
-                "per_task_budget_usd", "scheduler_running"):
+                "per_task_budget_usd", "scheduler_running", "running_sha"):
         assert key in body
     assert body["autonomy_enabled"] is False
 

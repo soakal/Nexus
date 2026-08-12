@@ -407,6 +407,7 @@ async def safety_status(_=Depends(require_api_key)):
     from backend.safety import governor
     from backend.integrations import telegram
     from backend.config import get_settings
+    from backend import version
 
     state = await asyncio.to_thread(governor.get_system_state)
     spend = await asyncio.to_thread(governor.today_spend_usd)
@@ -436,6 +437,7 @@ async def safety_status(_=Depends(require_api_key)):
         "scheduler_running": _scheduler_running(),
         "notify_channel": notify_channel,
         "secret_fallback": secret_fallback,
+        "running_sha": version.running_sha(),
     }
 
 
