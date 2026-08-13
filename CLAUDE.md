@@ -714,12 +714,50 @@ retires). Two independent layers:
   refusals) — manually fired the task to simulate the 15-min backstop, full chain recovered within
   ~15s (supervisor → tray → `start.ps1` → healthy). Confirm with Brian whether the real Telegram
   DOWN/UP alerts landed during this drill — that part can't be verified from this session alone.
-- **Residual gap, explicitly not closed here**: a full reboot with nobody logged in leaves NEXUS
-  down until someone logs in (the tray needs an interactive desktop session — it's a systray icon,
-  Windows services can't own one, Session 0 is isolated from the desktop). The 15-min repetition
-  backstop only helps if a session is already active. Closing this needs Windows auto-logon (a
-  stored credential, its own security tradeoff) — deliberately not bundled into this phase, Brian's
-  call if he wants it later.
+- **Residual gap CLOSED (2026-08-12)**: a full reboot with nobody logged in used to leave NEXUS
+  down until someone logged in (the tray needs an interactive desktop session — it's a systray
+  icon, Windows services can't own one, Session 0 is isolated from the desktop; the 15-min
+  repetition backstop only helps if a session is already active). Root-caused live the same day:
+  Windows Update force-rebooted the unattended machine twice around 17:30 (`MoUsoCoreWorker.exe`/
+  `TrustedInstaller.exe`, run by `NT AUTHORITY\SYSTEM`), which logged out the interactive session
+  and killed NEXUS — the logon-triggered "NEXUS Tray" task never fired since nobody was logged in,
+  and NEXUS stayed down ~2h until Brian remoted in and logged in manually (`backend/logs/backend.err.log`
+  showed a fresh process start at 19:27:45, matching the login). Fable-planned, closed same session
+  via two layers:
+  1. **Windows auto-logon** via Sysinternals `Autologon64.exe` (Microsoft-signed, verified before
+     running) — Brian entered credentials directly into the tool's own GUI, never through Claude
+     Code. Stores the password as an LSA secret (`HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`:
+     `AutoAdminLogon=1`, `DefaultUserName=Brian` — no `DefaultPassword` value, confirming it did NOT
+     land in the plaintext registry field netplwiz would have used). Accepted tradeoff (Brian's
+     explicit call): the credential is recoverable by a local admin or anyone with offline disk
+     access to this machine — obscured, not strongly encrypted at rest. No BitLocker on this host,
+     so no pre-boot PIN interaction to worry about. This makes the EXISTING "NEXUS Tray" logon
+     trigger fire on every reboot, not just ones a human is present for — the task itself was
+     verified byte-identical (`Export-ScheduledTask`) before and after, untouched by this change.
+  2. **Windows Update harm reduction** — `HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings`:
+     `SmartActiveHoursState=0`, `ActiveHoursStart=7`, `ActiveHoursEnd=1` (fixed 07:00–01:00 window,
+     the 18h max); `HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`:
+     `NoAutoRebootWithLoggedOnUsers=1` — now meaningful since auto-logon guarantees a user is always
+     "logged on," so update-driven reboots wait for Brian to initiate one rather than forcing it.
+     Known caveat: this combination can defer a pending-reboot update indefinitely if never
+     manually triggered — accepted, since a nagged reboot is now low-cost (NEXUS self-recovers in
+     minutes either way).
+  - **Password-change runbook**: if Brian's Windows password ever changes, auto-logon silently
+    breaks — symptom is the machine sitting at the login screen after the next unattended reboot,
+    caught within ~3 min by the Uptime Kuma NEXUS-down alert (fails loud, not silent). Fix: re-run
+    `Autologon64.exe` (`https://live.sysinternals.com/Autologon64.exe`), re-enter the new password
+    in its GUI, click Enable, then re-verify with a reboot drill.
+  - **End-to-end no-touch reboot drill: not yet run** (Brian deferred it to a separate session,
+    since it kills whatever session triggers it, including a live Claude Code session). Until that
+    drill runs, this fix is verified at the configuration level (registry values correct, LSA
+    secret confirmed, task untouched) but not yet empirically proven against a real unattended
+    reboot. Run it via `shutdown /r /t 20` with nobody touching the machine afterward, then confirm
+    `http://192.168.1.119:8000/api/health` returns healthy within 5 minutes from a second device,
+    and `logs/tray_supervisor.log` + `backend/logs/backend.err.log` show fresh starts in that
+    window.
+  - A second scheduled task to auto-lock the session shortly after an unattended auto-logon
+    (closing the "unlocked desktop at the console" exposure) was proposed and **declined** by
+    Brian — not built.
 - **Also confirmed while building this**: Proxmox host access still works via the existing
   `processforge_proxmox_ed25519` keypair (no new credential handoff needed for the LXC itself).
 
