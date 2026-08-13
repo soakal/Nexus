@@ -136,8 +136,37 @@ if ($dev) {
         -WorkingDirectory (Get-Location).Path
 }
 
-Start-Sleep -Seconds 2
-Write-Host "  Frontend ready (pid $($frontend.Id))" -ForegroundColor Green
+# Wait for the frontend to actually LISTEN on $port before reporting ready.
+# This used to be a blind `Start-Sleep -Seconds 2` followed by an unconditional
+# "Frontend ready". That was a lie: tray.py's _backend_healthy() requires a TCP
+# connect to 127.0.0.1:3000 on top of /api/health, so whenever the frontend took
+# longer than 2s to bind, start.ps1 exited 0 -> tray flipped to "running" ->
+# its 15s monitor ticks failed twice -> "Backend went unhealthy while running"
+# -> a pointless full auto-restart of a perfectly healthy NEXUS, ~30s after every
+# cold start (see logs/tray.log 2026-08-12 19:26:58/19:27:15 and 20:03:01/20:03:33).
+# `npx vite preview` is a 4-process chain (cmd -> npx node -> cmd -> vite node) and
+# measured ~3.8s warm on this host; cold after boot it has taken well over 30s.
+# Bounded to ~60s. If it never binds we still exit 0 on purpose: the backend IS up,
+# and a non-zero exit parks the tray at "stopped" with no auto-recovery (the monitor
+# only auto-restarts a backend that was "running"), which is strictly worse than
+# letting the tray's own watchdog handle a genuinely dead frontend.
+$feReady = $false
+Write-Host "  Waiting for frontend..." -NoNewline
+for ($i = 0; $i -lt 120; $i++) {
+    Start-Sleep -Milliseconds 500
+    if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
+        $feReady = $true
+        break
+    }
+    if ($frontend.HasExited) { break }
+    if ($i % 4 -eq 3) { Write-Host "." -NoNewline }
+}
+Write-Host ""
+if ($feReady) {
+    Write-Host "  Frontend ready (pid $($frontend.Id))" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: frontend never started listening on port $port (pid $($frontend.Id), exited=$($frontend.HasExited)). Backend is up - continuing anyway." -ForegroundColor Yellow
+}
 
 
 Write-Host ""

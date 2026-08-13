@@ -4,6 +4,33 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Post-start tray flap fixed — `start.ps1` now waits for the frontend port (2026-08-12, `master`)** —
+every cold start of NEXUS produced a spurious "Backend went unhealthy while running — auto-restart
+attempt 1/3" ~17-32s later, followed by a full stop/start cycle that self-healed. Root cause was NOT
+the backend: `start.ps1` launched the frontend, slept a blind `Start-Sleep -Seconds 2`, and printed
+"Frontend ready" unconditionally — but `tray.py`'s `_backend_healthy()` requires a TCP connect to
+`127.0.0.1:3000` **in addition to** `/api/health`. So start.ps1 exited 0 while `npx vite preview` was
+still coming up, the tray flipped to "running", and the monitor's next two 15s ticks both failed →
+auto-restart. `npx vite preview` is a 4-process chain (`cmd.exe` → npx `node` → `cmd.exe` → vite
+`node`); measured **3.8s warm** on this host on a spare port, **~9s** on a real restart, and the log
+evidence shows **>34s cold after boot**. Timing arithmetic confirms it was never a stall: with the
+monitor thread's t0 known from the "Tray started" line, both flap events fit two health checks
+~15.0s apart costing ~1.05s each — a 12s `urllib` timeout (the known one-time watchdog GIL spike)
+would have put the ticks ~27s apart and the "stopped" line ~12s later than observed. `/api/health`
+itself is two `pathlib.exists()` calls (`backend/main.py:261-269`) and cannot return non-ok while
+`.vault.key`/`nexus.vault` are on disk, so the failing leg was the `:3000` connect, by elimination.
+Fix (`start.ps1:139-169`): the blind sleep is replaced by a bounded ~60s poll of
+`Get-NetTCPConnection -LocalPort $port -State Listen`, mirroring the existing backend-wait loop, with
+fail-fast on `$frontend.HasExited`. **It deliberately still exits 0 if the port never binds** — a
+non-zero exit parks the tray at "stopped" with no auto-recovery (`tray.py`'s monitor only
+auto-restarts a backend whose status was `running`), which is strictly worse than letting the tray
+watchdog handle a genuinely dead frontend. No Python touched, no test covers `start.ps1`; verified by
+actually running it (frontend wait printed, `:3000` listening + HTTP 200 and `/api/health` = `ok` at
+exit, no flap in `logs/tray.log`). Two side observations logged but NOT fixed here (out of scope):
+`.nexus.pids` records the `cmd.exe` wrapper PID, not the real vite `node` PID, so `stop.ps1`'s
+PID-file kill relies on its kill-by-port fallback; and `modules/brain-organizer/mcp_server.py`
+children were seen surviving a backend restart as orphans.
+
 **Deploy-drift check — watchdog's 7th check (2026-08-11, branch `feat/deploy-drift-gitleaks-cleanup`,
 worktree `nexus-deploy-drift-gitleaks-cleanup`)** — closes the exact failure mode this repo's
 "Restart After Council Build" feedback note already names: a `git pull` lands but nobody restarts
