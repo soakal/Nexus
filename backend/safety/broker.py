@@ -199,6 +199,13 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # kill switch forbids it when autonomy is off.
         return Risk.LOW, Reversibility.REVERSIBLE
 
+    if kind == "system_restart":
+        # Restart NEXUS itself (stop.ps1 -> start.ps1). HIGH so an agent/
+        # autonomous actor always needs a human tap -- it drops the backend
+        # for ~10-30s and can interrupt in-flight autonomous work. Not
+        # IRREVERSIBLE: it comes back up on its own via start.ps1.
+        return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
+
     if kind == "policy_promote":
         # Feature 3 — Confirm-Policy Learner proposing to auto-allow a kind.
         # HIGH so an autonomous proposer always lands on NEEDS_CONFIRM, never
@@ -415,6 +422,32 @@ async def _dispatch_protonmail_delete(target: str, payload: dict) -> dict:
     return await protonmail.trash_email(payload["email_id"], mailbox=payload.get("mailbox"))
 
 
+async def _dispatch_system_restart(target: str, payload: dict) -> dict:
+    """Restart NEXUS itself (stop.ps1 then start.ps1) -- from a Telegram
+    /restart command or a button tap, e.g. to clear a deploy-drift warning
+    or recover a stuck backend.
+
+    stop.ps1 kills this very process, so the restart can never run inline
+    here -- this spawns a fully DETACHED PowerShell process (its own process
+    group, immune to stop.ps1 killing its parent) that waits a few seconds
+    first, giving this request's own HTTP/Telegram response time to finish
+    sending, then runs stop.ps1 -> start.ps1. Returns immediately; the actual
+    restart happens a few seconds later, out-of-process.
+    """
+    import pathlib
+    import subprocess
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    cmd = f"Start-Sleep -Seconds 3; & '{repo_root}\\stop.ps1'; & '{repo_root}\\start.ps1'"
+    subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
+        cwd=str(repo_root),
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+    return {"ok": True, "scheduled": True}
+
+
 async def _dispatch_policy_promote(target: str, payload: dict) -> dict:
     """Feature 3 — apply a human-confirmed policy promotion. `target` is the
     kind being promoted (so the audit trail reads "policy_promote -> kind",
@@ -458,6 +491,7 @@ _DISPATCHERS = {
     "protonmail_archive": _dispatch_protonmail_archive,
     "protonmail_delete": _dispatch_protonmail_delete,
     "policy_promote": _dispatch_policy_promote,
+    "system_restart": _dispatch_system_restart,
 }
 
 

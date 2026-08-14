@@ -110,6 +110,45 @@ def test_classify_unknown_kind_is_unclassifiable():
     assert classify("totally_new_thing", {}) == (Risk.UNCLASSIFIABLE, Reversibility.UNKNOWN)
 
 
+def test_classify_system_restart_is_high_reversible():
+    assert classify("system_restart", {}) == (Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE)
+
+
+@pytest.mark.parametrize("actor", [Actor.AGENT, Actor.AUTONOMOUS])
+def test_system_restart_needs_confirm_for_agent_and_autonomous(actor):
+    risk, reversibility = classify("system_restart", {})
+    assert decide(actor, risk, reversibility, confirmed=False) == Decision.NEEDS_CONFIRM
+    assert decide(actor, risk, reversibility, confirmed=True) == Decision.ALLOWED
+
+
+def test_system_restart_user_actor_always_allowed():
+    risk, reversibility = classify("system_restart", {})
+    assert decide(Actor.USER, risk, reversibility, confirmed=False) == Decision.ALLOWED
+
+
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_spawns_detached_process():
+    """The dispatcher must never run stop.ps1/start.ps1 inline (stop.ps1
+    would kill the very process handling this call) -- it hands off to a
+    fully detached subprocess and returns immediately."""
+    import subprocess
+
+    from backend.safety.broker import _dispatch_system_restart
+
+    with patch("subprocess.Popen") as mock_popen:
+        result = await _dispatch_system_restart("nexus", {})
+
+    assert result == {"ok": True, "scheduled": True}
+    mock_popen.assert_called_once()
+    args, kwargs = mock_popen.call_args
+    cmd = args[0]
+    assert cmd[0] == "powershell.exe"
+    joined = " ".join(cmd)
+    assert "stop.ps1" in joined and "start.ps1" in joined
+    assert kwargs["creationflags"] & subprocess.DETACHED_PROCESS
+    assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+
+
 # ---------------------------------------------------------------------------
 # decide — pure
 # ---------------------------------------------------------------------------

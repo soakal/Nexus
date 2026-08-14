@@ -156,6 +156,15 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
                 return True, "Blocked: autonomy is paused."
             return False, (res.error or "Start failed.")
 
+        if namespace == "system" and verb == "restart":
+            from backend.safety.broker import Decision, execute_action
+            res = await execute_action(
+                actor="user", kind="system_restart", target="nexus", payload={},
+            )
+            if res.decision == Decision.EXECUTED:
+                return True, "Restarting now (back in ~15-30s)."
+            return False, (res.error or "Restart failed.")
+
         return False, f"Unknown namespace: {namespace}"
     except Exception as e:
         logger.warning(f"telegram_poller dispatch error: {e}")

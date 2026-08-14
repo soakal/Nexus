@@ -467,7 +467,10 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
             from backend import events
             d = await outcomes.record_flag_ex("watchdog", "deploy_drift", msg, severity="medium")
             if d["surface"]:
-                await events.notify_phone(msg, kind="deploy_drift")
+                await events.notify_phone(
+                    msg, kind="deploy_drift",
+                    buttons=[{"text": "🔄 Restart NEXUS", "callback_data": "system:restart:nexus"}],
+                )
 
         return True
     except Exception as exc:

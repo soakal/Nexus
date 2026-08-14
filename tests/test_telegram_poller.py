@@ -804,6 +804,42 @@ async def test_vm_start_dispatches_via_native_vm_power():
 
 
 @pytest.mark.asyncio
+async def test_system_restart_dispatches_via_broker_with_user_actor():
+    """system:restart:nexus (the deploy-drift alert's button, and /restart's
+    underlying dispatch) goes through the native system_restart kind,
+    actor="user" -- same precedent as docker/vm above."""
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                           reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                           log_id=1, result={"ok": True, "scheduled": True})
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=result) as mock_exec, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("system:restart:nexus"))
+
+    mock_exec.assert_awaited_once_with(
+        actor="user", kind="system_restart", target="nexus", payload={},
+    )
+    assert "✓" in mock_edit.await_args.args[2]
+    assert "Restarting" in mock_edit.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_system_restart_failure_alerts_and_keeps_buttons():
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    result = ActionResult(decision=Decision.FAILED, risk=Risk.HIGH,
+                           reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                           log_id=1, error="boom")
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=result), \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("system:restart:nexus"))
+
+    assert mock_answer.await_args.kwargs.get("show_alert") is True
+    mock_edit.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_vm_start_invalid_vmid_returns_error_not_crash():
     with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec, \
          patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True), \
