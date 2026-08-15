@@ -4,20 +4,20 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
-> **Branch policy (read this first if you're on this branch).** This is the `linux-lxc`
-> branch — the Ubuntu LXC migration (real host: Proxmox LXC 207, `192.168.1.62`, live clone
-> at `/opt/nexus`). **Windows production stays on `master`, in a normal checkout, never this
-> branch** — a real incident during this migration (2026-08-14) found the Windows production
-> clone accidentally left on `linux-lxc`, which would have deleted `tray.py` (still Windows's
-> real supervision mechanism) out from under a running instance on its next restart. Fixed by
-> moving the Windows checkout back to `master` and doing all `linux-lxc` work from a separate
-> git worktree (`nexus-linux-lxc`, this one) instead. Everything below this banner up to the
-> next dated Windows-only entry describes `master`'s history before the branches diverged and
-> stays historically accurate for Windows — it does NOT all still apply on this branch (e.g.
-> `tray.py`/`tray_supervisor.ps1`/`launch_tray.vbs` were deleted here 2026-08-14, see below).
-> Where the two branches genuinely diverge, treat entries dated at or after the migration as
-> authoritative for `linux-lxc` and Windows-specific ones (tray/Task Scheduler/registry/
-> PowerShell-only content) as historical/`master`-only.
+> **Branch policy.** This branch — the Ubuntu LXC port (real host: Proxmox LXC 207,
+> `192.168.1.62`, live clone at `/opt/nexus`) — is `main`, the sole actively-developed branch,
+> as of 2026-08-15. Windows production (formerly on `master`) was fully shut down the same day:
+> both its scheduled tasks disabled, backend/frontend processes killed, tray autostart removed.
+> The old Windows branch is preserved, untouched, as `windows-archive` — a frozen historical
+> record, never deployed again, not merged here. It exists so `tray.py`/`tray_supervisor.ps1`/
+> PowerShell scripts/the Windows-specific `backup.py`/`voice.py` code aren't lost, in case any
+> of that history is ever needed for reference. Everything below this banner up to the next
+> dated post-migration entry describes the old Windows branch's history before it was archived
+> and stays historically accurate for that record — it does NOT all still apply here (e.g.
+> `tray.py`/`tray_supervisor.ps1`/`launch_tray.vbs` were deleted on this branch 2026-08-14, see
+> below). Treat entries dated at or after the migration as authoritative for this branch, and
+> Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
+> historical/`windows-archive`-only.
 
 **Track B — full cutover, this instance becomes primary (2026-08-15, overnight)** — executed
 autonomously while Brian slept, per his explicit request. See `nexus` (master)'s own CLAUDE.md

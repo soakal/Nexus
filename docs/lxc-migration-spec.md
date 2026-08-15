@@ -1,5 +1,11 @@
 # NEXUS Windows→LXC Migration — Implementation Spec
 
+> **STATUS: COMPLETE (2026-08-15).** Every phase below ran and was verified live — the LXC
+> (`main` branch, formerly `linux-lxc`) is the sole running NEXUS instance. Windows was fully
+> decommissioned the same day (scheduled tasks disabled, processes stopped, tray autostart
+> removed) and its branch archived as `windows-archive`. This document is kept as the historical
+> build record, not a forward-looking plan — read `main`'s own `CLAUDE.md` for current state.
+
 **Planner:** Fable · **Writer:** Sonnet, one step per pass · **Verifier:** checks every AC literally
 **Date:** 2026-08-14 · Powered by CwiAI
 

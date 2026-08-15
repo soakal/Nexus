@@ -2,36 +2,17 @@
 
 A production-grade personal AI operating system. FastAPI backend + React/Tailwind frontend + multi-agent orchestration.
 
-> **This is the `linux-lxc` branch** — deploy target is an Ubuntu LXC (Proxmox CT 207,
-> `192.168.1.62`, `/opt/nexus`), run under systemd, not the PowerShell scripts below.
-> Windows production stays on `master`, where those scripts are accurate — see this
-> branch's own `CLAUDE.md` for the full branch-policy explanation.
+> Runs on an Ubuntu LXC (Proxmox CT 207, `192.168.1.62`, `/opt/nexus`) under systemd. The
+> project previously ran on Windows 11 — that history is archived on the frozen `windows-archive`
+> branch, no longer deployed anywhere. See this repo's own `CLAUDE.md` for the full migration
+> history.
 
-## Quick Start (Linux / this branch)
+## Quick Start
 
 1. **Setup (first time only)** — `python3.13 -m venv venv && venv/bin/pip install -r requirements.txt`, `cd frontend && npm ci && npm run build`, then seed `/var/lib/nexus/.env` + `nexus.vault`/`.vault.key` (see `docs/lxc-migration-spec.md` Phase 1.1-1.4 for the full sequence).
 2. **Start** — `systemctl start nexus-backend nexus-frontend` (both enabled at boot, `Restart=on-failure`).
 3. **Stop** — `systemctl stop nexus-backend nexus-frontend`.
 4. **Logs** — `journalctl -u nexus-backend -f`.
-
-## Quick Start (Windows / `master` branch only — NOT this branch)
-
-1. **Setup (first time only)**
-   ```powershell
-   .\setup.ps1
-   ```
-   The wizard configures all integrations and stores secrets in an encrypted vault.
-
-2. **Start**
-   ```powershell
-   .\start.ps1
-   ```
-   Opens `http://localhost:3000` automatically.
-
-3. **Stop**
-   ```powershell
-   .\stop.ps1
-   ```
 
 ## Architecture
 
@@ -60,22 +41,17 @@ brake every LLM call, and every call is labeled in the spend report
 ## Backups & Restore
 
 Hourly WAL checkpoint, daily local backup (integrity-checked against the **copy**),
-daily off-VM bundle (vault + nexus.db) to the Unraid share, phone alert on failure.
-On `master`/Windows, restore is `.\restore.ps1 [-From <dir>]` (validates the backup
-before stopping anything). **On this branch there is no restore script** — POSIX
-restore is manual: `rclone copy nexus-unraid:<share>/<path> <dest>` (see
-`backend/backup.py::restore_vault`'s own guard/docstring for the exact remote layout).
+daily off-box bundle (vault + nexus.db) to the Unraid share, phone alert on failure.
+**There is no restore script yet** — restore is manual: `rclone copy
+nexus-unraid:<share>/<path> <dest>` (see `backend/backup.py::restore_vault`'s own
+guard/docstring for the exact remote layout).
 
 ## Remote Access
 
-On `master`/Windows, `tailscale serve` fronts the app at
-`https://win11-vm-proxmox.tailfa52c.ts.net` (one HTTPS origin: `/` frontend, `/api` +
-`/ws` backend). **This has not been rebuilt for the LXC yet** — Tailscale serve path
-mounts are Proxmox-VM-specific config, flagged in the fix-plan as not migrating
-automatically with the files; this branch's real host (`nexus-lxc`, `192.168.1.62`) is
-reachable today over plain HTTP on its Tailscale IP, no HTTPS front yet. LAN clients use
-plain HTTP either way. Device onboarding: open Settings and paste the API key —
-key-in-URL links are retired.
+`tailscale serve` fronts the app over HTTPS on the LXC's own Tailscale identity
+(`nexus-lxc.tailfa52c.ts.net`, one HTTPS origin: `/` frontend, `/api` + `/ws` backend).
+LAN clients use plain HTTP (`http://192.168.1.62:8000`/`:3000`). Device onboarding:
+open Settings and paste the API key — key-in-URL links are retired.
 
 ## Secrets Management
 
@@ -147,7 +123,6 @@ enforced before each billed call. Hosted web-search requests bill at $10/1k.
 
 ## Development
 
-On this branch (Linux):
 ```bash
 # Run tests
 venv/bin/pytest tests/ -v --cov=backend --cov-report=term-missing
@@ -157,19 +132,4 @@ venv/bin/ruff check backend/
 
 # Type check
 venv/bin/mypy backend/ --ignore-missing-imports
-```
-
-On `master`/Windows:
-```powershell
-# Dev mode (hot reload)
-.\start.ps1 -dev
-
-# Run tests
-.\venv\Scripts\pytest tests/ -v --cov=backend --cov-report=term-missing
-
-# Lint
-.\venv\Scripts\ruff check backend/
-
-# Type check
-.\venv\Scripts\mypy backend/ --ignore-missing-imports
 ```
