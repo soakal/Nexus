@@ -16,6 +16,22 @@ os.environ.setdefault("ADGUARD_HOST", "http://localhost:3000")
 os.environ.setdefault("ADGUARD_USER", "admin")
 os.environ.setdefault("GITHUB_USERNAME", "testuser")
 
+# ASSIGNMENT, not setdefault -- must beat both a real value already in the
+# shell AND the cwd .env file (process env outranks pydantic-settings'
+# env_file). backend/secrets/vault.py::set_secret() calls backup_vault() on
+# EVERY secret write, best-effort -- any test that touches set_secret()
+# without its own settings mock inherits whatever unraid_backup_path
+# resolves to. Left unset, that's backend/config.py's real Unraid-share
+# default, and backup_vault() would then shutil.copy2 straight onto that
+# real UNC path (this host already has share access, so it doesn't even
+# need _mount_unc to succeed first) -- the sibling Linux port of this repo
+# live-reproduced the equivalent bug 2026-08-14 (twice), including deletion
+# of real dated backup history via its rclone-sync mirror-delete. Forcing
+# this here, before any backend import, means get_settings()'s cache
+# (populated lazily on first Settings()) can only ever be built from the
+# safe empty value.
+os.environ["UNRAID_BACKUP_PATH"] = ""
+
 # Mock secrets so vault isn't required in tests
 MOCK_SECRETS = {
     "ANTHROPIC_API_KEY": "sk-ant-test-key",
@@ -97,6 +113,40 @@ def mock_secrets(monkeypatch):
 
     monkeypatch.setattr("backend.secrets.infisical_client._request", _network_guard)
     monkeypatch.setattr("backend.secrets.infisical_client.warm_up", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backup_targets(monkeypatch):
+    """Second layer of defense (the env override above is the first) against
+    a test reaching the real Unraid share: even if some test's own fixture
+    explicitly sets a real-looking unraid_backup_path (e.g. to test
+    backup_vault's own UNC-handling logic), backend.backup._mount_unc is the
+    one function that authenticates against the real network share --
+    patching it here to hard-fail means a test that forgets to re-patch it
+    for its own purposes gets a loud, immediate error instead of a silent
+    real mount attempt.
+
+    Note this does NOT fully close the gap on its own: backup_vault()'s
+    shutil.copy2 calls happen regardless of whether _mount_unc succeeds, and
+    on a host that already has share access (this one does) that copy can
+    reach the real share with no mount step at all. The env override above
+    is what actually prevents that -- this guard only adds a loud failure
+    for the narrower case of a test explicitly overriding unraid_backup_path.
+
+    Monkeypatch layering makes this compatible with tests that legitimately
+    want to exercise the real UNC-mount path: a test-level monkeypatch.setattr
+    on `_mount_unc` wins for the duration of that test and monkeypatch
+    restores to what was live when it patched -- i.e. THIS guard, never the
+    real function -- exactly the same reasoning _isolate_test_database's
+    docstring documents for engines.
+    """
+    def _guard(*args, **kwargs):
+        raise AssertionError(
+            "test attempted a real UNC mount via backend.backup._mount_unc "
+            "-- patch _mount_unc in your own test"
+        )
+
+    monkeypatch.setattr("backend.backup._mount_unc", _guard)
 
 
 @pytest.fixture(autouse=True)

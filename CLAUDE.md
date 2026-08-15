@@ -4,6 +4,33 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Test-isolation fix cherry-picked from the `linux-lxc` branch (2026-08-14, `master`, `tests/`
+only)** — the Linux port (`nexus-linux-lxc` worktree, branch `linux-lxc`, real host: Proxmox LXC
+207) live-reproduced a critical bug twice on 2026-08-14: `backend/secrets/vault.py::set_secret()`
+calls `backup_vault()` on every write, best-effort, with no test isolation — a bare `pytest`
+invocation with no `.env` in cwd resolves `unraid_backup_path` to `backend/config.py`'s real
+hardcoded default (`\\192.168.1.50\Computer Backup\Nexus_backup`) and writes/mirror-deletes for
+real. This host's own `backend/backup.py` is the pre-port Windows-only version (`_mount_unc` +
+`shutil.copy2`, no rclone) but carries the exact same exposure — a test resolving the real UNC
+path could `shutil.copy2` straight onto it with no explicit mount step needed, since this host
+already has share access. `tests/conftest.py` gained the same two-layer defense as the Linux
+branch, adapted to this file's own seam: `os.environ["UNRAID_BACKUP_PATH"] = ""` (assignment, not
+setdefault — must beat both a real shell value and the cwd `.env`) forced before any backend
+import, plus a new autouse `_isolate_backup_targets` fixture patching `backend.backup._mount_unc`
+to hard-fail (the analogous guard to the Linux branch's `_run_rclone` patch — `_mount_unc` is this
+codebase's actual network-authenticating seam; note it does NOT fully close the gap on its own,
+since `shutil.copy2` can still reach an already-accessible real UNC path independent of whether
+`_mount_unc` succeeds — the env override is what actually prevents that). Two scheduler job-count
+tests in `tests/test_coverage_boost.py` (`test_setup_scheduler_adds_jobs`,
+`test_auth_burst_check_adds_no_scheduler_job`) regressed from this change (vault_backup's job
+registration is gated behind `if unraid_backup_path:`, now empty by default) — fixed the same way
+the Linux branch fixed the identical regression: both tests explicitly set a fake non-empty
+`UNRAID_BACKUP_PATH` + reset `config._settings_instance` to `None`, scoped to themselves. Full
+suite re-run clean: 1965 passed, 1 skipped, 1 failed (the pre-existing time-of-day-flaky proposer
+test, unrelated — see below). No production code touched, tests-only change. The real data-loss
+incident itself happened entirely on the Linux branch/host, not here — nothing on this Windows
+instance's actual backup data was affected; this cherry-pick is pure prevention.
+
 **Post-start tray flap fixed — `start.ps1` now waits for the frontend port (2026-08-12, `master`)** —
 every cold start of NEXUS produced a spurious "Backend went unhealthy while running — auto-restart
 attempt 1/3" ~17-32s later, followed by a full stop/start cycle that self-healed. Root cause was NOT

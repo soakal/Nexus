@@ -155,11 +155,20 @@ async def test_scheduler_retry_pending_exception_swallowed():
 
 def test_setup_scheduler_adds_jobs(monkeypatch):
     from datetime import datetime
+    import backend.config as config_mod
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     # Far-future so the one-off infisical_soak_reminder job always registers,
     # regardless of the real current date.
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    # This test counts jobs under FULL configuration -- conftest.py forces
+    # UNRAID_BACKUP_PATH="" suite-wide (real-backup test isolation, unrelated
+    # to this test's own concern), which would also silently skip the
+    # vault_backup/knowledge_backup job registrations this test wants to
+    # count. Give it back a real-looking (but fake) UNC path, scoped to this
+    # test only.
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     # Baseline was 25 jobs (this assumes modules/brain-organizer/venv exists,
@@ -226,9 +235,15 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     test and test_setup_scheduler_adds_jobs's call_count must both be
     updated together, deliberately."""
     from datetime import datetime
+    import backend.config as config_mod
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    # See test_setup_scheduler_adds_jobs for why this is needed (conftest's
+    # UNRAID_BACKUP_PATH="" test-isolation default would otherwise also
+    # silently skip vault_backup/knowledge_backup registration here).
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
