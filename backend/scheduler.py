@@ -422,15 +422,6 @@ async def _run_brain_organizer():
         logger.error(f"Brain Organizer job error: {e}")
 
 
-async def _run_wiki_ingest():
-    try:
-        from backend.agents.wiki_ingest import run_all_unprocessed
-        result = await run_all_unprocessed()
-        logger.info(f"Wiki ingest batch: {result}")
-    except Exception as e:
-        logger.error(f"Wiki ingest job error: {e}")
-
-
 async def _run_fragmentation_report():
     try:
         from backend.agents.wiki_ingest import weekly_fragmentation_report
@@ -810,8 +801,11 @@ def setup_scheduler(briefing_time: str, timezone: str):
     # Daily wiki_ingest cron disabled 2026-07-14: it and brain_organizer both
     # route Brain/raw/ into wiki pages 5 minutes apart, with a known collision
     # risk over date-named pages. Brain Organizer is the sole nightly pipeline
-    # now; _run_wiki_ingest/run_all_unprocessed stay unused by cron but the
-    # module is still imported by wiki_fragmentation_report below.
+    # now. wiki_ingest.py's ingest_file/run_all_unprocessed/_import_reference_doc
+    # machinery (and _run_wiki_ingest, its scheduler wrapper) were deleted
+    # 2026-08-14 (linux-lxc fix-plan Phase 5.1, confirmed zero remaining
+    # callers) -- the module now only exists for weekly_fragmentation_report
+    # below, which is a separate, still-live read-only audit.
     scheduler.add_job(
         _run_fragmentation_report,
         CronTrigger(day_of_week="sun", hour=2, minute=30, timezone=timezone),
