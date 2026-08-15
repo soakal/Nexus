@@ -875,8 +875,11 @@ through the broker's `ActionLog`/confirm-reject audit trail the way broker-dispa
 ## Hermes fully decommissioned (2026-08-09)
 Hermes (the separate homelab bot on Proxmox LXC 200 `hermes-agent` + LXC 201 `hermes-webui`) is
 gone entirely — `pct destroy --purge`'d, all `HERMES_*`/`cred:hermes:*` Infisical secrets deleted
-(the local `nexus.vault` Fernet fallback still has some leftover entries as of this pass — flagged
-separately, not yet cleaned up), the SSH key access removed. This was the last step of a roadmap
+(the local `nexus.vault` Fernet fallback's leftover `HERMES_*`/`cred:hermes:*` entries — plus
+`LXC201_SSH_PASSWORD`/`cred:lxc201:*`, dead for the same reason, LXC 201 was `hermes-webui` — were
+cleaned up 2026-08-14, commit `20f1f05`; see that commit message for the full list and for a
+`nexus.vault.meta`/`nexus.vault` drift bug found during the cleanup), the SSH key access removed.
+This was the last step of a roadmap
 that ran across several sessions (2026-07-21 through 2026-08-09): every real Hermes capability was
 ported natively first — see the still-live "Telegram bot + calendar", "Write-actions brought
 in-house (Phase 7)", "Open WebUI dependency retired (Phase 6)", "NEXUS liveness monitoring
