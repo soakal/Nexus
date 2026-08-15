@@ -4,6 +4,42 @@ Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite fro
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
 
+**Windows decommission blocked by a Session-0 orphan, root-caused and fixed (2026-08-15,
+`master`)** — while shutting Windows's NEXUS down for good (the LXC is now primary, see the
+Track B entry below), `stop.ps1` reported success on every attempt but the real backend
+(`python.exe`) and frontend (`node.exe`) kept surviving. Root cause, confirmed empirically (not
+guessed): those two processes were running in **Session 0** — Windows' isolated, non-interactive
+services session — while every stop attempt ran from a normal, non-elevated Session 1 shell,
+which cannot terminate a cross-session process by OS design (`taskkill`/`Stop-Process` fail
+silently or with Access Denied). The "NEXUS Tray" scheduled task was the first suspect and is
+**innocent** — its principal is `LogonType: Interactive, RunLevel: Limited`, which can only ever
+produce Session 1 processes. **The actual injector was a second, unrelated task: "NEXUS Claude
+Digest Relay"**, configured `LogonType: Password` ("run whether user is logged on or not" —
+always Session 0 by design) specifically so the daily digest-merge cron works with nobody logged
+in. `tools/relay_claude_digest.cmd`'s own deploy-drift self-heal (added when the deploy-drift
+watchdog was built — see that entry further down) calls `stop.ps1`/`start.ps1` itself whenever a
+digest-PR merge moves git HEAD — so every time that fires, NEXUS's whole process tree silently
+relocates into Session 0. It fired today at 09:15, merged two digest PRs, and moved HEAD — which
+is why this was never seen before: nobody had tried to stop NEXUS on a day the relay task also
+ran. Fixed two ways: `relay_claude_digest.cmd` now checks its own session id before restarting
+(`(Get-Process -Id $PID).SessionId`) and refuses with an explicit message instead of restarting
+into Session 0 again — a real fix would also flip the task's `LogonType` to `Interactive` (safe
+now that Sysinternals auto-logon guarantees an interactive session always exists — the original
+reason for `Password` logon no longer applies), left undone since Windows is being decommissioned
+outright, not kept running. **`stop.ps1` had an independent, real bug of its own**: it printed
+"Stopped process on port N" / "NEXUS stopped." unconditionally after calling `Stop-Process`,
+never verifying the process actually died — silently lying about success on every single run
+against the Session-0 orphans tonight. Fixed: `stop.ps1` now polls up to 3s per target, and on a
+survivor reports the process's actual `SessionId` vs. the caller's own, telling the operator
+explicitly to re-run elevated when that's the cause; the script now exits 1 (was always exit 0)
+if anything survived. Checked `tray.py`'s `_do_stop`/`_quit_and_stop` before shipping this — both
+already ignore `stop.ps1`'s return code entirely (only catch exceptions from `_run_ps`), so the
+new nonzero exit changes no downstream behavior. The actual stuck Session-0 processes needed
+Brian's own elevated PowerShell to kill (session mismatch, not privilege mismatch — elevation is
+what crosses the Session-0 boundary, not matching user accounts) — Claude Code has no path to
+request elevation. Both scheduled tasks ("NEXUS Tray", "NEXUS Claude Digest Relay") were disabled
+as part of the actual decommission, not just this bug's fix.
+
 **Test-isolation fix cherry-picked from the `linux-lxc` branch (2026-08-14, `master`, `tests/`
 only)** — the Linux port (`nexus-linux-lxc` worktree, branch `linux-lxc`, real host: Proxmox LXC
 207) live-reproduced a critical bug twice on 2026-08-14: `backend/secrets/vault.py::set_secret()`

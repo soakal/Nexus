@@ -28,10 +28,26 @@ REM a fresh boot re-captures a matching SHA, so the drift alert never has
 REM anything to report.
 for /f %%i in ('git rev-parse HEAD') do set HEAD_AFTER=%%i
 
+REM Computed unconditionally, outside any parenthesized block below -- a
+REM `set` inside a `( ... )` block isn't visible via %VAR% later in that
+REM same block (cmd expands %VAR% for the whole block before it runs), so
+REM this has to happen out here, not inside the "if HEAD changed" branch.
+for /f %%s in ('powershell -NoProfile -Command "(Get-Process -Id $PID).SessionId"') do set OUR_SESSION=%%s
+
 if not "%HEAD_BEFORE%"=="%HEAD_AFTER%" (
-    echo Repo HEAD changed %HEAD_BEFORE% -^> %HEAD_AFTER% -- restarting NEXUS to clear deploy drift
-    powershell -NoProfile -ExecutionPolicy Bypass -File "stop.ps1"
-    powershell -NoProfile -ExecutionPolicy Bypass -File "start.ps1"
+    if "%OUR_SESSION%"=="0" (
+        REM This task must run with LogonType=Interactive so its restart lands
+        REM in the same session as tray.py's health checks -- a Session 0 task
+        REM (e.g. "run whether user is logged on or not") restarts NEXUS into
+        REM the isolated services session, where a normal non-elevated shell
+        REM can never stop it again. See CLAUDE.md, 2026-08-15 incident.
+        echo Repo HEAD changed but this task is running in Session 0 -- refusing to restart NEXUS
+        echo Fix the "NEXUS Claude Digest Relay" task principal to LogonType=Interactive instead
+    ) else (
+        echo Repo HEAD changed %HEAD_BEFORE% -^> %HEAD_AFTER% -- restarting NEXUS to clear deploy drift
+        powershell -NoProfile -ExecutionPolicy Bypass -File "stop.ps1"
+        powershell -NoProfile -ExecutionPolicy Bypass -File "start.ps1"
+    )
 ) else (
     echo Repo HEAD unchanged -- no restart needed
 )
