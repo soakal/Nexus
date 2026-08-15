@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     lxc_ssh_port: int = 22
     lxc_ssh_restart_timeout_s: int = 120
     proxmox_host: str = "https://192.168.1.60:8006"
+    # Self-hosted Uptime Kuma (Proxmox LXC 206). API key auth (2026-08-15) --
+    # see the uptime_kuma_api_key property below for the vault secret.
+    uptime_kuma_url: str = "http://192.168.1.61:3001"
     obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
     brain_mcp_url: str = "http://localhost:8765"
 
@@ -476,6 +479,21 @@ class Settings(BaseSettings):
         from backend.secrets.manager import get_secret
         try:
             return get_secret("PROXMOX_TOKEN")
+        except KeyError:
+            return ""
+
+    @property
+    def uptime_kuma_api_key(self) -> str:
+        # Sent as the PASSWORD half of HTTP Basic Auth (username is
+        # ignored/arbitrary) -- Kuma's own convention for its API-key-gated
+        # endpoints (confirmed live 2026-08-15: key-as-username got 401,
+        # key-as-password got 200), not a bearer header. Empty string, not a
+        # raised KeyError, when unconfigured -- mirrors proxmox_token's
+        # precedent so a caller can treat "" as "not set up yet" without a
+        # try/except at every call site.
+        from backend.secrets.manager import get_secret
+        try:
+            return get_secret("UPTIME_KUMA_API_KEY")
         except KeyError:
             return ""
 
