@@ -169,7 +169,7 @@ async def lifespan(app: FastAPI):
                 import subprocess
                 from pathlib import Path
                 _bo_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
-                _bo_py = _bo_dir / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                _bo_py = brain_organizer.venv_python_path(_bo_dir)
                 _bo_srv = _bo_dir / "mcp_server.py"
                 if _bo_py.exists() and _bo_srv.exists():
                     try:

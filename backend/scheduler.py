@@ -363,8 +363,9 @@ async def _run_brain_organizer():
         import os
         import subprocess
         from pathlib import Path
+        from backend.api.brain_organizer import venv_python_path
         module_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
-        python_exe = module_dir / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python_exe = venv_python_path(module_dir)
         script = module_dir / "brain_organizer.py"
         if not python_exe.exists() or not script.exists():
             logger.warning("Brain Organizer module not found — skipping run")
@@ -786,11 +787,10 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Calibration recompute enabled: daily at 03:50 {timezone}")
-    import os as _os
     from pathlib import Path as _Path
+    from backend.api.brain_organizer import venv_python_path
     _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
-    _bo_py_name = "Scripts/python.exe" if _os.name == "nt" else "bin/python"
-    if (_bo_dir / "venv" / _bo_py_name).exists():
+    if venv_python_path(_bo_dir).exists():
         scheduler.add_job(
             _run_brain_organizer,
             CronTrigger(hour=2, minute=0, timezone=timezone),
