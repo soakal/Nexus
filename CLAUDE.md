@@ -19,6 +19,24 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > authoritative for `linux-lxc` and Windows-specific ones (tray/Task Scheduler/registry/
 > PowerShell-only content) as historical/`master`-only.
 
+**`/restart lxc` companion change (2026-08-15, `linux-lxc` branch)** — the actual SSH restart
+mechanism lives on `master` (`backend/integrations/lxc_host.py` — Windows dispatches to this
+instance over SSH); this branch's own three small changes make that safe and future-proof. See
+`nexus` (master)'s own CLAUDE.md dated entry for the full feature.
+- **`backend/agents/watchdog.py`**: this instance's own deploy-drift alert button changed from
+  `system:restart:nexus` to `system:restart:lxc`. Real bug fixed, not just a rename: that
+  button is consumed by Windows's poller (this instance's own poller is off per the Track A
+  split below) — `system:restart:nexus` there means "restart Windows," which would have
+  wrongly restarted the WRONG instance while the actually-drifted LXC stayed broken.
+- **`backend/safety/broker.py::_dispatch_system_restart`**: now accepts `"lxc"` as an
+  additional self-target alongside `"nexus"`/`"self"`/`""` — future-proofs a post-cutover state
+  where this instance's OWN poller is active and receives its own `system:restart:lxc` button;
+  self-restarts correctly instead of raising unknown-target. Unknown targets still raise
+  `ValueError`, matching master's identical guard.
+- **`backend/agents/telegram_poller.py`**: threads the button's real target through
+  (`target=str(obj_id)`) instead of the old hardcoded `"nexus"` — dormant today (this poller
+  isn't consuming callbacks), live the moment Track B-1 flips.
+
 **Instance-ownership split, Windows vs LXC — Track A (2026-08-15, `linux-lxc` branch)** — same
 night as the fix-plan below, Brian asked "what system will run my brain organizer," the honest
 answer (both would) surfaced a bigger decision ("I want the LXC handling everything from this
