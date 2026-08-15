@@ -57,13 +57,50 @@ Copy the **entire Obsidian vault** from Windows (`C:\Users\Brian\iCloudDrive\iCl
 **AC:** `Brain/raw`, `Brain/wiki`, `Brain/wiki/daily`, `Brain/_meta` all exist under `/var/lib/nexus/knowledge/`; file count within ±1% of the Windows source (iCloud eviction placeholders must be materialized on Windows first if mismatched ⚠).
 
 **1.4 — Shadow-mode configuration (must complete BEFORE first backend start).**
-1. **Telegram:** Brian creates a **staging bot** via BotFather ⚠ (human step). Overwrite `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` **in the LXC's local `nexus.vault`** — starting with the prod token would instantly 409-war Windows's `getUpdates` poller.
-2. **Infisical: deliberately NOT configured during burn-in.** `get_secret` is Infisical-primary — if the LXC could reach Infisical it would fetch the *prod* Telegram token and ignore the local override. Unconfigured Infisical forces the legacy-vault fallback for everything, which also live-verifies the fallback path (expect `SecretFallback` rows — that's correct). Infisical creds get added at cutover (6.6).
-3. **Paths:** `OBSIDIAN_VAULT_PATH=/var/lib/nexus/knowledge`, `UNRAID_BACKUP_PATH=/mnt/unraid-backup/Nexus_backup-lxc` (distinct from Windows's path — two instances must never write one history rotation).
-4. **Autonomy off:** `sqlite3 nexus.db "UPDATE systemstate SET autonomy_enabled=0 WHERE id=1;"` — the built-in kill switch IS shadow mode: scheduled jobs run, agent/autonomous broker dispatches are FORBIDDEN+logged, user-actor drills still execute.
+
+> **Rewritten 2026-08-14 to match what was actually deployed** — the staging-bot design
+> below was never built; the real shadow-mode mechanism is a poll-off flag on the SAME
+> real bot/token, not a second bot. Kept here (struck through in spirit, not deleted) so a
+> future migration doesn't have to re-derive why the simpler design won.
+
+1. **Telegram: same real bot/token as Windows, via Infisical — the LXC just doesn't poll.**
+   The originally-specced "create a staging bot, override the token locally, keep Infisical
+   off" approach was never built. The real mechanism is simpler: both instances share the
+   one real `TELEGRAM_BOT_TOKEN` (both read it from the same Infisical project), but
+   `TELEGRAM_POLL_ENABLED=false` in the LXC's `.env` stops `telegram_poller.py`'s
+   `getUpdates` long-poll loop from ever starting there (`backend/config.py`'s
+   `telegram_poll_enabled` flag, checked in `telegram_poller.py`'s startup). That's the
+   entire fix for the 409-war risk the staging-bot design existed to avoid — only one
+   process (Windows) ever calls `getUpdates`, so there's nothing to collide with. The LXC
+   can still legitimately *send* (its own scheduled jobs, watchdog alerts, etc. all still
+   fire through the same bot) — that's intentional, not a gap; it's part of proving parity.
+2. **Infisical: fully configured from day one, not deliberately withheld.** `INFISICAL_URL`/
+   `INFISICAL_CLIENT_ID`/`INFISICAL_CLIENT_SECRET`/`INFISICAL_PROJECT_ID`/`SECRETS_BACKEND`
+   are all set in `/var/lib/nexus/.env`, and `get_secret` resolves the real prod secrets the
+   same way Windows does — this is also just simpler than standing up a parallel secret set,
+   and per the original migration proposal's own Decision #4, secrets were never meant to be
+   a Windows-vs-Linux distinction in the first place (Infisical primary + local vault
+   fallback is platform-agnostic already).
+3. **Paths:** `OBSIDIAN_VAULT_PATH=/var/lib/nexus/knowledge`, `UNRAID_BACKUP_PATH=` a
+   UNC-style string, e.g. `\\192.168.1.50\Computer Backup\Nexus_backup-lxc` — **not** a real
+   Linux mountpoint like `/mnt/unraid-backup/...` as originally specced. `backend/backup.py`'s
+   POSIX path never mounts anything; it parses this string into an rclone remote
+   (`_smb_share_and_subpath`) and stages locally first (see the fix-plan entry above this
+   one in the CLAUDE.md history for the full rclone design). Distinct from Windows's path —
+   two instances must never write one history rotation (confirmed: the `-lxc` suffix is
+   what keeps the two shares separate).
+4. **Autonomy:** confirm the LXC's actual `autonomy_enabled` state on `SystemState` before
+   relying on this doc's framing — this section describes the intended STARTING state
+   (autonomy off, scheduled jobs run, agent/autonomous broker dispatches FORBIDDEN+logged,
+   user-actor drills still execute), not necessarily where burn-in has progressed to by the
+   time you're reading this.
 5. **Mail writes off:** `MAIL_AUTOTRASH_ENABLED=false`; check for any autodraft-enable flag and disable it too.
 6. **Windows-path audit:** grep `backend/config.py` defaults for `C:\\`/drive-letter/UNC values; override every one that matters; report any beyond the known two (`obsidian_vault_path`, `unraid_backup_path`).
-**AC:** written checklist of all 6 items done; `sqlite3` SELECT confirms `autonomy_enabled=0`; vault meta shows updated `TELEGRAM_BOT_TOKEN` timestamp; grep output included.
+**AC:** written checklist of all 6 items done; Infisical resolves real secrets (confirm via
+`SecretFallback` table staying EMPTY, the inverse of the original spec's expectation);
+`TELEGRAM_POLL_ENABLED=false` confirmed in `.env` and `telegram_poller` logs "disabled" at
+boot; `sqlite3` SELECT reports the current `autonomy_enabled` value (whatever it is) rather
+than asserting it must be 0; grep output included.
 
 **1.5 — systemd units.**
 Create (commit templates under `deploy/`, scrubbed per R3):

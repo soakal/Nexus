@@ -1,8 +1,117 @@
 # NEXUS — Agentic OS · Claude Code Context
 
-Production-grade personal AI OS for Windows 11. FastAPI backend + React/Vite frontend, a system-tray launcher, and a multi-agent layer that talks to a homelab.
+Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-agent layer that talks to a homelab.
 
 > Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
+
+> **Branch policy (read this first if you're on this branch).** This is the `linux-lxc`
+> branch — the Ubuntu LXC migration (real host: Proxmox LXC 207, `192.168.1.62`, live clone
+> at `/opt/nexus`). **Windows production stays on `master`, in a normal checkout, never this
+> branch** — a real incident during this migration (2026-08-14) found the Windows production
+> clone accidentally left on `linux-lxc`, which would have deleted `tray.py` (still Windows's
+> real supervision mechanism) out from under a running instance on its next restart. Fixed by
+> moving the Windows checkout back to `master` and doing all `linux-lxc` work from a separate
+> git worktree (`nexus-linux-lxc`, this one) instead. Everything below this banner up to the
+> next dated Windows-only entry describes `master`'s history before the branches diverged and
+> stays historically accurate for Windows — it does NOT all still apply on this branch (e.g.
+> `tray.py`/`tray_supervisor.ps1`/`launch_tray.vbs` were deleted here 2026-08-14, see below).
+> Where the two branches genuinely diverge, treat entries dated at or after the migration as
+> authoritative for `linux-lxc` and Windows-specific ones (tray/Task Scheduler/registry/
+> PowerShell-only content) as historical/`master`-only.
+
+**Windows→Linux migration + critical-bug fix plan (2026-08-14, `linux-lxc` branch, worktree
+`nexus-linux-lxc`)** — the initial port (Fable-planned, Sonnet-built, spec at
+`docs/lxc-migration-spec.md`) shipped NEXUS running on the LXC in shadow mode alongside
+Windows. A follow-up Fable verification pass then found two serious bugs, which triggered a
+second Fable-planned fix pass (Sonnet-built, same worktree) — summarized here as one entry
+since they're one continuous piece of work:
+
+- **CRITICAL, real data loss: pytest was silently deleting real Unraid backup history.**
+  `backend/secrets/vault.py::set_secret()` calls `backup_vault()` on every write, best-effort,
+  with zero test isolation. On POSIX with no `.env` in pytest's cwd, `unraid_backup_path`
+  resolved to `backend/config.py`'s real hardcoded default — and the new POSIX
+  `backup_vault()` path (see below) stages locally then `rclone sync`s to the real Unraid
+  share, which **mirror-deletes** anything at the destination not present in the (mostly
+  empty, test-cwd) local staging dir. Live-reproduced twice on 2026-08-14 before the fix
+  landed — confirmed real, dated backup history was destroyed; pre-fix history on both the
+  Windows and LXC shares is unrecoverable. **Fixed** with two layers in `tests/conftest.py`:
+  `os.environ["UNRAID_BACKUP_PATH"] = ""` (assignment, not `setdefault` — must beat both a
+  real shell value and the cwd `.env`, forced before any backend import so `get_settings()`'s
+  lazy cache can only ever build from the safe empty value) plus an autouse
+  `_isolate_backup_targets` fixture patching `backend.backup._run_rclone` (the one subprocess
+  seam every rclone call in that module goes through) to hard-fail. **This same fix was
+  cherry-picked onto `master`** the same day (adapted to that branch's pre-port
+  `_mount_unc`-based backup.py, which has no rclone) — see `master`'s own CLAUDE.md entry.
+- **`backup_vault()` silently swallowed rclone sync failures** (found by code review, not
+  live verification) — `_rclone_sync` now returns `bool`, and `backup_vault()` folds that into
+  its `ok` result instead of reporting success regardless.
+- **`backend/backup.py` POSIX design** (the actual mechanism the bug above lives in): kernel
+  `mount.cifs` was tried first and rejected (permission denied against this specific Unraid
+  SMB server, several protocol/auth variants tried); `rclone` (a userspace SMB client, no
+  kernel mount, no elevated unprivileged-LXC capability needed) works. `backup_vault()`'s
+  existing shutil-based copy/history/prune logic runs unchanged against a local staging root
+  (`/var/lib/nexus/.unraid_staging`), then one `rclone sync` at the end mirrors it to the real
+  `nexus-unraid` remote (pre-configured once via `rclone config create`, not in this repo).
+  New `backup_knowledge()` (every 30 min, a different freshness need than the daily
+  secrets/DB job) mirrors the knowledge store the same way, with a `--exclude "/knowledge/**"`
+  guard on `backup_vault()`'s own sync so the two jobs can never stomp each other. Windows's
+  `_mount_unc`/PowerShell `New-SmbMapping` path is untouched — POSIX and Windows are separate
+  branches inside the same `backup_vault()` function, gated on `os.name`.
+  `restore_vault()` gained an early POSIX guard (`if dest_root.startswith("\\\\") and os.name
+  != "nt": return {"ok": False, ...}`) rather than silently attempting a UNC-path restore that
+  can't work here — restore on POSIX is manual (`rclone copy nexus-unraid:<share>/<path>
+  <dest>`), not automated in v1.
+- **`_dispatch_system_restart`'s Linux branch fixed a real collision bug**: the original used
+  a fixed `systemd-run --unit=nexus-restart-once` name, which collided (`rc=1`, "already
+  loaded," never checked) on rapid re-trigger. Now `subprocess.run` with an auto-generated
+  unit name and explicit returncode checking (`raise RuntimeError` on failure) — Windows's
+  branch is untouched.
+- **Dashboard-state test pollution, found while chasing unrelated flaky failures**:
+  `backend/state_workers.py::prime_state_workers` (a lifespan background task) was unpatched
+  in `tests/test_dashboard_state.py`'s `client` fixture, so its collectors wrote durable
+  failure rows into the shared session-scoped test DB — a later test's own dashboard-state
+  read could then find a seconds-old failure row and misreport `freshness` as `"fresh"`
+  instead of `"never_observed"`, order-dependent (reproduced live: single_cached_read →
+  stale_metadata fails, reversed passes). Fixed by patching `prime_state_workers` in that
+  fixture; the SAME gap existed in 21 other test files whose `TestClient(app)` fixtures patch
+  the sibling `memo_watcher.stop_watcher` but had never picked up this one — mechanically
+  swept the same patch into all 21.
+- **Phase 4.2 — real POSIX test coverage for `voice.py::_ensure_ffmpeg_on_path`.** The
+  function's `os.name != "nt"` no-op branch (which must short-circuit before `import winreg`,
+  unimportable on Linux) had zero real coverage on this branch's actual deploy target — the
+  three existing tests all mock `os.name` to fake the branch and skip on real Linux. New
+  `test_ensure_ffmpeg_on_path_real_posix_noop_without_ffmpeg` exercises the real path,
+  skipped on Windows.
+- **Phase 5.1 — deleted `wiki_ingest.py`'s dead ingestion-watcher machinery.**
+  `ingest_file`/`run_all_unprocessed`/`_import_reference_doc` and ~20 supporting helpers had
+  been dead since `brain_organizer` became the sole raw→wiki pipeline (2026-07-14, see the
+  `master`-history entry on that date further down) — the scheduler wrapper
+  `_run_wiki_ingest` was defined but never registered as a job. Confirmed zero remaining
+  callers before deleting. The module now holds only `weekly_fragmentation_report` and its
+  real dependencies (`_is_daily_note`, `_fragmentation_report_sync`, `_CLUSTER_TAIL`) — still a
+  live Sunday 02:30 job. The write-guard regression test (which used to carve out an exception
+  for the now-deleted dead code) is strengthened to a module-wide assertion: nothing in
+  `wiki_ingest.py` may do a direct pathlib write anymore, full stop — must go through
+  `obsidian.write_fragmentation_report()` (the `:8765` MCP write surface) like everything
+  else. This is also the actual fix for the "all direct pathlib writes to the vault are gone"
+  claim the original migration proposal flagged as false (`weekly_fragmentation_report` itself
+  was already routed through the MCP surface before this pass — this cleanup just removed the
+  *other* dead functions that still did raw writes, closing the gap for real).
+- **Phase 5.2 — deleted Windows-only tray launcher files from this branch**: `tray.py`,
+  `tray_supervisor.ps1`, `launch_tray.vbs`, `NEXUS_Tray_autostart_backup.reg`. Safe now that
+  Windows production stays on `master` (see the branch-policy banner above) — these are
+  replaced on Linux by systemd units (`nexus-backend.service`/`nexus-frontend.service`,
+  `Restart=on-failure`). `master` keeps all four files untouched.
+- **Phase 5.3 — factored the duplicated venv-path platform check into one helper.** The
+  `Scripts/python.exe`-vs-`bin/python` check for the brain-organizer module's venv was
+  duplicated across `main.py`, `scheduler.py` (twice), and `api/brain_organizer.py`. Now a
+  single `venv_python_path()` in `api/brain_organizer.py` (which already owned `_MODULE_DIR`),
+  called from the other three sites — also dropped one now-redundant aliased local import
+  (`import os as _os`/`from pathlib import Path as _Path`) in `scheduler.py`.
+- **Linux pytest baseline**: full suite on the live LXC, 1937 passed, 7 skipped, 1 failed (the
+  pre-existing time-of-day-flaky `test_known_hardware_issue_light_goal_dropped` — see the
+  `master`-history entries further down, same test, same known flake, unrelated to this
+  branch). No other failures across three consecutive full runs spanning this whole fix pass.
 
 **Post-start tray flap fixed — `start.ps1` now waits for the frontend port (2026-08-12, `master`)** —
 every cold start of NEXUS produced a spurious "Backend went unhealthy while running — auto-restart
