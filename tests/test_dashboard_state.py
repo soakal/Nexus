@@ -17,7 +17,17 @@ def client(tmp_path, monkeypatch):
          patch("backend.scheduler.setup_scheduler"), \
          patch("backend.scheduler.scheduler") as sched, \
          patch("backend.agents.memo_watcher.start_watcher_blocking"), \
-         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
+         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock), \
+         patch("backend.state_workers.prime_state_workers", new_callable=AsyncMock):
+        # prime_state_workers is spawned as a lifespan background task
+        # (backend/main.py:135) -- unpatched, its collectors fail against
+        # nothing-real and state_store.store_failure() writes durable rows
+        # into the session-scoped shared test DB (conftest's reset_caches
+        # only clears the in-memory cache, not the DB). A later test's own
+        # dashboard-state read can then find a seconds-old failure row and
+        # misreport `freshness` as "fresh" instead of "never_observed" --
+        # reproduced live 2026-08-14, order-dependent
+        # (single_cached_read -> stale_metadata fails, reversed passes).
         sched.running = False
         from backend.main import app
         with TestClient(app) as c:

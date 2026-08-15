@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 _HISTORY_KEEP = 14  # max dated copies retained in history/
 
+# backup_vault() (daily) and backup_knowledge() (every 30 min) both run via
+# asyncio.to_thread and both rclone-sync into the same remote root -- without
+# this lock, two overlapping runs could race writes into the same directory.
+# Held only around the actual rclone subprocess call, not the local
+# copy/history/prune work each function does first.
+import threading as _threading
+_RCLONE_LOCK = _threading.Lock()
+
 # POSIX only: local staging root mirroring exactly what should exist on the
 # Unraid share -- backup_vault()'s existing shutil-based copy/history/prune
 # logic runs against this local path completely unchanged, then a single
@@ -45,24 +53,63 @@ def _smb_share_and_subpath(unc_path: str) -> tuple[str, str]:
     return parts[1], "/".join(parts[2:])
 
 
-def _rclone_sync(local_dir: pathlib.Path, unc_path: str) -> None:
-    """Best-effort: mirror local_dir to the Unraid share via the pre-configured
-    `nexus-unraid` rclone remote (rclone config create, one-time host setup --
-    not done here). Never raises; a sync failure leaves the local staging
-    copy intact for the next scheduled run to retry."""
+def _rclone_remote(unc_path: str, subpath: str = "") -> str:
+    """Build the `nexus-unraid:{share}/{sub}` remote string for an rclone
+    command. Extracted so tests can point _run_rclone's captured command at
+    a real local tmp dir instead (rclone treats a plain filesystem path as
+    local, not remote, so a test can swap this and exercise real rclone
+    sync semantics without ever touching the network)."""
+    share, base = _smb_share_and_subpath(unc_path)
+    full = f"{share}/{base}" if not subpath else f"{share}/{base}/{subpath}"
+    return f"nexus-unraid:{full}"
+
+
+def _run_rclone(args: list, timeout: int) -> "subprocess.CompletedProcess":
+    """The one subprocess seam every rclone invocation in this module goes
+    through -- test isolation (conftest.py's autouse guard) patches THIS
+    function, never subprocess.run directly, so a test that forgets to mock
+    it fails loudly instead of silently reaching a real share.
+
+    Serialized via _RCLONE_LOCK: backup_vault() (daily) and
+    backup_knowledge() (every 30 min) both reach this via asyncio.to_thread
+    and both sync into the same remote root -- the lock keeps two overlapping
+    runs from racing writes into the same directory.
+    """
     import subprocess
 
+    with _RCLONE_LOCK:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+
+
+def _rclone_sync(local_dir: pathlib.Path, unc_path: str) -> bool:
+    """Mirror local_dir to the Unraid share via the pre-configured
+    `nexus-unraid` rclone remote (rclone config create, one-time host setup --
+    not done here). Root-anchored --exclude keeps backup_vault()'s sync from
+    ever touching backup_knowledge()'s separate knowledge/ subtree living in
+    the same remote root (both write under the same Nexus_backup-lxc/ path;
+    without this, backup_vault's mirror-delete semantics wipe the knowledge
+    mirror on every run -- reproduced live 2026-08-14).
+
+    Returns True on success, False on failure -- the caller MUST fold this
+    into its own `ok` result; a swallowed failure here previously meant
+    backup_vault() reported ok=True even when nothing actually reached
+    Unraid (found in code review, 2026-08-14: backup_knowledge() already
+    checks its own returncode correctly, this was the one place that
+    didn't). Never raises.
+    """
     try:
-        share, subpath = _smb_share_and_subpath(unc_path)
-        remote = f"nexus-unraid:{share}/{subpath}"
-        result = subprocess.run(
-            ["rclone", "sync", str(local_dir), remote, "--fast-list"],
-            capture_output=True, text=True, timeout=120,
+        remote = _rclone_remote(unc_path)
+        result = _run_rclone(
+            ["rclone", "sync", str(local_dir), remote, "--fast-list", "--exclude", "/knowledge/**"],
+            timeout=300,
         )
         if result.returncode != 0:
             logger.warning("rclone sync to %s failed: %s", remote, result.stderr[:500])
+            return False
+        return True
     except Exception as e:
         logger.warning("rclone sync attempt failed (non-fatal): %s", e)
+        return False
 
 
 def _mount_unc(unc_path: str, settings) -> None:
@@ -287,7 +334,12 @@ def backup_vault() -> dict:
                 pass
 
         if is_unc and os.name != "nt":
-            _rclone_sync(dest, dest_root)
+            synced = _rclone_sync(dest, dest_root)
+            if not synced:
+                # Local staging copy succeeded, but nothing actually reached
+                # Unraid -- this MUST read as a failure (the whole point of
+                # the off-VM backup is the off-VM part), not silently ok=True.
+                return {"ok": False, "dest": str(dest_root), "error": "rclone sync to Unraid failed"}
 
         logger.info("Vault backed up to %s (%s)", dest, ts)
         return {"ok": True, "dest": str(dest_root if is_unc else dest), "error": None}
@@ -328,13 +380,10 @@ def backup_knowledge() -> dict:
         if not dest_root.startswith("\\\\"):
             return {"ok": False, "error": "unraid_backup_path is not a UNC path"}
 
-        share, subpath = _smb_share_and_subpath(dest_root)
-        remote = f"nexus-unraid:{share}/{subpath}/knowledge"
-
-        import subprocess
-        result = subprocess.run(
+        remote = _rclone_remote(dest_root, "knowledge")
+        result = _run_rclone(
             ["rclone", "sync", vault_path, remote, "--fast-list"],
-            capture_output=True, text=True, timeout=300,
+            timeout=300,
         )
         if result.returncode != 0:
             err = result.stderr[:500]
@@ -365,6 +414,22 @@ def restore_vault(timestamp: str | None = None) -> dict:
         dest_root = s.unraid_backup_path.strip()
         if not dest_root:
             return {"ok": False, "src": "", "error": "unraid_backup_path not configured"}
+
+        if dest_root.startswith("\\\\") and os.name != "nt":
+            # No POSIX restore path is built (YAGNI -- the 2026-08-14 restore
+            # drill used a manual `rclone copy` from nexus-unraid: just fine).
+            # Fail loud and say what to do instead of silently mis-resolving
+            # the UNC string as a local path with backslash-literal filenames
+            # (what used to happen here, which "worked" only by accident --
+            # nothing ever matched, so it degraded to the same ok:False below
+            # but with a misleading "no vault files found" message).
+            return {
+                "ok": False, "src": "",
+                "error": "restore_vault is not supported on POSIX -- restore "
+                         "manually via `rclone copy nexus-unraid:<share>/<path> "
+                         "<dest>` (see CLAUDE.md's backup section for the exact "
+                         "remote layout)",
+            }
 
         dest = pathlib.Path(dest_root)
         src_dir = dest / "history" / timestamp if timestamp else dest

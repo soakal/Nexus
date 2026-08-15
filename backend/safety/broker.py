@@ -443,6 +443,18 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
     schedules, the same "detached, delayed" property the Windows branch
     gets from DETACHED_PROCESS. Restarts both the backend and frontend
     units, matching stop.ps1/start.ps1's scope on Windows.
+
+    The Linux branch deliberately does NOT pin `--unit=` to a fixed name:
+    `systemd-run` only registers the transient timer (it doesn't wait for it
+    to fire), so this call returns almost immediately -- safe to run
+    synchronously via subprocess.run instead of Popen. A fixed unit name
+    collides (rc=1 "already loaded") if this dispatcher fires twice within
+    the pending window, and the caller must SEE that failure -- an
+    auto-generated name (the default with no --unit) makes collisions
+    structurally impossible, and a nonzero returncode here is raised so the
+    broker's own contract (execute_action never re-raises a dispatch error,
+    it catches this and records the action FAILED) reports the truth
+    instead of logging EXECUTED for a restart that never got scheduled.
     """
     import pathlib
     import subprocess
@@ -457,11 +469,15 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
             close_fds=True,
         )
     else:
-        subprocess.Popen(
-            ["systemd-run", "--on-active=3", "--unit=nexus-restart-once",
+        result = subprocess.run(
+            ["systemd-run", "--on-active=3",
              "/usr/bin/systemctl", "restart", "nexus-backend", "nexus-frontend"],
-            close_fds=True,
+            capture_output=True, text=True, timeout=10,
         )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"systemd-run failed rc={result.returncode}: {result.stderr[:200]}"
+            )
     return {"ok": True, "scheduled": True}
 
 

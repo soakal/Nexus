@@ -2,7 +2,7 @@ import json
 import sys
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -157,21 +157,42 @@ async def test_dispatch_system_restart_linux_uses_systemd_run():
     """Linux branch: schedules a transient systemd-run timer that restarts
     both units, rather than the Windows detached-PowerShell dance. Runs on
     any platform (mocks os.name, never touches a Windows-only subprocess
-    constant), unlike the Windows-branch test above."""
+    constant), unlike the Windows-branch test above. Uses subprocess.run
+    (not Popen) and omits --unit -- systemd-run returns as soon as the
+    transient timer is registered, so running it synchronously is safe, and
+    an auto-generated unit name makes a repeat-trigger collision structurally
+    impossible (see test below for the rc!=0 case that motivated this)."""
     from backend.safety import broker
 
+    mock_result = MagicMock(returncode=0, stderr="")
     with patch.object(broker, "os") as mock_os, \
-         patch("subprocess.Popen") as mock_popen:
+         patch("subprocess.run", return_value=mock_result) as mock_run:
         mock_os.name = "posix"
         result = await broker._dispatch_system_restart("nexus", {})
 
     assert result == {"ok": True, "scheduled": True}
-    mock_popen.assert_called_once()
-    args, kwargs = mock_popen.call_args
+    mock_run.assert_called_once()
+    args, kwargs = mock_run.call_args
     cmd = args[0]
     assert cmd[0] == "systemd-run"
+    assert not any(a.startswith("--unit") for a in cmd)
     assert "nexus-backend" in cmd and "nexus-frontend" in cmd
-    assert "creationflags" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_linux_raises_on_systemd_run_failure():
+    """A failed systemd-run (e.g. a stale transient unit collision) must
+    propagate as a real error -- the broker's own contract catches this and
+    records the action FAILED, not EXECUTED. Silently returning {"ok": True}
+    here was the exact gap this test guards against."""
+    from backend.safety import broker
+
+    mock_result = MagicMock(returncode=1, stderr="Unit nexus-restart-once already loaded")
+    with patch.object(broker, "os") as mock_os, \
+         patch("subprocess.run", return_value=mock_result):
+        mock_os.name = "posix"
+        with pytest.raises(RuntimeError, match="systemd-run failed"):
+            await broker._dispatch_system_restart("nexus", {})
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +474,8 @@ def safety_client(tmp_path, monkeypatch):
          patch("backend.scheduler.setup_scheduler"), \
          patch("backend.scheduler.scheduler") as sched, \
          patch("backend.agents.memo_watcher.start_watcher_blocking"), \
-         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
+         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock), \
+         patch("backend.state_workers.prime_state_workers", new_callable=AsyncMock):
         sched.running = False
         from backend.database import get_session
         from backend.main import app

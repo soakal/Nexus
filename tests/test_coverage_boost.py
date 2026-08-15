@@ -40,7 +40,8 @@ def nexus_client(tmp_path, monkeypatch):
          patch("backend.scheduler.setup_scheduler"), \
          patch("backend.scheduler.scheduler") as sched, \
          patch("backend.agents.memo_watcher.start_watcher_blocking"), \
-         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
+         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock), \
+         patch("backend.state_workers.prime_state_workers", new_callable=AsyncMock):
         sched.running = False
         from backend.main import app
         from backend.database import get_session
@@ -155,11 +156,20 @@ async def test_scheduler_retry_pending_exception_swallowed():
 
 def test_setup_scheduler_adds_jobs(monkeypatch):
     from datetime import datetime
+    import backend.config as config_mod
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     # Far-future so the one-off infisical_soak_reminder job always registers,
     # regardless of the real current date.
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    # This test counts jobs under FULL configuration -- conftest.py forces
+    # UNRAID_BACKUP_PATH="" suite-wide (real-backup test isolation, unrelated
+    # to this test's own concern), which would also silently skip the
+    # vault_backup/knowledge_backup job registrations this test wants to
+    # count. Give it back a real-looking (but fake) UNC path, scoped to this
+    # test only.
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     # Baseline was 25 jobs (this assumes modules/brain-organizer/venv exists,
@@ -226,9 +236,15 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     test and test_setup_scheduler_adds_jobs's call_count must both be
     updated together, deliberately."""
     from datetime import datetime
+    import backend.config as config_mod
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    # See test_setup_scheduler_adds_jobs for why this is needed (conftest's
+    # UNRAID_BACKUP_PATH="" test-isolation default would otherwise also
+    # silently skip vault_backup/knowledge_backup registration here).
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
@@ -518,6 +534,21 @@ def test_ensure_ffmpeg_on_path_noop_when_already_resolvable():
          patch.dict("os.environ", {"PATH": original_path}):
         voice._ensure_ffmpeg_on_path()
         assert os.environ["PATH"] == original_path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="exercises the real POSIX no-op path")
+def test_ensure_ffmpeg_on_path_real_posix_noop_without_ffmpeg():
+    """On real POSIX (this branch's actual deploy target), the guard clause
+    `if shutil.which("ffmpeg") or os.name != "nt": return` must short-circuit
+    on `os.name != "nt"` alone, before `import winreg` is ever reached --
+    winreg doesn't exist on Linux, so reaching that import would raise
+    ModuleNotFoundError. The other three tests below all mock os.name to
+    fake this branch and skip on real Linux, so this path had zero real
+    coverage on the actual LXC deploy target."""
+    from backend.agents import voice
+
+    with patch("shutil.which", return_value=None):
+        voice._ensure_ffmpeg_on_path()  # must not raise, must not import winreg
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")

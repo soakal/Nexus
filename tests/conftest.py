@@ -16,6 +16,21 @@ os.environ.setdefault("ADGUARD_HOST", "http://localhost:3000")
 os.environ.setdefault("ADGUARD_USER", "admin")
 os.environ.setdefault("GITHUB_USERNAME", "testuser")
 
+# ASSIGNMENT, not setdefault -- must beat both a real value already in the
+# shell AND the cwd .env file (process env outranks pydantic-settings'
+# env_file). backend/secrets/vault.py::set_secret() calls backup_vault() on
+# EVERY secret write, best-effort -- any test that touches set_secret()
+# without its own settings mock inherits whatever unraid_backup_path
+# resolves to. Left unset, that's backend/config.py's real Windows-share
+# default, and on POSIX with no .env in pytest's cwd, backup_vault()'s
+# rclone sync mirror-deletes that real Unraid share -- live-reproduced
+# 2026-08-14 (twice: once from this repo's own test runs, once from an
+# independent verification pass), including deletion of the real dated
+# backup history. Forcing this here, before any backend import, means
+# get_settings()'s cache (populated lazily on first Settings()) can only
+# ever be built from the safe empty value.
+os.environ["UNRAID_BACKUP_PATH"] = ""
+
 # Mock secrets so vault isn't required in tests
 MOCK_SECRETS = {
     "ANTHROPIC_API_KEY": "sk-ant-test-key",
@@ -97,6 +112,38 @@ def mock_secrets(monkeypatch):
 
     monkeypatch.setattr("backend.secrets.infisical_client._request", _network_guard)
     monkeypatch.setattr("backend.secrets.infisical_client.warm_up", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backup_targets(monkeypatch, tmp_path):
+    """Second layer of defense (the env override above is the first) against
+    a test reaching a real Unraid share: even if some test's own fixture
+    explicitly sets a real-looking unraid_backup_path (e.g. to test
+    backup_vault's own UNC-handling logic), backend.backup._run_rclone is
+    the ONE subprocess seam every rclone invocation in that module goes
+    through -- patching it here to hard-fail means a test that forgets to
+    re-patch it for its own purposes gets a loud, immediate error instead of
+    a silent real write.
+
+    Monkeypatch layering makes this compatible with tests that legitimately
+    want to exercise the real rclone-dispatch path: a test-level
+    monkeypatch.setattr on `_run_rclone` or `_rclone_sync` wins for the
+    duration of that test and monkeypatch restores to what was live when
+    it patched -- i.e. THIS guard, never the real function -- exactly the
+    same reasoning _isolate_test_database's docstring documents for engines.
+    tests/test_vault_backup.py's own `env`-fixture tests use a non-UNC tmp
+    `share` path -- pure shutil, never reaches _run_rclone at all -- so they
+    are unaffected by this guard without needing to patch anything.
+    """
+    monkeypatch.setattr("backend.backup._STAGING_ROOT", tmp_path / "unraid_staging")
+
+    def _guard(*args, **kwargs):
+        raise AssertionError(
+            "test attempted a real rclone invocation via backend.backup._run_rclone "
+            "-- patch _run_rclone or _rclone_sync in your own test"
+        )
+
+    monkeypatch.setattr("backend.backup._run_rclone", _guard)
 
 
 @pytest.fixture(autouse=True)

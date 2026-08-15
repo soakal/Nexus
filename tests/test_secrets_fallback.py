@@ -417,7 +417,8 @@ def safety_client(tmp_path, monkeypatch):
          _patch("backend.scheduler.setup_scheduler"), \
          _patch("backend.scheduler.scheduler") as sched, \
          _patch("backend.agents.memo_watcher.start_watcher_blocking"), \
-         _patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
+         _patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock), \
+         _patch("backend.state_workers.prime_state_workers", new_callable=AsyncMock):
         sched.running = False
         from backend.database import get_session
         from backend.main import app

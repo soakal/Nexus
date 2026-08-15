@@ -353,7 +353,8 @@ def goals_client(tmp_path, monkeypatch):
          patch("backend.scheduler.setup_scheduler"), \
          patch("backend.scheduler.scheduler") as sched, \
          patch("backend.agents.memo_watcher.start_watcher_blocking"), \
-         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock):
+         patch("backend.agents.memo_watcher.stop_watcher", new_callable=AsyncMock), \
+         patch("backend.state_workers.prime_state_workers", new_callable=AsyncMock):
         sched.running = False
         from backend.main import app
         app.dependency_overrides[get_session] = override_session
