@@ -169,6 +169,14 @@ class Settings(BaseSettings):
     # caught and reverted before deploying (see CLAUDE.md's dated entry).
     brain_organizer_nightly_enabled: bool = True
 
+    # Gates ONLY the weekly Sunday 02:30 wiki_fragmentation_report scheduler
+    # job registration -- not wiki_ingest.py's module import (still needed by
+    # this function) and not anything else. Same reasoning and same night as
+    # brain_organizer_nightly_enabled above: pairs with it as one 02:00->02:30
+    # pipeline, one owner. Default True; set False on the Windows instance's
+    # own .env as of 2026-08-15 since the LXC owns this too.
+    wiki_fragmentation_report_enabled: bool = True
+
     # Local backup settings — db + secrets copied to backups/<timestamp>/ daily.
     # backups/ is gitignored; secrets NEVER leave the local machine via this path.
     backup_enabled: bool = True

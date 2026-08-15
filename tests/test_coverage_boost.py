@@ -175,6 +175,11 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # this test only, so the count keeps reflecting "every job that CAN
     # register" rather than this one host's specific runtime config.
     monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
+    # Same reasoning again: this host's .env sets MAIL_AUTODRAFT_ENABLED=false
+    # (2026-08-15 -- LXC owns mail autodraft). Force it back on for this
+    # full-configuration count.
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
+    monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -253,6 +258,8 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     # See test_setup_scheduler_adds_jobs for why this is needed too (this
     # host's own .env disables it, but this test wants the full count).
     monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
+    monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -277,6 +284,8 @@ def test_brain_organizer_nightly_disabled_skips_job(monkeypatch):
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
     monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
     monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "false")
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
+    monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -293,6 +302,36 @@ def test_brain_organizer_nightly_enabled_default_is_true():
     instance, since this host's own .env sets it false."""
     from backend.config import Settings
     assert Settings.model_fields["brain_organizer_nightly_enabled"].default is True
+
+
+def test_wiki_fragmentation_report_disabled_skips_job(monkeypatch):
+    """WIKI_FRAGMENTATION_REPORT_ENABLED=false must skip only that one job --
+    wiki_ingest.py's module import (still needed by _run_fragmentation_report
+    itself) and every other job stay unaffected."""
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
+    monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "wiki_fragmentation_report" not in ids_set
+    expected_count = (29 if os.name == "nt" else 30) - 1
+    assert mock_add.call_count == expected_count
+
+
+def test_wiki_fragmentation_report_enabled_default_is_true():
+    """Class default must stay True regardless of any host's .env -- checked
+    against the field default, not a live Settings() instance, since this
+    host's own .env sets it false."""
+    from backend.config import Settings
+    assert Settings.model_fields["wiki_fragmentation_report_enabled"].default is True
 
 
 # ---------------------------------------------------------------------------

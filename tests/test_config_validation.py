@@ -111,7 +111,13 @@ def test_protonmail_secret_missing_raises(monkeypatch):
     s.validate()
 
 
-def test_mail_autodraft_settings_defaults():
+def test_mail_autodraft_settings_defaults(monkeypatch):
+    # This host's own .env sets MAIL_AUTODRAFT_ENABLED=false (2026-08-15 --
+    # LXC owns mail autodraft, see CLAUDE.md) -- Settings() reads the real
+    # .env file directly, so force the class default back on for this
+    # test's own narrow purpose (checking the DEFAULT, not this host's
+    # runtime config).
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
     s = _settings()
     assert s.mail_autodraft_enabled is True
     assert s.mail_autodraft_interval_minutes == 30

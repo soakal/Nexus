@@ -818,13 +818,19 @@ def setup_scheduler(briefing_time: str, timezone: str):
     # risk over date-named pages. Brain Organizer is the sole nightly pipeline
     # now; _run_wiki_ingest/run_all_unprocessed stay unused by cron but the
     # module is still imported by wiki_fragmentation_report below.
-    scheduler.add_job(
-        _run_fragmentation_report,
-        CronTrigger(day_of_week="sun", hour=2, minute=30, timezone=timezone),
-        id="wiki_fragmentation_report",
-        replace_existing=True,
-    )
-    logger.info("Wiki fragmentation report registered: runs Sundays at 02:30 %s", timezone)
+    if getattr(s, "wiki_fragmentation_report_enabled", True):
+        scheduler.add_job(
+            _run_fragmentation_report,
+            CronTrigger(day_of_week="sun", hour=2, minute=30, timezone=timezone),
+            id="wiki_fragmentation_report",
+            replace_existing=True,
+        )
+        logger.info("Wiki fragmentation report registered: runs Sundays at 02:30 %s", timezone)
+    else:
+        logger.info(
+            "Wiki fragmentation report DISABLED (wiki_fragmentation_report_enabled=False) "
+            "-- another instance owns this weekly job"
+        )
 
     try:
         tz = ZoneInfo(timezone)

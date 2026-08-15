@@ -31,6 +31,76 @@ test, unrelated — see below). No production code touched, tests-only change. T
 incident itself happened entirely on the Linux branch/host, not here — nothing on this Windows
 instance's actual backup data was affected; this cherry-pick is pure prevention.
 
+**Instance-ownership split, Windows vs LXC — Track A (2026-08-15, `master`)** — same night
+as the Brain Organizer fix below, Brian asked point-blank "what system will run my brain
+organizer," and the honest answer (both would) led to a bigger decision: **"I want the LXC
+handling everything from this point, turn off the features in the Windows version."** That's
+effectively Phase 6 (cutover) of the migration spec, which the spec itself gates behind a
+14-day burn-in — the LXC was one day old and had already produced two real incidents that
+same day (the Unraid backup deletion, a live mail-autodraft duplication bug). Fable-planned a
+split: **Track A** (this entry) stops every currently-active duplication tonight, config-only,
+zero risk; **Track B** (the genuinely high-stakes cutover decisions — Telegram bot ownership,
+the autonomy/kill-switch flip, Uptime Kuma repointing, the HTTPS origin move, vault topology)
+is deliberately deferred to its own confirmed sitting, not bundled into tonight's fix. A real
+bug surfaced during planning: an LXC-sent `goal:approve:<id>` Telegram button would be consumed
+by Windows's poller (the only `getUpdates` consumer) and could approve the WRONG goal on
+Windows, since the two instances' goal ids overlap (the LXC's DB is a stale seed of Windows's)
+— one more reason ownership-flipping needs to be deliberate, not assumed from "turn off
+Windows's duplicates."
+- **Ownership choices**: mail autodraft → **LXC** (Brian's explicit word; drafts are
+  reversible; content derives from the shared mailbox, not a local DB). Everything
+  Telegram-interactive or local-DB-derived (`goal_proposer`, `goal_recurrence`,
+  `autonomy_digest`, `homelab_watch`, `homelab_digest`, `spend_report`, `facts_digest`,
+  `anthropic_balance_watch`, `morning_briefing`) → **stays on Windows**, since it's still the
+  only `getUpdates` consumer (buttons/commands act on ITS db) and its Fact/Goal DBs are the
+  live ones — those eight-plus-one get disabled on the LXC's `.env` instead.
+- **`MAIL_AUTODRAFT_ENABLED=false`** added to this instance's `.env` (flag already existed,
+  `config.py:39`, gate at `scheduler.py:642-649` — unchanged; also stops this instance's
+  nested autotrash, which runs inside `autodraft_tick`). **New `wiki_fragmentation_report_enabled`
+  flag** (default True) added, same narrow-gate pattern as `brain_organizer_nightly_enabled`
+  below — gates only the Sunday 02:30 job, not `wiki_ingest.py`'s module import. Set False on
+  this instance's `.env`; pairs with `brain_organizer` as one 02:00→02:30 LXC-owned pipeline.
+- **Consequence stated explicitly, not left implicit**: mail autotrash now runs on NEITHER
+  instance (Windows's just stopped; the LXC's was already `false` per its own shadow-mode
+  `.env`). Junk accumulates in the inbox until a Track B decision assigns ownership. Deliberate,
+  safe direction (no false positives, just no auto-cleanup for now).
+- **Tests**: the two job-count tests in `tests/test_coverage_boost.py` gained
+  `monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")` +
+  `monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")` (same "this host's real
+  `.env` doesn't match what the test wants to count" pattern hit twice already tonight for
+  `UNRAID_BACKUP_PATH`/`BRAIN_ORGANIZER_NIGHTLY_ENABLED`). Also fixed
+  `tests/test_config_validation.py::test_mail_autodraft_settings_defaults`, which constructs a
+  bare `Settings()` reading the real `.env` directly — added the same protective monkeypatch.
+  New `test_wiki_fragmentation_report_disabled_skips_job` /
+  `test_wiki_fragmentation_report_enabled_default_is_true`, mirroring the brain-organizer pair.
+  Full suite green after (1967 passed / 1 skipped / 1 known-flake, unchanged).
+- **Verified post-restart**: startup log shows `Wiki fragmentation report DISABLED` and no
+  `Mail autodraft enabled:` line (that flag's gate has no `else`-branch log — silent skip by
+  original design, confirmed correct via absence rather than a positive message); `:8765` MCP
+  server still spawned; `/api/health` ok.
+- **LXC-side companion change** (own repo, `linux-lxc` branch — see that repo's own CLAUDE.md):
+  eight `_ENABLED=false` lines appended to `/var/lib/nexus/.env` for the Windows-owned jobs
+  above, plus a new `morning_briefing_enabled` flag (code) + `MORNING_BRIEFING_ENABLED=false`
+  (env) so Windows keeps the daily briefing. **A gap was caught and fixed the same sitting**:
+  the `.env` edit for `morning_briefing` was initially forgotten (only the eight other flags
+  were appended) — caught by directly querying the live scheduler's registered job ids after
+  restart rather than trusting the log lines alone, since not every flag's gate logs a disabled
+  message. Final verified job list on the LXC confirmed all nine Windows-owned jobs absent,
+  `brain_organizer`/`wiki_fragmentation_report`/`mail_autodraft` present (LXC-owned), every
+  per-instance self-monitoring job (watchdog, backups, uptime, state refresh, etc.) present on
+  both — deliberately never touched, since the LXC has no Uptime Kuma monitor yet and its own
+  watchdog pages are its only failure signal for now.
+- **Track B — deliberately NOT done tonight, each needs its own explicit confirmation later**:
+  Telegram bot ownership (flipping `telegram_poll_enabled` makes the LXC the one Brian actually
+  interacts with — user-facing, not background housekeeping), autonomy/kill-switch
+  (`SystemState.autonomy_enabled` — the actual safety dimension shadow mode exists to gate, not
+  implied by turning off duplicate scheduled jobs), Uptime Kuma monitors for the LXC (currently
+  zero — it can die silently right now), `app_base_url`/Tailscale serve HTTPS origin for the LXC
+  (confirmed not built — LXC-sent alerts still deep-link to Windows's URL), vault topology
+  (the LXC now owns nightly digestion, so its wiki copy is the one accumulating canonical
+  content — the original spec's Phase 6.1 plan to overwrite it from Windows at cutover may no
+  longer be correct as written), mail autotrash ownership (currently owned by nobody).
+
 **LXC now owns nightly Brain Organizer digestion (2026-08-14, `master`)** — both this
 instance and the LXC migration's `linux-lxc` instance had a working `modules/brain-organizer/venv`
 and, since shadow mode only gates the action broker (not scheduled jobs), both would have
