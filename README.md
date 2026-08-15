@@ -49,7 +49,7 @@ brake every LLM call, and every call is labeled in the spend report
 
 Hourly WAL checkpoint, daily local backup (integrity-checked against the **copy**),
 daily off-VM bundle (vault + nexus.db) to the Unraid share, phone alert on failure.
-Restore: `.estore.ps1 [-From <dir>]` — validates the backup before stopping anything.
+Restore: `.\restore.ps1 [-From <dir>]` — validates the backup before stopping anything.
 
 ## Remote Access
 
