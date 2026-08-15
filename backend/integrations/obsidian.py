@@ -285,6 +285,20 @@ async def write_facts_digest(content: str) -> None:
     await _post_raw(content, filename=f"facts-digest-{ts}.md")
 
 
+async def write_fragmentation_report(content: str) -> None:
+    """Weekly wiki-fragmentation report via POST /raw (Brain/raw/, digested
+    into Brain/wiki/ by the next brain_organizer run, same as every other
+    raw note) -- replaces wiki_ingest.py's old direct pathlib append straight
+    to Brain/wiki/Inbox.md, which bypassed the :8765 MCP write surface every
+    other writer in this codebase goes through. Modeled on
+    write_facts_digest: propagates failures rather than swallowing them, so
+    the caller's own best-effort try/except (weekly_fragmentation_report's)
+    is the single place this can fail silently, not two.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    await _post_raw(content, filename=f"wiki-fragmentation-report-{ts}.md")
+
+
 async def create_note(title: str, content: str, folder: str = "NEXUS") -> str:
     safe_title = title.replace("/", "-").replace("\\", "-")
     filename = f"{folder}/{safe_title}.md" if folder else f"{safe_title}.md"

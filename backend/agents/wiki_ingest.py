@@ -598,9 +598,18 @@ def _fragmentation_report_sync(vault: Path) -> list[str]:
 
 
 async def weekly_fragmentation_report() -> dict:
-    """Append a fragmentation warning to Inbox.md if any cluster of >=5 stubs exists.
+    """Post a fragmentation warning as a raw note if any cluster of >=5 stubs
+    exists. Read-only audit — never merges/deletes. Called weekly by the
+    scheduler.
 
-    Read-only audit — never merges/deletes. Called weekly by the scheduler.
+    Goes through obsidian.write_fragmentation_report() (POST :8765/raw), NOT
+    a direct pathlib write to Inbox.md -- this used to bypass the MCP write
+    surface every other writer in this codebase goes through (the one
+    confirmed direct-vault-write inconsistency from the migration's
+    Windows-code audit). Behavior change: the report now arrives via the
+    raw->wiki digestion pipeline like every other note, appended to Inbox.md
+    by the next brain_organizer run, rather than appearing in Inbox.md
+    immediately/synchronously.
     """
     try:
         from backend.config import get_settings
@@ -609,11 +618,10 @@ async def weekly_fragmentation_report() -> dict:
         if not lines:
             return {"clusters": 0}
         today = date.today().isoformat()
-        section = f"\n## {today} — Fragmentation report\n" + "\n".join(f"- {ln}" for ln in lines) + "\n"
-        inbox = vault / "Brain" / "wiki" / "Inbox.md"
-        inbox.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(_append_text, inbox, section)
-        logger.info(f"wiki fragmentation report: {len(lines)} clusters flagged to Inbox.md")
+        section = f"## {today} — Fragmentation report\n" + "\n".join(f"- {ln}" for ln in lines) + "\n"
+        from backend.integrations import obsidian
+        await obsidian.write_fragmentation_report(section)
+        logger.info(f"wiki fragmentation report: {len(lines)} clusters flagged")
         return {"clusters": len(lines)}
     except Exception as e:
         logger.warning(f"fragmentation report error: {e}")

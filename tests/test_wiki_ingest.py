@@ -357,7 +357,7 @@ def _function_body_source(source: str, name: str) -> str:
     of the equality check -- only the executable logic must match)."""
     tree = ast.parse(source)
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == name:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             body = node.body
             if (
                 body
@@ -388,3 +388,72 @@ def test_daily_note_guard_stays_in_sync_with_brain_organizer_mirror() -> None:
         "_is_daily_note body diverged between brain_organizer.py and wiki_ingest.py -- "
         "the daily-note guard is a hand-copied mirror; both must change together"
     )
+
+
+# ---------------------------------------------------------------------------
+# weekly_fragmentation_report — must go through the :8765 MCP write surface,
+# never a direct pathlib write to the vault (the migration's confirmed
+# direct-vault-write inconsistency, fixed here).
+# ---------------------------------------------------------------------------
+
+def test_weekly_fragmentation_report_posts_via_obsidian_not_direct_write(monkeypatch, tmp_path):
+    vault = tmp_path / "vault"
+    wiki_dir = vault / "Brain" / "wiki"
+    wiki_dir.mkdir(parents=True)
+    # 5 small same-prefix stub files -> exactly the >=5 cluster threshold.
+    for i in range(5):
+        (wiki_dir / f"topic-{i}.md").write_text("x")
+
+    s = SimpleNamespace(obsidian_vault_path=str(vault))
+    monkeypatch.setattr("backend.config.get_settings", lambda: s)
+
+    posted = AsyncMock()
+    monkeypatch.setattr("backend.integrations.obsidian.write_fragmentation_report", posted)
+
+    import asyncio
+    result = asyncio.run(wiki_ingest.weekly_fragmentation_report())
+
+    assert result == {"clusters": 1}
+    posted.assert_awaited_once()
+    (content,) = posted.await_args.args
+    assert "Fragmentation report" in content
+    assert "topic-*" in content
+    # Never fell back to writing Inbox.md directly.
+    assert not (wiki_dir / "Inbox.md").exists()
+
+
+def test_weekly_fragmentation_report_no_clusters_never_posts(monkeypatch, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "Brain" / "wiki").mkdir(parents=True)
+    s = SimpleNamespace(obsidian_vault_path=str(vault))
+    monkeypatch.setattr("backend.config.get_settings", lambda: s)
+
+    posted = AsyncMock()
+    monkeypatch.setattr("backend.integrations.obsidian.write_fragmentation_report", posted)
+
+    import asyncio
+    result = asyncio.run(wiki_ingest.weekly_fragmentation_report())
+
+    assert result == {"clusters": 0}
+    posted.assert_not_called()
+
+
+def test_weekly_fragmentation_report_body_has_no_direct_write():
+    """Regression guard, precisely scoped to the actual fix: the ONE function
+    that was live (weekly_fragmentation_report, wired to the Sunday
+    scheduler job) must never again call _append_text/_write_text/.write_
+    directly. Deliberately NOT a whole-file/whole-codebase sweep --
+    ingest_file/_import_reference_doc/run_all_unprocessed still use
+    _write_text/_write_bytes internally, but they're confirmed dead code
+    (never registered as a scheduler job, no other live caller found), a
+    separate cleanup decision from this fix, not something this guard
+    should force. Uses this file's own _function_body_source helper (see
+    the daily-note-guard-mirror test above) rather than a fresh AST walk."""
+    ingest_src = _INGEST_PATH.read_text(encoding="utf-8")
+    body = _function_body_source(ingest_src, "weekly_fragmentation_report")
+    for banned in ("_append_text", "_write_text", "_write_bytes", ".write_text(", ".write_bytes(", 'open('):
+        assert banned not in body, (
+            f"weekly_fragmentation_report body contains {banned!r} -- must post "
+            "via obsidian.write_fragmentation_report(), not a direct vault write"
+        )
+    assert "write_fragmentation_report" in body

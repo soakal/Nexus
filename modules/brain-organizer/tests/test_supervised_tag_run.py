@@ -92,8 +92,20 @@ def test_assert_relative_rejects_backup_folder_absolute() -> None:
 
 
 def test_assert_relative_accepts_backup_folder_plain_relative_path() -> None:
-    """The real production shape of backup_folder in config.json: 'raw\\backups'."""
+    """Backslash-separated relative paths must still pass (not just the current
+    production shape of backup_folder in config.json, which is now
+    forward-slash 'raw/backups' -- pathlib on POSIX treats a literal
+    backslash as a filename character, not a separator, so this exercises
+    the guard's own logic independent of which separator style is live)."""
     config = {"backup_folder": "raw\\backups"}
+
+    st._assert_relative(config, ("backup_folder",))  # must not raise
+
+
+def test_assert_relative_accepts_backup_folder_forward_slash_path() -> None:
+    """The real production shape of backup_folder in config.json as of the
+    Linux port: 'raw/backups'."""
+    config = {"backup_folder": "raw/backups"}
 
     st._assert_relative(config, ("backup_folder",))  # must not raise
 

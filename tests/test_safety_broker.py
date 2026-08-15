@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -127,6 +128,8 @@ def test_system_restart_user_actor_always_allowed():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "win32", reason="subprocess.DETACHED_PROCESS/"
+                     "CREATE_NEW_PROCESS_GROUP only exist on a Windows-built Python")
 async def test_dispatch_system_restart_spawns_detached_process():
     """The dispatcher must never run stop.ps1/start.ps1 inline (stop.ps1
     would kill the very process handling this call) -- it hands off to a
@@ -147,6 +150,28 @@ async def test_dispatch_system_restart_spawns_detached_process():
     assert "stop.ps1" in joined and "start.ps1" in joined
     assert kwargs["creationflags"] & subprocess.DETACHED_PROCESS
     assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+
+
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_linux_uses_systemd_run():
+    """Linux branch: schedules a transient systemd-run timer that restarts
+    both units, rather than the Windows detached-PowerShell dance. Runs on
+    any platform (mocks os.name, never touches a Windows-only subprocess
+    constant), unlike the Windows-branch test above."""
+    from backend.safety import broker
+
+    with patch.object(broker, "os") as mock_os, \
+         patch("subprocess.Popen") as mock_popen:
+        mock_os.name = "posix"
+        result = await broker._dispatch_system_restart("nexus", {})
+
+    assert result == {"ok": True, "scheduled": True}
+    mock_popen.assert_called_once()
+    args, kwargs = mock_popen.call_args
+    cmd = args[0]
+    assert cmd[0] == "systemd-run"
+    assert "nexus-backend" in cmd and "nexus-frontend" in cmd
+    assert "creationflags" not in kwargs
 
 
 # ---------------------------------------------------------------------------

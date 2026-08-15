@@ -242,6 +242,23 @@ async def _vault_backup():
         logger.error(f"Vault backup job error: {e}")
 
 
+async def _knowledge_backup():
+    try:
+        import asyncio
+        from backend.backup import backup_knowledge
+        result = await asyncio.to_thread(backup_knowledge)
+        if result["ok"]:
+            logger.info(f"Knowledge backup ok: {result['dest']}")
+        else:
+            # Log-only, not phone-escalated like vault_backup's failure --
+            # this runs every 30 min (vs once daily), a missed cycle just
+            # retries next tick, not the sole disaster-recovery copy the
+            # way the vault/DB backup is.
+            logger.warning(f"Knowledge backup failed: {result['error']}")
+    except Exception as e:
+        logger.error(f"Knowledge backup job error: {e}")
+
+
 async def _checkpoint():
     try:
         from backend.agents.backup import run_checkpoint_job
@@ -347,7 +364,7 @@ async def _run_brain_organizer():
         import subprocess
         from pathlib import Path
         module_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
-        python_exe = module_dir / "venv" / "Scripts" / "python.exe"
+        python_exe = module_dir / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         script = module_dir / "brain_organizer.py"
         if not python_exe.exists() or not script.exists():
             logger.warning("Brain Organizer module not found — skipping run")
@@ -679,6 +696,15 @@ def setup_scheduler(briefing_time: str, timezone: str):
                 replace_existing=True,
             )
             logger.info(f"Vault backup to Unraid enabled: daily at {bh:02d}:{(bm+5) if bm < 55 else 0:02d} {timezone}")
+            import os as _os_knowledge
+            if _os_knowledge.name != "nt":
+                scheduler.add_job(
+                    _knowledge_backup,
+                    IntervalTrigger(minutes=30),
+                    id="knowledge_backup",
+                    replace_existing=True,
+                )
+                logger.info("Knowledge store backup to Unraid enabled: every 30 min")
         logger.info(f"Backup enabled: checkpoint hourly, backup daily at {bh:02d}:{bm:02d} {timezone}")
     if getattr(s, "watchdog_enabled", False):
         scheduler.add_job(
@@ -769,9 +795,11 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Calibration recompute enabled: daily at 03:50 {timezone}")
+    import os as _os
     from pathlib import Path as _Path
     _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
-    if (_bo_dir / "venv" / "Scripts" / "python.exe").exists():
+    _bo_py_name = "Scripts/python.exe" if _os.name == "nt" else "bin/python"
+    if (_bo_dir / "venv" / _bo_py_name).exists():
         scheduler.add_job(
             _run_brain_organizer,
             CronTrigger(hour=2, minute=0, timezone=timezone),

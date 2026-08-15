@@ -117,7 +117,7 @@ async def brain_organizer_run(_=Depends(require_api_key)):
     if _running[0] is not None and _running[0].poll() is None:
         raise HTTPException(status_code=409, detail="Brain Organizer is already running")
 
-    python_exe = _MODULE_DIR / "venv" / "Scripts" / "python.exe"
+    python_exe = _MODULE_DIR / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     script = _MODULE_DIR / "brain_organizer.py"
     if not python_exe.exists() or not script.exists():
         raise HTTPException(status_code=503, detail="Brain Organizer module not found")

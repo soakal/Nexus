@@ -14,16 +14,25 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 import backend.database  # noqa: F401 — registers all table metadata
 
 
-def make_engine():
+def make_engine(db_path):
+    # File-backed, not in-memory StaticPool: an in-memory StaticPool hands
+    # every caller the SAME underlying DBAPI connection, so a concurrent
+    # Session (e.g. a background state-worker asyncio.to_thread read touching
+    # this same monkeypatched engine mid-test) can interleave BEGIN/COMMIT
+    # with the test's own session and corrupt its transaction state --
+    # reproduced reliably on Linux (FlushError: NULL identity key), not on
+    # Windows, evidently a real scheduling-timing difference between the two
+    # platforms' default event loops, not a Linux-specific product bug. Same
+    # fix already applied in test_autonomy_notify.py for the identical
+    # reason: a tmp-file engine gives each caller its own pooled connection to
+    # the same file, matching production, nothing left to race on.
     eng = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
     SQLModel.metadata.create_all(eng)
     return eng
@@ -68,7 +77,7 @@ def traces_client(tmp_path, monkeypatch):
     vault_file.write_text("{}")
     monkeypatch.chdir(tmp_path)
 
-    test_engine = make_engine()
+    test_engine = make_engine(tmp_path / "test_traces_api.db")
     monkeypatch.setattr("backend.database.engine", test_engine)
 
     from backend.database import get_session

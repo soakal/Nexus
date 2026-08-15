@@ -23,6 +23,47 @@ logger = logging.getLogger(__name__)
 
 _HISTORY_KEEP = 14  # max dated copies retained in history/
 
+# POSIX only: local staging root mirroring exactly what should exist on the
+# Unraid share -- backup_vault()'s existing shutil-based copy/history/prune
+# logic runs against this local path completely unchanged, then a single
+# `rclone sync` at the end mirrors it to the real remote share (uploads new
+# files, deletes anything pruned locally -- one command instead of separate
+# remote-prune logic). Kernel `mount.cifs` was tried first and rejected
+# (mount error(13) Permission denied against this specific Unraid SMB
+# server, even with several protocol/auth variants) while `smbclient` and
+# `rclone` (both userspace SMB clients, no kernel mount, no elevated
+# unprivileged-LXC capability needed) connect fine -- rclone was chosen over
+# raw smbclient scripting because `rclone sync` already does exactly the
+# copy+mirror-delete this function needs, matching Unraid backup patterns
+# already documented as a rejected-mount / working-userspace-client split.
+_STAGING_ROOT = pathlib.Path("/var/lib/nexus/.unraid_staging")
+
+
+def _smb_share_and_subpath(unc_path: str) -> tuple[str, str]:
+    """Split a \\\\host\\share\\sub\\path UNC string into (share, subpath)."""
+    parts = unc_path.lstrip("\\").split("\\")
+    return parts[1], "/".join(parts[2:])
+
+
+def _rclone_sync(local_dir: pathlib.Path, unc_path: str) -> None:
+    """Best-effort: mirror local_dir to the Unraid share via the pre-configured
+    `nexus-unraid` rclone remote (rclone config create, one-time host setup --
+    not done here). Never raises; a sync failure leaves the local staging
+    copy intact for the next scheduled run to retry."""
+    import subprocess
+
+    try:
+        share, subpath = _smb_share_and_subpath(unc_path)
+        remote = f"nexus-unraid:{share}/{subpath}"
+        result = subprocess.run(
+            ["rclone", "sync", str(local_dir), remote, "--fast-list"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning("rclone sync to %s failed: %s", remote, result.stderr[:500])
+    except Exception as e:
+        logger.warning("rclone sync attempt failed (non-fatal): %s", e)
+
 
 def _mount_unc(unc_path: str, settings) -> None:
     """Best-effort: use PowerShell's New-SmbMapping to authenticate the UNC
@@ -147,12 +188,20 @@ def backup_vault() -> dict:
         if not dest_root:
             return {"ok": False, "dest": "", "error": "unraid_backup_path not configured"}
 
-        dest = pathlib.Path(dest_root)
+        is_unc = dest_root.startswith("\\\\")
 
-        # If it's a UNC path and credentials are configured, mount it via net use first.
-        # This is a no-op if the share is already accessible (guest/already-mapped).
-        if dest_root.startswith("\\\\"):
+        if is_unc and os.name == "nt":
+            dest = pathlib.Path(dest_root)
+            # Mount it via net use first. No-op if the share is already
+            # accessible (guest/already-mapped).
             _mount_unc(dest_root, s)
+        elif is_unc:
+            # POSIX: no kernel mount available in this environment (see
+            # _STAGING_ROOT's docstring) -- write to a local staging mirror,
+            # rclone-sync it to the real share at the end of this function.
+            dest = _STAGING_ROOT
+        else:
+            dest = pathlib.Path(dest_root)
 
         history = dest / "history"
         dest.mkdir(parents=True, exist_ok=True)
@@ -237,12 +286,67 @@ def backup_vault() -> dict:
             except Exception:
                 pass
 
+        if is_unc and os.name != "nt":
+            _rclone_sync(dest, dest_root)
+
         logger.info("Vault backed up to %s (%s)", dest, ts)
-        return {"ok": True, "dest": str(dest), "error": None}
+        return {"ok": True, "dest": str(dest_root if is_unc else dest), "error": None}
 
     except Exception as e:
         logger.warning("Vault backup failed (non-fatal): %s", e)
         return {"ok": False, "dest": "", "error": str(e)}
+
+
+def backup_knowledge() -> dict:
+    """Mirror the knowledge store (obsidian_vault_path) to Unraid, frequently
+    (every 30 min, per the scheduler job) -- a different freshness need than
+    backup_vault()'s once-daily secrets/DB snapshot.
+
+    Deliberately ONE mirrored copy, no 14-deep dated history like
+    backup_vault() keeps: point-in-time history for the knowledge store
+    comes from nightly Proxmox LXC snapshots + Syncthing's own file
+    versioning, not from this function duplicating the whole vault every 30
+    minutes. `rclone sync` both uploads new/changed files AND deletes
+    anything removed locally, matching the local canonical copy exactly.
+
+    Only meaningful on POSIX today: the knowledge store is a Linux-only
+    concept for this migration (Windows's vault is the separate,
+    iCloud-synced original, backed up nowhere by this function). Never
+    raises.
+    """
+    try:
+        from backend.config import get_settings
+
+        if os.name == "nt":
+            return {"ok": False, "error": "backup_knowledge is POSIX-only (no Windows knowledge store)"}
+
+        s = get_settings()
+        vault_path = s.obsidian_vault_path.strip()
+        dest_root = s.unraid_backup_path.strip()
+        if not vault_path or not pathlib.Path(vault_path).is_dir():
+            return {"ok": False, "error": f"obsidian_vault_path not found: {vault_path!r}"}
+        if not dest_root.startswith("\\\\"):
+            return {"ok": False, "error": "unraid_backup_path is not a UNC path"}
+
+        share, subpath = _smb_share_and_subpath(dest_root)
+        remote = f"nexus-unraid:{share}/{subpath}/knowledge"
+
+        import subprocess
+        result = subprocess.run(
+            ["rclone", "sync", vault_path, remote, "--fast-list"],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            err = result.stderr[:500]
+            logger.warning("backup_knowledge rclone sync failed: %s", err)
+            return {"ok": False, "error": err}
+
+        logger.info("Knowledge store synced to %s", remote)
+        return {"ok": True, "dest": remote, "error": None}
+
+    except Exception as e:
+        logger.warning("Knowledge backup failed (non-fatal): %s", e)
+        return {"ok": False, "error": str(e)}
 
 
 def restore_vault(timestamp: str | None = None) -> dict:

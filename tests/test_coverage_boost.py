@@ -2,6 +2,7 @@
 import asyncio
 import os
 import pathlib
+import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
@@ -170,14 +171,18 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # backend/state_workers.py -- one job per COLLECTOR_GROUPS interval,
     # registered via register_state_workers()) +1 "anthropic_balance_watch"
     # (2026-08-05, monthly) -1 "hermes_soak_reminder" (removed 2026-08-09,
-    # Hermes fully decommissioned) = 29. These deltas landed as separate
+    # Hermes fully decommissioned) = 29, +1 "knowledge_backup" on POSIX only
+    # (2026-08-14, Linux port -- knowledge_backup is guarded `os.name != "nt"`
+    # in setup_scheduler since the knowledge store is a Linux-only concept
+    # for this migration) = 30 on POSIX. These deltas landed as separate
     # commits; if any flips back off, drop this count and its id below
     # deliberately, not as a side effect of an unrelated change.
-    assert mock_add.call_count == 29
+    expected_count = 29 if os.name == "nt" else 30
+    assert mock_add.call_count == expected_count
     ids_set = set()
     for c in mock_add.call_args_list:
         ids_set.add(c.kwargs.get("id"))
-    assert ids_set == {
+    expected_ids = {
         "morning_briefing",
         "retention_prune",
         "retry_deliveries",
@@ -208,6 +213,9 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "calibration_recompute",
         "anthropic_balance_watch",
     }
+    if os.name != "nt":
+        expected_ids = expected_ids | {"knowledge_backup"}
+    assert ids_set == expected_ids
 
 
 def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
@@ -215,7 +223,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     (see backend/agents/watchdog.py::run_watchdog) rather than registering its
     own scheduler job — matches the same choice already made for
     check_budget_warning. If a future change moves it to its own job, this
-    test and test_setup_scheduler_adds_jobs's call_count==29 must both be
+    test and test_setup_scheduler_adds_jobs's call_count must both be
     updated together, deliberately."""
     from datetime import datetime
     import backend.scheduler as sched_mod
@@ -226,7 +234,9 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    assert mock_add.call_count == 29
+    # See test_setup_scheduler_adds_jobs for the +1 knowledge_backup-on-POSIX
+    # explanation (2026-08-14 Linux port).
+    assert mock_add.call_count == (29 if os.name == "nt" else 30)
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +520,7 @@ def test_ensure_ffmpeg_on_path_noop_when_already_resolvable():
         assert os.environ["PATH"] == original_path
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")
 def test_ensure_ffmpeg_on_path_merges_registry_path():
     from backend.agents import voice
 
@@ -532,6 +543,7 @@ def test_ensure_ffmpeg_on_path_merges_registry_path():
         assert "C:\\stale" in os.environ["PATH"]  # merged, not replaced
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")
 def test_ensure_ffmpeg_on_path_never_raises_on_registry_failure():
     from backend.agents import voice
 
@@ -541,6 +553,7 @@ def test_ensure_ffmpeg_on_path_never_raises_on_registry_failure():
         voice._ensure_ffmpeg_on_path()  # must not raise
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")
 def test_ensure_ffmpeg_on_path_skips_on_non_windows():
     from backend.agents import voice
 

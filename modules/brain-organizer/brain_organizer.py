@@ -85,7 +85,7 @@ _CONFIG_REQUIRED: tuple[str, ...] = (
 # config.get(...) call site historically hardcoded (see F4/§4.2: three of
 # those literals had already drifted from production's actual config).
 _CONFIG_DEFAULTS: dict[str, Any] = {
-    "daily_folder": "wiki\\daily",
+    "daily_folder": "wiki/daily",
     "mcp_port": 8765,
     "mcp_host": "0.0.0.0",  # nosec B104 — intentional for Tailscale access, matches mcp_server.py
     "mcp_write_token": "",  # nosec B105 -- default matches mcp_server.py, empty means no auth configured

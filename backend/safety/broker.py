@@ -32,6 +32,7 @@ import asyncio
 import html
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -423,28 +424,44 @@ async def _dispatch_protonmail_delete(target: str, payload: dict) -> dict:
 
 
 async def _dispatch_system_restart(target: str, payload: dict) -> dict:
-    """Restart NEXUS itself (stop.ps1 then start.ps1) -- from a Telegram
-    /restart command or a button tap, e.g. to clear a deploy-drift warning
-    or recover a stuck backend.
+    """Restart NEXUS itself -- from a Telegram /restart command or a button
+    tap, e.g. to clear a deploy-drift warning or recover a stuck backend.
 
-    stop.ps1 kills this very process, so the restart can never run inline
-    here -- this spawns a fully DETACHED PowerShell process (its own process
-    group, immune to stop.ps1 killing its parent) that waits a few seconds
-    first, giving this request's own HTTP/Telegram response time to finish
-    sending, then runs stop.ps1 -> start.ps1. Returns immediately; the actual
-    restart happens a few seconds later, out-of-process.
+    The restart mechanism kills this very process, so it can never run
+    inline here -- both branches below schedule the actual restart to run
+    a few seconds from now, OUT of this process's own lifetime, giving this
+    request's own HTTP/Telegram response time to finish sending first.
+    Returns immediately either way.
+
+    Windows: spawns a fully DETACHED PowerShell process (its own process
+    group, immune to this process dying) that waits, then runs
+    stop.ps1 -> start.ps1.
+
+    Linux (systemd-managed deploy): `systemd-run` schedules a one-shot
+    transient timer owned by systemd itself (PID 1), not this process's
+    cgroup -- it survives this process being killed by the restart it
+    schedules, the same "detached, delayed" property the Windows branch
+    gets from DETACHED_PROCESS. Restarts both the backend and frontend
+    units, matching stop.ps1/start.ps1's scope on Windows.
     """
     import pathlib
     import subprocess
 
-    repo_root = pathlib.Path(__file__).resolve().parents[2]
-    cmd = f"Start-Sleep -Seconds 3; & '{repo_root}\\stop.ps1'; & '{repo_root}\\start.ps1'"
-    subprocess.Popen(
-        ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
-        cwd=str(repo_root),
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
+    if os.name == "nt":
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        cmd = f"Start-Sleep -Seconds 3; & '{repo_root}\\stop.ps1'; & '{repo_root}\\start.ps1'"
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
+            cwd=str(repo_root),
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+    else:
+        subprocess.Popen(
+            ["systemd-run", "--on-active=3", "--unit=nexus-restart-once",
+             "/usr/bin/systemctl", "restart", "nexus-backend", "nexus-frontend"],
+            close_fds=True,
+        )
     return {"ok": True, "scheduled": True}
 
 
