@@ -31,6 +31,45 @@ test, unrelated — see below). No production code touched, tests-only change. T
 incident itself happened entirely on the Linux branch/host, not here — nothing on this Windows
 instance's actual backup data was affected; this cherry-pick is pure prevention.
 
+**Track B — full cutover to the LXC (2026-08-15, `master`, overnight)** — executed autonomously
+while Brian slept, following his explicit request and two hard constraints he stated directly:
+(1) never actually stop/decommission Windows's NEXUS — only get the LXC to a state where he can
+safely do that himself in the morning; (2) "nothing destructive to take down systems" — brief,
+self-recovering restarts to apply config are fine (the established pattern all night), anything
+that could leave a system down, or an irreversible data-destroying action without a backup
+first, is not. One consequential decision (wiping the LXC's stale 2-day-old goal/task/fact DB
+and replacing it with a copy of Windows's live one) was explicitly confirmed via a direct
+question before proceeding — not inferred from "make ethical decisions for me." Fable-planned
+(a second planning pass, separate from the earlier Brain-Organizer/mail-autodraft one) after
+Fable's own harness flagged a legitimate concern on its first pass — that it had no independent
+way to verify the DB-wipe approval it was asserting, only the orchestrating session's summary of
+it — addressed by recording exactly where that approval came from (Brian's direct answer to an
+`AskUserQuestion`, this exact paragraph) rather than just trusting the assertion.
+- **Windows relinquished ownership of everything Telegram-interactive**: `TELEGRAM_POLL_ENABLED=false`
+  plus the nine job-ownership flags (`PROPOSER_ENABLED`, `GOAL_RECURRENCE_ENABLED`,
+  `AUTONOMY_DIGEST_ENABLED`, `HOMELAB_WATCH_ENABLED`, `HOMELAB_DIGEST_ENABLED`,
+  `SPEND_REPORT_ENABLED`, `FACTS_DIGEST_ENABLED`, `ANTHROPIC_BALANCE_WATCH_ENABLED`,
+  `MORNING_BRIEFING_ENABLED`) added to this instance's `.env`. The `morning_briefing_enabled`
+  flag itself was new code here (mirrored from `linux-lxc`, which already had it from the
+  earlier Track A pass) — every other flag already existed. Windows is now a self-monitoring
+  shell: only backup/local/watchdog jobs remain registered (verified via the same
+  fresh-interpreter `scheduler.get_jobs()` technique used all night, not just log lines).
+- **Consistent DB snapshot taken while Windows stayed fully live** — `VACUUM INTO` (never a raw
+  `cp` against a WAL-mode SQLite file with an open writer), verified (`PRAGMA integrity_check`
+  → `ok`, `SystemState`/goal/fact counts recorded) before transfer, sha256-matched at every hop
+  (local → `scp` → LXC). Snapshot lives at `backups/cutover-20260815/nexus-cutover.db` — this
+  IS the rollback path if anything about the cutover needs reversing.
+- **Two tests broke from the new `.env` flags, same class of bug hit repeatedly tonight**:
+  `test_facts_digest_enabled_by_default` constructed a live `Settings()` (now reads this host's
+  real `FACTS_DIGEST_ENABLED=false`) — fixed to check `Settings.model_fields[...]` instead, the
+  established pattern. `test_scheduler_goal_recurrence_job_registered` had no env override at
+  all — added one. Full suite green after (1985 passed / 1 skipped / 1 known-flake).
+- **What this does NOT include**: Windows itself was never stopped tonight — it's still running,
+  still healthy, deliberately reduced to a safety-net shell rather than torn down. See the LXC's
+  own CLAUDE.md entry for the DB swap and ownership-flip half of this cutover, and Brian's own
+  morning checklist (in that entry) for the deliberate, informed steps that make actually
+  shutting Windows down tomorrow safe rather than a leap of faith.
+
 **`/restart lxc` — Telegram-triggered restart of the LXC instance (2026-08-15, `master`)** —
 follow-up to the Track A ownership split below: Brian asked whether he could restart the new
 NEXUS (the LXC) from Telegram. Answer was no — `/restart` genuinely exists but only acts on
