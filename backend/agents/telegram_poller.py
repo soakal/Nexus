@@ -157,11 +157,20 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
             return False, (res.error or "Start failed.")
 
         if namespace == "system" and verb == "restart":
+            # obj_id carries the target ("nexus" = this instance, "lxc" = the
+            # peer instance over SSH, 2026-08-15) -- "system" is deliberately
+            # NOT in _INT_ID_NAMESPACES, so obj_id stays the raw string a
+            # button's callback_data actually sent. An unknown target raises
+            # ValueError inside the broker's dispatcher, which surfaces here
+            # as a FAILED decision -- not a silent restart of the wrong thing.
             from backend.safety.broker import Decision, execute_action
+            target = str(obj_id)
             res = await execute_action(
-                actor="user", kind="system_restart", target="nexus", payload={},
+                actor="user", kind="system_restart", target=target, payload={},
             )
             if res.decision == Decision.EXECUTED:
+                if target == "lxc":
+                    return True, "LXC NEXUS restarted (systemctl ok)."
                 return True, "Restarting now (back in ~15-30s)."
             return False, (res.error or "Restart failed.")
 

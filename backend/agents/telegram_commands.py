@@ -322,18 +322,42 @@ async def _cmd_prune(args: str, msg: dict) -> str:
 
 
 async def _cmd_restart(args: str, msg: dict) -> str:
-    """Restart NEXUS (stop.ps1 -> start.ps1) -- e.g. to clear a deploy-drift
-    warning or recover a stuck backend. actor="user", same precedent as
-    /prune: a Telegram command from an authorized chat IS the human
-    decision. The dispatcher spawns a detached process with its own delay
-    before actually killing this process, so this reply should always make
-    it out first."""
+    """Restart NEXUS -- e.g. to clear a deploy-drift warning or recover a
+    stuck backend. actor="user", same precedent as /prune: a Telegram
+    command from an authorized chat IS the human decision.
+
+    No argument (or "self"/"windows") restarts THIS instance -- the receiving
+    instance -- exactly as /restart always has: stop.ps1 -> start.ps1 here.
+    The dispatcher spawns a detached process with its own delay before
+    actually killing this process, so this reply should always make it out
+    first.
+
+    "lxc" (2026-08-15) restarts the OTHER instance instead, over SSH (see
+    backend/integrations/lxc_host.py) -- this only works from whichever
+    instance is actually consuming Telegram's getUpdates (Windows, as of
+    the 2026-08-15 instance-ownership split; see CLAUDE.md). Unlike the
+    self-restart above, this one is synchronous: systemctl restart on the
+    remote end completes before this reply is sent, so the reply is past
+    tense ("restarted"), not "restarting...".
+
+    Anything else is a usage error -- deliberately NOT dispatched, so a typo
+    can never accidentally restart the wrong thing."""
     from backend.safety.broker import Decision, execute_action
 
-    res = await execute_action(actor="user", kind="system_restart", target="nexus", payload={})
-    if res.decision == Decision.EXECUTED:
-        return "Restarting NEXUS now (back in ~15-30s)..."
-    return f"Restart failed: {res.error or res.decision.value}"
+    target_arg = args.strip().lower()
+    if target_arg in ("", "self", "windows"):
+        res = await execute_action(actor="user", kind="system_restart", target="nexus", payload={})
+        if res.decision == Decision.EXECUTED:
+            return "Restarting NEXUS (this Windows instance) now (back in ~15-30s)..."
+        return f"Restart failed: {res.error or res.decision.value}"
+
+    if target_arg == "lxc":
+        res = await execute_action(actor="user", kind="system_restart", target="lxc", payload={})
+        if res.decision == Decision.EXECUTED:
+            return "LXC NEXUS restarted (systemctl ok)."
+        return f"LXC restart failed: {res.error or res.decision.value}"
+
+    return "Usage: /restart [lxc] — no argument restarts this (Windows) instance."
 
 
 def _mute_kind_menu() -> str:
@@ -658,7 +682,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "tasks": (_cmd_tasks, "List recent tasks"),
     "digest": (_cmd_digest, "Today's autonomy digest"),
     "prune": (_cmd_prune, "Prune dangling Docker images on Unraid"),
-    "restart": (_cmd_restart, "Restart NEXUS (stop.ps1 + start.ps1)"),
+    "restart": (_cmd_restart, "Restart NEXUS. /restart lxc restarts the LXC instance instead"),
     "mute": (_cmd_mute, "Silence a notification kind"),
     "unmute": (_cmd_unmute, "Un-silence a notification kind"),
     "muted": (_cmd_muted, "List muted notification kinds"),

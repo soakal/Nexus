@@ -821,3 +821,41 @@ def test_calibration_registered_in_command_menu():
     assert "calibration" in telegram_commands.COMMANDS
     menu_names = {m["command"] for m in telegram_commands.command_menu()}
     assert "calibration" in menu_names
+
+
+# ---------------------------------------------------------------------------
+# /restart — target-aware (2026-08-15)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_restart_no_args_targets_nexus():
+    from backend.safety.broker import Decision
+
+    fake_result = MagicMock(decision=Decision.EXECUTED, error=None)
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=fake_result) as mock_exec:
+        reply = await telegram_commands._cmd_restart("", _msg("/restart"))
+
+    mock_exec.assert_awaited_once_with(actor="user", kind="system_restart", target="nexus", payload={})
+    assert "Windows" in reply
+
+
+@pytest.mark.asyncio
+async def test_restart_lxc_arg_targets_lxc():
+    from backend.safety.broker import Decision
+
+    fake_result = MagicMock(decision=Decision.EXECUTED, error=None)
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=fake_result) as mock_exec:
+        reply = await telegram_commands._cmd_restart("lxc", _msg("/restart lxc"))
+
+    mock_exec.assert_awaited_once_with(actor="user", kind="system_restart", target="lxc", payload={})
+    assert "LXC" in reply and "restarted" in reply
+
+
+@pytest.mark.asyncio
+async def test_restart_unknown_arg_usage_reply_no_dispatch():
+    """A typo'd target must never dispatch anything -- pure usage reply."""
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec:
+        reply = await telegram_commands._cmd_restart("garbage", _msg("/restart garbage"))
+
+    mock_exec.assert_not_called()
+    assert "Usage" in reply

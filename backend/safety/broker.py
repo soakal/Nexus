@@ -201,10 +201,12 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         return Risk.LOW, Reversibility.REVERSIBLE
 
     if kind == "system_restart":
-        # Restart NEXUS itself (stop.ps1 -> start.ps1). HIGH so an agent/
-        # autonomous actor always needs a human tap -- it drops the backend
-        # for ~10-30s and can interrupt in-flight autonomous work. Not
-        # IRREVERSIBLE: it comes back up on its own via start.ps1.
+        # Restart NEXUS -- itself (stop.ps1 -> start.ps1) or, since 2026-08-15,
+        # a peer instance (target="lxc", over a fixed SSH forced-command --
+        # see _dispatch_system_restart). Same risk band either way: HIGH so
+        # an agent/autonomous actor always needs a human tap -- it drops the
+        # target backend for ~10-30s and can interrupt in-flight autonomous
+        # work there. Not IRREVERSIBLE: it comes back up on its own.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
     if kind == "policy_promote":
@@ -424,14 +426,26 @@ async def _dispatch_protonmail_delete(target: str, payload: dict) -> dict:
 
 
 async def _dispatch_system_restart(target: str, payload: dict) -> dict:
-    """Restart NEXUS itself -- from a Telegram /restart command or a button
-    tap, e.g. to clear a deploy-drift warning or recover a stuck backend.
+    """Restart NEXUS -- from a Telegram /restart command or a button tap,
+    e.g. to clear a deploy-drift warning or recover a stuck backend.
 
-    The restart mechanism kills this very process, so it can never run
+    `target` selects WHICH instance: "nexus"/"self"/"" (or anything falling
+    through to the default below) restarts THIS process's own host, exactly
+    as before this branch existed. "lxc" (2026-08-15) restarts the LXC
+    instance instead, over the hardened SSH forced-command path in
+    backend/integrations/lxc_host.py -- see that module's docstring for why
+    SSH, not an HTTP call to the LXC's own :8000 (the restart channel must
+    not depend on the process being restarted). Any other target raises
+    ValueError -- a typo'd target must fail loudly (the broker records
+    FAILED) rather than silently restarting the wrong instance.
+
+    The self-restart mechanism kills this very process, so it can never run
     inline here -- both branches below schedule the actual restart to run
     a few seconds from now, OUT of this process's own lifetime, giving this
     request's own HTTP/Telegram response time to finish sending first.
-    Returns immediately either way.
+    Returns immediately either way. The "lxc" branch is different: it's a
+    REMOTE restart over SSH, so it awaits the real result and returns only
+    once the LXC's systemctl restart has genuinely completed (or raised).
 
     Windows: spawns a fully DETACHED PowerShell process (its own process
     group, immune to this process dying) that waits, then runs
@@ -446,6 +460,13 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
     """
     import pathlib
     import subprocess
+
+    if target == "lxc":
+        from backend.integrations import lxc_host
+        return await lxc_host.restart_nexus_services()
+
+    if target not in ("nexus", "self", ""):
+        raise ValueError(f"unknown system_restart target {target!r}")
 
     if os.name == "nt":
         repo_root = pathlib.Path(__file__).resolve().parents[2]

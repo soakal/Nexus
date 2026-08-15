@@ -825,6 +825,29 @@ async def test_system_restart_dispatches_via_broker_with_user_actor():
 
 
 @pytest.mark.asyncio
+async def test_system_restart_lxc_callback_targets_lxc():
+    """system:restart:lxc (2026-08-15 -- e.g. the LXC's own deploy-drift
+    alert button, consumed here since only Windows's poller is active) must
+    thread target="lxc" through to the broker and reply with the LXC-specific,
+    past-tense wording (the SSH restart is synchronous, unlike the local
+    self-restart's fire-and-forget detached process)."""
+    from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
+    result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                           reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                           log_id=1, result={"ok": True, "restarted": True})
+    with patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=result) as mock_exec, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("system:restart:lxc"))
+
+    mock_exec.assert_awaited_once_with(
+        actor="user", kind="system_restart", target="lxc", payload={},
+    )
+    assert "✓" in mock_edit.await_args.args[2]
+    assert "LXC" in mock_edit.await_args.args[2]
+
+
+@pytest.mark.asyncio
 async def test_system_restart_failure_alerts_and_keeps_buttons():
     from backend.safety.broker import ActionResult, Decision, Risk, Reversibility
     result = ActionResult(decision=Decision.FAILED, risk=Risk.HIGH,

@@ -174,6 +174,34 @@ async def test_dispatch_system_restart_linux_uses_systemd_run():
     assert "creationflags" not in kwargs
 
 
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_lxc_target_uses_ssh_not_subprocess():
+    """target="lxc" must route to the SSH restart path, never the local
+    self-restart subprocess machinery -- these are two different instances,
+    dispatching the wrong one would restart the wrong process."""
+    from backend.safety import broker
+
+    with patch("backend.integrations.lxc_host.restart_nexus_services",
+               new_callable=AsyncMock) as mock_restart, \
+         patch("subprocess.Popen") as mock_popen:
+        mock_restart.return_value = {"ok": True, "restarted": True}
+        result = await broker._dispatch_system_restart("lxc", {})
+
+    assert result == {"ok": True, "restarted": True}
+    mock_restart.assert_awaited_once()
+    mock_popen.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_unknown_target_raises():
+    """A typo'd target must fail loudly, never fall through to restarting
+    the wrong instance."""
+    from backend.safety.broker import _dispatch_system_restart
+
+    with pytest.raises(ValueError, match="unknown system_restart target"):
+        await _dispatch_system_restart("lcx", {})
+
+
 # ---------------------------------------------------------------------------
 # decide — pure
 # ---------------------------------------------------------------------------

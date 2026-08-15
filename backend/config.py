@@ -22,6 +22,18 @@ class Settings(BaseSettings):
     unraid_ssh_user: str = "root"
     unraid_ssh_port: int = 22
     unraid_ssh_prune_timeout_s: int = 60
+    # Native SSH path for restarting the LXC's NEXUS remotely via Telegram
+    # (2026-08-15, `/restart lxc`) -- same forced-command pattern as the
+    # Unraid docker-prune path above. Deliberately SSH, not an authenticated
+    # HTTP call to the LXC's own :8000 -- the restart channel must not
+    # depend on the process being restarted; sshd is independent of NEXUS.
+    # Empty default means _ssh_restart_sync() raises before any network
+    # attempt -- shipped-but-not-yet-live until the SSH credential is
+    # installed on the LXC (a separate, human-gated step; see CLAUDE.md).
+    lxc_ssh_host: str = ""
+    lxc_ssh_user: str = "root"
+    lxc_ssh_port: int = 22
+    lxc_ssh_restart_timeout_s: int = 120
     proxmox_host: str = "https://192.168.1.60:8006"
     obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
     brain_mcp_url: str = "http://localhost:8765"
@@ -440,6 +452,16 @@ class Settings(BaseSettings):
         configured"), mirroring unraid_api_key's precedent."""
         from backend.secrets.manager import get_secret
         return get_secret("UNRAID_SSH_PRIVATE_KEY")
+
+    @property
+    def lxc_ssh_private_key(self) -> str:
+        """OpenSSH-format private key (full armor + trailing newline) for the
+        native NEXUS-restart SSH path to the LXC (2026-08-15). Loud (KeyError
+        propagates) -- backend/integrations/lxc_host.py wraps this in its own
+        try/except and re-raises RuntimeError("LXC_SSH_PRIVATE_KEY not
+        configured"), mirroring unraid_ssh_private_key's precedent."""
+        from backend.secrets.manager import get_secret
+        return get_secret("LXC_SSH_PRIVATE_KEY")
 
     @property
     def proxmox_token(self) -> str:

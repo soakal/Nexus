@@ -31,6 +31,64 @@ test, unrelated — see below). No production code touched, tests-only change. T
 incident itself happened entirely on the Linux branch/host, not here — nothing on this Windows
 instance's actual backup data was affected; this cherry-pick is pure prevention.
 
+**`/restart lxc` — Telegram-triggered restart of the LXC instance (2026-08-15, `master`)** —
+follow-up to the Track A ownership split below: Brian asked whether he could restart the new
+NEXUS (the LXC) from Telegram. Answer was no — `/restart` genuinely exists but only acts on
+whichever instance is actively consuming Telegram's `getUpdates`, and per Track A that's
+Windows exclusively. Fable-planned two structurally different fixes (a narrow target-aware
+`/restart lxc` vs. executing the full Track B-1 Telegram-ownership cutover now) and
+recommended the narrow one explicitly: "restart control" was the actual complaint, not
+authorization to move Brian's whole Telegram interaction surface to a 2-day-old instance with
+a stale DB. Built the narrow fix.
+- **New `backend/integrations/lxc_host.py`** — restarts the LXC's `nexus-backend`/
+  `nexus-frontend` systemd units over SSH, mirroring the Phase 7d Unraid docker-prune module's
+  hardened pattern line for line: Ed25519 key loaded from an in-memory string (never a file on
+  disk), TOFU host-key pinning (`.lxc_ssh_known_hosts`, gitignored), and a fixed sentinel
+  string (`nexus-lxc-restart`) that means nothing on its own — the LXC's own `authorized_keys`
+  maps it server-side to the real `systemctl restart nexus-backend nexus-frontend` via a forced-
+  command restriction. If that restriction is ever weakened, this fails LOUDLY ("command not
+  found") instead of becoming an arbitrary-command channel. **Deliberately SSH, not an
+  authenticated HTTP call to the LXC's own `:8000`** — the restart channel must not depend on
+  the process being restarted; `sshd` is independent of NEXUS entirely.
+- **New settings** (`backend/config.py`): `lxc_ssh_host`/`lxc_ssh_user`/`lxc_ssh_port`/
+  `lxc_ssh_restart_timeout_s` + a `lxc_ssh_private_key` vault property (`LXC_SSH_PRIVATE_KEY`),
+  same conventions as the `unraid_ssh_*` block right above them — empty host default means the
+  SSH call raises "not configured" before any network attempt, never silently no-ops.
+- **Broker** (`backend/safety/broker.py::_dispatch_system_restart`): `target="lxc"` routes to
+  the new module instead of the local self-restart subprocess dance; `target` outside
+  `("nexus", "self", "", "lxc")` raises `ValueError` — a typo'd target fails loudly (broker
+  records FAILED) rather than silently restarting the wrong instance. Risk classification
+  unchanged (`HIGH`/`REVERSIBLE_BY_INVERSE`) — reused, not a new kind, since the audit trail
+  already records `target` and the same band is correct for a peer restart too.
+- **Telegram**: `/restart` (no args, or `self`/`windows`) still restarts Windows exactly as
+  before — unchanged reply text now names what it's restarting, so there's never ambiguity
+  again. `/restart lxc` restarts the LXC instead, reply is past-tense ("restarted") since the
+  SSH call is synchronous, unlike the self-restart's fire-and-forget detached process. Anything
+  else is a usage reply with **no dispatch** — a typo can never accidentally restart something.
+  `telegram_poller.py`'s callback handler threads the button's target straight through
+  (`target=str(obj_id)`, "system" is deliberately not in `_INT_ID_NAMESPACES`) instead of the
+  old hardcoded `"nexus"`.
+- **Also fixes a live bug found during planning**: the LXC's own deploy-drift watchdog alert
+  sent a `system:restart:nexus` button — tapped, that would have been consumed by Windows's
+  poller and restarted *Windows* while the actually-drifted LXC stayed broken. See the
+  `linux-lxc` companion commit (`system:restart:lxc` instead).
+- **Deploy**: dedicated Ed25519 keypair generated, public half installed on the LXC's
+  `authorized_keys` with the forced-command restriction, private half stored as
+  `LXC_SSH_PRIVATE_KEY` (Infisical, never left as a file on disk), `LXC_SSH_HOST=192.168.1.62`
+  added to this instance's `.env`. **Verified end-to-end twice**: once via a raw SSH probe
+  sending a deliberately wrong command (confirmed the forced-command mapping ignores it and
+  restarts anyway), once via the real `execute_action(actor="user", kind="system_restart",
+  target="lxc", ...)` broker call (the exact path `/restart lxc` takes) — both produced a fresh
+  `ActiveEnterTimestamp` on the LXC's `nexus-backend` and a healthy `/api/health` after.
+- **What this deliberately does NOT solve**: Brian still cannot `/task`, chat, approve/reject
+  goals, or `/status` against the LXC via Telegram — every command except `/restart lxc` still
+  acts on Windows and its DB. That remains Track B-1, still gated on its own confirmed sitting.
+- **Also found, not yet fixed**: the Safety page has no restart button at all (grepped
+  `Safety.jsx`, zero matches) — Telegram is currently the ONLY restart control for either
+  instance. A UI restart button (calling this same broker path) would be a natural companion,
+  especially since it wouldn't depend on Telegram-poller ownership at all — noted for later,
+  not built tonight.
+
 **Instance-ownership split, Windows vs LXC — Track A (2026-08-15, `master`)** — same night
 as the Brain Organizer fix below, Brian asked point-blank "what system will run my brain
 organizer," and the honest answer (both would) led to a bigger decision: **"I want the LXC
