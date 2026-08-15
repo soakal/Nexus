@@ -6,6 +6,15 @@ nexus.vault
 .env.local
 .nexus.pids
 
+# Brain Organizer config -- vault_path/logs_folder/processed_file are
+# environment-specific absolute paths (found during the Linux port: this file
+# being tracked meant every `git pull` silently reset the LXC's paths back
+# to Windows's, breaking the Brain MCP server until manually re-patched).
+# Untracked here so each environment keeps its own local copy across pulls
+# -- the version already on disk in each checkout (Windows or LXC) is
+# unaffected by this change, only future tracking is.
+modules/brain-organizer/config.json
+
 # UniFi TLS certificate pin store (TOFU known_hosts, host-specific -- not portable across machines/deployments)
 .unifi_known_hosts.json
 
