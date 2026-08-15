@@ -22,9 +22,17 @@ async def get_uptime_summary(
         .order_by(UptimeSample.checked_at)
     ).all()
 
-    # Group by source
+    # Group by source. Historical rows from decommissioned integrations
+    # (Hermes, retired 2026-08-09) are never deleted -- they're left to age
+    # out of the query window naturally per this repo's own convention (see
+    # CLAUDE.md's "Hermes fully decommissioned" entry) -- but nothing polls
+    # them anymore, so they're excluded from the live summary instead of
+    # waiting out the 7-day default window.
+    _DECOMMISSIONED_SOURCES = {"hermes"}
     by_source: dict[str, list] = {}
     for s in samples:
+        if s.source in _DECOMMISSIONED_SOURCES:
+            continue
         by_source.setdefault(s.source, []).append(s)
 
     sources = []
