@@ -168,6 +168,13 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # count. Give it back a real-looking (but fake) UNC path, scoped to this
     # test only.
     monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    # Same reasoning as UNRAID_BACKUP_PATH above: this test counts jobs under
+    # FULL configuration, but the Windows production .env sets
+    # BRAIN_ORGANIZER_NIGHTLY_ENABLED=false (2026-08-14 -- the LXC owns
+    # nightly Brain digestion, see CLAUDE.md). Force it back on, scoped to
+    # this test only, so the count keeps reflecting "every job that CAN
+    # register" rather than this one host's specific runtime config.
+    monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -243,6 +250,9 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     # UNRAID_BACKUP_PATH="" test-isolation default would otherwise also
     # silently skip vault_backup/knowledge_backup registration here).
     monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    # See test_setup_scheduler_adds_jobs for why this is needed too (this
+    # host's own .env disables it, but this test wants the full count).
+    monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -252,6 +262,37 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     # See test_setup_scheduler_adds_jobs for the +1 knowledge_backup-on-POSIX
     # explanation (2026-08-14 Linux port).
     assert mock_add.call_count == (29 if os.name == "nt" else 30)
+
+
+def test_brain_organizer_nightly_disabled_skips_job(monkeypatch):
+    """BRAIN_ORGANIZER_NIGHTLY_ENABLED=false must skip only the brain_organizer
+    job registration -- every other job (including the venv-gated ones) stays
+    unaffected, matching the intent that this flag NOT touch the shared venv
+    the :8765 MCP server spawn and POST /run also depend on (see
+    backend/config.py's own comment on this field)."""
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "brain_organizer" not in ids_set
+    expected_count = (29 if os.name == "nt" else 30) - 1
+    assert mock_add.call_count == expected_count
+
+
+def test_brain_organizer_nightly_enabled_default_is_true():
+    """Class default must stay True regardless of any host's .env -- a fresh
+    checkout (or the LXC instance) registers the job normally with no
+    override needed. Checked against the field default, not a live Settings()
+    instance, since this host's own .env sets it false."""
+    from backend.config import Settings
+    assert Settings.model_fields["brain_organizer_nightly_enabled"].default is True
 
 
 # ---------------------------------------------------------------------------

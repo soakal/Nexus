@@ -31,6 +31,50 @@ test, unrelated — see below). No production code touched, tests-only change. T
 incident itself happened entirely on the Linux branch/host, not here — nothing on this Windows
 instance's actual backup data was affected; this cherry-pick is pure prevention.
 
+**LXC now owns nightly Brain Organizer digestion (2026-08-14, `master`)** — both this
+instance and the LXC migration's `linux-lxc` instance had a working `modules/brain-organizer/venv`
+and, since shadow mode only gates the action broker (not scheduled jobs), both would have
+independently run the 02:00 `brain_organizer` digestion job against their own Syncthing-synced
+copy of the vault tonight — a duplicate-digestion race, not data loss, but one that would have
+produced divergent/near-duplicate wiki content needing manual reconciliation. Fable-planned
+(explicitly asked, given the time pressure — ~2h to the next 02:00 fire — and to avoid repeating
+a mistake already caught once: the first instinct, renaming the shared venv folder so its
+existence guard fails, was tried and reverted before deploying, since that SAME guard also gates
+`main.py`'s `:8765` Brain MCP write-server spawn and `POST /api/brain-organizer/run` — renaming it
+would have collateral-disabled both, not just the nightly job). Fixed properly with a new,
+narrowly-named settings flag, `brain_organizer_nightly_enabled: bool = True` (`backend/config.py`)
+— gates ONLY the `scheduler.add_job(_run_brain_organizer, ...)` call in `setup_scheduler()`, wrapped
+around the pre-existing venv-presence check rather than replacing it. Deliberately not a bare
+`brain_organizer_enabled` — that name would invite a future reader to gate the MCP spawn with it
+too, exactly the trap already caught. Set `BRAIN_ORGANIZER_NIGHTLY_ENABLED=false` in this instance's
+own `.env`; the LXC needs no change at all (defaults `True`, no flag set there). The manual "Run
+Now" API route is deliberately left ungated — an explicit human click is `actor="user"`, same
+always-allowed precedent as every other broker-gated action in this codebase, and it's the one
+remaining way to debug the Windows module during the migration's burn-in window; it already
+self-guards against concurrency with a 409 while a run is in flight. Verified post-restart:
+startup log shows `Brain Organizer nightly job DISABLED (brain_organizer_nightly_enabled=False)`
+immediately followed by `Brain Organizer MCP server started (PID ...)` — proving the collateral
+concern is fully avoided — plus `GET /api/brain-organizer/status` → 200 and `/api/health` → ok.
+`tests/test_coverage_boost.py`'s two job-count tests (which already had to fight this exact
+"this host's own `.env` doesn't match what the test wants to count" problem once before, for
+`UNRAID_BACKUP_PATH`) gained the same treatment: `monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED",
+"true")` to force full-configuration counting regardless of this host's real `.env` — counts stay
+unchanged at 29(nt)/30(POSIX), `brain_organizer` stays in `expected_ids`. Two new tests added:
+`test_brain_organizer_nightly_disabled_skips_job` (only that one job drops, count −1, everything
+else unaffected) and `test_brain_organizer_nightly_enabled_default_is_true` (class-default pin,
+checked via `Settings.model_fields`, not a live instance — this host's own `.env` sets it false).
+81/81 targeted tests (`test_coverage_boost.py` + `test_brain_organizer_capture.py` +
+`test_facts_digest.py`) green both before and after the `.env` edit, confirming the monkeypatches
+are genuinely env-independent. **Broader, deliberately out of scope tonight** (Fable flagged this
+while planning, for a future session): every other job that touches state shared between the two
+instances — `telegram_poll` (409-collision risk if both instances are actually polling; check
+`telegram_poll_enabled` on both `.env`s), mail autodraft/autotrash, `facts_digest` (each instance
+has its own local Fact DB, so duplicates would *diverge*, not just repeat), `morning_briefing`/
+`wiki_fragmentation_report` (no flag exists for either yet), and every duplicate-pager job
+(`homelab_watch`, `spend_report`, watchdog alerts, etc.) — needs its own explicit
+job-to-owner-to-mechanism decision, not an ad-hoc flip each time one bites. A follow-up session
+should produce that ownership matrix rather than repeating tonight's one-off fix per job.
+
 **Post-start tray flap fixed — `start.ps1` now waits for the frontend port (2026-08-12, `master`)** —
 every cold start of NEXUS produced a spurious "Backend went unhealthy while running — auto-restart
 attempt 1/3" ~17-32s later, followed by a full stop/start cycle that self-healed. Root cause was NOT

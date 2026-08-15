@@ -797,16 +797,22 @@ def setup_scheduler(briefing_time: str, timezone: str):
         logger.info(f"Calibration recompute enabled: daily at 03:50 {timezone}")
     import os as _os
     from pathlib import Path as _Path
-    _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
-    _bo_py_name = "Scripts/python.exe" if _os.name == "nt" else "bin/python"
-    if (_bo_dir / "venv" / _bo_py_name).exists():
-        scheduler.add_job(
-            _run_brain_organizer,
-            CronTrigger(hour=2, minute=0, timezone=timezone),
-            id="brain_organizer",
-            replace_existing=True,
+    if getattr(s, "brain_organizer_nightly_enabled", True):
+        _bo_dir = _Path(__file__).parent.parent / "modules" / "brain-organizer"
+        _bo_py_name = "Scripts/python.exe" if _os.name == "nt" else "bin/python"
+        if (_bo_dir / "venv" / _bo_py_name).exists():
+            scheduler.add_job(
+                _run_brain_organizer,
+                CronTrigger(hour=2, minute=0, timezone=timezone),
+                id="brain_organizer",
+                replace_existing=True,
+            )
+            logger.info("Brain Organizer job registered: runs daily at 02:00 %s", timezone)
+    else:
+        logger.info(
+            "Brain Organizer nightly job DISABLED (brain_organizer_nightly_enabled=False) "
+            "-- another instance owns nightly digestion"
         )
-        logger.info("Brain Organizer job registered: runs daily at 02:00 %s", timezone)
     # Daily wiki_ingest cron disabled 2026-07-14: it and brain_organizer both
     # route Brain/raw/ into wiki pages 5 minutes apart, with a known collision
     # risk over date-named pages. Brain Organizer is the sole nightly pipeline

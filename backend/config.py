@@ -154,6 +154,21 @@ class Settings(BaseSettings):
     facts_digest_day: str = "sun"      # APScheduler day_of_week value
     facts_digest_time: str = "01:30"   # 24h HH:MM
 
+    # Gates ONLY the nightly 02:00 brain_organizer scheduler-job registration
+    # in setup_scheduler() -- NOT main.py's :8765 Brain MCP server spawn and
+    # NOT POST /api/brain-organizer/run (both share the same on-disk venv but
+    # have their own independent existence checks). Default True so a fresh
+    # checkout / the LXC instance registers the job normally. Set to False on
+    # the Windows instance's own .env as of 2026-08-14: the LXC now owns
+    # nightly Brain digestion (both instances had a working venv and would
+    # otherwise both run the job against their own Syncthing-synced vault
+    # copy every night -- a duplicate-digestion race, not data loss, but one
+    # that produces divergent wiki content needing manual reconciliation).
+    # Named narrowly (not a bare brain_organizer_enabled) on purpose -- a
+    # broader name would invite gating the MCP spawn with it too, which was
+    # caught and reverted before deploying (see CLAUDE.md's dated entry).
+    brain_organizer_nightly_enabled: bool = True
+
     # Local backup settings — db + secrets copied to backups/<timestamp>/ daily.
     # backups/ is gitignored; secrets NEVER leave the local machine via this path.
     backup_enabled: bool = True
