@@ -201,10 +201,14 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         return Risk.LOW, Reversibility.REVERSIBLE
 
     if kind == "system_restart":
-        # Restart NEXUS itself (stop.ps1 -> start.ps1). HIGH so an agent/
-        # autonomous actor always needs a human tap -- it drops the backend
-        # for ~10-30s and can interrupt in-flight autonomous work. Not
-        # IRREVERSIBLE: it comes back up on its own via start.ps1.
+        # Restart NEXUS -- target "nexus"/"lxc" both mean "this instance"
+        # here (2026-08-15: "lxc" added so a system:restart:lxc button --
+        # e.g. this instance's own deploy-drift alert -- self-restarts
+        # correctly if this poller is ever the one consuming it, present or
+        # post-cutover). HIGH so an agent/autonomous actor always needs a
+        # human tap -- it drops the backend for ~10-30s and can interrupt
+        # in-flight autonomous work. Not IRREVERSIBLE: it comes back up on
+        # its own.
         return Risk.HIGH, Reversibility.REVERSIBLE_BY_INVERSE
 
     if kind == "policy_promote":
@@ -427,6 +431,16 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
     """Restart NEXUS itself -- from a Telegram /restart command or a button
     tap, e.g. to clear a deploy-drift warning or recover a stuck backend.
 
+    `target` "nexus"/"lxc"/"self"/"" all mean THIS instance -- "lxc" was
+    added 2026-08-15 so a system:restart:lxc button (this instance's own
+    deploy-drift alert, see watchdog.py) self-restarts correctly whenever
+    THIS poller is the one consuming it (relevant post-cutover; today
+    Windows's poller is the only active consumer and dispatches "lxc" over
+    SSH to master's own lxc_host.py module instead -- see that repo's
+    broker.py, a structurally different function from this one). Any other
+    target raises ValueError -- fail loud on a typo, never silently
+    misroute.
+
     The restart mechanism kills this very process, so it can never run
     inline here -- both branches below schedule the actual restart to run
     a few seconds from now, OUT of this process's own lifetime, giving this
@@ -458,6 +472,9 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
     """
     import pathlib
     import subprocess
+
+    if target not in ("nexus", "lxc", "self", ""):
+        raise ValueError(f"unknown system_restart target {target!r}")
 
     if os.name == "nt":
         repo_root = pathlib.Path(__file__).resolve().parents[2]

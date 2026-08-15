@@ -195,6 +195,32 @@ async def test_dispatch_system_restart_linux_raises_on_systemd_run_failure():
             await broker._dispatch_system_restart("nexus", {})
 
 
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_lxc_target_also_means_self():
+    """target="lxc" must self-restart THIS instance exactly like "nexus" --
+    2026-08-15, so a system:restart:lxc button (this instance's own
+    deploy-drift alert) self-restarts correctly if this poller is ever the
+    one consuming it."""
+    from backend.safety import broker
+
+    mock_result = MagicMock(returncode=0, stderr="")
+    with patch.object(broker, "os") as mock_os, \
+         patch("subprocess.run", return_value=mock_result) as mock_run:
+        mock_os.name = "posix"
+        result = await broker._dispatch_system_restart("lxc", {})
+
+    assert result == {"ok": True, "scheduled": True}
+    mock_run.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_system_restart_unknown_target_raises():
+    from backend.safety.broker import _dispatch_system_restart
+
+    with pytest.raises(ValueError, match="unknown system_restart target"):
+        await _dispatch_system_restart("windows", {})
+
+
 # ---------------------------------------------------------------------------
 # decide — pure
 # ---------------------------------------------------------------------------
