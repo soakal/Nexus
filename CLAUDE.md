@@ -19,6 +19,72 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > authoritative for `linux-lxc` and Windows-specific ones (tray/Task Scheduler/registry/
 > PowerShell-only content) as historical/`master`-only.
 
+**Track B — full cutover, this instance becomes primary (2026-08-15, overnight)** — executed
+autonomously while Brian slept, per his explicit request. See `nexus` (master)'s own CLAUDE.md
+entry for the full reasoning, constraints, and the confirmed-not-assumed DB-wipe decision. This
+entry covers the LXC-side execution: the actual DB swap and the ownership-flag flip.
+- **DB swap (env-only + data, no code)**: stopped `nexus-backend` only after confirming the
+  02:00 `brain_organizer` digestion run had genuinely finished (watched the subprocess exit and
+  its own log's completion line, not just the scheduler's "job started" line — stopping mid-run
+  would have killed an in-progress digestion of that night's raw notes). Checkpointed the WAL
+  (`PRAGMA wal_checkpoint(TRUNCATE)`), backed up this instance's own 2-day-old DB to
+  `/var/lib/nexus/db-pre-cutover-20260815/nexus.db` (verified `integrity_check` = `ok` + sane
+  row counts BEFORE touching the live file — this backup is a full rollback path and also
+  preserves this instance's own genuine audit trail, including the real `ActionLog` rows from
+  earlier tonight's incidents), then swapped in the sha256-verified snapshot of Windows's live
+  DB (transferred via `pct push`, not scp directly — no direct SSH path to this LXC's
+  filesystem from outside Proxmox), cleared the stale `-wal`/`-shm` sidecars (they belonged to
+  the OLD db). Verified post-restart: `SystemState`/goal-count values match Windows's snapshot
+  exactly, clean boot log, healthy `/api/health` — checked BEFORE flipping any ownership flags,
+  so this step's own correctness was verified in isolation.
+- **Ownership flip**: all eleven existing `_ENABLED=false` lines in `/var/lib/nexus/.env`
+  (`TELEGRAM_POLL_ENABLED` + the nine Track-A job flags + `MAIL_AUTOTRASH_ENABLED`) flipped to
+  `true` via one `sed`, then the flag count was explicitly verified (11 `=true` lines, full list
+  printed) before restarting — the exact "forgotten flag" mistake from the Brain-Organizer fix
+  earlier tonight, deliberately not repeated. Post-restart, the fresh-interpreter
+  `scheduler.get_jobs()` check (same technique all night) confirmed all twelve formerly-Windows
+  jobs now registered here, cross-checked against Windows's own list for zero overlap. The
+  Telegram poller flip was watched for 3 minutes for any `getUpdates conflict` line (a real
+  signal of a dual-poller collision) — zero seen, single active consumer confirmed from both
+  sides independently.
+- **Vault/HTTPS topology — no changes needed, verified not assumed**: every write path
+  (`emit_event`, facts digest, fragmentation report) already routes through this instance's OWN
+  `:8765` MCP server (`brain_mcp_url` default, no Windows-hardcoded override anywhere in the
+  code), `OBSIDIAN_VAULT_PATH`/`APP_BASE_URL` were already correctly LXC-local from earlier
+  tonight's work. Confirmed live post-flip: HTTPS origin still 200/200.
+- **Full pytest suite green throughout** — no code changed on this branch for Track B (env +
+  data only), 1941 passed / 7 skipped / 1 known pre-existing flake, unchanged from before.
+- **Explicitly out of scope tonight** (so nothing is assumed done): Uptime Kuma monitors for
+  this instance (needs manual setup at `http://192.168.1.61:3001` — add `NEXUS LXC backend`,
+  HTTP(s)-Keyword, `http://192.168.1.62:8000/api/health`, keyword `"status":"ok"`; and
+  `NEXUS LXC frontend`, plain HTTP(s), `http://192.168.1.62:3000/` — mirroring the existing
+  Windows pair exactly); Council-loop's `/api/trigger` target (separate repo, still points at
+  Windows, breaks once Windows is actually decommissioned); a Safety-page restart button (still
+  doesn't exist); MacBook Syncthing pairing (blocked on Brian's own device ID).
+- **Known small residual risk, not engineered around**: this instance's own `processedmailid`
+  ledger got overwritten by Windows's snapshot (older, since Windows's own autodraft went off
+  earlier tonight) — any email this instance drafted using its own more-recent ledger before the
+  swap may be reconsidered once, producing at most one duplicate draft. Bounded, reversible,
+  worth a glance at Proton's Drafts folder.
+
+**Brian's morning checklist** (his steps, not run automatically — the deliberate, informed
+sequence that makes shutting Windows down tomorrow safe rather than a leap of faith):
+1. Confirm this instance survived the night: `https://nexus-lxc.tailfa52c.ts.net/api/health` ok,
+   or `journalctl -u nexus-backend --since "6 hours ago" -p warning` shows nothing alarming.
+2. **Round-trip Telegram against THIS instance before anything else** — send `/status`, confirm
+   the reply reflects your real migrated data (real goals, $2/day budget, autonomy on). Then one
+   real interaction (approve/reject a goal, or a trivial `/task`) and confirm it lands here.
+3. Confirm the morning briefing arrived — Windows's is off, so any briefing today came from here.
+4. Glance at Proton's Drafts for the possible duplicate noted above.
+5. **Only then** shut down Windows: `cd "C:\Users\Brian\Documents\Agentic os\nexus"; .\stop.ps1`
+   — also disable its tray autostart (registry Run key) so a Windows reboot doesn't resurrect it.
+6. Pause (don't delete) Windows's two Uptime Kuma monitors at that same moment, or they'll page.
+7. Keep Windows's repo/`.env`/vault/`nexus.db` intact — that's the actual rollback path, along
+   with `backups/cutover-20260815/` on Windows and `db-pre-cutover-20260815/` here. Reverting
+   means flipping the flags back in both `.env` files and restarting both.
+8. Council-loop's `/api/trigger` still points at Windows — repoint it before or shortly after
+   shutdown if you still use it.
+
 **`/restart lxc` companion change (2026-08-15, `linux-lxc` branch)** — the actual SSH restart
 mechanism lives on `master` (`backend/integrations/lxc_host.py` — Windows dispatches to this
 instance over SSH); this branch's own three small changes make that safe and future-proof. See
