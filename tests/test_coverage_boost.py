@@ -255,6 +255,35 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     assert mock_add.call_count == (29 if os.name == "nt" else 30)
 
 
+def test_morning_briefing_disabled_skips_job(monkeypatch):
+    """MORNING_BRIEFING_ENABLED=false must skip only that one job -- the
+    hour/minute parse it shares with homelab_digest's briefing_time+5
+    computation stays unconditional, so homelab_digest is unaffected."""
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "morning_briefing" not in ids_set
+    assert "homelab_digest" in ids_set
+    expected_count = (29 if os.name == "nt" else 30) - 1
+    assert mock_add.call_count == expected_count
+
+
+def test_morning_briefing_enabled_default_is_true():
+    """Class default must stay True -- a fresh checkout (or Windows, once it
+    picks up this same flag at cutover) registers the job normally with no
+    override needed."""
+    from backend.config import Settings
+    assert Settings.model_fields["morning_briefing_enabled"].default is True
+
+
 # ---------------------------------------------------------------------------
 # backend/api/agents.py — WebSocketManager
 # ---------------------------------------------------------------------------
