@@ -369,7 +369,14 @@ async def test_tick_recurring_goals_best_effort(eng, monkeypatch):
 #    (Updates test_coverage_boost.py count — verified there; this test is additive.)
 # ---------------------------------------------------------------------------
 
-def test_scheduler_goal_recurrence_job_registered():
+def test_scheduler_goal_recurrence_job_registered(monkeypatch):
+    # This host's own .env sets GOAL_RECURRENCE_ENABLED=false as of
+    # 2026-08-15 (Track B cutover: the LXC owns it now) -- force it back on,
+    # scoped to this test only, since this test checks the job registers
+    # under normal/enabled config, not this host's specific runtime state.
+    import backend.config as config_mod
+    monkeypatch.setenv("GOAL_RECURRENCE_ENABLED", "true")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
     from backend.scheduler import setup_scheduler, scheduler
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")

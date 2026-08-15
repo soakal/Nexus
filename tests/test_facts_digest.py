@@ -44,9 +44,15 @@ def test_facts_digest_enabled_by_default():
     This is the regression guard against a silent, unnoticed flip in either
     direction -- if this default ever needs to go back to False (e.g. new
     unreconciled noise is found), update this assertion deliberately, don't
-    just delete it."""
+    just delete it.
+
+    Checked against the class default (Settings.model_fields), not a live
+    Settings() instance -- this host's own .env sets it false as of
+    2026-08-15 (Track B cutover: the LXC owns facts_digest now), which
+    would otherwise make this "ships enabled by default" guard fail for a
+    reason that has nothing to do with the regression it exists to catch."""
     from backend.config import Settings
-    assert Settings().facts_digest_enabled is True
+    assert Settings.model_fields["facts_digest_enabled"].default is True
 
 
 # ---------------------------------------------------------------------------
