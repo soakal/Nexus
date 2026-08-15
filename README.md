@@ -1,8 +1,20 @@
 # NEXUS — Personal Agentic OS
 
-A production-grade personal AI operating system for Windows 11. FastAPI backend + React/Tailwind frontend + multi-agent orchestration.
+A production-grade personal AI operating system. FastAPI backend + React/Tailwind frontend + multi-agent orchestration.
 
-## Quick Start
+> **This is the `linux-lxc` branch** — deploy target is an Ubuntu LXC (Proxmox CT 207,
+> `192.168.1.62`, `/opt/nexus`), run under systemd, not the PowerShell scripts below.
+> Windows production stays on `master`, where those scripts are accurate — see this
+> branch's own `CLAUDE.md` for the full branch-policy explanation.
+
+## Quick Start (Linux / this branch)
+
+1. **Setup (first time only)** — `python3.13 -m venv venv && venv/bin/pip install -r requirements.txt`, `cd frontend && npm ci && npm run build`, then seed `/var/lib/nexus/.env` + `nexus.vault`/`.vault.key` (see `docs/lxc-migration-spec.md` Phase 1.1-1.4 for the full sequence).
+2. **Start** — `systemctl start nexus-backend nexus-frontend` (both enabled at boot, `Restart=on-failure`).
+3. **Stop** — `systemctl stop nexus-backend nexus-frontend`.
+4. **Logs** — `journalctl -u nexus-backend -f`.
+
+## Quick Start (Windows / `master` branch only — NOT this branch)
 
 1. **Setup (first time only)**
    ```powershell
@@ -49,14 +61,21 @@ brake every LLM call, and every call is labeled in the spend report
 
 Hourly WAL checkpoint, daily local backup (integrity-checked against the **copy**),
 daily off-VM bundle (vault + nexus.db) to the Unraid share, phone alert on failure.
-Restore: `.estore.ps1 [-From <dir>]` — validates the backup before stopping anything.
+On `master`/Windows, restore is `.\restore.ps1 [-From <dir>]` (validates the backup
+before stopping anything). **On this branch there is no restore script** — POSIX
+restore is manual: `rclone copy nexus-unraid:<share>/<path> <dest>` (see
+`backend/backup.py::restore_vault`'s own guard/docstring for the exact remote layout).
 
 ## Remote Access
 
-`tailscale serve` fronts the app at `https://win11-vm-proxmox.tailfa52c.ts.net` (one
-HTTPS origin: `/` frontend, `/api` + `/ws` backend). LAN clients keep using plain HTTP
-from the same build. Install it as a PWA from the browser menu. Device onboarding:
-open Settings and paste the API key — key-in-URL links are retired.
+On `master`/Windows, `tailscale serve` fronts the app at
+`https://win11-vm-proxmox.tailfa52c.ts.net` (one HTTPS origin: `/` frontend, `/api` +
+`/ws` backend). **This has not been rebuilt for the LXC yet** — Tailscale serve path
+mounts are Proxmox-VM-specific config, flagged in the fix-plan as not migrating
+automatically with the files; this branch's real host (`nexus-lxc`, `192.168.1.62`) is
+reachable today over plain HTTP on its Tailscale IP, no HTTPS front yet. LAN clients use
+plain HTTP either way. Device onboarding: open Settings and paste the API key —
+key-in-URL links are retired.
 
 ## Secrets Management
 
@@ -128,6 +147,19 @@ enforced before each billed call. Hosted web-search requests bill at $10/1k.
 
 ## Development
 
+On this branch (Linux):
+```bash
+# Run tests
+venv/bin/pytest tests/ -v --cov=backend --cov-report=term-missing
+
+# Lint
+venv/bin/ruff check backend/
+
+# Type check
+venv/bin/mypy backend/ --ignore-missing-imports
+```
+
+On `master`/Windows:
 ```powershell
 # Dev mode (hot reload)
 .\start.ps1 -dev
