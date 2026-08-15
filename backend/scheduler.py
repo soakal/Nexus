@@ -571,12 +571,24 @@ def _register_activity_listener() -> None:
 def setup_scheduler(briefing_time: str, timezone: str):
     _register_activity_listener()
     hour, minute = briefing_time.split(":")
-    scheduler.add_job(
-        _run_briefing,
-        CronTrigger(hour=int(hour), minute=int(minute), timezone=timezone),
-        id="morning_briefing",
-        replace_existing=True,
-    )
+    # Local fetch (not a later `s = get_settings()`) so this gate doesn't
+    # depend on reordering the rest of the function -- hour/minute stay
+    # unconditional since homelab_digest's briefing_time+5 computation
+    # further down reuses them regardless of whether this job registers.
+    # Mirrors linux-lxc's identical gate (Track B cutover, 2026-08-15).
+    from backend.config import get_settings as _get_settings
+    if getattr(_get_settings(), "morning_briefing_enabled", True):
+        scheduler.add_job(
+            _run_briefing,
+            CronTrigger(hour=int(hour), minute=int(minute), timezone=timezone),
+            id="morning_briefing",
+            replace_existing=True,
+        )
+    else:
+        logger.info(
+            "Morning briefing DISABLED (morning_briefing_enabled=False) "
+            "-- another instance owns this job"
+        )
     scheduler.add_job(
         _prune_retention,
         CronTrigger(hour=3, minute=45, timezone=timezone),

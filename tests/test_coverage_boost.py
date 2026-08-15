@@ -180,6 +180,15 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # full-configuration count.
     monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
     monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
+    monkeypatch.setenv("PROPOSER_ENABLED", "true")
+    monkeypatch.setenv("GOAL_RECURRENCE_ENABLED", "true")
+    monkeypatch.setenv("AUTONOMY_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_WATCH_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("SPEND_REPORT_ENABLED", "true")
+    monkeypatch.setenv("FACTS_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_BALANCE_WATCH_ENABLED", "true")
+    monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -260,6 +269,15 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
     monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
     monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
+    monkeypatch.setenv("PROPOSER_ENABLED", "true")
+    monkeypatch.setenv("GOAL_RECURRENCE_ENABLED", "true")
+    monkeypatch.setenv("AUTONOMY_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_WATCH_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("SPEND_REPORT_ENABLED", "true")
+    monkeypatch.setenv("FACTS_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_BALANCE_WATCH_ENABLED", "true")
+    monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -286,6 +304,15 @@ def test_brain_organizer_nightly_disabled_skips_job(monkeypatch):
     monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "false")
     monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
     monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
+    monkeypatch.setenv("PROPOSER_ENABLED", "true")
+    monkeypatch.setenv("GOAL_RECURRENCE_ENABLED", "true")
+    monkeypatch.setenv("AUTONOMY_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_WATCH_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("SPEND_REPORT_ENABLED", "true")
+    monkeypatch.setenv("FACTS_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_BALANCE_WATCH_ENABLED", "true")
+    monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -317,6 +344,15 @@ def test_wiki_fragmentation_report_disabled_skips_job(monkeypatch):
     monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
     monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
     monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "false")
+    monkeypatch.setenv("PROPOSER_ENABLED", "true")
+    monkeypatch.setenv("GOAL_RECURRENCE_ENABLED", "true")
+    monkeypatch.setenv("AUTONOMY_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_WATCH_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("SPEND_REPORT_ENABLED", "true")
+    monkeypatch.setenv("FACTS_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_BALANCE_WATCH_ENABLED", "true")
+    monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
@@ -332,6 +368,45 @@ def test_wiki_fragmentation_report_enabled_default_is_true():
     host's own .env sets it false."""
     from backend.config import Settings
     assert Settings.model_fields["wiki_fragmentation_report_enabled"].default is True
+
+
+def test_morning_briefing_disabled_skips_job(monkeypatch):
+    """MORNING_BRIEFING_ENABLED=false must skip only that one job -- the
+    hour/minute parse it shares with homelab_digest's briefing_time+5
+    computation stays unconditional, so homelab_digest is unaffected.
+    Mirrors linux-lxc's identical test (Track B cutover, 2026-08-15)."""
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setenv("BRAIN_ORGANIZER_NIGHTLY_ENABLED", "true")
+    monkeypatch.setenv("MAIL_AUTODRAFT_ENABLED", "true")
+    monkeypatch.setenv("WIKI_FRAGMENTATION_REPORT_ENABLED", "true")
+    monkeypatch.setenv("PROPOSER_ENABLED", "true")
+    monkeypatch.setenv("GOAL_RECURRENCE_ENABLED", "true")
+    monkeypatch.setenv("AUTONOMY_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_WATCH_ENABLED", "true")
+    monkeypatch.setenv("HOMELAB_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("SPEND_REPORT_ENABLED", "true")
+    monkeypatch.setenv("FACTS_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("ANTHROPIC_BALANCE_WATCH_ENABLED", "true")
+    monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "morning_briefing" not in ids_set
+    assert "homelab_digest" in ids_set
+    expected_count = (29 if os.name == "nt" else 30) - 1
+    assert mock_add.call_count == expected_count
+
+
+def test_morning_briefing_enabled_default_is_true():
+    """Class default must stay True -- this host's own .env sets it false."""
+    from backend.config import Settings
+    assert Settings.model_fields["morning_briefing_enabled"].default is True
 
 
 # ---------------------------------------------------------------------------
