@@ -19,6 +19,66 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > authoritative for `linux-lxc` and Windows-specific ones (tray/Task Scheduler/registry/
 > PowerShell-only content) as historical/`master`-only.
 
+**Instance-ownership split, Windows vs LXC — Track A (2026-08-15, `linux-lxc` branch)** — same
+night as the fix-plan below, Brian asked "what system will run my brain organizer," the honest
+answer (both would) surfaced a bigger decision ("I want the LXC handling everything from this
+point"), and Fable planned a two-track split: stop all currently-active duplication tonight
+(Track A, this entry), defer the genuinely high-stakes cutover decisions — Telegram ownership,
+the autonomy kill-switch flip, Uptime Kuma repointing, the HTTPS origin move, vault topology —
+to their own confirmed sitting (Track B, deliberately not done tonight). Full reasoning and the
+mail-autodraft duplication bug that triggered this whole thread live in `nexus` (master)'s own
+CLAUDE.md dated entry — this entry covers only the LXC-side half of the change.
+- **Ownership choices**: this instance keeps `brain_organizer`, `wiki_fragmentation_report`
+  (both already established the prior fix-plan night), and now `mail_autodraft` too (Brian's
+  explicit call — drafts are reversible, content derives from the shared mailbox). Windows
+  keeps everything Telegram-interactive or derived from a local DB that's currently just a
+  stale seed of Windows's real one: `goal_proposer`, `goal_recurrence`, `autonomy_digest`,
+  `homelab_watch`, `homelab_digest`, `spend_report`, `facts_digest`, `anthropic_balance_watch`,
+  and `morning_briefing`.
+- **Real bug found during planning, not yet fixed (Track B item)**: an LXC-sent
+  `goal:approve:<id>` Telegram button would be consumed by Windows's poller (the only
+  `getUpdates` consumer, `TELEGRAM_POLL_ENABLED=false` here) and could approve the WRONG goal
+  on Windows, since the two instances' goal ids overlap — the LXC's DB is a stale seed of
+  Windows's. This is exactly why `goal_proposer`/`goal_recurrence` are disabled here, not just
+  the more obvious Telegram-noise jobs.
+- **New `morning_briefing_enabled` flag** (`backend/config.py`, default True) — gates only the
+  `scheduler.add_job(_run_briefing, ...)` call in `setup_scheduler()`; the `hour, minute =
+  briefing_time.split(":")` parse stays unconditional since `homelab_digest`'s
+  `briefing_time+5` computation further down reuses those same locals regardless of whether
+  the briefing job itself registers. Uses a locally-scoped `get_settings()` fetch (aliased
+  `_get_settings` to avoid any name collision) rather than reordering the function to hoist
+  the existing `s = get_settings()` earlier — same "narrowly scoped, don't touch what already
+  works" discipline as `brain_organizer_nightly_enabled`.
+- **`/var/lib/nexus/.env`** (the real running instance) gained nine `_ENABLED=false` lines —
+  the eight jobs above plus `MORNING_BRIEFING_ENABLED=false`.
+- **A gap was caught and fixed the same sitting**: the `MORNING_BRIEFING_ENABLED=false` line
+  was initially forgotten when appending the other eight (a copy-paste-adjacent slip, not a
+  logic bug) — `morning_briefing` still showed up gated `True` in the live scheduler after the
+  first restart. Caught by directly querying `scheduler.get_jobs()` on a fresh interpreter
+  invocation from the correct working directory (`/var/lib/nexus`, matching the real systemd
+  `WorkingDirectory` — NOT `/opt/nexus`, the same cwd-relative-config trap this branch's own
+  fix-plan already documented once) rather than trusting log lines alone, since not every
+  flag's gate emits an explicit disabled message (`mail_autodraft`'s doesn't, by original
+  design — silent skip, confirmed correct via absence, not a positive log line). Second
+  restart confirmed the full job list matches exactly: `brain_organizer`,
+  `wiki_fragmentation_report`, `mail_autodraft` present (this instance's own); the nine
+  Windows-owned jobs absent; every per-instance self-monitoring job (watchdog, backups,
+  uptime, state refresh, `brain_spend_ingest`, `calibration_recompute`, etc.) present —
+  deliberately untouched, since this instance has no Uptime Kuma monitor yet and its own
+  watchdog pages are its only failure signal for now.
+- **Tests**: `test_morning_briefing_disabled_skips_job` (only that job drops; asserts
+  `homelab_digest` — the thing sharing the parsed locals — is still present) and
+  `test_morning_briefing_enabled_default_is_true` (class-default pin via `Settings.model_fields`,
+  not a live instance, since this host's real `.env` sets it false), added to
+  `tests/test_coverage_boost.py` next to the existing job-count tests. No monkeypatch needed on
+  the existing job-count tests themselves — pytest here runs from `/opt/nexus`, which has no
+  `.env` of its own, so the class default (True) applies during tests regardless of the real
+  runtime `.env` at `/var/lib/nexus`.
+- **Track B — deliberately deferred**: see `nexus` (master)'s CLAUDE.md entry for the full list
+  (Telegram ownership, autonomy flip, Kuma monitors, HTTPS origin, vault topology, mail
+  autotrash ownership — currently owned by nobody, since Windows's autodraft/nested-autotrash
+  is now off too and this instance's own `MAIL_AUTOTRASH_ENABLED` was already `false`).
+
 **Windows→Linux migration + critical-bug fix plan (2026-08-14, `linux-lxc` branch, worktree
 `nexus-linux-lxc`)** — the initial port (Fable-planned, Sonnet-built, spec at
 `docs/lxc-migration-spec.md`) shipped NEXUS running on the LXC in shadow mode alongside
