@@ -193,7 +193,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     # Flush any buffered secret-fallback events before we lose the process —
-    # a normal stop.ps1 restart must not discard up to 300s of audit signal.
+    # a normal `systemctl restart nexus-backend` must not discard up to 300s of audit signal.
     try:
         from backend.secrets import fallback_log
         await asyncio.to_thread(fallback_log.drain)
