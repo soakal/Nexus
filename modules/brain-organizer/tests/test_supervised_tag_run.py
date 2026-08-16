@@ -166,6 +166,33 @@ def test_assert_safe_destination_accepts_safe_sibling_directory(tmp_path: Path) 
     st._assert_safe_destination(dest, configured_vault)  # must not raise
 
 
+def test_live_vault_is_the_real_lxc_path() -> None:
+    """This cycle's fix: _LIVE_VAULT must be the real, absolute LXC vault
+    path, not the old Windows literal r"C:\\Users\\Brian\\..." -- which, on
+    POSIX, pathlib treats as a single relative filename component (backslash
+    is not a separator there), so it never anchored the guard at all."""
+    assert st._LIVE_VAULT == Path("/var/lib/nexus/knowledge/Brain")
+    assert st._LIVE_VAULT.is_absolute()
+
+
+def test_assert_safe_destination_rejects_dest_inside_live_vault_even_when_configured_vault_differs(
+    tmp_path: Path,
+) -> None:
+    """Pins the _LIVE_VAULT anchor as an independently functioning guard,
+    separate from configured_vault: a dest inside the real live vault must
+    be refused even when configured_vault points somewhere unrelated. The
+    expected dest is the literal real LXC vault path, not st._LIVE_VAULT
+    itself -- deriving it from the constant under test would make this
+    self-relative, passing for any value of _LIVE_VAULT (including a
+    regressed/broken one)."""
+    configured_vault = tmp_path / "unrelated_configured_vault"
+    configured_vault.mkdir()
+    dest = Path("/var/lib/nexus/knowledge/Brain") / "throwaway_copy"
+
+    with pytest.raises(st.UnsafeDestination):
+        st._assert_safe_destination(dest, configured_vault)
+
+
 # ---------------------------------------------------------------------------
 # main() -- a no-op run (nothing touched, suggest_tags() never called) must
 # report INCONCLUSIVE for all of crit 44-48, never a vacuous PASS. This is

@@ -64,7 +64,8 @@ import brain_organizer as bo  # noqa: E402 -- must follow the sys.path insert ab
 # The live vault, hardcoded per the RISK guard this script was built under —
 # deliberately NOT derived solely from config.json, so a corrupted or
 # hand-edited config can't silently narrow what counts as "the real vault".
-_LIVE_VAULT = Path(r"C:\Users\Brian\iCloudDrive\iCloud~md~obsidian\Brain")
+# Path is the LXC-hosted vault (Linux migration, 2026-08-15).
+_LIVE_VAULT = Path("/var/lib/nexus/knowledge/Brain")
 
 # Mirrors _extract_page_entry's own pseudo-frontmatter key-line regex in
 # brain_organizer.py — crit 48's "no summary starts with a frontmatter key"
