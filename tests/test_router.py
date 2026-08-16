@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 
 @pytest.mark.asyncio
@@ -501,3 +501,144 @@ async def test_llm_call_span_gets_parent_from_span_stack(spend_eng):
     rows = _trace_span_rows(spend_eng)
     assert len(rows) == 1
     assert rows[0].parent_span_id == 3
+
+
+# ---------------------------------------------------------------------------
+# Anthropic credit-exhaustion detection + paging
+#
+# 2026-08-15 the account ran out of credit; both the briefing and a
+# goal-proposer tick failed with the same HTTP 400 and nobody was told it was
+# a billing problem specifically -- these pin the fix: _run and run_with_tools
+# both page distinctly, exactly once (debounced), on this specific failure,
+# and never on any other kind of failure.
+# ---------------------------------------------------------------------------
+
+def _credit_exhausted_error(message="Your credit balance is too low to access the "
+                                     "Anthropic API. Please go to Plans & Billing to "
+                                     "upgrade or purchase credits."):
+    """A real anthropic.BadRequestError shaped exactly like the live 2026-08-15
+    failure -- constructed via the SDK's own class, not a fake/duck-typed stand-in."""
+    import anthropic
+    import httpx
+
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    resp = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        json=body,
+    )
+    return anthropic.BadRequestError(message=f"Error code: 400 - {body}", response=resp, body=body)
+
+
+def test_is_credit_exhausted_matches_real_sdk_error():
+    from backend.agents import router
+
+    assert router._is_credit_exhausted(_credit_exhausted_error()) is True
+    # The streaming path only has the stringified form, no .body -- must still match.
+    assert router._is_credit_exhausted(RuntimeError(str(_credit_exhausted_error()))) is True
+
+
+def test_is_credit_exhausted_does_not_match_other_400s():
+    """Same status code, same generic error.type (invalid_request_error) -- e.g.
+    the real cache_control-breakpoint-limit error this module already
+    documents hitting -- must NOT be mistaken for credit exhaustion."""
+    from backend.agents import router
+
+    other = _credit_exhausted_error(
+        message="A maximum of 4 blocks with cache_control may be provided. Found 5."
+    )
+    assert router._is_credit_exhausted(other) is False
+
+
+def test_generic_llm_failure_does_not_page():
+    from backend.agents import router
+
+    assert router._is_credit_exhausted(RuntimeError("network timeout")) is False
+
+
+@pytest.mark.asyncio
+async def test_run_pages_once_on_credit_exhaustion(spend_eng):
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _credit_exhausted_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify, \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}) as mock_flag:
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        with pytest.raises(Exception):
+            await router.sonnet("prompt 1")
+        with pytest.raises(Exception):
+            await router.sonnet("prompt 2")
+
+    assert mock_notify.await_count == 1
+    assert mock_notify.await_args[1]["kind"] == "anthropic_credit_exhausted"
+    mock_flag.assert_awaited_once()
+    assert mock_flag.await_args[0][0:2] == ("router", "anthropic_credit")
+
+
+@pytest.mark.asyncio
+async def test_run_with_tools_pages_on_credit_exhaustion(spend_eng):
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _credit_exhausted_error()
+
+    def _fake_create(*args, **kwargs):
+        raise err
+
+    with patch.object(router, "_create_sync_raw", _fake_create), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify, \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}):
+        with pytest.raises(Exception):
+            await router.run_with_tools("m", 100, "prompt", "sys", [{"name": "fake_tool"}], {})
+
+    mock_notify.assert_awaited_once()
+    assert mock_notify.await_args[1]["kind"] == "anthropic_credit_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_other_failures_never_page_as_credit_exhausted(spend_eng):
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify:
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = RuntimeError("network timeout")
+        mock_anthropic.return_value = mock_client
+
+        with pytest.raises(RuntimeError, match="network timeout"):
+            await router.sonnet("prompt")
+
+    mock_notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_credit_alert_failure_never_swallows_the_original_error(spend_eng):
+    """A poisoned alert path (notify_phone itself raises) must never mask the
+    real BadRequestError -- same 'poisoned X doesn't break Y' contract used
+    throughout this codebase (e.g. test_span_failure_never_breaks_chat)."""
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _credit_exhausted_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock,
+               side_effect=RuntimeError("telegram down")):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        with pytest.raises(Exception) as excinfo:
+            await router.sonnet("prompt")
+
+    assert "credit balance is too low" in str(excinfo.value).lower()

@@ -612,6 +612,70 @@ async def _loop_guard(task_id, task_start) -> None:
         raise TaskAborted("cancelled")
 
 
+def _is_credit_exhausted(exc) -> bool:
+    """True when Anthropic rejected the call because the account is out of credit.
+
+    Matched on message text on purpose: Anthropic returns HTTP 400 with the generic
+    error.type "invalid_request_error" for this -- the same type this module already
+    hits for too many cache_control breakpoints -- so there is no code to key on, and
+    there is no public balance API to poll instead (see anthropic_balance_watch, which
+    exists solely to notice IF one ever ships). Reads the structured body first and
+    falls back to str(exc) so the stringified streaming-path error still matches.
+    """
+    # ponytail: English-prose match; swap to a real error code the day Anthropic ships one.
+    body = getattr(exc, "body", None)
+    msg = (body.get("error") or {}).get("message", "") if isinstance(body, dict) else ""
+    return "credit balance is too low" in f"{msg} {exc}".lower()
+
+
+_CREDIT_ALERT = (
+    "NEXUS is OUT OF ANTHROPIC CREDIT — every LLM call is failing right now "
+    "(HTTP 400, \"your credit balance is too low\"). This is a billing problem, "
+    "not a bug: top up at console.anthropic.com -> Plans & Billing. "
+    "Briefings, goals, chat and tasks stay broken until you do."
+)
+
+
+async def _maybe_alert_credit_exhausted(exc) -> None:
+    """Page distinctly, at most once per watchdog_alert_cooldown_s, when the Anthropic
+    account is out of credit. Best-effort — never raises; the caller re-raises the
+    original error either way, so behavior is byte-identical when this is a no-op.
+
+    Debounce is watchdog._should_alert (the same in-memory per-key cooldown the
+    scheduler-stall and deploy-drift checks use) -- this condition only matters while
+    the process is running, exactly deploy_drift's reasoning, so it does not need to
+    survive a restart.
+    """
+    try:
+        if not _is_credit_exhausted(exc):
+            return
+        from backend.agents.watchdog import _should_alert
+        from backend.config import get_settings
+        cooldown = getattr(get_settings(), "watchdog_alert_cooldown_s", 3600)
+        if not _should_alert("anthropic_credit_exhausted", cooldown):
+            return
+        from backend.agents import outcomes
+        d = await outcomes.record_flag_ex(
+            "router", "anthropic_credit", _CREDIT_ALERT, severity="high",
+        )
+        if d["surface"]:
+            from backend import events
+            await events.notify_phone(_CREDIT_ALERT, kind="anthropic_credit_exhausted")
+    except Exception as e:  # never let alerting break the failing call's own error
+        logger.warning(f"credit-exhausted alert failed (non-fatal): {e}")
+
+
+async def _run_billed(loop, func):
+    """Run a blocking Anthropic call in the executor, paging once if the account is
+    out of credit. The single choke point every billed call's FAILURE passes through
+    (mirroring _budget_brake, which owns the pre-call side)."""
+    try:
+        return await loop.run_in_executor(None, func)
+    except Exception as e:
+        await _maybe_alert_credit_exhausted(e)
+        raise
+
+
 async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
     """Run the blocking SDK call in the default thread-pool executor.
 
@@ -631,7 +695,7 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
 
     loop = asyncio.get_event_loop()
     func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id)
-    return await loop.run_in_executor(None, func)
+    return await _run_billed(loop, func)
 
 
 def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None, trace_id=None, parent_span_id=None):
@@ -750,8 +814,8 @@ async def run_with_tools(
 
     for _round in range(max_rounds):
         await _loop_guard(task_id, task_start)
-        resp = await loop.run_in_executor(
-            None,
+        resp = await _run_billed(
+            loop,
             functools.partial(_create_sync_raw, model, max_tokens, messages, system, tools, label, spend_task_id, trace_id, parent_span_id),
         )
         last_resp = resp
@@ -867,6 +931,7 @@ async def stream_sonnet(prompt: str, system: str = "", web_search: bool = False)
             break
         elif kind == "error":
             await fut
+            await _maybe_alert_credit_exhausted(data)
             raise RuntimeError(data)
     await fut
 

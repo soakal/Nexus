@@ -242,7 +242,9 @@ def get_muted_notify_kinds() -> set[str]:
 # single SUCCESSFUL /mute call can silence one of these outright, with no
 # TTL — indistinguishable from a harmless typo'd kind that "did nothing".
 # Mirrors broker.py's _NEVER_PROMOTABLE floor on a different CSV column.
-_NEVER_MUTABLE_NOTIFY_KINDS = frozenset({"auth_burst", "contract_breach", "budget_warn", "needs_confirm"})
+_NEVER_MUTABLE_NOTIFY_KINDS = frozenset({
+    "auth_burst", "contract_breach", "budget_warn", "needs_confirm", "anthropic_credit_exhausted",
+})
 
 
 def add_muted_notify_kind(kind: str) -> None:

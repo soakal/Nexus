@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 # Used by governor.add_muted_notify_kind to reject a typo'd /mute instead of
 # silently muting a string that nothing ever fires.
 NOTIFY_KINDS: frozenset[str] = frozenset({
-    "agent_message", "anthropic_balance_watch", "auth_burst", "auto_approved",
+    "agent_message", "anthropic_balance_watch", "anthropic_credit_exhausted",
+    "auth_burst", "auto_approved",
     "autonomy_alert", "autonomy_digest", "backup_failed", "budget_warn",
     "calibration_suppress", "circuit_breaker", "contract_breach",
     "council_postmortem", "dead_letter", "deploy_drift", "flag_followup",
