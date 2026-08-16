@@ -101,11 +101,9 @@ class Settings(BaseSettings):
     auto_approve_low_risk: bool = True
 
     # Gates ONLY the daily morning_briefing scheduler-job registration --
-    # no other briefing read/write path. Default True; set False on
-    # whichever instance is NOT the current owner (Windows owns it as of
-    # 2026-08-15, since it's still the sole Telegram-interactive instance
-    # and its briefing content -- calendar, facts, goals -- is the live
-    # data). See CLAUDE.md's dated entry for the full ownership matrix.
+    # no other briefing read/write path. Default True. Windows production
+    # was decommissioned 2026-08-15; this LXC is the only running instance,
+    # so it owns this job by default.
     morning_briefing_enabled: bool = True
 
     # Phone notification settings (via Telegram).
