@@ -6,14 +6,15 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_ffmpeg_on_path() -> None:
-    """Local whisper shells out to ffmpeg to decode audio. start.ps1 launches
-    the backend via Start-Process, which on Windows can go through
-    ShellExecute and inherit the LOGON session's cached PATH rather than the
-    launching shell's live-refreshed one — so an ffmpeg installed (e.g. via
-    winget) after that session's PATH was cached stays invisible to NEXUS
-    until a full sign-out/restart. Reads the REAL current Machine+User PATH
-    straight from the registry and merges it in. Cheap, idempotent
-    (no-ops once ffmpeg already resolves), Windows-only, never raises."""
+    """Local whisper shells out to ffmpeg to decode audio. Windows can launch
+    the backend through ShellExecute (e.g. the windows-archive code path),
+    which inherits the LOGON session's cached PATH rather than the launching
+    shell's live-refreshed one — so an ffmpeg installed (e.g. via winget)
+    after that session's PATH was cached stays invisible to NEXUS until a
+    full sign-out/restart. Reads the REAL current Machine+User PATH straight
+    from the registry and merges it in. Cheap, idempotent (no-ops once
+    ffmpeg already resolves), a no-op on Linux/systemd where the backend
+    inherits the unit's live PATH, never raises."""
     import shutil
     if shutil.which("ffmpeg") or os.name != "nt":
         return
