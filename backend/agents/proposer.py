@@ -656,10 +656,15 @@ async def propose_goals_tick() -> dict:
         }
 
     except Exception as e:
-        logger.warning("propose_goals_tick failed (best-effort): %s", e)
+        logger.warning("propose_goals_tick failed: %s", e)
         _trace_status = "error"
         _trace_error = str(e)
-        return {"status": "error", "error": str(e)}
+        # Re-raise (was swallowed here before) -- the scheduler wrapper
+        # (_propose_goals) is what's supposed to surface this to Pulse and
+        # APScheduler's error event; swallowing it at this layer defeated
+        # that fix entirely, letting a real failure (e.g. the 2026-08-15
+        # Anthropic credit-balance error) show as "ok" on the board.
+        raise
     finally:
         # Best-effort trace close, wrapped so a bookkeeping failure here can
         # never mask the real return value from propose_goals_tick.

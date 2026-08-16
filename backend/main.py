@@ -34,6 +34,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs the full request URL at INFO -- several integrations carry their
+# credential IN the URL (Telegram bot token, OpenWeather API key, the
+# Google/Apple calendar ICS tokens), which would otherwise write cleartext
+# secrets to the (persistent) journal on every single call.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

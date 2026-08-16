@@ -209,7 +209,7 @@ async def set_my_commands(commands: list[dict]) -> bool:
         resp = await _call("setMyCommands", {"commands": commands}, timeout=10)
         return resp.status_code == 200
     except Exception as e:
-        logger.warning(f"setMyCommands failed (ignored): {e}")
+        logger.warning(f"setMyCommands failed (ignored): {e!r}")
         return False
 
 

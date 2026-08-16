@@ -321,11 +321,12 @@ async def test_dedup_second_tick_debounced(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 6 — Best-effort: Opus raises RuntimeError → tick returns 'error', doesn't raise
+# Test 6 — An LLM-call failure re-raises (surfaced to the scheduler wrapper
+# so it lands on Pulse / APScheduler's error event, not silently swallowed)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_best_effort_on_opus_error(eng, monkeypatch):
+async def test_reraises_on_opus_error(eng, monkeypatch):
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
@@ -338,11 +339,9 @@ async def test_best_effort_on_opus_error(eng, monkeypatch):
             mock_settings.return_value = s
 
             from backend.agents.proposer import propose_goals_tick
-            # Must NOT raise.
-            result = await propose_goals_tick()
+            with pytest.raises(RuntimeError, match="network error"):
+                await propose_goals_tick()
 
-    assert result["status"] == "error"
-    assert "error" in result
     # No Goal rows created.
     assert _all_goals(eng) == []
 

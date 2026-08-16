@@ -52,7 +52,7 @@ Create `/opt/nexus` (code), `/var/lib/nexus` (runtime data/secrets — will be t
 
 **1.1 — Clone + venvs + frontend build.**
 `git clone https://github.com/soakal/Nexus /opt/nexus` (⚠ confirm exact remote URL via `git remote -v` on Windows, read-only). `python3.13 -m venv /opt/nexus/venv`, `pip install -r requirements.txt` (respect the `starlette==0.38.6` re-pin; document whatever torch/whisper install path is actually used on Linux). `cd frontend && npm ci && npm run build`. Also provision the Brain Organizer module's own venv.
-**AC:** `pip check` clean in both venvs; `npm run build` exits 0 with a `dist/` produced; `git log -1` SHA matches current `origin/master`.
+**AC:** `pip check` clean in both venvs; `npm run build` exits 0 with a `dist/` produced; `git log -1` SHA matches current `origin/main`.
 
 **1.2 — Seed secrets + DB from the Unraid backup (this doubles as a live restore drill).**
 Copy `nexus.vault`, `nexus.vault.meta`, `.vault.key` (if present in backup; else read-only from Windows repo root), and the `nexus.db` snapshot from `\\192.168.1.50\Computer Backup\Nexus_backup` into **`/var/lib/nexus/`** — these paths are cwd-relative in code, and the systemd unit's `WorkingDirectory=/var/lib/nexus` satisfies "secrets outside the repo tree" with zero code changes. Copy `.env` read-only from Windows to `/var/lib/nexus/.env`. Delete any stale `nexus.db-wal`/`nexus.db-shm`.
@@ -203,7 +203,7 @@ Confirm with evidence: `brain_organizer` digestion, Sunday `wiki_fragmentation_r
 
 **5.5 — Manual deploy drill (confirmed-manual, per locked decision 5).**
 `deploy/update.sh` (git pull → deps if changed → build if changed → restart), committed under `deploy/` (scrubbed). Run once by hand.
-**AC:** `running_sha` matches `origin/master`; no deploy-drift alert; health ok.
+**AC:** `running_sha` matches `origin/main`; no deploy-drift alert; health ok.
 
 **5.6 — Burn-in exit review.**
 Assemble go/no-go evidence (Kuma uptime, restart causes, job table across ≥2 Sundays, backup streak, Syncthing health, open flags).

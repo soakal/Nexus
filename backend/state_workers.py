@@ -153,7 +153,7 @@ async def refresh_collector(collector: Collector) -> dict:
         payload = jsonable_encoder(await collector.load())
         snapshot = await asyncio.to_thread(store_success, collector.key, payload, collector.ttl_seconds)
     except Exception as exc:
-        logger.warning("State collector %s failed: %s", collector.key, exc)
+        logger.warning("State collector %s failed: %r", collector.key, exc)
         try:
             snapshot = await asyncio.to_thread(store_failure, collector.key, str(exc))
         except Exception as store_exc:

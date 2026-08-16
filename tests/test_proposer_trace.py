@@ -117,8 +117,9 @@ async def test_trace_closed_error_on_unexpected_exception(eng, monkeypatch):
     """An unexpected exception raised mid-tick (here: the Haiku call itself
     fails with something other than BudgetExceeded) still closes the
     AgentTrace row status='error' with the exception message recorded, and
-    propose_goals_tick still honors its own best-effort contract (returns
-    status='error' rather than raising)."""
+    propose_goals_tick now RE-RAISES rather than swallowing it -- the
+    scheduler wrapper (_propose_goals) is what surfaces this to Pulse and
+    APScheduler's error event; swallowing it here defeated that fix."""
     from backend.database import AgentTrace
 
     _seed_state(eng, autonomy=True)
@@ -134,10 +135,8 @@ async def test_trace_closed_error_on_unexpected_exception(eng, monkeypatch):
             mock_settings.return_value = s
 
             from backend.agents.proposer import propose_goals_tick
-            result = await propose_goals_tick()
-
-    assert result["status"] == "error"
-    assert "boom" in result["error"]
+            with pytest.raises(RuntimeError, match="boom"):
+                await propose_goals_tick()
 
     with Session(eng) as s:
         traces = s.exec(select(AgentTrace).where(AgentTrace.kind == "proposer")).all()
