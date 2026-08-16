@@ -36,6 +36,11 @@ __pycache__/
 *.pyo
 venv/
 .venv/
+# The digest relay's own venv (tools/relay_claude_digest.py, run from cron on
+# devbox). Untracked AND unignored, it was silently destroyed by a routine
+# `git clean -fd` during the 2026-08-15 branch switch, which broke the daily
+# digest delivery with only a "python: not found" line in the cron log.
+.relay-venv/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/

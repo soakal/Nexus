@@ -1,9 +1,17 @@
 """Relay the daily Claude-features digest (written by a cloud routine into
 digests/claude-features/*.md) into the Brain vault + a Telegram notify.
 
-Run daily by a Windows Scheduled Task shortly after the cloud routine's
-09:00 America/New_York run. Assumes the repo has already been `git pull`ed
-(the .cmd wrapper does that before invoking this).
+Run daily at 09:20 US/Eastern by a cron job in `brian`'s crontab on devbox,
+shortly after the cloud routine's 09:00 America/New_York run. (It used to be
+a Windows Scheduled Task; Windows production was decommissioned 2026-08-15.)
+The cron entry does the `git pull` before invoking this.
+
+Two things this script depends on that have each silently broken it before --
+check them first if a digest stops arriving:
+  * `.relay-venv/` must exist with httpx + pydantic-settings + cryptography.
+  * The digest routine must target the SAME branch devbox has checked out
+    (`main`). A digest merged to `master` -- the frozen Windows archive --
+    is invisible here and relays to nobody. See DIGEST_INSTRUCTIONS.md.
 """
 
 from __future__ import annotations
@@ -27,10 +35,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 def _pending_digest_branches() -> list[str]:
     """Best-effort check for `digest/*` branches pushed to origin but not yet
-    merged to master (i.e. a digest PR still awaiting review/merge).
+    merged to main (i.e. a digest PR still awaiting review/merge).
 
     The digest routine now lands its output on a branch + PR instead of
-    committing straight to master (see DIGEST_INSTRUCTIONS.md) -- without
+    committing straight to main (see DIGEST_INSTRUCTIONS.md) -- without
     this check, a pending PR and "no digest ran today" both print the exact
     same "nothing new to relay" line, and the daily Brain/Telegram delivery
     silently stops with zero signal that anything changed. Uses only `git`,
@@ -72,7 +80,7 @@ def _pr_only_touches(number: int, expected_file: str) -> bool:
     This is the actual security boundary, not the branch-name/owner check
     above: the cloud routine itself processes untrusted web content every
     run (that's the whole reason it's barred from pushing straight to
-    master -- see DIGEST_INSTRUCTIONS.md). A prompt injection against THAT
+    main -- see DIGEST_INSTRUCTIONS.md). A prompt injection against THAT
     routine, not against this relay, could in principle steer it into
     committing something other than the digest file on its own branch. This
     check means such an injection can only ever poison the digest's prose
@@ -106,7 +114,7 @@ def _merge_pending_digest_prs() -> list[str]:
     """Merge any open digest/* PR via the local `gh` CLI before checking for
     new files to relay.
 
-    The cloud routine is barred from pushing straight to master (see
+    The cloud routine is barred from pushing straight to main (see
     DIGEST_INSTRUCTIONS.md's 2026-07-27 security fix -- it processes
     untrusted web content every run, so it opens a PR instead of committing
     directly). This relay already runs locally under Brian's own scheduled
@@ -156,7 +164,7 @@ def _merge_pending_digest_prs() -> list[str]:
         # targeting this repo, including cross-repo PRs whose branch name
         # an attacker fully controls (e.g. a stranger opening
         # digest/2026-07-30 from their own fork). Without this, anyone
-        # could get arbitrary code auto-merged onto master and pulled onto
+        # could get arbitrary code auto-merged onto main and pulled onto
         # Brian's machine.
         owner = pr.get("headRepositoryOwner")
         author = pr.get("author")
@@ -260,7 +268,7 @@ async def main() -> int:
         pending = _pending_digest_branches()
         if pending:
             print(
-                f"nothing new to relay on master -- but {len(pending)} digest "
+                f"nothing new to relay on main -- but {len(pending)} digest "
                 f"PR(s)/branch(es) pending review/merge: {', '.join(pending)} "
                 "(check GitHub for an open PR before assuming today's digest "
                 "didn't run)"
