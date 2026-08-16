@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Self-hosted Uptime Kuma (Proxmox LXC 206). API key auth (2026-08-15) --
     # see the uptime_kuma_api_key property below for the vault secret.
     uptime_kuma_url: str = "http://192.168.1.61:3001"
-    obsidian_vault_path: str = "C:\\Users\\Brian\\iCloudDrive\\iCloud~md~obsidian"
+    obsidian_vault_path: str = "/var/lib/nexus/knowledge"
     brain_mcp_url: str = "http://localhost:8765"
 
     # Infisical secret store (see backend/secrets/manager.py). Empty defaults —

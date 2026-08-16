@@ -111,6 +111,12 @@ def test_protonmail_secret_missing_raises(monkeypatch):
     s.validate()
 
 
+def test_obsidian_vault_path_default_is_lxc_path():
+    # 2026-08-16: default moved off the old Windows dev-machine path to the
+    # LXC-hosted knowledge dir (docs/lxc-migration-spec.md:90).
+    assert _settings().obsidian_vault_path == "/var/lib/nexus/knowledge"
+
+
 def test_mail_autodraft_settings_defaults():
     s = _settings()
     assert s.mail_autodraft_enabled is True
