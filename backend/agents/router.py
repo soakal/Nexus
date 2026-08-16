@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import anthropic
 
@@ -220,6 +221,10 @@ _PRICE_PER_MTOK = {
     SONNET_MODEL: {"input": 3.0, "output": 15.0},
     HAIKU_MODEL: {"input": 1.0, "output": 5.0},
     "claude-sonnet-5": {"input": 2.0, "output": 10.0},
+    # OpenRouter model-swap trial (Trial A/B) -- verified live against
+    # GET https://openrouter.ai/api/v1/models 2026-08-16.
+    "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
+    "google/gemini-2.5-pro": {"input": 1.25, "output": 10.00},
 }
 
 # Hosted web-search server tool: $10 per 1,000 searches (Anthropic pricing,
@@ -676,6 +681,115 @@ async def _run_billed(loop, func):
         raise
 
 
+# --- OpenRouter model-swap trial (Trial A) -----------------------------------
+# Shadows selected Haiku-tier labels with a second, parallel call to
+# settings.shadow_model, logged for later comparison. Never affects the real
+# response -- this is purely for Brian to judge whether a cheaper model is
+# good enough before actually cutting anything over. See tools/shadow_diff.py.
+
+_shadow_tasks: set[asyncio.Task] = set()
+_SHADOW_LOG = Path("/var/lib/nexus/logs/shadow.jsonl")
+
+
+def _shadow_active(label: str, settings) -> bool:
+    model = getattr(settings, "shadow_model", "") or ""
+    if not model:
+        return False
+    until = getattr(settings, "shadow_until", "") or ""
+    if until:
+        from datetime import date
+        try:
+            if date.today() > date.fromisoformat(until):
+                return False
+        except ValueError:
+            logger.warning(f"invalid shadow_until {until!r}; shadow disabled")
+            return False
+    labels = {s.strip() for s in (getattr(settings, "shadow_labels", "") or "").split(",") if s.strip()}
+    return label in labels
+
+
+async def _maybe_shadow(model: str, prompt: str, system: str, label: str, primary_text: str) -> None:
+    """Fire the shadow call as a background task -- never awaited by the real
+    caller, so it can never add latency or a failure mode to the real response."""
+    try:
+        from backend.config import get_settings
+        settings = get_settings()
+        if not _shadow_active(label, settings):
+            return
+        task = asyncio.create_task(_run_shadow_call(settings.shadow_model, prompt, system, label, primary_text))
+        _shadow_tasks.add(task)
+        task.add_done_callback(_shadow_tasks.discard)
+    except Exception as e:  # never let the shadow trigger touch the real call
+        logger.warning(f"shadow trigger failed (non-fatal): {e}")
+
+
+async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: str, primary_text: str) -> None:
+    """The actual shadow call + logging. Whole body is one try/except -- a
+    shadow failure must be invisible to everything except its own log line."""
+    try:
+        import time
+        from types import SimpleNamespace
+
+        import httpx
+
+        from backend.config import get_settings
+        from backend.http_client import SSL_CONTEXT
+
+        settings = get_settings()
+        messages = ([{"role": "system", "content": system}] if system else []) + [
+            {"role": "user", "content": prompt}
+        ]
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+                json={"model": shadow_model, "max_tokens": 4096, "messages": messages},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        shadow_text = data["choices"][0]["message"]["content"] or ""
+        usage = data.get("usage") or {}
+        fake_resp = SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+        ))
+        # Real, metered spend -- shows up in the daily spend report and
+        # autonomy digest automatically, so a forgotten trial is visible
+        # even if nobody ever reads shadow.jsonl. Off the loop: _record_spend
+        # opens a sync Session/commit, same as every other caller of it, all
+        # of which run inside a run_in_executor thread -- this is the only
+        # caller that's a plain asyncio task, so it must hop threads itself.
+        await asyncio.to_thread(_record_spend, shadow_model, fake_resp, f"shadow:{label}")
+
+        agree = primary_text.strip().upper() == shadow_text.strip().upper()
+
+        import json as _json
+
+        row = {
+            "ts": datetime.utcnow().isoformat(),
+            "label": label,
+            "model_a": HAIKU_MODEL,
+            "model_b": shadow_model,
+            "prompt": prompt[:4000],
+            "out_a": primary_text[:2000],
+            "out_b": shadow_text[:2000],
+            "agree": agree,
+            "latency_ms": latency_ms,
+        }
+
+        def _append() -> None:
+            _SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with _SHADOW_LOG.open("a", encoding="utf-8") as f:
+                f.write(_json.dumps(row) + "\n")
+
+        await asyncio.to_thread(_append)
+    except Exception as e:
+        logger.warning(f"shadow call failed (non-fatal, label={label!r}): {e}")
+
+
 async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
     """Run the blocking SDK call in the default thread-pool executor.
 
@@ -695,7 +809,10 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
 
     loop = asyncio.get_event_loop()
     func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id)
-    return await _run_billed(loop, func)
+    result = await _run_billed(loop, func)
+    if model == HAIKU_MODEL:
+        await _maybe_shadow(model, prompt, system, label, result)
+    return result
 
 
 def _create_sync_raw(model: str, max_tokens: int, messages: list, system: str, tools: list, label: str, task_id=None, trace_id=None, parent_span_id=None):

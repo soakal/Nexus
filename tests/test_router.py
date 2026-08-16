@@ -642,3 +642,123 @@ async def test_credit_alert_failure_never_swallows_the_original_error(spend_eng)
             await router.sonnet("prompt")
 
     assert "credit balance is too low" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Trial A — Gemini Flash-Lite shadow on Haiku-tier calls
+# ---------------------------------------------------------------------------
+
+def test_shadow_active_requires_model_label_and_date(monkeypatch):
+    from backend.agents import router
+    from types import SimpleNamespace
+
+    off = SimpleNamespace(shadow_model="", shadow_until="", shadow_labels="mail_junk_classify")
+    assert router._shadow_active("mail_junk_classify", off) is False
+
+    on = SimpleNamespace(shadow_model="google/gemini-2.5-flash-lite", shadow_until="", shadow_labels="mail_junk_classify")
+    assert router._shadow_active("mail_junk_classify", on) is True
+    assert router._shadow_active("some_other_label", on) is False
+
+    expired = SimpleNamespace(shadow_model="google/gemini-2.5-flash-lite", shadow_until="2000-01-01", shadow_labels="mail_junk_classify")
+    assert router._shadow_active("mail_junk_classify", expired) is False
+
+
+@pytest.mark.asyncio
+async def test_haiku_call_fires_shadow_when_active(spend_eng, monkeypatch, tmp_path):
+    """A real Haiku call, with shadow active for its label, must fire a
+    background shadow call -- verified via the recorded shadow: SpendLog row,
+    not by awaiting the task directly (the whole point is it's not awaited)."""
+    from backend.agents import router
+    from backend.config import Settings
+
+    monkeypatch.setattr(router, "_SHADOW_LOG", tmp_path / "shadow.jsonl")
+
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(type="text", text="KEEP")]
+    mock_resp.usage = None
+
+    settings = Settings(shadow_model="google/gemini-2.5-flash-lite", shadow_until="", shadow_labels="mail_junk_classify")
+
+    shadow_http_resp = MagicMock()
+    shadow_http_resp.raise_for_status = MagicMock()
+    shadow_http_resp.json.return_value = {
+        "choices": [{"message": {"content": "KEEP"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+    }
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.config.get_settings", return_value=settings), \
+         patch("httpx.AsyncClient") as mock_httpx_cls:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_resp
+        mock_anthropic.return_value = mock_client
+
+        mock_httpx = AsyncMock()
+        mock_httpx.post.return_value = shadow_http_resp
+        mock_httpx_cls.return_value.__aenter__.return_value = mock_httpx
+
+        from backend.agents import router as router_mod
+        await router.haiku("is this junk mail?", label="mail_junk_classify")
+        # Give the fire-and-forget task a chance to run.
+        for t in list(router_mod._shadow_tasks):
+            await t
+
+    from sqlmodel import Session, select
+    from backend.database import SpendLog
+    with Session(spend_eng) as s:
+        rows = s.exec(select(SpendLog).where(SpendLog.label == "shadow:mail_junk_classify")).all()
+    assert len(rows) == 1
+    assert rows[0].model == "google/gemini-2.5-flash-lite"
+
+
+@pytest.mark.asyncio
+async def test_haiku_call_no_shadow_when_inactive(spend_eng, monkeypatch):
+    from backend.agents import router
+    from backend.config import Settings
+
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(type="text", text="KEEP")]
+    mock_resp.usage = None
+
+    settings = Settings(shadow_model="", shadow_until="", shadow_labels="mail_junk_classify")
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.config.get_settings", return_value=settings), \
+         patch("httpx.AsyncClient") as mock_httpx_cls:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_resp
+        mock_anthropic.return_value = mock_client
+
+        await router.haiku("is this junk mail?", label="mail_junk_classify")
+
+    mock_httpx_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shadow_failure_never_touches_real_response(spend_eng, monkeypatch):
+    """A poisoned shadow path (httpx raises) must never affect the real
+    Haiku call's return value -- same 'poisoned X doesn't break Y' contract
+    used throughout this module."""
+    from backend.agents import router
+    from backend.config import Settings
+
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(type="text", text="KEEP")]
+    mock_resp.usage = None
+
+    settings = Settings(shadow_model="google/gemini-2.5-flash-lite", shadow_until="", shadow_labels="mail_junk_classify")
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.config.get_settings", return_value=settings), \
+         patch("httpx.AsyncClient", side_effect=RuntimeError("network down")):
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_resp
+        mock_anthropic.return_value = mock_client
+
+        result = await router.haiku("is this junk mail?", label="mail_junk_classify")
+        # Give the fire-and-forget task a chance to actually fail, so this
+        # assertion proves isolation rather than just that the task never ran.
+        for t in list(router._shadow_tasks):
+            await t
+
+    assert result == "KEEP"

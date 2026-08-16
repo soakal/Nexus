@@ -344,6 +344,16 @@ async def _homelab_digest():
         raise
 
 
+async def _trial_report():
+    try:
+        from backend.agents.trial_report import run_trial_report
+        result = await run_trial_report()
+        logger.info(f"Trial report job: {result}")
+    except Exception as e:
+        logger.error(f"Trial report job error: {e}")
+        raise
+
+
 async def _spend_report():
     try:
         from backend.agents.digest import send_spend_report
@@ -788,6 +798,23 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Homelab digest enabled: daily at {dh:02d}:{dm:02d} {timezone}")
+    if getattr(s, "trial_report_enabled", False):
+        report_time = getattr(s, "trial_report_time", "08:10")
+        try:
+            trh, trm = report_time.split(":")
+            trh, trm = int(trh), int(trm)
+        except Exception:
+            logger.warning(
+                f"Invalid trial_report_time {report_time!r}; falling back to 08:10"
+            )
+            trh, trm = 8, 10
+        scheduler.add_job(
+            _trial_report,
+            CronTrigger(hour=trh, minute=trm, timezone=timezone),
+            id="trial_report",
+            replace_existing=True,
+        )
+        logger.info(f"Trial report enabled: daily at {trh:02d}:{trm:02d} {timezone}")
     if getattr(s, "spend_report_enabled", False):
         report_time = getattr(s, "spend_report_time", "08:00")
         try:

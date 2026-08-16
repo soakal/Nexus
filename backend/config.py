@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     mail_autodraft_enabled: bool = True
     mail_autodraft_interval_minutes: int = 30
     mail_autotrash_enabled: bool = True
+
+    # OpenRouter model-swap trial (Trial A) -- shadow the real Haiku call on
+    # selected labels with a second, parallel call to `shadow_model`, logged
+    # for comparison, never affecting the real response. "" = off. Self-disables
+    # past shadow_until so a forgotten trial can't run (and spend) forever.
+    shadow_model: str = ""
+    shadow_until: str = ""  # "YYYY-MM-DD"
+    shadow_labels: str = (
+        "mail_junk_classify,mail_reply_classify,facts_extract,goal_proposer,"
+        "goal_criteria_eval,chat_classify,voice_intent,action_judge"
+    )
+    # Trial B + the daily trial-report/verdict layer (see backend/agents/trial_report.py).
+    trial_report_enabled: bool = False
+    trial_report_time: str = "08:10"
     channels_host: str = "http://localhost:8089"
     adguard_host: str = "http://localhost:3000"
     adguard_user: str = "admin"
