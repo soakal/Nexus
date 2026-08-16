@@ -1,6 +1,5 @@
 import base64
 import json
-import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,8 +9,6 @@ from sqlmodel import Session, select
 
 from backend.cache import async_ttl_cache
 from backend.integrations.unifi_tls_pinning import build_transport
-
-logger = logging.getLogger(__name__)
 
 _MAC_HEX_RE = re.compile(r"^[0-9a-fA-F]{12}$")
 
@@ -167,46 +164,21 @@ async def fetch() -> UniFiData:
         else:
             bandwidth_mbps = 0.0
 
-        # Active alerts — UniFi's `list/alarm` endpoint returns ALL alarms
-        # (active + archived) by convention -- the caller filters, typically
-        # via an `archived` query param or post-filtering `archived`/
-        # `archived_time` on each row. No alarm existed on the real controller
-        # during the ORIGINAL live verification to confirm the exact field
-        # name, so this filters defensively on the common `archived` boolean
-        # (a no-op, not a false-negative, if that key is absent) rather than
-        # trusting an unverified "no archived param = active-only" assumption.
-        # Raw dicts are otherwise kept as-is — tools.py's consumer renders
-        # arbitrary alert values via str(a).
-        #
-        # FIXED 2026-08-06: `list/alarm` was live-verified BROKEN on this
-        # controller (UniFi Network 10.5.67 / UDM Pro Max) -- returns
-        # HTTP 400 {"meta":{"rc":"error","msg":"api.err.InvalidObject"}} for
-        # EVERY request, meaning "alarm" is no longer (or never was, on this
-        # firmware) a valid record type -- confirmed by testing `list/wlanconf`/
-        # `list/networkconf`/`list/user` on the same controller, which all
-        # return 200, proving the legacy `list/*` REST pattern itself still
-        # works; only "alarm" specifically is rejected. No working replacement
-        # record-type name was found (list/event, list/alert, stat/alarm,
-        # stat/event, the v2 `/proxy/network/v2/api/site/default/alarm` path,
-        # and a raw-Tomcat-404 variant were all tried live and failed too).
-        #
-        # This ONE sub-call is therefore isolated in its own try/except,
-        # degrading to alerts=None (never [] -- see UniFiData.alerts'
-        # docstring: an empty list must never be confused with "confirmed no
-        # alarms" when the read itself is broken) rather than raising and
-        # killing client_count/uplink_status/bandwidth_mbps too, which all
-        # still work fine and are real, useful data on every poll. This is a
-        # deliberate, narrow exception to the "Unraid lesson" raise-on-failure
-        # convention used elsewhere in this function -- clients/health above
-        # still raise, because those calls are confirmed genuinely working.
-        try:
-            alarm_resp = await client.get(f"{settings.unifi_host}/proxy/network/api/s/default/list/alarm", headers=headers)
-            if alarm_resp.status_code != 200:
-                raise Exception(f"UniFi alarms fetch failed: {alarm_resp.status_code}")
-            alerts = [a for a in alarm_resp.json().get("data", []) if not a.get("archived")]
-        except Exception as e:
-            logger.warning(f"UniFi alarms read failed (degrading alerts to unavailable, not a false all-clear): {e}")
-            alerts = None
+        # Active alerts — `list/alarm` is permanently unreachable on this
+        # controller (UniFi Network 10.5.67 / UDM Pro Max): every request
+        # returns HTTP 400 {"meta":{"rc":"error","msg":"api.err.InvalidObject"}},
+        # confirmed live over 10 days / 285 polls/day (2026-08-06 through
+        # 2026-08-16) with zero successes. No working replacement record-type
+        # name was found (list/event, list/alert, stat/alarm, stat/event, the
+        # v2 `/proxy/network/v2/api/site/default/alarm` path, and a
+        # raw-Tomcat-404 variant were all tried live and failed too) — see
+        # git history for the original per-request attempt and its full
+        # investigation notes. Skipped outright now rather than re-probing a
+        # dead endpoint every 5 minutes: alerts=None (never [] -- see
+        # UniFiData.alerts' docstring: an empty list must never be confused
+        # with "confirmed no alarms" when the read is known-unavailable).
+        # Re-check manually after the next controller firmware upgrade.
+        alerts = None
 
     # Check for new devices
     new_devices = []

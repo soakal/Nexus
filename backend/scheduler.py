@@ -34,6 +34,9 @@ async def _run_briefing():
         await run_briefing()
     except Exception as e:
         logger.error(f"Briefing job error: {e}")
+        from backend import events
+        await events.notify_phone(f"Morning briefing failed: {e}"[:400], kind="autonomy_alert")
+        raise
 
 
 def _parse_uptime_targets() -> list[tuple[str, str, int]]:
@@ -124,6 +127,7 @@ async def _record_uptime():
         logger.info(f"Uptime recorded: {sum(1 for _, ok, _ in results if ok)}/{len(results)} up")
     except Exception as e:
         logger.error(f"Uptime record error: {e}")
+        raise
 
 
 async def _record_speedtest():
@@ -146,6 +150,7 @@ async def _record_speedtest():
         logger.info(f"Speedtest recorded: {result}")
     except Exception as e:
         logger.error(f"Speedtest record error: {e}")
+        raise
 
 
 async def _retry_pending_deliveries():
@@ -154,6 +159,7 @@ async def _retry_pending_deliveries():
         await deliver_pending()
     except Exception as e:
         logger.error(f"Retry delivery error: {e}")
+        raise
 
 
 async def _ingest_brain_spend():
@@ -163,6 +169,7 @@ async def _ingest_brain_spend():
         await asyncio.to_thread(ingest_brain_spend)
     except Exception as e:
         logger.error(f"Brain spend ingest error: {e}")
+        raise
 
 
 async def _secret_fallback_drain():
@@ -174,6 +181,7 @@ async def _secret_fallback_drain():
             logger.info(f"Secret fallback drain: persisted {n} key(s)")
     except Exception as e:
         logger.error(f"Secret fallback drain job error: {e}")
+        raise
 
 
 async def _step_watchdog():
@@ -185,6 +193,7 @@ async def _step_watchdog():
             logger.info(f"Step watchdog: reaped {count} orphaned step(s)")
     except Exception as e:
         logger.error(f"Step watchdog error: {e}")
+        raise
 
 
 async def _propose_goals():
@@ -193,6 +202,7 @@ async def _propose_goals():
         await propose_goals_tick()
     except Exception as e:
         logger.error(f"Goal proposer job error: {e}")
+        raise
 
 
 async def _run_mail_autodraft():
@@ -201,6 +211,7 @@ async def _run_mail_autodraft():
         await autodraft_tick()
     except Exception as e:
         logger.error(f"Mail autodraft job error: {e}")
+        raise
 
 
 async def _autonomy_digest():
@@ -209,6 +220,7 @@ async def _autonomy_digest():
         await send_autonomy_digest()
     except Exception as e:
         logger.error(f"Autonomy digest job error: {e}")
+        raise
 
 
 async def _backup():
@@ -217,6 +229,7 @@ async def _backup():
         await run_backup_job()
     except Exception as e:
         logger.error(f"Backup job error: {e}")
+        raise
 
 
 async def _vault_backup():
@@ -240,6 +253,7 @@ async def _vault_backup():
                 logger.error(f"notify_phone for vault backup failure failed: {ne}")
     except Exception as e:
         logger.error(f"Vault backup job error: {e}")
+        raise
 
 
 async def _knowledge_backup():
@@ -257,6 +271,7 @@ async def _knowledge_backup():
             logger.warning(f"Knowledge backup failed: {result['error']}")
     except Exception as e:
         logger.error(f"Knowledge backup job error: {e}")
+        raise
 
 
 async def _checkpoint():
@@ -265,6 +280,7 @@ async def _checkpoint():
         await run_checkpoint_job()
     except Exception as e:
         logger.error(f"Checkpoint job error: {e}")
+        raise
 
 
 async def _prune_retention():
@@ -288,6 +304,7 @@ async def _prune_retention():
         )
     except Exception as e:
         logger.error(f"Retention prune job error: {e}")
+        raise
 
 
 async def _calibration_recompute():
@@ -297,6 +314,7 @@ async def _calibration_recompute():
         logger.info(f"Calibration recompute: {result}")
     except Exception as e:
         logger.error(f"Calibration recompute job error: {e}")
+        raise
 
 
 async def _watchdog():
@@ -305,6 +323,7 @@ async def _watchdog():
         await run_watchdog()
     except Exception as e:
         logger.error(f"Watchdog job error: {e}")
+        raise
 
 
 async def _homelab_watch():
@@ -313,6 +332,7 @@ async def _homelab_watch():
         await run_homelab_watch()
     except Exception as e:
         logger.error(f"Homelab watch job error: {e}")
+        raise
 
 
 async def _homelab_digest():
@@ -321,6 +341,7 @@ async def _homelab_digest():
         await run_homelab_digest()
     except Exception as e:
         logger.error(f"Homelab digest job error: {e}")
+        raise
 
 
 async def _spend_report():
@@ -329,6 +350,7 @@ async def _spend_report():
         await send_spend_report()
     except Exception as e:
         logger.error(f"Spend report job error: {e}")
+        raise
 
 
 async def _anthropic_balance_watch():
@@ -337,6 +359,7 @@ async def _anthropic_balance_watch():
         await check_anthropic_balance_feature()
     except Exception as e:
         logger.error(f"Anthropic balance watch job error: {e}")
+        raise
 
 
 async def _run_facts_digest():
@@ -346,6 +369,7 @@ async def _run_facts_digest():
         logger.info(f"Facts digest job: {result}")
     except Exception as e:
         logger.error(f"Facts digest job error: {e}")
+        raise
 
 
 async def _goal_recurrence():
@@ -355,6 +379,7 @@ async def _goal_recurrence():
         logger.info(f"Goal recurrence tick: {result}")
     except Exception as e:
         logger.error(f"Goal recurrence job error: {e}")
+        raise
 
 
 async def _run_brain_organizer():
@@ -421,6 +446,7 @@ async def _run_brain_organizer():
             logger.info("Brain Organizer run complete")
     except Exception as e:
         logger.error(f"Brain Organizer job error: {e}")
+        raise
 
 
 async def _run_fragmentation_report():
