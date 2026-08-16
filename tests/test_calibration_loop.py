@@ -1160,13 +1160,16 @@ def test_hint_report_groups_persisted_status_into_suppressed_and_overridden(eng)
 
 
 @pytest.mark.asyncio
-async def test_cal46_calibration_recompute_swallows_exception_and_logs(caplog):
-    """CAL46: _calibration_recompute swallows a raising recompute_hints and
-    logs rather than propagating -- mirrors test_watchdog.py's
-    test_watchdog_scheduler_wrapper_swallows_exception (patch the lazily-
-    imported target function, call the wrapper, assert it does not raise)."""
+async def test_cal46_calibration_recompute_logs_and_reraises(caplog):
+    """CAL46: _calibration_recompute logs a raising recompute_hints then
+    re-raises, so APScheduler's error event fires and the failure is visible
+    on the Pulse activity board -- mirrors test_watchdog.py's
+    test_watchdog_scheduler_wrapper_reraises_exception (patch the lazily-
+    imported target function, call the wrapper, assert it raises)."""
     import logging
     from unittest.mock import AsyncMock, patch
+
+    import pytest
 
     from backend.scheduler import _calibration_recompute
 
@@ -1174,7 +1177,8 @@ async def test_cal46_calibration_recompute_swallows_exception_and_logs(caplog):
 
     with caplog.at_level(logging.ERROR):
         with patch("backend.agents.calibration.recompute_hints", recompute_mock):
-            await _calibration_recompute()  # must not raise
+            with pytest.raises(RuntimeError, match="calibration exploded"):
+                await _calibration_recompute()
 
     recompute_mock.assert_awaited_once()
     assert any(
