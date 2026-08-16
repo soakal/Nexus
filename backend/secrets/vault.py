@@ -63,7 +63,10 @@ def _stamp_meta(key: str) -> None:
 
 def _load_fernet() -> Fernet:
     if not KEY_PATH.exists():
-        raise RuntimeError(".vault.key not found. Run setup.ps1 first.")
+        raise RuntimeError(
+            ".vault.key not found. Seed /var/lib/nexus/.vault.key "
+            "(see docs/lxc-migration-spec.md Phase 1.1-1.4)."
+        )
     return Fernet(KEY_PATH.read_bytes())
 
 def get_secret(key: str) -> str:

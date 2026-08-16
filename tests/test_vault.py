@@ -56,8 +56,12 @@ def test_missing_vault_key(vault_dir, monkeypatch):
     (vault_dir / ".vault.key").unlink()
     importlib.reload(v)
 
-    with pytest.raises(RuntimeError, match=".vault.key not found"):
+    with pytest.raises(RuntimeError, match=".vault.key not found") as exc_info:
         v.get_secret("TEMP_KEY")
+    # Error text must point at the Linux seeding path, not the old Windows
+    # setup.ps1 pointer (see docs/lxc-migration-spec.md Phase 1.1-1.4).
+    assert "ps1" not in str(exc_info.value)
+    assert "/var/lib/nexus/.vault.key" in str(exc_info.value)
 
 
 def test_missing_secret_raises_key_error(vault_dir, monkeypatch):
