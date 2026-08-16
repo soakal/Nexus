@@ -355,14 +355,16 @@ async def test_watchdog_scheduler_wrapper_calls_run_watchdog():
 
 
 @pytest.mark.asyncio
-async def test_watchdog_scheduler_wrapper_swallows_exception():
-    """_watchdog swallows exceptions from run_watchdog."""
+async def test_watchdog_scheduler_wrapper_reraises_exception():
+    """_watchdog logs then re-raises exceptions from run_watchdog so
+    APScheduler's error event fires and the failure is visible on Pulse."""
     from backend.scheduler import _watchdog
 
     run_mock = AsyncMock(side_effect=RuntimeError("watchdog crashed"))
 
     with patch("backend.agents.watchdog.run_watchdog", run_mock):
-        await _watchdog()  # must not raise
+        with pytest.raises(RuntimeError, match="watchdog crashed"):
+            await _watchdog()
 
 
 # ---------------------------------------------------------------------------

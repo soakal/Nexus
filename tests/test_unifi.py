@@ -305,82 +305,12 @@ async def test_unifi_fetch_bandwidth_null_rate_leaves_degrade_to_zero():
 
 
 @pytest.mark.asyncio
-async def test_unifi_fetch_alerts_filters_out_archived():
-    """list/alarm returns ALL alarms by convention, not just active ones --
-    fetch() must filter out anything with archived truthy so a resolved alarm
-    doesn't show up as an active alert forever."""
-    login_resp = MagicMock(status_code=200)
-    clients_resp = MagicMock(status_code=200)
-    clients_resp.json.return_value = {"data": []}
-    health_resp = MagicMock(status_code=200)
-    health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
-    active = {"key": "EVT_WU_Disconnected", "msg": "AP disconnected", "archived": False}
-    resolved = {"key": "EVT_WU_Connected", "msg": "AP reconnected", "archived": True}
-
-    with patch("httpx.AsyncClient") as mock_cls, \
-         patch("backend.integrations.unifi.Session") as mock_session_cls, \
-         patch("backend.database.engine"):
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
-        mock_client.__aenter__.return_value.get = AsyncMock(
-            side_effect=[clients_resp, health_resp, _alarm_resp([active, resolved])]
-        )
-        mock_cls.return_value = mock_client
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.exec.return_value.all.return_value = []
-        mock_session_cls.return_value = mock_session
-
-        from backend.integrations.unifi import fetch
-        data = await fetch()
-
-    assert data.alerts == [active]
-
-
-@pytest.mark.asyncio
-async def test_unifi_fetch_alerts_populated_from_alarm_endpoint():
-    login_resp = MagicMock(status_code=200)
-    clients_resp = MagicMock(status_code=200)
-    clients_resp.json.return_value = {"data": []}
-    health_resp = MagicMock(status_code=200)
-    health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
-    alarms = [{"key": "EVT_WU_Disconnected", "msg": "AP disconnected", "time": 1785318278000}]
-
-    with patch("httpx.AsyncClient") as mock_cls, \
-         patch("backend.integrations.unifi.Session") as mock_session_cls, \
-         patch("backend.database.engine"):
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
-        mock_client.__aenter__.return_value.get = AsyncMock(
-            side_effect=[clients_resp, health_resp, _alarm_resp(alarms)]
-        )
-        mock_cls.return_value = mock_client
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.exec.return_value.all.return_value = []
-        mock_session_cls.return_value = mock_session
-
-        from backend.integrations.unifi import fetch
-        data = await fetch()
-
-    assert data.alerts == alarms
-
-
-@pytest.mark.asyncio
-async def test_unifi_fetch_alarm_endpoint_failure_degrades_alerts_to_none():
-    """FIXED 2026-08-06: a failed alarms read used to raise and kill the
-    ENTIRE fetch() (client_count/uplink_status/bandwidth_mbps included), even
-    though those are independently confirmed working. Live-verified the
-    alarms endpoint itself is broken on the real controller (HTTP 400
-    api.err.InvalidObject) -- this now degrades ONLY alerts, to None (never
-    [], which would be a false all-clear), while everything else still
-    succeeds."""
+async def test_unifi_fetch_alerts_always_none():
+    """list/alarm is permanently broken on the real controller (HTTP 400
+    api.err.InvalidObject on every request, confirmed live) -- fetch() no
+    longer calls it at all, alerts is unconditionally None (never [], which
+    would read as a false all-clear). Only 2 GET calls now (clients, health),
+    not 3."""
     login_resp = MagicMock(status_code=200)
     clients_resp = MagicMock(status_code=200)
     clients_resp.json.return_value = {"data": [{"mac": "aa:bb:cc:dd:ee:ff"}]}
@@ -394,7 +324,7 @@ async def test_unifi_fetch_alarm_endpoint_failure_degrades_alerts_to_none():
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
         mock_client.__aenter__.return_value.get = AsyncMock(
-            side_effect=[clients_resp, health_resp, _alarm_resp(status_code=500)]
+            side_effect=[clients_resp, health_resp]
         )
         mock_cls.return_value = mock_client
 
@@ -410,42 +340,7 @@ async def test_unifi_fetch_alarm_endpoint_failure_degrades_alerts_to_none():
     assert data.alerts is None
     assert data.client_count == 1
     assert data.uplink_status == "ok"
-
-
-@pytest.mark.asyncio
-async def test_unifi_fetch_alarm_endpoint_400_invalid_object_degrades_alerts_to_none():
-    """The exact real-world failure mode: UniFi Network 10.5.67 / UDM Pro Max
-    returns HTTP 400 {"meta":{"rc":"error","msg":"api.err.InvalidObject"}} for
-    list/alarm on every request -- confirmed live, not a hypothetical."""
-    login_resp = MagicMock(status_code=200)
-    clients_resp = MagicMock(status_code=200)
-    clients_resp.json.return_value = {"data": []}
-    health_resp = MagicMock(status_code=200)
-    health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
-    invalid_object_resp = MagicMock(status_code=400)
-    invalid_object_resp.json.return_value = {"meta": {"rc": "error", "msg": "api.err.InvalidObject"}, "data": []}
-
-    with patch("httpx.AsyncClient") as mock_cls, \
-         patch("backend.integrations.unifi.Session") as mock_session_cls, \
-         patch("backend.database.engine"):
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
-        mock_client.__aenter__.return_value.get = AsyncMock(
-            side_effect=[clients_resp, health_resp, invalid_object_resp]
-        )
-        mock_cls.return_value = mock_client
-
-        mock_session = MagicMock()
-        mock_session.__enter__ = MagicMock(return_value=mock_session)
-        mock_session.__exit__ = MagicMock(return_value=False)
-        mock_session.exec.return_value.all.return_value = []
-        mock_session_cls.return_value = mock_session
-
-        from backend.integrations.unifi import fetch
-        data = await fetch()
-
-    assert data.alerts is None
+    assert mock_client.__aenter__.return_value.get.await_count == 2
 
 
 def test_unifi_data_defaults():

@@ -133,10 +133,14 @@ async def test_scheduler_run_briefing_success():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_briefing_exception_swallowed():
+async def test_scheduler_run_briefing_exception_notifies_and_reraises():
     from backend.scheduler import _run_briefing
-    with patch("backend.agents.briefing.run_briefing", new_callable=AsyncMock, side_effect=Exception("boom")):
-        await _run_briefing()  # Exception is caught, should not raise
+    with patch("backend.agents.briefing.run_briefing", new_callable=AsyncMock, side_effect=Exception("boom")), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify:
+        with pytest.raises(Exception, match="boom"):
+            await _run_briefing()
+    mock_notify.assert_awaited_once()
+    assert "Morning briefing failed" in mock_notify.await_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -148,10 +152,11 @@ async def test_scheduler_retry_pending():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_retry_pending_exception_swallowed():
+async def test_scheduler_retry_pending_exception_reraises():
     from backend.scheduler import _retry_pending_deliveries
     with patch("backend.integrations.telegram.deliver_pending", new_callable=AsyncMock, side_effect=Exception("telegram down")):
-        await _retry_pending_deliveries()  # Should not raise
+        with pytest.raises(Exception, match="telegram down"):
+            await _retry_pending_deliveries()
 
 
 def test_setup_scheduler_adds_jobs(monkeypatch):

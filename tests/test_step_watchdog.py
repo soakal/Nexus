@@ -284,13 +284,14 @@ async def test_step_watchdog_coroutine_calls_reap():
 
 
 @pytest.mark.asyncio
-async def test_step_watchdog_coroutine_swallows_exception():
-    """The _step_watchdog wrapper swallows exceptions so a watchdog failure
-    never propagates to the APScheduler job runner."""
+async def test_step_watchdog_coroutine_reraises_exception():
+    """The _step_watchdog wrapper logs then re-raises so APScheduler's error
+    event fires and the failure is visible on the Pulse activity board."""
     from backend.scheduler import _step_watchdog
 
     mock_pool = AsyncMock()
     mock_pool.reap_hung_steps = AsyncMock(side_effect=RuntimeError("pool exploded"))
 
     with patch("backend.agents.worker_pool.get_pool", return_value=mock_pool):
-        await _step_watchdog()  # must not raise
+        with pytest.raises(RuntimeError, match="pool exploded"):
+            await _step_watchdog()
