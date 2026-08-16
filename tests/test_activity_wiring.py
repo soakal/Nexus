@@ -137,6 +137,85 @@ def test_listener_error_does_not_propagate(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# registered_jobs() -- the scheduler's own live job list, merged into Pulse
+# so a job that's registered but hasn't fired yet (e.g. goal_proposer, a
+# 6-hour interval) is distinguishable from one that isn't registered at all.
+# ---------------------------------------------------------------------------
+
+def test_registered_jobs_returns_id_and_next_run_time(monkeypatch):
+    import backend.scheduler as sched_mod
+    from datetime import datetime, timezone, timedelta
+
+    aware = datetime(2026, 8, 16, 8, 0, tzinfo=timezone(timedelta(hours=-4)))
+    fake_jobs = [
+        SimpleNamespace(id="goal_proposer", next_run_time=aware),
+        SimpleNamespace(id="anthropic_balance_watch", next_run_time=aware),
+    ]
+    with patch.object(sched_mod.scheduler, "get_jobs", return_value=fake_jobs):
+        result = sched_mod.registered_jobs()
+
+    assert result == [
+        {"id": "anthropic_balance_watch", "next_run_time": aware.isoformat()},
+        {"id": "goal_proposer", "next_run_time": aware.isoformat()},
+    ]
+
+
+def test_registered_jobs_handles_unset_next_run_time(monkeypatch):
+    """A job added while the scheduler is stopped has next_run_time UNSET
+    (no attribute at all), not None -- a bare `job.next_run_time` raises
+    AttributeError here, which is exactly the bug this test pins."""
+    import backend.scheduler as sched_mod
+
+    class _PendingJob:
+        id = "x"
+        # deliberately no next_run_time attribute
+
+    with patch.object(sched_mod.scheduler, "get_jobs", return_value=[_PendingJob()]):
+        result = sched_mod.registered_jobs()
+
+    assert result == [{"id": "x", "next_run_time": None}]
+
+
+def test_registered_jobs_paused_job_is_null(monkeypatch):
+    import backend.scheduler as sched_mod
+
+    fake_jobs = [SimpleNamespace(id="paused_job", next_run_time=None)]
+    with patch.object(sched_mod.scheduler, "get_jobs", return_value=fake_jobs):
+        result = sched_mod.registered_jobs()
+
+    assert result == [{"id": "paused_job", "next_run_time": None}]
+
+
+def test_registered_jobs_never_raises(monkeypatch):
+    import backend.scheduler as sched_mod
+
+    with patch.object(sched_mod.scheduler, "get_jobs", side_effect=RuntimeError("scheduler down")):
+        result = sched_mod.registered_jobs()
+
+    assert result == []
+
+
+def test_registered_jobs_actor_id_convention_matches_listener(monkeypatch):
+    """The real regression guard for the Pulse merge: registered_jobs()'s
+    `id` and the listener's `job:{id}` actor_id must use the identical raw
+    job id string, or the frontend's dedup (`entries[`job:${j.id}`]`) breaks
+    silently and a fired job shows twice."""
+    import backend.scheduler as sched_mod
+    from apscheduler.events import EVENT_JOB_SUBMITTED
+
+    callback = _capture_listener(monkeypatch)
+    callback(SimpleNamespace(code=EVENT_JOB_SUBMITTED, job_id="goal_proposer"))
+
+    fired_actor_id = activity.snapshot()["entries"][0]["actor_id"]
+
+    with patch.object(sched_mod.scheduler, "get_jobs",
+                       return_value=[SimpleNamespace(id="goal_proposer", next_run_time=None)]):
+        registered = sched_mod.registered_jobs()
+
+    assert f"job:{registered[0]['id']}" == fired_actor_id
+
+
+# ---------------------------------------------------------------------------
 # Worker pool
 # ---------------------------------------------------------------------------
 

@@ -586,6 +586,32 @@ def _register_activity_listener() -> None:
         logger.warning(f"Pulse activity listener registration failed (non-fatal): {e}")
 
 
+def registered_jobs() -> list[dict]:
+    """The live APScheduler job registry -- id + next fire time, in-memory
+    only (no DB, no I/O, no lock). Pulse merges this with activity.snapshot()
+    so a job that IS registered but hasn't fired since the last restart shows
+    as "registered, next run at X" instead of being silently absent from the
+    board -- previously indistinguishable from a job that isn't registered at
+    all (goal_proposer was missing for ~3 weeks, found only by hand-diffing
+    this file against the live /api/activity response).
+
+    Best-effort, never raises -- same contract as backend/activity.py's
+    mutators: a scheduler hiccup must degrade the Pulse board, not 500 it."""
+    try:
+        jobs = []
+        for job in scheduler.get_jobs():
+            # getattr, not job.next_run_time: the attribute is UNSET (not
+            # None) on a job added while the scheduler is stopped -- see
+            # APScheduler's own Job.__repr__ hasattr guard. None means paused.
+            nrt = getattr(job, "next_run_time", None)
+            jobs.append({"id": job.id, "next_run_time": nrt.isoformat() if nrt else None})
+        jobs.sort(key=lambda j: j["id"])
+        return jobs
+    except Exception as ex:
+        logger.debug(f"registered_jobs failed (ignored): {ex}")
+        return []
+
+
 def setup_scheduler(briefing_time: str, timezone: str):
     _register_activity_listener()
     hour, minute = briefing_time.split(":")

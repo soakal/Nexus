@@ -435,6 +435,9 @@ async def websocket_agent_activity(websocket: WebSocket):
 async def get_activity(_=Depends(require_api_key)):
     # REST fallback for the Pulse page's initial paint (before the socket
     # opens) and as a poll fallback. Reads the in-memory registry only — no
-    # DB, no LLM. Same shape as the websocket's "activity.snapshot" message.
+    # DB, no LLM. `entries`/`events` are the same shape as the websocket's
+    # "activity.snapshot" message; `jobs` is the scheduler's own live job
+    # list, which the registry cannot know about until a job actually fires.
     from backend import activity
-    return activity.snapshot()
+    from backend.scheduler import registered_jobs
+    return {**activity.snapshot(), "jobs": registered_jobs()}

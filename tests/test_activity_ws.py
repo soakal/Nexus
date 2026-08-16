@@ -143,6 +143,40 @@ def test_get_activity_returns_snapshot(lan_client):
     assert "worker:0" in ids
 
 
+def test_get_activity_includes_registered_jobs(lan_client):
+    """The real-world state this exists for: goal_proposer is registered on
+    the live scheduler but hasn't fired since the last restart -- it must be
+    representable in `jobs` without a matching `entries` row."""
+    from types import SimpleNamespace
+    from backend.config import get_settings
+    import backend.scheduler as sched_mod
+
+    real_key = get_settings().nexus_api_key
+    fake_job = SimpleNamespace(id="goal_proposer", next_run_time=None)
+    with patch.object(sched_mod.scheduler, "get_jobs", return_value=[fake_job]):
+        resp = lan_client.get("/api/activity", headers={"Authorization": f"Bearer {real_key}"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["jobs"] == [{"id": "goal_proposer", "next_run_time": None}]
+    assert "job:goal_proposer" not in {e["actor_id"] for e in body["entries"]}
+
+
+def test_get_activity_jobs_empty_when_scheduler_unavailable(lan_client):
+    """A scheduler hiccup must degrade `jobs` to [] without breaking the rest
+    of the page's paint -- entries/events unaffected."""
+    from backend.config import get_settings
+    real_key = get_settings().nexus_api_key
+    activity.begin("worker:0", "worker", "task 7")
+
+    resp = lan_client.get("/api/activity", headers={"Authorization": f"Bearer {real_key}"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["jobs"] == []
+    assert "worker:0" in {e["actor_id"] for e in body["entries"]}
+
+
 # ---------------------------------------------------------------------------
 # Broadcaster: runs the REAL run_activity_broadcaster() coroutine, not a
 # reimplementation of its logic in the test -- an Opus verify pass on this

@@ -36,6 +36,21 @@ function fmtElapsed(startedAtIso, nowTick) {
   return `${Math.floor(s / 60)}m ${s % 60}s`
 }
 
+// APScheduler's next_run_time is timezone-AWARE (carries a -04:00 offset),
+// unlike the registry's naive-UTC timestamps -- it must NOT go through
+// toMs(), which blindly appends 'Z' and would produce an Invalid Date.
+function fmtNextRun(iso) {
+  if (!iso) return 'paused'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return '—'
+  const when = new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const d = Math.floor((t - Date.now()) / 1000)
+  if (d <= 0) return `due now · ${when}`
+  if (d < 3600) return `in ${Math.ceil(d / 60)}m · ${when}`
+  if (d < 86400) return `in ${Math.floor(d / 3600)}h · ${when}`
+  return `in ${Math.floor(d / 86400)}d · ${when}`
+}
+
 function statusColor(status) {
   switch (status) {
     case 'running': return '#2fd4ee'
@@ -55,6 +70,7 @@ export default function Pulse() {
   const [autonomy, setAutonomy] = useState(null)
   const [nowTick, setNowTick] = useState(Date.now())
   const [paused, setPaused] = useState(false)
+  const [jobs, setJobs] = useState([])         // scheduler's own live job list, id + next_run_time
   const pausedRef = useRef(false)
   const pendingEventsRef = useRef([])
 
@@ -86,7 +102,19 @@ export default function Pulse() {
       for (const e of (snap.entries || [])) map[e.actor_id] = e
       setEntries(map)
       setEvents(snap.events || [])
+      setJobs(snap.jobs || [])
     }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    // Registered-job list only -- entries/events come over the socket, but
+    // the scheduler's own list (needed for jobs that haven't fired yet) isn't
+    // pushed over it, so a daily job's "next run" would otherwise go stale in
+    // a tab left open overnight.
+    const t = setInterval(() => {
+      api.activity.snapshot().then(s => setJobs(s.jobs || [])).catch(() => {})
+    }, 60000)
+    return () => clearInterval(t)
   }, [])
 
   useEffect(() => {
@@ -174,6 +202,21 @@ export default function Pulse() {
     const key = e.actor_type
     if (!grouped[key]) grouped[key] = []
     grouped[key].push(e)
+  }
+  // The Pulse registry is in-memory and only gains a job:{id} entry once the
+  // job has actually RUN since the last restart -- so a 6-hourly/daily/weekly
+  // job is invisible here, indistinguishable from one that silently isn't
+  // registered at all. The scheduler's own list fills that gap. A job that HAS
+  // fired keeps its real entry: fired state is strictly more informative, and
+  // this also makes the two reads race-proof (see the backend route).
+  for (const j of jobs) {
+    const actorId = `job:${j.id}`
+    if (entries[actorId]) continue
+    if (!grouped.job) grouped.job = []
+    grouped.job.push({
+      actor_id: actorId, actor_type: 'job',
+      status: 'scheduled', next_run_time: j.next_run_time,
+    })
   }
   for (const key of Object.keys(grouped)) {
     grouped[key].sort((a, b) => {
@@ -268,6 +311,7 @@ export default function Pulse() {
                   <div key={e.actor_id} style={{
                     padding: '10px 12px', borderRadius: '10px',
                     background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(120,160,220,0.10)',
+                    opacity: e.status === 'scheduled' ? 0.6 : 1,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                       <StatusDot color={statusColor(e.status)} pulse={e.status === 'running'} size={7} />
@@ -276,11 +320,13 @@ export default function Pulse() {
                       </span>
                     </div>
                     <div style={{ fontSize: '11px', color: '#8a96ad' }}>
-                      {e.status === 'running'
-                        ? `running${e.actor_type === 'worker' && e.detail?.task_id ? ` · task #${e.detail.task_id}` : ''} · ${fmtElapsed(e.started_at, nowTick)}`
-                        : e.last_run_at
-                          ? `last ran ${relativeTime(e.last_run_at)} · ${fmtMs(e.last_duration_ms)} · ${e.status === 'error' ? 'ERROR' : 'OK'}`
-                          : 'no data yet'}
+                      {e.status === 'scheduled'
+                        ? `registered · next run ${fmtNextRun(e.next_run_time)}`
+                        : e.status === 'running'
+                          ? `running${e.actor_type === 'worker' && e.detail?.task_id ? ` · task #${e.detail.task_id}` : ''} · ${fmtElapsed(e.started_at, nowTick)}`
+                          : e.last_run_at
+                            ? `last ran ${relativeTime(e.last_run_at)} · ${fmtMs(e.last_duration_ms)} · ${e.status === 'error' ? 'ERROR' : 'OK'}`
+                            : 'no data yet'}
                     </div>
                     {e.label && e.label !== e.actor_id.replace(/^(job|worker|loop|task):/, '') ? (
                       <div style={{ fontSize: '11px', color: '#8a96ad', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
