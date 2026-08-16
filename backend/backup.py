@@ -6,11 +6,11 @@ Keeps a dated history/ subfolder capped at 14 copies. Never raises — backup
 failures must never block a secret save or crash the scheduler.
 
 Restore path (manual):
-  1. Stop NEXUS (stop.ps1)
+  1. Stop NEXUS (systemctl stop nexus-backend nexus-frontend)
   2. Copy nexus.vault (and .vault.key if backed up) AND nexus.db from the
      share to the project root, overwriting the current files. Delete any
      stale nexus.db-wal / nexus.db-shm sidecars.
-  3. Start NEXUS (start.ps1)
+  3. Start NEXUS (systemctl start nexus-backend nexus-frontend)
   To restore a specific point-in-time: copy from history/<timestamp>/ instead.
 """
 import logging
