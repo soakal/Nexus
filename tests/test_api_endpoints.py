@@ -425,21 +425,22 @@ def test_trigger_requires_auth(app_client):
 
 
 def test_trigger_council_postmortem(app_client, auth_headers):
-    """Council-loop's run-loop.ps1 POSTs here at driver exit (Phase 2c hookup)
-    -- pins the parameter plumbing that POST depends on: 'since' must reach
-    run_postmortem unchanged."""
+    """Council-loop/scripts/postmortem_payload.py POSTs here at driver exit --
+    pins the parameter plumbing: the full parameters dict (the payload) must
+    reach run_postmortem unchanged, as a single positional arg."""
     with patch("backend.agents.council_postmortem.run_postmortem", new_callable=AsyncMock) as mock_pm:
         mock_pm.return_value = {"ok": True, "findings": []}
+        payload = {"target_repo_name": "ProcessForge", "range": None}
         resp = app_client.post(
             "/api/trigger",
-            json={"task_name": "council_postmortem", "parameters": {"since": "2026-07-27T00:00:00Z"}},
+            json={"task_name": "council_postmortem", "parameters": payload},
             headers=auth_headers,
         )
         assert resp.status_code == 200
         body = resp.json()
         assert body["ok"] is True
         assert body["result"] == {"ok": True, "findings": []}
-        mock_pm.assert_awaited_once_with(since="2026-07-27T00:00:00Z")
+        mock_pm.assert_awaited_once_with(payload)
 
 
 # ---------------------------------------------------------------------------

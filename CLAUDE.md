@@ -19,6 +19,47 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**Council-loop post-mortem repointed off local filesystem access (2026-08-16)** — closes a gap
+introduced by the Windows→nexus-lxc migration and never caught until a Fable-led NEXUS feature-gap
+review: `council_postmortem_enabled` was `True` and `council_loop_path` still hardcoded
+`C:\Users\Brian\Documents\Council-loop`, but no Council-loop clone exists anywhere on nexus-lxc's
+filesystem — every `/api/trigger` call for `council_postmortem` had been silently failing since
+Windows was decommissioned (see the "Windows fully shut down" banner above), and nothing was
+calling it anyway: `run-loop.ps1` (the only existing driver) has no Linux equivalent, so nothing on
+Linux ever invoked the postmortem trigger in the first place.
+- **Design change:** `backend/agents/council_postmortem.py` no longer reads git data off local
+  disk (`_git`/`_effective_config`/`_read_history`/`_read_goal`/`_read_transcripts`/
+  `_derive_range`/`_range_expr` all deleted) — it now consumes a `payload: dict` of raw git data
+  (log/diff/file-listing output) gathered CLIENT-SIDE by a new
+  `Council-loop/scripts/postmortem_payload.py`, on whichever machine is actually running
+  Council-loop (now `devbox`, not necessarily the same machine as NEXUS's own nexus-lxc). All
+  judgment stays server-side (the deterministic checks + the one Haiku allowlist-extraction call);
+  only the raw data-gathering moved to the caller. `backend/api/trigger.py`'s
+  `_trigger_council_postmortem` now passes the full `params` dict straight through as the payload
+  (dropped the old `since=` kwarg, which was accepted but never actually used).
+  `backend/config.py`'s `council_loop_path` setting is deleted outright — there is no local path
+  to configure anymore.
+- **New live caller:** `Council-loop/run-loop.sh`, a bash port of `run-loop.ps1` for Linux/macOS
+  (same stop.flag loop, same Brain-event-at-exit block, calls `postmortem_payload.py` at exit
+  instead of POSTing pre-gathered data directly). `run-loop.ps1` is untouched and still works for
+  a future Windows driver, but Council-loop's actual current usage is via `/loop /council-cycle`
+  in Claude Code directly, not either driver script — `run-loop.sh` exists so an unattended/batch
+  driver mode is available on Linux, matching what `run-loop.ps1` used to provide on Windows.
+- **Also closed the same session:** `nexus-backend.service`/`nexus-frontend.service`/
+  `mcp-obsidian.service` all had `StartLimitIntervalSec`/`StartLimitBurst` misplaced in `[Service]`
+  instead of `[Unit]` (silently ignored by systemd ≥229, journal warned on every restart) — moved
+  to `[Unit]` in all three units, verified with `systemd-analyze verify`, no restart needed. Stale
+  `HERMES_*` entries in the legacy `nexus.vault` (never cleaned up when Hermes was decommissioned
+  2026-08-09, flagged then, actually removed now) deleted. The Unraid docker-prune SSH key (Phase
+  7d, "shipped but not yet live" per that section's own note) turned out to already be installed —
+  just with its `from=` restriction pinned to the old decommissioned Windows box's IP
+  (`192.168.1.119`) instead of nexus-lxc's real IP (`192.168.1.62`); fixed in both
+  `/root/.ssh/authorized_keys` and the persisting `/boot/config/go` block on the Unraid host
+  itself (not tracked in any repo). `prune_docker_images()` verified working end-to-end
+  post-fix. The POSIX vault-restore automation gap this same review flagged was deliberately
+  NOT built — `backend/backup.py::restore_vault`'s existing YAGNI comment (manual `rclone copy`,
+  drilled successfully 2026-08-14) stands; Brian confirmed leaving it as-is.
+
 **Track B — full cutover, this instance becomes primary (2026-08-15, overnight)** — executed
 autonomously while Brian slept, per his explicit request. See `nexus` (master)'s own CLAUDE.md
 entry for the full reasoning, constraints, and the confirmed-not-assumed DB-wipe decision. This

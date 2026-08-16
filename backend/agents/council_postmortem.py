@@ -1,40 +1,45 @@
 """Independently re-verify a Council-loop session's real commit range against
 its own claims — the "did the Realist's prose match reality" check.
 
-Council-loop (a separate repo, C:\\Users\\Brian\\Documents\\Council-loop) auto-commits
-one step at a time against whatever `target_repo` it's building, and nobody
-re-reads the diffs afterward. The Realist role is instructed to run its own
-verification, but nothing captures whether it actually did — only its own
-prose claim survives, in `.council/state/transcripts/cycle-NNNN.md`.
+Council-loop (a separate repo) auto-commits one step at a time against
+whatever `target_repo` it's building, and nobody re-reads the diffs
+afterward. The Realist role is instructed to run its own verification, but
+nothing captures whether it actually did — only its own prose claim
+survives, in `.council/state/transcripts/cycle-NNNN.md`.
 
-Triggered by Council-loop's own `run-loop.ps1` POSTing to `/api/trigger`
-{"task_name": "council_postmortem"} at driver exit (see backend/api/trigger.py)
-— NOT scheduled here on NEXUS's own scheduler, because `/goal` TRUNCATES
+Triggered by Council-loop's own `run-loop.sh` (or `run-loop.ps1` on Windows)
+POSTing to `/api/trigger` {"task_name": "council_postmortem", "parameters":
+<payload>} at driver exit (see backend/api/trigger.py) — NOT scheduled here
+on NEXUS's own scheduler, because `/goal` TRUNCATES
 `.council/state/history.jsonl` on every new session, so a poller that missed
 the window would lose that session's history permanently and silently.
 
-Independence comes from being DETERMINISTIC (git + Python ast), not from using
-a different model — Council-loop's own `.council/config.local.json` currently
-assigns Arbiter=opus, Engineer=sonnet, Security=sonnet, Realist=opus, so
-there's no smarter model to delegate to. The one LLM call here (extracting a
-file allowlist from goal.md's prose Objective) uses Haiku purely because it's
-the only role-free model and the task is extraction, not judgment.
+The payload carries raw git data (log/diff/file-listing output, gathered by
+Council-loop/scripts/postmortem_payload.py on whichever machine actually
+runs Council-loop) rather than this module reading it off local disk —
+NEXUS runs on nexus-lxc, Council-loop runs wherever Brian is actively using
+it, and those are no longer the same filesystem. Only the judgment stays
+server-side: all deterministic checks below, plus the one LLM call.
 
-Read-only. Never writes to the target repo (no checkout/revert/stash — only
-git log/diff/cat-file/rev-parse). Never raises — every public entry point
-returns a dict, even on total failure.
+Independence comes from being DETERMINISTIC (regex/set operations over the
+supplied git data), not from using a different model — Council-loop's own
+`.council/config.local.json` currently assigns Arbiter=opus, Engineer=sonnet,
+Security=sonnet, Realist=opus, so there's no smarter model to delegate to.
+The one LLM call here (extracting a file allowlist from goal.md's prose
+Objective) uses Haiku purely because it's the only role-free model and the
+task is extraction, not judgment.
+
+Read-only by construction — this module runs no git commands at all; it only
+ever reads fields off the payload dict. Never raises — every public entry
+point returns a dict, even on total failure.
 """
 
 import ast
 import logging
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 # Path-like tokens the test-claim check extracts from Realist/Engineer prose —
 # deliberately simple (regex, no LLM): a run of path-safe characters containing
@@ -71,113 +76,21 @@ def _looks_like_url(text: str, match_start: int) -> bool:
     return "://" in window
 
 
-def _git(cwd: str, *args: str, timeout: int = 30) -> str:
-    """Run a git command in cwd, return stdout stripped. Raises RuntimeError
-    on nonzero exit. Sync — every call site awaits this via asyncio.to_thread,
-    never directly: NEXUS forces the SelectorEventLoop and spawns no in-loop
-    subprocesses (see CLAUDE.md), so this must never be called from the loop.
-    """
-    result = subprocess.run(
-        ["git", "-C", cwd, *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
+def _normalize_path(p: str) -> str:
+    """git diff --name-only always emits forward slashes with no leading
+    './'; the goal-extraction LLM call is asked for paths "verbatim", and
+    goal.md text (e.g. Windows paths, a leading './') would otherwise never
+    match a real touched file. Normalize both sides through this."""
+    return p.strip().replace("\\", "/").removeprefix("./")
 
 
-def _effective_config(council_root: str) -> dict:
-    import json
-    script = str(Path(council_root) / "scripts" / "council_state.py")
-    result = subprocess.run(
-        [sys.executable, script, "effective-config"],
-        cwd=council_root, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"council_state.py effective-config failed: {result.stderr.strip()}")
-    return json.loads(result.stdout)
-
-
-def _read_history(council_root: str) -> list[dict]:
-    import json
-    path = Path(council_root) / ".council" / "state" / "history.jsonl"
-    if not path.exists():
-        return []
-    lines = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue  # malformed line — skip, don't fail the whole read
-        if isinstance(item, dict):
-            lines.append(item)
-    return lines
-
-
-def _read_goal(council_root: str) -> str:
-    path = Path(council_root) / ".council" / "state" / "goal.md"
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def _read_transcripts(council_root: str) -> str:
-    """Concatenate every transcript's text — used only for regex extraction
-    of cited test paths, never parsed as structured data."""
-    tdir = Path(council_root) / ".council" / "state" / "transcripts"
-    if not tdir.exists():
-        return ""
-    chunks = []
-    for f in sorted(tdir.glob("cycle-*.md")):
-        try:
-            chunks.append(f.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-    return "\n".join(chunks)
-
-
-def _derive_range(history: list[dict], target: str) -> tuple[str, str] | None:
-    """Return (first_full_sha, last_full_sha) spanning the whole session, or
-    None if the session has no real commits (every cycle deferred, or
-    auto_commit=false)."""
-    commits = [h.get("commit") for h in history if h.get("commit")]
-    if not commits:
-        return None
-
-    first_short, last_short = commits[0], commits[-1]
-    # --verify ...^{commit}, not a bare rev-parse: a bare `git rev-parse
-    # <nonexistent-40-char-hex>` exits 0 and echoes the input back verbatim
-    # (verified live) instead of failing — only ^{commit} actually confirms
-    # the object exists AND is a commit. Without this, a 40-char SHA that no
-    # longer resolves (Council-loop's Arbiter sometimes runs a bare `git
-    # rev-parse HEAD`, unlike the 7-char `--short HEAD` history normally
-    # stores) silently produces a bogus range instead of raising here, and
-    # the failure resurfaces one step later with no notification at all.
-    first = _git(target, "rev-parse", "--verify", f"{first_short}^{{commit}}")
-    last = _git(target, "rev-parse", "--verify", f"{last_short}^{{commit}}")
-    return (first, last)
-
-
-def _range_expr(target: str, first: str, last: str) -> str:
-    """first^..last, substituting the empty-tree hash if first is the repo's
-    very first commit (no parent to diff against)."""
-    try:
-        _git(target, "rev-parse", "--verify", f"{first}^")
-        base = f"{first}^"
-    except RuntimeError:
-        base = _EMPTY_TREE_HASH
-    return f"{base}..{last}"
-
-
-def _count_council_commits(target: str, rng: str, commit_prefix: str) -> tuple[int, int]:
-    """Return (council_commit_count, foreign_commit_count) in rng, split by
-    whether the subject line starts with commit_prefix (e.g. "council: cycle
-    3: ..."). Foreign commits are counted, never scanned by the checks below."""
-    log = _git(target, "log", "--format=%H%x00%s", rng)
+def _count_council_commits(log_text: str, commit_prefix: str) -> tuple[int, int]:
+    """Return (council_commit_count, foreign_commit_count) from a `git log
+    --format=%H%x00%s <range>` payload field, split by whether the subject
+    line starts with commit_prefix (e.g. "council: cycle 3: ..."). Foreign
+    commits are counted, never scanned by the checks below."""
     council, foreign = 0, 0
-    for line in log.splitlines():
+    for line in (log_text or "").splitlines():
         if not line:
             continue
         _, _, subject = line.partition("\x00")
@@ -188,19 +101,10 @@ def _count_council_commits(target: str, rng: str, commit_prefix: str) -> tuple[i
     return council, foreign
 
 
-def _normalize_path(p: str) -> str:
-    """git diff --name-only always emits forward slashes with no leading
-    './'; the goal-extraction LLM call is asked for paths "verbatim", and
-    goal.md text (e.g. Windows paths, a leading './') would otherwise never
-    match a real touched file. Normalize both sides through this."""
-    return p.strip().replace("\\", "/").removeprefix("./")
-
-
-def _check_scope_drift(target: str, rng: str, allowed: list[str]) -> list[dict]:
-    touched = [f for f in _git(target, "diff", "--name-only", rng).splitlines() if f]
+def _check_scope_drift(files_changed: list[str], allowed: list[str]) -> list[dict]:
     allowed_norm = [_normalize_path(a) for a in allowed]
     findings = []
-    for f in touched:
+    for f in files_changed:
         fn = _normalize_path(f)
         if not any(fn == a or fn.startswith(a.rstrip("/") + "/") for a in allowed_norm):
             findings.append({
@@ -209,9 +113,6 @@ def _check_scope_drift(target: str, rng: str, allowed: list[str]) -> list[dict]:
                 "detail": f"'{f}' was touched but is outside the stated plan",
             })
     return findings
-
-
-_PLACEHOLDER_BODY_TYPES = (ast.Pass,)
 
 
 def _is_placeholder_body(body: list) -> str | None:
@@ -242,25 +143,25 @@ def _is_placeholder_body(body: list) -> str | None:
     return None
 
 
-def _check_placeholders(target: str, rng: str, max_files: int = 200) -> list[dict]:
+def _check_placeholders(py_files: dict, py_changed_count: int, max_files: int = 200) -> list[dict]:
+    """py_files: {path: {"source": str, "diff_u0": str}} — absent (None) when
+    py_changed_count exceeded the client's own gathering cap."""
     findings = []
-    changed = [f for f in _git(target, "diff", "--name-only", rng).splitlines() if f.endswith(".py")]
-    if len(changed) > max_files:
-        # Bounds the 2-subprocesses-per-file cost — an ordinary session never
-        # comes close (ProcessForge's largest real cycle range touched ~12
-        # files); a session this large is unusual enough to flag rather than
-        # silently truncate or silently take minutes.
+    if py_changed_count > max_files:
+        # Bounds the payload/scan cost — an ordinary session never comes
+        # close (ProcessForge's largest real cycle range touched ~12 files);
+        # a session this large is unusual enough to flag rather than
+        # silently truncate.
         findings.append({
             "check": "placeholder", "severity": "low",
-            "detail": f"{len(changed)} changed .py files exceeds council_postmortem_max_files "
+            "detail": f"{py_changed_count} changed .py files exceeds council_postmortem_max_files "
                       f"({max_files}) — skipping the placeholder scan for this session",
         })
         return findings
 
-    for f in changed:
-        try:
-            source = _git(target, "show", f"{rng.split('..')[-1]}:{f}")
-        except RuntimeError:
+    for f, data in (py_files or {}).items():
+        source = data.get("source")
+        if source is None:
             continue  # file deleted in this range — nothing to parse
         try:
             tree = ast.parse(source)
@@ -283,11 +184,7 @@ def _check_placeholders(target: str, rng: str, max_files: int = 200) -> list[dic
 
         # Added lines only — a TODO/FIXME on an unchanged context line is not
         # new cruft; on a `+` line it is.
-        try:
-            diff_text = _git(target, "diff", "-U0", rng, "--", f)
-        except RuntimeError:
-            diff_text = ""
-        for line in diff_text.splitlines():
+        for line in (data.get("diff_u0") or "").splitlines():
             if not line.startswith("+") or line.startswith("+++"):
                 continue
             if re.search(r"\b(TODO|FIXME|XXX|HACK)\b", line) or "# ponytail:" in line:
@@ -299,8 +196,8 @@ def _check_placeholders(target: str, rng: str, max_files: int = 200) -> list[dic
     return findings
 
 
-def _check_test_claims(target: str, last: str, history: list[dict], transcripts: str) -> list[dict]:
-    text = transcripts + "\n" + "\n".join(h.get("notes", "") for h in history)
+def _check_test_claims(ls_tree_last: list[str], last: str, history: list[dict], transcripts: str) -> list[dict]:
+    text = (transcripts or "") + "\n" + "\n".join(h.get("notes", "") for h in (history or []))
     candidates = set()
     for m in _PATH_TOKEN_RE.finditer(text):
         token = m.group(0).lstrip("/\\")
@@ -311,11 +208,10 @@ def _check_test_claims(target: str, last: str, history: list[dict], transcripts:
             continue
         candidates.add(token)
 
+    existing = {_normalize_path(p) for p in (ls_tree_last or [])}
     findings = []
     for path in sorted(candidates):
-        try:
-            _git(target, "cat-file", "-e", f"{last}:{path}")
-        except RuntimeError:
+        if _normalize_path(path) not in existing:
             findings.append({
                 "check": "test_claim",
                 "severity": "high",
@@ -356,9 +252,8 @@ the list of those tokens verbatim (empty list if explicit is false)."""
         return [], False
 
 
-def _format_summary(session: dict, target: str, rng: str | None, findings: list[dict],
+def _format_summary(session: dict, repo_name: str, rng: str | None, findings: list[dict],
                      council_commits: int, foreign_commits: int) -> str:
-    repo_name = Path(target).name
     header = f"Council post-mortem — {repo_name}, {session.get('cycles', 0)} cycles"
     if rng:
         header += f", {council_commits} commit(s) ({rng})"
@@ -370,82 +265,70 @@ def _format_summary(session: dict, target: str, rng: str | None, findings: list[
     return "\n".join(lines)[:800]
 
 
-async def run_postmortem(*, since: str | None = None) -> dict:
+async def run_postmortem(payload: dict | None = None) -> dict:
     """Independently re-verify a Council-loop session against its target
-    repo's real commit range. Best-effort: NEVER raises. Returns a summary
-    dict; see module docstring for the full design rationale.
+    repo's real commit range, using raw git data the caller (wherever
+    Council-loop actually runs — see Council-loop/scripts/postmortem_payload.py)
+    gathered and sent. Best-effort: NEVER raises. Returns a summary dict; see
+    module docstring for the full design rationale.
 
-    `since` is accepted (Council-loop's run-loop.ps1 sends its own
-    `$runStart`) but deliberately NOT used to filter history: `/goal`
-    truncates `.council/state/history.jsonl` on every new session, so the
-    whole file already IS exactly one session — there's nothing left to
-    filter by timestamp. Kept as a parameter so the caller's contract doesn't
-    need to change if a future version needs it (e.g. once Council-loop
-    stops truncating history and starts appending across sessions)."""
-    import asyncio
-
-    target = None  # bound early so the outer except below can still report
-                   # which repo (if any) was being checked when it failed.
+    payload fields (all produced by postmortem_payload.py): target_repo_name,
+    commit_prefix, goal, history, transcripts, and either range_error (git
+    data couldn't be gathered), range=None (no commits this session), or the
+    full set: range, last, log, files_changed, ls_tree_last, py_changed_count,
+    py_files.
+    """
+    repo_name = "unknown"
     try:
         from backend.config import get_settings
         s = get_settings()
         if not getattr(s, "council_postmortem_enabled", True):
             return {"ok": False, "skipped": "council_postmortem_enabled is False"}
 
-        council_root = getattr(s, "council_loop_path", None)
-        if not council_root or not Path(council_root).exists():
-            return {"ok": False, "skipped": f"council_loop_path not found: {council_root}"}
+        if not payload:
+            return {"ok": False, "skipped": "no payload — caller must send git data "
+                                             "(see Council-loop/scripts/postmortem_payload.py)"}
 
-        cfg = await asyncio.to_thread(_effective_config, council_root)
-        target = cfg["target_repo"]
-        commit_prefix = cfg.get("commit_prefix", "council:")
-
-        history = await asyncio.to_thread(_read_history, council_root)
-        goal_text = await asyncio.to_thread(_read_goal, council_root)
-        transcripts = await asyncio.to_thread(_read_transcripts, council_root)
+        repo_name = payload.get("target_repo_name") or "unknown"
+        commit_prefix = payload.get("commit_prefix", "council:")
+        history = payload.get("history") or []
+        goal_text = payload.get("goal") or ""
+        transcripts = payload.get("transcripts") or ""
 
         session = {
             "goal": goal_text.strip()[:200],
             "cycles": len(history),
         }
 
-        try:
-            derived = await asyncio.to_thread(_derive_range, history, target)
-        except Exception as e:
-            # A commit SHA the history recorded no longer resolves in the
-            # target repo (rebase/amend/force-push, or target_repo pointed
-            # somewhere new since this history was written). This must NOT
-            # fall through to the outer except and die silently — that would
-            # make a permanently-broken post-mortem indistinguishable from a
-            # clean one on Brian's phone, the worst failure mode for a feature
-            # whose whole premise is "nobody re-reads this otherwise" (found
-            # live 2026-07-26 against real Council-loop state).
+        if payload.get("range_error"):
+            # Same "must not fall through and die silently" concern as the
+            # old local-git version: a permanently-broken post-mortem must
+            # not be indistinguishable from a clean one on Brian's phone.
             from backend import events
+            e = payload["range_error"]
             notified = await events.notify_phone(
-                f"Council post-mortem — {Path(target).name}: could not verify this "
+                f"Council post-mortem — {repo_name}: could not verify this "
                 f"session ({e}). The target repo's git history may have diverged "
                 f"from what Council-loop recorded (rebase/amend/force-push?).",
                 kind="council_postmortem",
             )
             return {
-                "ok": False, "session": session, "target_repo": target, "range": None,
+                "ok": False, "session": session, "target_repo": repo_name, "range": None,
                 "findings": [{"check": "range_resolution", "severity": "high", "detail": str(e)}],
                 "council_commits": 0, "foreign_commits": 0,
                 "notified": notified, "skipped": None,
             }
 
-        if derived is None:
+        rng = payload.get("range")
+        if rng is None:
             return {
-                "ok": True, "session": session, "target_repo": target, "range": None,
+                "ok": True, "session": session, "target_repo": repo_name, "range": None,
                 "findings": [], "council_commits": 0, "foreign_commits": 0,
                 "notified": False, "skipped": "no commits in session — nothing to check",
             }
-        first, last = derived
-        rng = await asyncio.to_thread(_range_expr, target, first, last)
 
-        council_commits, foreign_commits = await asyncio.to_thread(
-            _count_council_commits, target, rng, commit_prefix
-        )
+        last = payload["last"]
+        council_commits, foreign_commits = _count_council_commits(payload.get("log", ""), commit_prefix)
 
         model = getattr(s, "council_postmortem_model", "claude-haiku-4-5-20251001")
         allowed_paths, explicit = await _extract_allowed_paths(goal_text, model)
@@ -453,42 +336,34 @@ async def run_postmortem(*, since: str | None = None) -> dict:
         max_files = getattr(s, "council_postmortem_max_files", 200)
         findings: list[dict] = []
         if explicit:
-            findings += await asyncio.to_thread(_check_scope_drift, target, rng, allowed_paths)
-        findings += await asyncio.to_thread(_check_placeholders, target, rng, max_files)
-        findings += await asyncio.to_thread(_check_test_claims, target, last, history, transcripts)
+            findings += _check_scope_drift(payload.get("files_changed") or [], allowed_paths)
+        findings += _check_placeholders(payload.get("py_files") or {}, payload.get("py_changed_count", 0), max_files)
+        findings += _check_test_claims(payload.get("ls_tree_last") or [], last, history, transcripts)
 
         if getattr(s, "council_postmortem_run_tests", False):
             # Opt-in only (default False) — running a foreign repo's configured
             # test_commands inside this process is a much bigger trust step
-            # than reading its git history. Not implemented in v1; the flag
-            # exists so a future version can wire it in without a schema change.
+            # than reading its git history. Not implemented in v1.
             logger.info("council_postmortem_run_tests is True but running tests is not yet implemented")
 
         notified = False
         if findings:
             from backend import events
-            body = _format_summary(session, target, rng, findings, council_commits, foreign_commits)
+            body = _format_summary(session, repo_name, rng, findings, council_commits, foreign_commits)
             notified = await events.notify_phone(body, kind="council_postmortem")
 
         return {
-            "ok": True, "session": session, "target_repo": target, "range": rng,
+            "ok": True, "session": session, "target_repo": repo_name, "range": rng,
             "findings": findings, "council_commits": council_commits,
             "foreign_commits": foreign_commits, "notified": notified, "skipped": None,
         }
     except Exception as e:
         logger.warning(f"run_postmortem error (ignored): {e}")
-        # Best-effort notify here too, not just for the _derive_range case
-        # above — any other failure (a bad effective-config call, a git
-        # subprocess timeout on a huge diff, a malformed history.jsonl this
-        # session's own read/parse layer didn't catch) is exactly the same
-        # "nobody re-reads this otherwise" silent-failure risk F1 fixed for
-        # one call site; this closes it for the rest of the function too.
         notified = False
         try:
             from backend import events
-            where = f" ({Path(target).name})" if target else ""
             notified = await events.notify_phone(
-                f"Council post-mortem{where}: failed to run ({e}). Check "
+                f"Council post-mortem ({repo_name}): failed to run ({e}). Check "
                 f"NEXUS logs — this session was not verified.",
                 kind="council_postmortem",
             )

@@ -319,30 +319,37 @@ class Settings(BaseSettings):
     contract_canary_consecutive_ticks: int = 3
 
     # Council-loop post-mortem (backend/agents/council_postmortem.py). Triggered by
-    # Council-loop's own run-loop.ps1 at driver exit via POST /api/trigger
-    # {"task_name": "council_postmortem"} — NOT scheduled here, because /goal
-    # TRUNCATES .council/state/history.jsonl, so a poller that misses the window
-    # loses that session permanently.
+    # Council-loop's own run-loop.sh (or run-loop.ps1 on Windows) at driver exit via
+    # POST /api/trigger {"task_name": "council_postmortem", "parameters": <payload>}
+    # — NOT scheduled here, because /goal TRUNCATES .council/state/history.jsonl, so
+    # a poller that misses the window loses that session permanently.
+    #
+    # The payload carries raw git data gathered by Council-loop/scripts/
+    # postmortem_payload.py on whichever machine is actually running Council-loop —
+    # this module has no local filesystem access to Council-loop's repo (it runs on
+    # nexus-lxc; Council-loop runs wherever Brian is actively using it, no longer
+    # necessarily the same machine). There is no council_loop_path setting anymore;
+    # the caller is responsible for locating its own repo.
     #
     # Model: Haiku. Council-loop currently assigns Arbiter=opus, Engineer=sonnet,
     # Security=sonnet, Realist=opus (.council/config.local.json overrides the
     # tracked config's realist=sonnet), so Haiku is the only role-free model —
     # genuine independence for the single extraction call. # VERIFY: re-check if
     # Council-loop's model assignment changes. The real independence, though, comes
-    # from checks 1-3 being pure git/AST with no model in the loop at all.
+    # from checks 1-3 being pure regex/AST/set-membership over the supplied data,
+    # with no model in the loop at all.
     #
     # run_tests defaults False: executing a foreign repo's configured test_commands
     # inside the NEXUS process is a much bigger trust step than reading its git
     # history, and ProcessForge's runner (pip-audit + pytest) takes minutes and
     # reaches the network. Opt in deliberately.
     council_postmortem_enabled: bool = True
-    council_loop_path: str = r"C:\Users\Brian\Documents\Council-loop"
     council_postmortem_model: str = "claude-haiku-4-5-20251001"
     council_postmortem_run_tests: bool = False
-    # Bounds the placeholder-code scan (2 git subprocesses per changed .py
-    # file, each with its own 30s timeout) — ProcessForge's largest real
-    # council cycle range touched ~12 files, so 200 is a generous ceiling,
-    # not a real limit on ordinary sessions.
+    # Bounds the placeholder-code scan — ProcessForge's largest real council
+    # cycle range touched ~12 files, so 200 is a generous ceiling, not a real
+    # limit on ordinary sessions. Enforced client-side too (postmortem_payload.py
+    # skips gathering py_files content above this count).
     council_postmortem_max_files: int = 200
 
     # NEXUS-native Telegram bot. telegram_poll_timeout_s is Telegram's long-poll

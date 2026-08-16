@@ -14,8 +14,8 @@ class TriggerRequest(BaseModel):
 
 
 # Process-local fixed-window rate limiter for /api/trigger. Only live caller
-# is Council-loop's run-loop.ps1 (council_postmortem, Bearer-only). The
-# limiter caps abuse if the Bearer key leaks. Window is 60s, max 5 calls. A
+# is Council-loop's run-loop.sh/run-loop.ps1 (council_postmortem, Bearer-only).
+# The limiter caps abuse if the Bearer key leaks. Window is 60s, max 5 calls. A
 # reset hook keeps the autouse test fixtures from tripping across tests.
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW_S = 60.0
@@ -71,4 +71,4 @@ async def _trigger_status(params: dict) -> dict:
 
 async def _trigger_council_postmortem(params: dict) -> dict:
     from backend.agents.council_postmortem import run_postmortem
-    return await run_postmortem(since=params.get("since"))
+    return await run_postmortem(params)
