@@ -263,6 +263,13 @@ async def test_cmd_help_lists_all_commands():
         assert f"/{name}" in reply
 
 
+@pytest.mark.asyncio
+async def test_cmd_help_restart_uses_systemd_not_stale_powershell():
+    reply = await telegram_commands._cmd_help("", _msg("/help"))
+    assert "ps1" not in reply
+    assert "systemctl restart nexus-backend" in reply
+
+
 # ---------------------------------------------------------------------------
 # Phase 2b — /remember, /facts, /forget
 # ---------------------------------------------------------------------------

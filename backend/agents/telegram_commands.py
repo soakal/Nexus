@@ -322,7 +322,7 @@ async def _cmd_prune(args: str, msg: dict) -> str:
 
 
 async def _cmd_restart(args: str, msg: dict) -> str:
-    """Restart NEXUS (stop.ps1 -> start.ps1) -- e.g. to clear a deploy-drift
+    """Restart NEXUS (systemctl restart nexus-backend + nexus-frontend) -- e.g. to clear a deploy-drift
     warning or recover a stuck backend. actor="user", same precedent as
     /prune: a Telegram command from an authorized chat IS the human
     decision. The dispatcher spawns a detached process with its own delay
@@ -658,7 +658,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "tasks": (_cmd_tasks, "List recent tasks"),
     "digest": (_cmd_digest, "Today's autonomy digest"),
     "prune": (_cmd_prune, "Prune dangling Docker images on Unraid"),
-    "restart": (_cmd_restart, "Restart NEXUS (stop.ps1 + start.ps1)"),
+    "restart": (_cmd_restart, "Restart NEXUS (systemctl restart nexus-backend + nexus-frontend)"),
     "mute": (_cmd_mute, "Silence a notification kind"),
     "unmute": (_cmd_unmute, "Un-silence a notification kind"),
     "muted": (_cmd_muted, "List muted notification kinds"),
