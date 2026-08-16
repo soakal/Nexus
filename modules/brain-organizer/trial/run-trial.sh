@@ -27,6 +27,17 @@ if [[ "$mode" == "snapshot" ]]; then
     done
     [[ -f "$REAL_VAULT/_Index.md" ]] && cp -a "$REAL_VAULT/_Index.md" "$TRIAL_ROOT/vault/Brain/_Index.md"
     [[ -f "$REPO_MODULE/processed.json" ]] && cp -a "$REPO_MODULE/processed.json" "$TRIAL_ROOT/processed.json"
+
+    # A separate FROZEN copy of wiki/, untouched by the trial run itself --
+    # $TRIAL_ROOT/vault/Brain/wiki above is the trial's own working copy and
+    # gets mutated in place. Diffing the trial's output against the LIVE real
+    # vault (as this script used to) mixes in every unrelated write the real
+    # vault picks up between snapshot and diff time (goal completions, digest
+    # entries, etc.) -- diffing against this frozen baseline instead isolates
+    # exactly what the trial run itself changed.
+    rm -rf "$TRIAL_ROOT/wiki-baseline"
+    [[ -d "$REAL_VAULT/wiki" ]] && cp -a "$REAL_VAULT/wiki" "$TRIAL_ROOT/wiki-baseline"
+
     echo "[$(date -Is)] snapshot done: $(du -sh "$TRIAL_ROOT/vault" | cut -f1)"
     exit 0
 fi
@@ -74,7 +85,13 @@ set -e
 echo "[$(date -Is)] run: brain_organizer.py exited $run_rc" >> "$night_dir/organizer.log"
 echo "$run_rc" > "$night_dir/rc"
 
-diff -ru "$REAL_VAULT/wiki" "$TRIAL_ROOT/vault/Brain/wiki" > "$night_dir/diff.txt" || true
+# Clean signal: exactly what the trial run itself changed, isolated from any
+# unrelated live-vault noise (see the snapshot step's wiki-baseline comment).
+diff -ru "$TRIAL_ROOT/wiki-baseline" "$TRIAL_ROOT/vault/Brain/wiki" > "$night_dir/diff-trial.txt" || true
+# Reference only: what the real run changed over the same window. May still
+# include some unrelated background writes -- the real vault stays live and
+# shared the whole time, unlike the isolated trial copy.
+diff -ru "$TRIAL_ROOT/wiki-baseline" "$REAL_VAULT/wiki" > "$night_dir/diff-real.txt" || true
 
 "$REPO_MODULE/venv/bin/python" "$REPO_MODULE/wikilink_census.py" \
     --before "$REAL_VAULT" \

@@ -153,7 +153,10 @@ def _read_trial_b_night(night: date) -> dict:
     else:
         result["status"] = "no log"
 
-    diff_path = night_dir / "diff.txt"
+    # diff-trial.txt: the trial's own delta against a frozen wiki baseline --
+    # isolated from unrelated live-vault writes, unlike the old diff.txt
+    # (which compared against the live real vault and was mostly noise).
+    diff_path = night_dir / "diff-trial.txt"
     if diff_path.exists():
         added = removed = files_changed = 0
         for line in diff_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -456,7 +459,7 @@ def _build_verdict_payload_b() -> tuple[str, str, str] | None:
             f"+{diff.get('added', '?')}/-{diff.get('removed', '?')} lines, "
             f"census={info.get('census_status', '?')}"
         )
-        diff_path = d / "diff.txt"
+        diff_path = d / "diff-trial.txt"
         if diff_path.exists() and status == "OK":
             text = diff_path.read_text(encoding="utf-8", errors="replace")
             hunk = text[:1500]
