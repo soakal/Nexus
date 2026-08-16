@@ -64,8 +64,11 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Claude Code session directory
+# Claude Code session directory -- but skills are real reusable content, not
+# ephemeral session state, so track those
 .claude/
+!.claude/skills/
+!.claude/skills/**
 
 # Local-only relay bookkeeping (not synced across machines)
 digests/claude-features/.relay_state.json
