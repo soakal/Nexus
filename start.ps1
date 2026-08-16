@@ -72,9 +72,9 @@ foreach ($p in @(8000, $port)) {
 $backendLog = ".\logs\backend.log"
 $backendErr = ".\logs\backend.err.log"
 New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
-# Launch via run.py (NOT `-m uvicorn`): run.py pins the Selector event loop on
-# Windows BEFORE uvicorn builds its loop - the only place early enough to avoid
-# the ProactorEventLoop WinError 64 that kills concurrent connections.
+# Launch via run.py (NOT `-m uvicorn`): run.py blocking-prewarms the shared TLS
+# context (see run.py) on the bare main thread before uvicorn/its event loop
+# even exist, instead of stalling live requests later.
 $backendArgs = "run.py"
 if ($dev) { $backendArgs += " --reload" }
 $backend = Start-Process -PassThru -WindowStyle Hidden `

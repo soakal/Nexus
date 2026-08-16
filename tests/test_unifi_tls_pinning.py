@@ -35,16 +35,13 @@ def _run_on_selector_loop(coro):
     whatever loop pytest-asyncio's `asyncio_mode = "auto"` would otherwise
     hand us (WindowsProactorEventLoopPolicy's default on this platform).
 
-    This matches run.py's own documented reason for forcing Selector in
-    production ("ProactorEventLoop ... under concurrent httpx fetches"):
-    abruptly closing a TLS stream after a pinning mismatch -- exactly what
-    `_PinningNetworkStream.start_tls` does on purpose, to refuse the
-    connection before any data is sent -- triggers a Proactor-specific
-    SSL-transport teardown bug on Windows that hangs the test process
-    (reproduced independently of this test suite while writing it). NEXUS
-    itself never hits this: run.py pins SelectorEventLoop before uvicorn
-    ever builds its loop, so production always runs this exact transport
-    code under Selector, never Proactor.
+    This test constructs its own SelectorEventLoop to exercise that code
+    path deliberately: abruptly closing a TLS stream after a pinning
+    mismatch -- exactly what `_PinningNetworkStream.start_tls` does on
+    purpose, to refuse the connection before any data is sent -- triggers a
+    Proactor-specific SSL-transport teardown bug on Windows that hangs the
+    test process (reproduced independently of this test suite while writing
+    it).
     """
     if sys.platform == "win32":
         loop = asyncio.SelectorEventLoop()

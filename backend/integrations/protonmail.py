@@ -42,7 +42,7 @@ async def _call_tool(tool_name: str, arguments: dict, *, timeout: float = 20.0) 
     ClientSession is not safe for concurrent calls and a per-call session is
     naturally concurrency-safe and resilient to the remote LXC restarting
     between calls. Runs on the event loop: streamable-HTTP is async httpx/SSE,
-    spawns no subprocess, so it's compatible with the forced SelectorEventLoop.
+    spawns no subprocess.
     """
     from backend.config import get_settings
     settings = get_settings()

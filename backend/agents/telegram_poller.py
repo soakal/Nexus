@@ -3,10 +3,8 @@ text commands/chat.
 
 Polling, not a webhook — NEXUS needs no inbound exposure. Runs as an asyncio task on the
 lifespan loop, NOT a daemon thread: the poll is a single idle httpx socket
-(pure async I/O), so it never blocks the loop, and the forced Windows
-SelectorEventLoop handles sockets fine (its limits are subprocess transports,
-which this never touches). memo_watcher needs a thread only because
-watchdog.Observer.join() is blocking; this has no such constraint.
+(pure async I/O), so it never blocks the loop. memo_watcher needs a thread only
+because watchdog.Observer.join() is blocking; this has no such constraint.
 
 Button dispatch calls the SAME internal functions the REST confirm/reject/
 approve/reject endpoints already use (goals.approve/reject,
