@@ -42,8 +42,8 @@ def _pending_digest_branches() -> list[str]:
     this check, a pending PR and "no digest ran today" both print the exact
     same "nothing new to relay" line, and the daily Brain/Telegram delivery
     silently stops with zero signal that anything changed. Uses only `git`,
-    which the .cmd wrapper already requires (it runs `git pull` before this
-    script) -- no new dependency, no new credential. Returns [] on any
+    which the devbox cron entry already requires (it runs `git pull` before
+    this script) -- no new dependency, no new credential. Returns [] on any
     failure (git missing, no network, unexpected output, etc.) rather than
     raising; this is a best-effort notice, not a hard requirement.
     """
