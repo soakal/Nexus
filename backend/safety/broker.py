@@ -32,7 +32,6 @@ import asyncio
 import html
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -442,23 +441,18 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
     misroute.
 
     The restart mechanism kills this very process, so it can never run
-    inline here -- both branches below schedule the actual restart to run
-    a few seconds from now, OUT of this process's own lifetime, giving this
-    request's own HTTP/Telegram response time to finish sending first.
-    Returns immediately either way.
-
-    Windows: spawns a fully DETACHED PowerShell process (its own process
-    group, immune to this process dying) that waits, then runs
-    stop.ps1 -> start.ps1.
+    inline here -- this schedules the actual restart to run a few seconds
+    from now, OUT of this process's own lifetime, giving this request's own
+    HTTP/Telegram response time to finish sending first. Returns
+    immediately.
 
     Linux (systemd-managed deploy): `systemd-run` schedules a one-shot
     transient timer owned by systemd itself (PID 1), not this process's
     cgroup -- it survives this process being killed by the restart it
-    schedules, the same "detached, delayed" property the Windows branch
-    gets from DETACHED_PROCESS. Restarts both the backend and frontend
-    units, matching stop.ps1/start.ps1's scope on Windows.
+    schedules, giving this the same "detached, delayed" property the
+    request needs. Restarts both the backend and frontend units.
 
-    The Linux branch deliberately does NOT pin `--unit=` to a fixed name:
+    This deliberately does NOT pin `--unit=` to a fixed name:
     `systemd-run` only registers the transient timer (it doesn't wait for it
     to fire), so this call returns almost immediately -- safe to run
     synchronously via subprocess.run instead of Popen. A fixed unit name
@@ -470,31 +464,20 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
     it catches this and records the action FAILED) reports the truth
     instead of logging EXECUTED for a restart that never got scheduled.
     """
-    import pathlib
     import subprocess
 
     if target not in ("nexus", "lxc", "self", ""):
         raise ValueError(f"unknown system_restart target {target!r}")
 
-    if os.name == "nt":
-        repo_root = pathlib.Path(__file__).resolve().parents[2]
-        cmd = f"Start-Sleep -Seconds 3; & '{repo_root}\\stop.ps1'; & '{repo_root}\\start.ps1'"
-        subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
-            cwd=str(repo_root),
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
+    result = subprocess.run(
+        ["systemd-run", "--on-active=3",
+         "/usr/bin/systemctl", "restart", "nexus-backend", "nexus-frontend"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"systemd-run failed rc={result.returncode}: {result.stderr[:200]}"
         )
-    else:
-        result = subprocess.run(
-            ["systemd-run", "--on-active=3",
-             "/usr/bin/systemctl", "restart", "nexus-backend", "nexus-frontend"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"systemd-run failed rc={result.returncode}: {result.stderr[:200]}"
-            )
     return {"ok": True, "scheduled": True}
 
 

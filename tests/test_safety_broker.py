@@ -1,5 +1,4 @@
 import json
-import sys
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -128,46 +127,17 @@ def test_system_restart_user_actor_always_allowed():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "win32", reason="subprocess.DETACHED_PROCESS/"
-                     "CREATE_NEW_PROCESS_GROUP only exist on a Windows-built Python")
-async def test_dispatch_system_restart_spawns_detached_process():
-    """The dispatcher must never run stop.ps1/start.ps1 inline (stop.ps1
-    would kill the very process handling this call) -- it hands off to a
-    fully detached subprocess and returns immediately."""
-    import subprocess
-
-    from backend.safety.broker import _dispatch_system_restart
-
-    with patch("subprocess.Popen") as mock_popen:
-        result = await _dispatch_system_restart("nexus", {})
-
-    assert result == {"ok": True, "scheduled": True}
-    mock_popen.assert_called_once()
-    args, kwargs = mock_popen.call_args
-    cmd = args[0]
-    assert cmd[0] == "powershell.exe"
-    joined = " ".join(cmd)
-    assert "stop.ps1" in joined and "start.ps1" in joined
-    assert kwargs["creationflags"] & subprocess.DETACHED_PROCESS
-    assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
-
-
-@pytest.mark.asyncio
 async def test_dispatch_system_restart_linux_uses_systemd_run():
     """Linux branch: schedules a transient systemd-run timer that restarts
-    both units, rather than the Windows detached-PowerShell dance. Runs on
-    any platform (mocks os.name, never touches a Windows-only subprocess
-    constant), unlike the Windows-branch test above. Uses subprocess.run
-    (not Popen) and omits --unit -- systemd-run returns as soon as the
-    transient timer is registered, so running it synchronously is safe, and
-    an auto-generated unit name makes a repeat-trigger collision structurally
-    impossible (see test below for the rc!=0 case that motivated this)."""
+    both units. Uses subprocess.run (not Popen) and omits --unit -- systemd-run
+    returns as soon as the transient timer is registered, so running it
+    synchronously is safe, and an auto-generated unit name makes a
+    repeat-trigger collision structurally impossible (see test below for the
+    rc!=0 case that motivated this)."""
     from backend.safety import broker
 
     mock_result = MagicMock(returncode=0, stderr="")
-    with patch.object(broker, "os") as mock_os, \
-         patch("subprocess.run", return_value=mock_result) as mock_run:
-        mock_os.name = "posix"
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
         result = await broker._dispatch_system_restart("nexus", {})
 
     assert result == {"ok": True, "scheduled": True}
@@ -188,9 +158,7 @@ async def test_dispatch_system_restart_linux_raises_on_systemd_run_failure():
     from backend.safety import broker
 
     mock_result = MagicMock(returncode=1, stderr="Unit nexus-restart-once already loaded")
-    with patch.object(broker, "os") as mock_os, \
-         patch("subprocess.run", return_value=mock_result):
-        mock_os.name = "posix"
+    with patch("subprocess.run", return_value=mock_result):
         with pytest.raises(RuntimeError, match="systemd-run failed"):
             await broker._dispatch_system_restart("nexus", {})
 
@@ -204,9 +172,7 @@ async def test_dispatch_system_restart_lxc_target_also_means_self():
     from backend.safety import broker
 
     mock_result = MagicMock(returncode=0, stderr="")
-    with patch.object(broker, "os") as mock_os, \
-         patch("subprocess.run", return_value=mock_result) as mock_run:
-        mock_os.name = "posix"
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
         result = await broker._dispatch_system_restart("lxc", {})
 
     assert result == {"ok": True, "scheduled": True}
