@@ -160,9 +160,7 @@ export default function SetupWizard() {
               <div style={{ color: '#34d399', fontSize: '15px', fontWeight: 600, marginBottom: '8px' }}>Setup complete</div>
               <div style={{ color: '#8a96ad', fontSize: '13px', lineHeight: 1.6 }}>
                 Loading NEXUS... Background agents and scheduling will start after you run{' '}
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#aab4c7' }}>stop.ps1</span>
-                {' '}then{' '}
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#aab4c7' }}>start.ps1</span>.
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#aab4c7' }}>systemctl restart nexus-backend nexus-frontend</span>.
               </div>
             </div>
           ) : (
