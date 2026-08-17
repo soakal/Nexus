@@ -223,12 +223,12 @@ async def _transcribe_voice(msg: dict) -> str | None:
             from backend.agents import voice as voice_mod
             return await voice_mod.transcribe(path)
         finally:
-            # Guarded: on Windows a transient external handle-holder (Defender,
-            # the indexer) can make an unlink of a just-written file raise
-            # PermissionError. Unguarded, that exception in `finally` would
-            # supersede a SUCCESSFUL transcribe() return — silently discarding
-            # a paid/expensive transcript. Matches the existing guarded-unlink
-            # pattern in backend/api/voice.py.
+            # Guarded: historically, on Windows, a transient external
+            # handle-holder (Defender, the indexer) could make an unlink of a
+            # just-written file raise PermissionError. Unguarded, that
+            # exception in `finally` would supersede a SUCCESSFUL transcribe()
+            # return — silently discarding a paid/expensive transcript.
+            # Matches the existing guarded-unlink pattern in backend/api/voice.py.
             try:
                 os.unlink(path)
             except OSError as e:

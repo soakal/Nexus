@@ -616,9 +616,9 @@ async def test_transcribe_voice_missing_file_id_returns_none():
 @pytest.mark.asyncio
 async def test_transcribe_voice_survives_unlink_failure():
     """A successful transcript must not be discarded because deleting the temp
-    file failed afterward (Windows can transiently hold a handle on a
-    just-written file — an unguarded finally: os.unlink() would supersede a
-    successful return with the unlink's own exception)."""
+    file failed afterward (historically, Windows could transiently hold a
+    handle on a just-written file — an unguarded finally: os.unlink() would
+    supersede a successful return with the unlink's own exception)."""
     with patch("backend.integrations.telegram.get_file_bytes", new_callable=AsyncMock, return_value=b"audio-bytes"), \
          patch("backend.agents.voice.transcribe", new_callable=AsyncMock, return_value="turn off the garage light"), \
          patch("os.unlink", side_effect=PermissionError("file in use")):
