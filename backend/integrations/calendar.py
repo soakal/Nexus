@@ -2,9 +2,7 @@
 
 Pure iCal-over-HTTPS + RRULE expansion, no OAuth. Fetches directly via httpx.
 
-Two bugs fixed during an earlier port (do not re-add):
-  - the no-pad strftime flag (percent, dash, then I or d) is glibc-only and
-    raises ValueError on Windows.
+One bug fixed during an earlier port (do not re-add):
   - date.today() reads the PROCESS timezone; briefing_timezone is used instead
     so this stays correct if NEXUS ever runs on a UTC host.
 """

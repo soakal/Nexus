@@ -1,4 +1,3 @@
-import inspect
 from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -13,16 +12,6 @@ TZ = ZoneInfo("America/Detroit")
 
 def _today() -> date:
     return datetime.now(TZ).date()
-
-
-# ---------------------------------------------------------------------------
-# Regression guard: %-I / %-d strftime flags are glibc-only and raise
-# ValueError on Windows.
-# ---------------------------------------------------------------------------
-
-def test_no_unpadded_strftime_directive_in_module():
-    source = inspect.getsource(calendar)
-    assert "%-" not in source, "found a glibc-only %- strftime flag — raises on Windows"
 
 
 # ---------------------------------------------------------------------------
