@@ -21,26 +21,13 @@ def secure_key_file(path: pathlib.Path | None = None) -> None:
     time, not bind time, so tests/callers that monkeypatch KEY_PATH and then
     call secure_key_file() with no args keep working), which decrypts every
     secret in the vault and must not be world-readable. POSIX -> chmod 0600.
-    Windows -> icacls: drop inherited ACEs and grant only the current user.
     Never raises — a permissions failure must not block startup."""
     if path is None:
         path = KEY_PATH
     if not path.exists():
         return
     try:
-        if os.name == "nt":
-            import getpass
-            import subprocess
-            user = os.environ.get("USERNAME") or getpass.getuser()
-            # Grants only the current user. NEXUS runs as the logged-in user (tray
-            # via HKCU Run key), so this can't lock itself out. If NEXUS ever runs as
-            # a Windows service (LocalSystem), add "SYSTEM:F" to the grant list too.
-            subprocess.run(
-                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
-                check=False, capture_output=True,
-            )
-        else:
-            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
     except Exception as e:
         logger.warning(f"Could not harden {path} permissions: {e}")
 
