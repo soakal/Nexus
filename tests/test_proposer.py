@@ -686,6 +686,30 @@ async def test_proposer_prompt_forbids_physical_inspection_criteria(eng, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# Test 11d3 — the prompt was loosened 2026-08-17 to also welcome proactive
+# low-risk maintenance goals (not just reactive alerts) — the proposer had
+# gone silent for 3 weeks straight otherwise. Guards both halves: the new
+# invitation is present, and the pre-existing risk-classification instruction
+# for physical-security domains wasn't lost in the rewrite.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_proposer_prompt_welcomes_proactive_maintenance(eng, monkeypatch):
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_mock = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=haiku_mock):
+        from backend.agents.proposer import propose_goals_tick
+        result = await propose_goals_tick()
+
+    assert result["status"] == "ok"
+    prompt = haiku_mock.call_args[0][0]
+    assert "PROACTIVE MAINTENANCE" in prompt
+    assert "physical-security domains" in prompt
+
+
+# ---------------------------------------------------------------------------
 # Test 11e — Facts as a goal-trigger source (Roadmap Build #2, 2026-07-07).
 # An actionable fact must reach the prompt so the proposer can turn it into a
 # low-risk goal via the EXISTING propose()/broker pipeline (no new pipeline).

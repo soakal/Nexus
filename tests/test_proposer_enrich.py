@@ -228,7 +228,49 @@ def test_db_recent_abandoned(eng):
     assert rows[0]["title"] == "Check logs"
     assert rows[1]["title"] == "Restart plex"
     assert rows[1]["rejection_reason"] == "manual"
-    assert rows[0]["rejection_reason"] is None
+
+
+def test_db_recent_abandoned_excludes_ttl_expired(eng):
+    """TTL-expired proposals must NOT appear in the DO-NOT-RE-PROPOSE list --
+    nobody rejected them, they just went unanswered (regression for goal #66,
+    2026-07-14, which was auto-swept then treated as a rejection forever)."""
+    from backend.agents.goals import _db_recent_abandoned
+    from backend.database import Goal
+
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        rejected = Goal(
+            title="Rejected via Telegram",
+            description="d",
+            status="abandoned",
+            fingerprint="fp010",
+            rejection_reason="rejected via Telegram",
+            updated_at=now - timedelta(minutes=1),
+        )
+        reasonless = Goal(
+            title="Rejected no reason",
+            description="d",
+            status="abandoned",
+            fingerprint="fp011",
+            rejection_reason=None,
+            updated_at=now - timedelta(minutes=2),
+        )
+        expired = Goal(
+            title="Auto-swept on TTL",
+            description="d",
+            status="abandoned",
+            fingerprint="fp012",
+            rejection_reason="expired: proposal TTL passed, auto-swept",
+            updated_at=now - timedelta(minutes=3),
+        )
+        s.add_all([rejected, reasonless, expired])
+        s.commit()
+
+    rows = _db_recent_abandoned(limit=8)
+    titles = [r["title"] for r in rows]
+    assert "Rejected via Telegram" in titles
+    assert "Rejected no reason" in titles
+    assert "Auto-swept on TTL" not in titles
 
 
 def test_db_recent_abandoned_limit(eng):

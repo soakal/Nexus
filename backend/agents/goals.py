@@ -279,14 +279,23 @@ def _db_delete_goal(goal_id: int) -> bool:
 
 
 def _db_recent_abandoned(limit: int = 8) -> list[dict]:
-    """Return recently abandoned goals as [{title, rejection_reason}], newest first.
+    """Return recently REJECTED goals as [{title, rejection_reason}], newest first.
 
-    Called exclusively via asyncio.to_thread.
+    Feeds the proposer's DO NOT RE-PROPOSE block -- so TTL-expired proposals
+    (rejection_reason 'expired: ...') are excluded: nobody rejected those, they
+    just went unanswered, and suppressing them starves the proposer (goal #66,
+    2026-07-14, was auto-swept then treated as Brian's rejection forever).
+    rejection_reason=None IS treated as a real rejection (reject() without a
+    reason). Called exclusively via asyncio.to_thread.
     """
     with Session(_db_mod.engine) as session:
         stmt = (
             select(Goal)
             .where(Goal.status == "abandoned")
+            .where(
+                (Goal.rejection_reason == None)  # noqa: E711
+                | (~Goal.rejection_reason.like("expired:%"))  # type: ignore[attr-defined]
+            )
             .order_by(Goal.updated_at.desc())  # type: ignore[attr-defined]
             .limit(limit)
         )
@@ -548,7 +557,11 @@ async def approve(goal_id: int, *, approved_by: str = "user") -> dict:
     if g["expires_at"]:
         expires_dt = datetime.fromisoformat(g["expires_at"])
         if now > expires_dt:
-            await asyncio.to_thread(_db_update_goal, goal_id, status="abandoned", updated_at=now)
+            await asyncio.to_thread(
+                _db_update_goal, goal_id, status="abandoned",
+                rejection_reason="expired: proposal TTL passed at approve time",
+                updated_at=now,
+            )
             return {"status": "expired"}
 
     # Mark approved

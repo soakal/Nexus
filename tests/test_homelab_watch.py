@@ -33,6 +33,13 @@ def _settings(**overrides):
     s.homelab_garage_entity_id = "cover.garage_door_garage_door"
     s.homelab_garage_open_minutes = 30
     s.homelab_recovery_notify_enabled = False
+    # Default OFF: existing fired-alert tests exercise the six homelab checks,
+    # not the proposer -- without this, _maybe_propose_on_alert would spawn a
+    # REAL (unmocked) propose_goals_tick background task on every test whose
+    # settings mock doesn't explicitly care, leaking a dangling asyncio task
+    # into whichever test happens to fire an alert. Tests that actually want
+    # to exercise event-driven proposing pass proposer_enabled=True explicitly.
+    s.proposer_enabled = False
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -847,3 +854,53 @@ def test_kinds_are_not_on_the_never_mutable_floor():
         "homelab_disk_temp", "homelab_garage", "homelab_backup_failed",
     }
     assert kinds.isdisjoint(governor._NEVER_MUTABLE_NOTIFY_KINDS)
+
+
+# ---------------------------------------------------------------------------
+# Event-driven proposing (2026-08-17) — a fired alert triggers one proposer
+# tick instead of waiting up to 6h for the next scheduled one.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_maybe_propose_on_alert_schedules_when_fired():
+    tick_mock = AsyncMock(return_value={"status": "ok"})
+    with patch("backend.config.get_settings", return_value=_settings(proposer_enabled=True)), \
+         patch("backend.agents.proposer.propose_goals_tick", tick_mock):
+        homelab_watch._maybe_propose_on_alert(True)
+        await homelab_watch._event_propose_task
+
+    tick_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_maybe_propose_on_alert_respects_cooldown():
+    tick_mock = AsyncMock(return_value={"status": "ok"})
+    with patch("backend.config.get_settings", return_value=_settings(proposer_enabled=True)), \
+         patch("backend.agents.proposer.propose_goals_tick", tick_mock):
+        homelab_watch._maybe_propose_on_alert(True)
+        await homelab_watch._event_propose_task
+        homelab_watch._maybe_propose_on_alert(True)  # within cooldown -- must not schedule again
+
+    tick_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_maybe_propose_on_alert_noop_when_nothing_fired():
+    tick_mock = AsyncMock(return_value={"status": "ok"})
+    with patch("backend.config.get_settings", return_value=_settings(proposer_enabled=True)), \
+         patch("backend.agents.proposer.propose_goals_tick", tick_mock):
+        homelab_watch._maybe_propose_on_alert(False)
+
+    assert homelab_watch._event_propose_task is None
+    tick_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_maybe_propose_on_alert_noop_when_proposer_disabled():
+    tick_mock = AsyncMock(return_value={"status": "ok"})
+    with patch("backend.config.get_settings", return_value=_settings(proposer_enabled=False)), \
+         patch("backend.agents.proposer.propose_goals_tick", tick_mock):
+        homelab_watch._maybe_propose_on_alert(True)
+
+    assert homelab_watch._event_propose_task is None
+    tick_mock.assert_not_awaited()

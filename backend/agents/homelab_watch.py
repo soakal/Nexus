@@ -21,9 +21,11 @@ PendingDelivery retry queue + dead-letter watchdog, so blocking a scheduler
 tick on Telegram delivery would be strictly worse. A muted kind still
 latches — muting must not replay a stale alert.
 """
+import asyncio
 import html
 import logging
 import time
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +42,24 @@ _paged_alerts: set[str] = set()
 # Garage-open timer (time.monotonic() of when it was first observed open).
 _garage_open_since: float | None = None
 
+# Event-driven proposing (2026-08-17): a fired alert triggers one proposer tick
+# instead of waiting up to 6h for the next scheduled one. In-memory, same
+# accepted-tradeoff pattern as _active_alerts above.
+_EVENT_PROPOSE_COOLDOWN_S = 1800  # ponytail: fixed 30min; make a Settings field if Brian wants tuning
+_last_event_propose_at: datetime | None = None
+_event_propose_task: asyncio.Task | None = None
+
 
 def reset() -> None:
     """Clear all watcher state. Test hook — call at the start of each test."""
-    global _garage_open_since
+    global _garage_open_since, _last_event_propose_at, _event_propose_task
     _vm_states.clear()
     _docker_states.clear()
     _active_alerts.clear()
     _paged_alerts.clear()
     _garage_open_since = None
+    _last_event_propose_at = None
+    _event_propose_task = None
 
 
 async def _maybe_notify_recovery(key: str, message: str) -> None:
@@ -324,6 +335,41 @@ async def _run_check(name: str, coro) -> list[str]:
         return []
 
 
+def _maybe_propose_on_alert(fired_any: bool) -> None:
+    """Kick one fire-and-forget propose_goals_tick when an alert fired this tick.
+
+    Reacts to a homelab alert in ~seconds instead of waiting up to 6h for the
+    next scheduled proposer tick. Bounded by a 30min cooldown here plus the
+    proposer's own fingerprint debounce (6h) and TTL -- a burst of alerts in
+    one tick still only triggers one run, since they all land in the same
+    tick's fired lists anyway.
+    """
+    global _last_event_propose_at, _event_propose_task
+    if not fired_any:
+        return
+    from backend.config import get_settings
+    if not getattr(get_settings(), "proposer_enabled", True):
+        return
+    now = datetime.utcnow()
+    if _last_event_propose_at and (now - _last_event_propose_at).total_seconds() < _EVENT_PROPOSE_COOLDOWN_S:
+        return
+    if _event_propose_task and not _event_propose_task.done():
+        return
+    _last_event_propose_at = now
+
+    async def _run():
+        try:
+            from backend.agents.proposer import propose_goals_tick
+            await propose_goals_tick()
+        except Exception as e:
+            logger.warning(f"event-driven proposer tick failed (ignored): {e}")
+
+    # asyncio.create_task alone holds only a weak ref (same reasoning as
+    # telegram_poller._message_tasks) -- the module-level var is what keeps
+    # this alive, and also doubles as the already-running guard above.
+    _event_propose_task = asyncio.create_task(_run())
+
+
 async def run_homelab_watch() -> dict:
     """Top-level entry point called by the scheduler every 60 seconds.
 
@@ -335,7 +381,7 @@ async def run_homelab_watch() -> dict:
         if not getattr(s, "homelab_watch_enabled", True):
             return {"skipped": True}
 
-        return {
+        result = {
             "vms": await _run_check("vms", check_proxmox_vms()),
             "docker": await _run_check("docker", check_docker()),
             "array": await _run_check("array", check_unraid_array()),
@@ -343,6 +389,8 @@ async def run_homelab_watch() -> dict:
             "garage": await _run_check("garage", check_garage()),
             "backups": await _run_check("backups", check_backups()),
         }
+        _maybe_propose_on_alert(any(result.values()))
+        return result
     except Exception as exc:
         logger.error(f"run_homelab_watch error (ignored): {exc}")
         return {"vms": [], "docker": [], "array": [], "disk_temps": [], "garage": [], "backups": []}
