@@ -16,7 +16,8 @@ def test_spawn_env_carries_token_and_inherits_parent_env(monkeypatch):
     env = _brain_mcp_spawn_env("abc123")
     assert env is not None
     assert env["MCP_WRITE_TOKEN"] == "abc123"
-    # Full copy of the parent env, not a minimal dict (breaks Windows child
-    # startup if SystemRoot/PATH etc. are dropped).
+    # Full copy of the parent env, not a minimal dict (a minimal dict would
+    # strip PATH/HOME/other env-provided config the child would otherwise
+    # inherit from the parent process).
     assert env["NEXUS_TEST_PARENT_VAR"] == "parent-value"
     assert env.keys() >= os.environ.keys()

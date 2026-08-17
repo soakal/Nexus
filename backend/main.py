@@ -34,8 +34,10 @@ def _brain_mcp_spawn_env(token: str | None) -> dict | None:
 
     Returns None (inherit the parent env unchanged, today's behavior) when no
     token is set. Otherwise returns a FULL copy of the parent env with
-    MCP_WRITE_TOKEN added — never a minimal env dict, which breaks Python
-    child process startup on Windows (missing SystemRoot/PATH etc).
+    MCP_WRITE_TOKEN added — never a minimal env dict, which would strip the
+    parent environment the child would otherwise inherit (PATH for anything
+    it shells out to, HOME, and any other env-provided config the server or
+    its imported modules read via os.environ).
     """
     if not token:
         return None
