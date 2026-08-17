@@ -638,8 +638,7 @@ def setup_scheduler(briefing_time: str, timezone: str):
         )
     else:
         logger.info(
-            "Morning briefing DISABLED (morning_briefing_enabled=False) "
-            "-- another instance owns this job"
+            "Morning briefing DISABLED via MORNING_BRIEFING_ENABLED=False"
         )
     scheduler.add_job(
         _prune_retention,
