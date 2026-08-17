@@ -192,7 +192,10 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
     logs_folder.mkdir(parents=True, exist_ok=True)
     log_file = logs_folder / "organizer.log"
 
-    # Windows consoles default to cp1252 which can't encode emoji in log output.
+    # scheduler.py::_run_brain_organizer hard-decodes this script's stdout
+    # pipe as UTF-8 (errors="replace"), overriding whatever locale the unit
+    # actually inherits -- pin stdout to UTF-8 here too so an explicitly
+    # non-UTF-8 LANG can't corrupt the emoji in this log output.
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")

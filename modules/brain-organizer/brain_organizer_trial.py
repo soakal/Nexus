@@ -216,7 +216,11 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
     logs_folder.mkdir(parents=True, exist_ok=True)
     log_file = logs_folder / "organizer.log"
 
-    # Windows consoles default to cp1252 which can't encode emoji in log output.
+    # This script is cron-launched (via trial/run-trial.sh, copied to
+    # $TRIAL_ROOT/module/brain_organizer.py) with stdout redirected to a log
+    # file, not decoded by a scheduler parent pipe -- under cron the inherited
+    # LANG determines stdout's encoding, so pin UTF-8 here too so an
+    # explicitly non-UTF-8 locale can't corrupt the emoji in this log output.
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")

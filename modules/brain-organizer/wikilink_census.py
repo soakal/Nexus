@@ -431,8 +431,12 @@ def _write_evidence_artifact(
 # ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
-    # Windows consoles default to cp1252, which can't encode "§" -- same fix
-    # brain_organizer.py's setup_logging() applies for its own console output.
+    # This script is cron-launched directly (trial/run-trial.sh), not by the
+    # scheduler -- its stdout is cron's own log, not a decoded parent pipe.
+    # Under cron the inherited LANG determines stdout's encoding, so pin
+    # UTF-8 here too so an explicitly non-UTF-8 locale can't corrupt "§" in
+    # this output. Same fix brain_organizer.py's setup_logging() applies for
+    # its own console output.
     if hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
