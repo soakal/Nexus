@@ -6,7 +6,7 @@ existing read-only native tools (unraid_status, channels_status,
 homeassistant_status, adguard_status, unifi_status).
 
 Run from the repo root:
-    .\venv\Scripts\python.exe seed_starter_goals.py
+    venv/bin/python seed_starter_goals.py
 
 Then open NEXUS -> Safety page and Approve the goals you want live. Re-running is
 safe: identical titles/descriptions debounce as 'duplicate_active'.
