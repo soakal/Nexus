@@ -132,7 +132,7 @@ def _merge_pending_digest_prs() -> list[str]:
         result = subprocess.run(
             [
                 "gh", "pr", "list", "--state", "open",
-                "--json", "number,headRefName,isDraft,isCrossRepository,author,headRepositoryOwner",
+                "--json", "number,headRefName,baseRefName,isDraft,isCrossRepository,author,headRepositoryOwner",
                 "--limit", "20",
             ],
             cwd=REPO_ROOT,
@@ -158,6 +158,14 @@ def _merge_pending_digest_prs() -> list[str]:
         date_match = _DIGEST_BRANCH.match(branch)
         number = pr.get("number")
         if not date_match or number is None:
+            continue
+
+        # gh merges into the PR's own base. A digest PR based on the frozen
+        # `master` archive merges cleanly into a branch nobody relays from --
+        # the exact silent-loss mode of 2026-08-14..16. Skip it loudly; the
+        # branch stays on origin so the pending-PR notice in main() still fires.
+        if pr.get("baseRefName") != "main":
+            print(f"NOT merging digest PR #{number}: base is {pr.get('baseRefName')!r}, not 'main' -- retarget it on GitHub")
             continue
 
         # Reject any fork PR outright -- gh pr list returns every open PR
