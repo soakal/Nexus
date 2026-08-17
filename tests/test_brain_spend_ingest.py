@@ -5,6 +5,8 @@ ingestor atomically claims that file and writes one SpendLog row per line
 (label="brain_organizer"), pricing known models via router._PRICE_PER_MTOK.
 """
 import json
+import logging
+import os
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -149,6 +151,27 @@ def test_leftover_claim_consumed_first(eng, usage_paths):
     # Both files consumed.
     assert not usage.exists()
     assert not claim.exists()
+
+
+def test_permission_error_on_claim_logged_by_outer_handler(eng, usage_paths, monkeypatch, caplog):
+    """os.replace raising PermissionError (e.g. a Windows lock race) is no longer a
+    dedicated silent-skip branch; it now falls through to the outer `except Exception`,
+    which logs at ERROR and still returns without raising."""
+    from backend.agents.brain_spend import ingest_brain_spend
+
+    usage, _ = usage_paths
+    usage.write_text(_line("claude-sonnet-4-6", 1_000_000, 0) + "\n", encoding="utf-8")
+
+    def boom(src, dst):
+        raise PermissionError("file in use")
+    monkeypatch.setattr(os, "replace", boom)
+
+    with caplog.at_level(logging.ERROR, logger="backend.agents.brain_spend"):
+        n = ingest_brain_spend()
+
+    assert n == 0
+    assert _rows(eng) == []
+    assert any("ingest failed" in r.message for r in caplog.records)
 
 
 def test_today_spend_includes_ingested_row(eng, usage_paths, monkeypatch):

@@ -127,8 +127,7 @@ def ingest_brain_spend() -> int:
          previous cycle claimed but died before committing/deleting it).
       2. os.replace(usage.jsonl -> usage.jsonl.ingest) as an ATOMIC claim so the
          producer keeps appending to a fresh usage.jsonl while we consume the
-         snapshot. FileNotFoundError -> nothing to do. PermissionError (Windows
-         lock race) -> skip this cycle, retry next.
+         snapshot. FileNotFoundError -> nothing to do.
       3. Ingest the freshly-claimed file.
 
     Returns the total rows written. NEVER raises.
@@ -143,9 +142,6 @@ def ingest_brain_spend() -> int:
             os.replace(_USAGE_FILE, _CLAIM_FILE)
         except FileNotFoundError:
             return total  # no producer output this cycle
-        except PermissionError:
-            logger.debug("brain_spend: usage.jsonl locked; skipping this cycle")
-            return total
 
         # 3. Ingest the newly-claimed snapshot.
         total += _ingest_claim_file()
