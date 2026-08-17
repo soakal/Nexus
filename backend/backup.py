@@ -112,114 +112,6 @@ def _rclone_sync(local_dir: pathlib.Path, unc_path: str) -> bool:
         return False
 
 
-def _mount_unc(unc_path: str, settings) -> None:
-    """Best-effort: use PowerShell's New-SmbMapping to authenticate the UNC
-    share before copying.
-
-    Credential lookup order:
-      1. Vault keys UNRAID_BACKUP_USER / UNRAID_BACKUP_PASSWORD (explicit override)
-      2. cred:unraid:user / cred:unraid:password (from Credentials & Passwords section)
-    Silently skips if no credentials found or PowerShell is unavailable.
-
-    The password is NEVER placed on the child process's argv (a plaintext
-    credential there is visible, for the process's whole lifetime, to any
-    co-resident process/user that can enumerate command lines). Instead the
-    entire mapping script -- including the credentials -- is piped over the
-    child's STDIN to `powershell -NoProfile -NonInteractive -Command -`.
-    """
-    pw = ""
-    try:
-        user = getattr(settings, "unraid_backup_user", "").strip()
-        pw = getattr(settings, "unraid_backup_password", "").strip()
-
-        # Fall back to the general credential store under service "unraid" (case-insensitive)
-        if not user or not pw:
-            try:
-                from backend.secrets.manager import get_credential, list_credentials
-                creds_map = list_credentials()
-                # find service key case-insensitively
-                svc_key = next((k for k in creds_map if k.lower() == "unraid"), None)
-                if svc_key:
-                    cred = get_credential(svc_key)
-                    if not user:
-                        user = (cred.get("user") or "").strip()
-                    if not pw:
-                        pw = (cred.get("password") or "").strip()
-            except Exception:
-                pass
-
-        if not pw:
-            return  # nothing to authenticate with
-
-        parts = unc_path.lstrip("\\").split("\\")
-        if len(parts) < 2:
-            return
-        share = f"\\\\{parts[0]}\\{parts[1]}"
-
-        import base64
-        import subprocess
-
-        def _b64(s: str) -> str:
-            # Pure-ASCII by construction (no quote char in the alphabet), so
-            # this also makes script injection impossible without a separate
-            # escaping helper.
-            return base64.b64encode(s.encode("utf-8")).decode("ascii")
-
-        share_b64 = _b64(share)
-        pw_b64 = _b64(pw)
-
-        # The ENTIRE script is built as ONE semicolon-joined line -- a
-        # multi-line script piped to `-Command -` can silently truncate
-        # execution after the first network call with no error. Credentials
-        # are base64 on the Python side and decoded INSIDE PowerShell so the
-        # piped text is pure ASCII: Windows PowerShell 5.1 decodes redirected
-        # stdin using the console's OEM code page (not UTF-8), which would
-        # otherwise silently corrupt a non-ASCII credential embedded directly
-        # in the script. The catch block avoids Write-Error, which renders a
-        # full ErrorRecord that echoes the invoking script line (credentials
-        # included) into stderr -- [Console]::Error.WriteLine prints only the
-        # .NET exception's own message text.
-        stmts = [
-            f"$s=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{share_b64}'))",
-            f"$p=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{pw_b64}'))",
-        ]
-        if user:
-            user_b64 = _b64(user)
-            stmts.append(
-                f"$u=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{user_b64}'))"
-            )
-            stmts.append(
-                "try { New-SmbMapping -RemotePath $s -UserName $u -Password $p "
-                "-Persistent $false -ErrorAction Stop | Out-Null } "
-                "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
-            )
-        else:
-            stmts.append(
-                "try { New-SmbMapping -RemotePath $s -Password $p "
-                "-Persistent $false -ErrorAction Stop | Out-Null } "
-                "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }"
-            )
-        script = ";".join(stmts)
-
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "-"],
-            input=script.encode("ascii"),
-            capture_output=True,
-            timeout=20,
-        )
-        if result.returncode != 0:
-            out = result.stdout.decode(errors="replace").replace(pw, "[REDACTED]")
-            err = result.stderr.decode(errors="replace").replace(pw, "[REDACTED]")
-            logger.debug(
-                "SMB mount returned %d: stdout=%s stderr=%s", result.returncode, out, err
-            )
-    except Exception as e:
-        msg = str(e)
-        if pw:
-            msg = msg.replace(pw, "[REDACTED]")
-        logger.debug("SMB mount attempt: %s", msg)
-
-
 def backup_vault() -> dict:
     """Copy nexus.vault (+ meta + optionally .vault.key) to the Unraid share.
 
@@ -237,13 +129,8 @@ def backup_vault() -> dict:
 
         is_unc = dest_root.startswith("\\\\")
 
-        if is_unc and os.name == "nt":
-            dest = pathlib.Path(dest_root)
-            # Mount it via net use first. No-op if the share is already
-            # accessible (guest/already-mapped).
-            _mount_unc(dest_root, s)
-        elif is_unc:
-            # POSIX: no kernel mount available in this environment (see
+        if is_unc:
+            # No kernel mount available in this environment (see
             # _STAGING_ROOT's docstring) -- write to a local staging mirror,
             # rclone-sync it to the real share at the end of this function.
             dest = _STAGING_ROOT

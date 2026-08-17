@@ -104,14 +104,12 @@ def test_backup_vault_posix_unc_stages_locally_and_rclone_syncs(env, monkeypatch
     available in an unprivileged LXC -- see _STAGING_ROOT's docstring),
     backup_vault() must write to the local staging root (unchanged
     shutil-based logic) and then call rclone sync exactly once against the
-    real remote path, never touching _mount_unc (Windows-only)."""
+    real remote path."""
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
     staging = tmp_path / "staging"
     monkeypatch.setattr("backend.backup._STAGING_ROOT", staging)
     monkeypatch.setattr("backend.backup.os.name", "posix")
 
-    mount_calls = []
-    monkeypatch.setattr("backend.backup._mount_unc", lambda *a, **k: mount_calls.append(a))
     sync_calls = []
 
     def _fake_sync(local_dir, unc_path):
@@ -125,7 +123,6 @@ def test_backup_vault_posix_unc_stages_locally_and_rclone_syncs(env, monkeypatch
 
     assert result["ok"] is True
     assert result["dest"] == "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
-    assert not mount_calls, "must never call the Windows-only _mount_unc on POSIX"
     assert (staging / "nexus.vault").exists()
     assert sync_calls == [(staging, "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc")]
 
@@ -228,7 +225,6 @@ def test_backup_vault_posix_reports_failure_when_rclone_sync_fails(env, monkeypa
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
     monkeypatch.setattr("backend.backup._STAGING_ROOT", tmp_path / "staging")
     monkeypatch.setattr("backend.backup.os.name", "posix")
-    monkeypatch.setattr("backend.backup._mount_unc", lambda *a, **k: None)
 
     def _failing_run(cmd, timeout=None):
         return MagicMock(returncode=1, stderr="connection refused")
