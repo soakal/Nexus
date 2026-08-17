@@ -85,3 +85,10 @@ async def test_status_log_tail_reads_via_to_thread(monkeypatch, tmp_path):
     assert result["succeeded"] == 1
     assert result["failed"] == 0
     assert result["last_run"] == "2026-08-02T00:00:00"
+
+
+def test_venv_python_path_is_posix_bin_python(tmp_path):
+    """Regression for the dead os.name == "nt" branch removed from
+    venv_python_path(): NEXUS runs exclusively on the Linux LXC now, so the
+    function must unconditionally return venv/bin/python."""
+    assert boapi.venv_python_path(tmp_path) == tmp_path / "venv" / "bin" / "python"

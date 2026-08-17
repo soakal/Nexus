@@ -18,13 +18,12 @@ _running: list = [None]  # mutable slot tracking a Run Now subprocess
 
 
 def venv_python_path(module_dir: Path) -> Path:
-    """Return the brain-organizer module's venv python executable path for
-    the current platform (Scripts/python.exe on Windows, bin/python on
-    POSIX). Existence is NOT checked here -- callers combine this with
+    """Return the brain-organizer module's venv python executable path
+    (bin/python). Existence is NOT checked here -- callers combine this with
     their own .exists() guard, since "module not installed" is handled
     differently at each call site (skip a scheduler tick, 503 an API
     route, skip spawning the MCP server at boot)."""
-    return module_dir / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return module_dir / "venv" / "bin" / "python"
 
 
 def _count_pending(config: dict) -> int:
