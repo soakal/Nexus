@@ -117,6 +117,20 @@ def test_obsidian_vault_path_default_is_lxc_path():
     assert _settings().obsidian_vault_path == "/var/lib/nexus/knowledge"
 
 
+def test_unraid_backup_path_default_is_lxc_share():
+    # 2026-08-16: default moved off the decommissioned Windows-era UNC share
+    # to the distinct -lxc share (docs/lxc-migration-spec.md:91) so
+    # backup_vault()'s destructive rclone sync never targets the old,
+    # unmaintained share. Checked on the field default (not _settings()) --
+    # conftest.py force-sets UNRAID_BACKUP_PATH="" in the process env for
+    # test-run safety, which would shadow the class default read through a
+    # live Settings() instance.
+    from backend.config import Settings
+    assert Settings.model_fields["unraid_backup_path"].default == (
+        r"\\192.168.1.50\Computer Backup\Nexus_backup-lxc"
+    )
+
+
 def test_mail_autodraft_settings_defaults():
     s = _settings()
     assert s.mail_autodraft_enabled is True
