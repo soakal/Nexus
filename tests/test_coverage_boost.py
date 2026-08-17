@@ -277,9 +277,8 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
 
 
 def test_morning_briefing_enabled_default_is_true():
-    """Class default must stay True -- a fresh checkout (or Windows, once it
-    picks up this same flag at cutover) registers the job normally with no
-    override needed."""
+    """Class default must stay True -- a fresh checkout registers the job
+    normally with no override needed."""
     from backend.config import Settings
     assert Settings.model_fields["morning_briefing_enabled"].default is True
 
