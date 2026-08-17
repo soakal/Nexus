@@ -1,9 +1,10 @@
 """Regression guards for the 2026-08-05 httpx SSL-context reuse fix.
 
 Background: httpx.AsyncClient()/Client() build a fresh ssl.SSLContext
-SYNCHRONOUSLY at construction time by default (~1.3-1.45s on this host,
-suspected Windows Defender scanning the certifi PEM bundle each time) and it
-BLOCKS THE EVENT LOOP while doing so. backend/http_client.py builds one
+SYNCHRONOUSLY at construction time by default (~1.3-1.45s on the Windows host
+this was measured on before it was decommissioned (2026-08-15), suspected
+Windows Defender scanning the certifi PEM bundle each time) and it BLOCKS THE
+EVENT LOOP while doing so, regardless of host. backend/http_client.py builds one
 SSL_CONTEXT at import instead and every real call site reuses it via
 verify=SSL_CONTEXT. Two categories are deliberately exempt (verify=False and
 transport=, see that module's docstring) -- these tests encode all three
@@ -74,8 +75,9 @@ def test_every_httpx_client_reuses_the_shared_ssl_context():
             lineno = src.count("\n", 0, m.start()) + 1
             offenders.append(f"{f}:{lineno}: {src[m.start():m.start() + 80]!r}")
     assert not offenders, (
-        "httpx client(s) built without a shared SSL context -- each costs ~1.3s of "
-        "BLOCKED EVENT LOOP on this host. Pass verify=SSL_CONTEXT (from "
+        "httpx client(s) built without a shared SSL context -- each one BLOCKS THE "
+        "EVENT LOOP while it builds (~1.3s when measured on the since-decommissioned "
+        "Windows host). Pass verify=SSL_CONTEXT (from "
         "backend.http_client), or verify=False / transport= if TLS is deliberately "
         f"handled another way. See backend/http_client.py. Offenders: {offenders}"
     )
