@@ -8,9 +8,9 @@ get_secret falls back infisical -> legacy vault -> os.environ, matching the
 transition-window design (see plan D6): a key missing from Infisical but
 still present in the not-yet-retired vault keeps working, logged so the
 14-day soak has a concrete signal to watch. The event is now also persisted
-to the SecretFallback table via backend.secrets.fallback_log, since the log
-file truncates on every restart and can't answer "has this fired since
-2026-07-24?" on its own. Writes are active-backend-only — no dual-write,
+to the SecretFallback table via backend.secrets.fallback_log, since it's
+DB-backed and survives restarts, giving a concrete answer to "has this fired
+since 2026-07-24?" that a log file alone couldn't. Writes are active-backend-only — no dual-write,
 since drift between two stores is worse than re-running the one-time
 migration script.
 """

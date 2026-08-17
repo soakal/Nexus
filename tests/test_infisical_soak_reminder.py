@@ -49,6 +49,10 @@ async def test_infisical_soak_reminder_notifies_phone(monkeypatch):
     assert "Top keys" not in message
     assert "logs/backend.err.log" not in message
     assert "resets on every backend restart" not in message
+    # 2026-08-17: message reworded to drop the stale Windows-era "truncates
+    # on every restart" contrast now that the signal is DB-backed.
+    assert "truncates on every restart" not in message
+    assert "survives restarts" in message
 
 
 @pytest.mark.asyncio

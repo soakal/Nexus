@@ -511,8 +511,7 @@ async def _infisical_soak_reminder():
                 "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
                 "days since the 2026-07-24 flip). Zero legacy-vault fallbacks "
                 "have been recorded since durable tracking began (SecretFallback "
-                "table, DB-backed — not a log file that truncates on every "
-                "restart). Looks clear to green-light Phase 6 (retiring the "
+                "table, DB-backed — survives restarts). Looks clear to green-light Phase 6 (retiring the "
                 "Fernet vault) on that front."
             )
         else:
