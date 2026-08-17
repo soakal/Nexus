@@ -2,7 +2,6 @@
 import asyncio
 import os
 import pathlib
-import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
@@ -554,79 +553,6 @@ async def test_voice_transcribe_whisper_api():
          patch("builtins.open", return_value=mock_file):
         result = await transcribe("/fake/audio.wav")
     assert result == "transcribed text"
-
-
-# ---------------------------------------------------------------------------
-# backend/agents/voice.py — _ensure_ffmpeg_on_path
-# ---------------------------------------------------------------------------
-
-def test_ensure_ffmpeg_on_path_noop_when_already_resolvable():
-    from backend.agents import voice
-
-    original_path = "C:\\already\\has\\ffmpeg"
-    with patch("shutil.which", return_value="C:\\already\\has\\ffmpeg\\ffmpeg.exe"), \
-         patch.dict("os.environ", {"PATH": original_path}):
-        voice._ensure_ffmpeg_on_path()
-        assert os.environ["PATH"] == original_path
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="exercises the real POSIX no-op path")
-def test_ensure_ffmpeg_on_path_real_posix_noop_without_ffmpeg():
-    """On real POSIX (this branch's actual deploy target), the guard clause
-    `if shutil.which("ffmpeg") or os.name != "nt": return` must short-circuit
-    on `os.name != "nt"` alone, before `import winreg` is ever reached --
-    winreg doesn't exist on Linux, so reaching that import would raise
-    ModuleNotFoundError. The other three tests below all mock os.name to
-    fake this branch and skip on real Linux, so this path had zero real
-    coverage on the actual LXC deploy target."""
-    from backend.agents import voice
-
-    with patch("shutil.which", return_value=None):
-        voice._ensure_ffmpeg_on_path()  # must not raise, must not import winreg
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")
-def test_ensure_ffmpeg_on_path_merges_registry_path():
-    from backend.agents import voice
-
-    def _fake_open_key(root, subkey):
-        cm = MagicMock()
-        cm.__enter__ = MagicMock(return_value=cm)
-        cm.__exit__ = MagicMock(return_value=False)
-        return cm
-
-    with patch("shutil.which", return_value=None), \
-         patch("os.name", "nt"), \
-         patch.dict("os.environ", {"PATH": "C:\\stale"}), \
-         patch("winreg.OpenKey", side_effect=_fake_open_key), \
-         patch("winreg.QueryValueEx", return_value=("C:\\fresh\\ffmpeg\\bin", 1)):
-        voice._ensure_ffmpeg_on_path()
-        # Assertions INSIDE the `with` — patch.dict restores the pre-test PATH
-        # the moment the block exits, so checking afterward would just see
-        # the real system PATH, not what the function actually set.
-        assert "C:\\fresh\\ffmpeg\\bin" in os.environ["PATH"]
-        assert "C:\\stale" in os.environ["PATH"]  # merged, not replaced
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")
-def test_ensure_ffmpeg_on_path_never_raises_on_registry_failure():
-    from backend.agents import voice
-
-    with patch("shutil.which", return_value=None), \
-         patch("os.name", "nt"), \
-         patch("winreg.OpenKey", side_effect=OSError("registry unavailable")):
-        voice._ensure_ffmpeg_on_path()  # must not raise
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="winreg module doesn't exist on non-Windows")
-def test_ensure_ffmpeg_on_path_skips_on_non_windows():
-    from backend.agents import voice
-
-    with patch("shutil.which", return_value=None), \
-         patch("os.name", "posix"), \
-         patch("winreg.OpenKey") as mock_open_key:
-        voice._ensure_ffmpeg_on_path()
-    mock_open_key.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

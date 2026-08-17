@@ -261,12 +261,14 @@ since they're one continuous piece of work:
   fixture; the SAME gap existed in 21 other test files whose `TestClient(app)` fixtures patch
   the sibling `memo_watcher.stop_watcher` but had never picked up this one — mechanically
   swept the same patch into all 21.
-- **Phase 4.2 — real POSIX test coverage for `voice.py::_ensure_ffmpeg_on_path`.** The
-  function's `os.name != "nt"` no-op branch (which must short-circuit before `import winreg`,
-  unimportable on Linux) had zero real coverage on this branch's actual deploy target — the
-  three existing tests all mock `os.name` to fake the branch and skip on real Linux. New
-  `test_ensure_ffmpeg_on_path_real_posix_noop_without_ffmpeg` exercises the real path,
-  skipped on Windows.
+- **Phase 4.2 (superseded, cycle 13) — deleted `voice.py::_ensure_ffmpeg_on_path`** and its
+  5-test block from `tests/test_coverage_boost.py`, plus its call site in `transcribe()`, as
+  unreachable dead code on this branch: its guard clause (`if shutil.which("ffmpeg") or
+  os.name != "nt": return`) always short-circuits on the `os.name != "nt"` half alone, since
+  Linux is never `"nt"` — independent of whether ffmpeg is installed. The function itself
+  still lives on `windows-archive` and `master`, both untouched by this cycle; this bullet's
+  original text and the deleted POSIX test are recoverable from main's git history if ever
+  needed.
 - **Phase 5.1 — deleted `wiki_ingest.py`'s dead ingestion-watcher machinery.**
   `ingest_file`/`run_all_unprocessed`/`_import_reference_doc` and ~20 supporting helpers had
   been dead since `brain_organizer` became the sole raw→wiki pipeline (2026-07-14, see the
