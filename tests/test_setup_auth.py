@@ -6,7 +6,9 @@ from unittest.mock import patch
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """A genuinely-pending first-run setup: no .vault.key/nexus.vault on disk
-    (vault_ok False, matching the real pre-setup.ps1-completion state), so the
+    (vault_ok False, matching the real first-run state before
+    /var/lib/nexus/.vault.key is seeded — see docs/lxc-migration-spec.md
+    Phase 1.1-1.4), so the
     lifespan's `if vault_ok:` branch (settings.validate(), scheduler, memo
     watcher, worker pool, telegram poller) never runs — only
     ensure_bootstrap_token() (unconditional) and the router registrations do.
