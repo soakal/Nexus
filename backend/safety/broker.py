@@ -432,13 +432,13 @@ async def _dispatch_system_restart(target: str, payload: dict) -> dict:
 
     `target` "nexus"/"lxc"/"self"/"" all mean THIS instance -- "lxc" was
     added 2026-08-15 so a system:restart:lxc button (this instance's own
-    deploy-drift alert, see watchdog.py) self-restarts correctly whenever
-    THIS poller is the one consuming it (relevant post-cutover; today
-    Windows's poller is the only active consumer and dispatches "lxc" over
-    SSH to master's own lxc_host.py module instead -- see that repo's
-    broker.py, a structurally different function from this one). Any other
-    target raises ValueError -- fail loud on a typo, never silently
-    misroute.
+    deploy-drift alert, see watchdog.py) self-restarts correctly. This
+    instance's poller is the only active consumer post-cutover, so all
+    four targets dispatch here. (Historical: pre-2026-08-15 shutdown,
+    Windows's poller was the active consumer and dispatched "lxc" over SSH
+    to master's own lxc_host.py module instead -- moot now Windows is shut
+    down. See CLAUDE.md.) Any other target raises ValueError -- fail loud
+    on a typo, never silently misroute.
 
     The restart mechanism kills this very process, so it can never run
     inline here -- this schedules the actual restart to run a few seconds
