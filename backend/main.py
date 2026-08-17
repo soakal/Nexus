@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 # this import pays the shared TLS context's ~1.3s cost (see that module's
 # docstring) before anything is served, not during a live request. run.py
 # already imports it earlier still (before uvicorn itself); this import is
-# what covers every OTHER entrypoint (pytest, `-m uvicorn`, the tray).
+# what covers every OTHER entrypoint (pytest, `-m uvicorn`).
 import backend.http_client  # noqa: F401
 
 logging.basicConfig(

@@ -55,7 +55,7 @@ Caveats
 * Import cost is paid wherever this module is first imported. `run.py` imports
   it before `uvicorn.run()` so on the production path the 1.3s lands on the bare
   main thread, before an event loop even exists; `backend/main.py` imports it at
-  module level so every other entrypoint (pytest, `-m uvicorn`, the tray) still
+  module level so every other entrypoint (pytest, `-m uvicorn`) still
   gets it during uvicorn's `config.load()` -- which uvicorn runs BEFORE
   `startup()` binds the listening socket (server.py:76 vs :84), i.e. before
   anything is served and long before prime_state_workers() runs.
