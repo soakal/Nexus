@@ -4,12 +4,13 @@ Why this exists
 ---------------
 `httpx.AsyncClient()` builds a fresh `ssl.SSLContext` SYNCHRONOUSLY inside its
 constructor -- before it has seen a single URL -- by calling
-`ssl.create_default_context(cafile=certifi.where())`. On this Windows host that
-costs ~1.3s (measured 2026-08-05: 1241ms per AsyncClient(), vs 24ms for
+`ssl.create_default_context(cafile=certifi.where())`. On the Windows host this
+ran on before it was decommissioned (2026-08-15), that cost ~1.3s (measured
+2026-08-05: 1241ms per AsyncClient(), vs 24ms for
 `ssl.create_default_context()` with no cafile -- so it is the certifi PEM bundle
 load specifically, not SSL setup in general; Windows Defender scanning the
-bundle on every open is the suspected cause). It is a BLOCKING call on the
-event loop thread.
+bundle on every open was the suspected cause there). It is a BLOCKING call on
+the event loop thread regardless of host.
 
 That was already bad. `backend/state_workers.py::prime_state_workers()` -- run
 once eagerly at boot from main.py's lifespan -- made it critical: it walks 22
