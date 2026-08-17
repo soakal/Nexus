@@ -7,16 +7,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Eagerly trigger the heavy watchdog C-extension import at module import time.
-# On Windows this import can hold the GIL for 10-25s. Doing it here (during app
-# import, before uvicorn binds/serves its socket) guarantees the GIL hold cannot
-# collide with a live IOCP accept socket and produce WinError 64. The thread-based
-# start in start_watcher_blocking() is the primary fix; this is defense in depth.
-try:  # pragma: no cover - import side effect only
-    import watchdog.observers  # noqa: F401
-except Exception as _e:  # noqa: BLE001
-    logging.getLogger(__name__).warning(f"watchdog preimport skipped: {_e}")
-
 _observer = None
 _loop = None
 
