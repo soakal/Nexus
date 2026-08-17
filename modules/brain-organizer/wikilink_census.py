@@ -49,7 +49,7 @@ frontmatter helper the production parser uses instead of re-deriving
 frontmatter detection.
 
 Usage:
-    venv/Scripts/python.exe modules/brain-organizer/wikilink_census.py \\
+    venv/bin/python modules/brain-organizer/wikilink_census.py \\
         --before <vault-dir> [--after <vault-dir>] [--out <evidence.md>]
 
 If --after is omitted, the census runs in single-dir mode against --before

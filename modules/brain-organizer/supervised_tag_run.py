@@ -41,7 +41,7 @@ Telegram message. The throwaway copy is left on disk (path printed at the
 end) for manual inspection; nothing here deletes it automatically.
 
 Usage:
-    venv/Scripts/python.exe modules/brain-organizer/supervised_tag_run.py --confirm
+    venv/bin/python modules/brain-organizer/supervised_tag_run.py --confirm
 
     (--confirm is required — an accidental bare invocation prints a warning
     and exits 2 instead of making real API calls / sending a real Telegram
