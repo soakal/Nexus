@@ -1,16 +1,24 @@
 """Regression tests for backend/scheduler.py::_run_brain_organizer's
 subprocess capture (see CLAUDE.md's backend/scheduler.py bullet).
 
-Root cause (see the spec this test file was built from): `subprocess.run(...,
-text=True)` with no `encoding=` decodes the child's pipes under the parent's
-locale default (cp1252 on Brian's host). brain_organizer.py reconfigures its
-own stdout to UTF-8 and emits emoji -- an undecodable byte under cp1252 kills
-CPython's `_readerthread` mid-read, and `subprocess.run` returns normally with
-`stdout=None` instead of raising (dead thread, no exception surfaces to the
-outer `except`). Separately, brain_organizer.py logs EVERYTHING via a
-`StreamHandler(sys.stdout)` -- it never writes to stderr -- so the pre-fix
-`logger.error(...: {result.stderr[:500]})` line was reading an always-empty
-stream and threw away every real diagnostic.
+Historical root cause (see the spec this test file was built from): on the
+Windows host this project ran on before the 2026-08-15 LXC migration,
+`subprocess.run(..., text=True)` with no `encoding=` decoded the child's
+pipes under the parent's locale default (cp1252 on that Windows host).
+brain_organizer.py reconfigures its own stdout to UTF-8 and emits emoji -- an
+undecodable byte under cp1252 killed CPython's `_readerthread` mid-read, and
+`subprocess.run` returned normally with `stdout=None` instead of raising
+(dead thread, no exception surfaces to the outer `except`). Separately,
+brain_organizer.py logs EVERYTHING via a `StreamHandler(sys.stdout)` -- it
+never writes to stderr -- so the pre-fix `logger.error(...:
+{result.stderr[:500]})` line was reading an always-empty stream and threw
+away every real diagnostic.
+
+This suite still matters post-migration: the guard it pins down
+(`capture_output=True, text=True, encoding="utf-8", errors="replace"` at
+backend/scheduler.py:434) is host-independent and regresses on any platform
+whose locale default isn't UTF-8, so the test keeps that fix locked in
+regardless of which OS is running the scheduler.
 
 None of these tests touch the network, the real vault, real Brain/raw/, or
 the real modules/brain-organizer/venv on disk -- the existence check inside
