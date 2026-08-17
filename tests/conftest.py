@@ -21,9 +21,10 @@ os.environ.setdefault("GITHUB_USERNAME", "testuser")
 # env_file). backend/secrets/vault.py::set_secret() calls backup_vault() on
 # EVERY secret write, best-effort -- any test that touches set_secret()
 # without its own settings mock inherits whatever unraid_backup_path
-# resolves to. Left unset, that's backend/config.py's real Windows-share
-# default, and on POSIX with no .env in pytest's cwd, backup_vault()'s
-# rclone sync mirror-deletes that real Unraid share -- live-reproduced
+# resolves to. Left unset, that's backend/config.py's real default --
+# the Unraid SMB share \\192.168.1.50\Computer Backup\Nexus_backup-lxc
+# set 2026-08-16, still live -- and on POSIX with no .env in pytest's
+# cwd, backup_vault()'s rclone sync mirror-deletes that real share -- live-reproduced
 # 2026-08-14 (twice: once from this repo's own test runs, once from an
 # independent verification pass), including deletion of the real dated
 # backup history. Forcing this here, before any backend import, means
