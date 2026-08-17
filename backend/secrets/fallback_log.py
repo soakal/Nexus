@@ -19,8 +19,9 @@ holds an open Session, and get_secret() is called during startup BEFORE
 create_db_and_tables() runs). The actual DB write happens on a 300s scheduler
 drain (backend/scheduler.py::_secret_fallback_drain) plus a lifespan-shutdown
 flush (backend/main.py) -- so a normal restart doesn't lose the signal. The
-accepted residual gap: a hard process kill (e.g. taskkill) still loses at
-most one 300s window of buffered-but-undrained events.
+accepted residual gap: a hard process kill (e.g. SIGKILL / `systemctl kill
+-s SIGKILL` / an OOM-kill) still loses at most one 300s window of
+buffered-but-undrained events.
 
 Only the secret KEY NAME is ever stored -- never the value.
 
