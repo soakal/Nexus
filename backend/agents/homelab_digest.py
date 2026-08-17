@@ -192,8 +192,10 @@ async def _run_section(name: str, coro) -> str:
 
 
 def _format_now() -> str:
-    """Windows-safe equivalent of '%-d'/'%-I' (glibc-only, crashes on
-    Windows) -- plain ints instead of the strftime no-pad flag."""
+    """Historical note: this builds '%-d'/'%-I'-equivalent output (day and
+    12-hour without zero-padding) using plain ints instead of the strftime
+    no-pad flag, because that flag is glibc-only and crashed on the Windows
+    host this ran on before its 2026-08-15 decommission."""
     now = _now()
     return f"{now:%A, %B} {now.day} {now:%Y} {now.hour % 12 or 12}:{now:%M %p}"
 
