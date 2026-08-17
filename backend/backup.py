@@ -267,11 +267,9 @@ def backup_vault() -> dict:
             return {"ok": False, "dest": str(dest), "error": "no vault files found to back up"}
 
         # Latest copy (overwrites previous)
-        copied_paths = []
         for src, name in files:
             dst = dest / name
             shutil.copy2(src, dst)
-            copied_paths.append(dst)
 
         # Dated history copy
         hist_dir = history / ts
@@ -279,7 +277,6 @@ def backup_vault() -> dict:
         for src, name in files:
             dst = hist_dir / name
             shutil.copy2(src, dst)
-            copied_paths.append(dst)
 
         # Also ship a consistent nexus.db snapshot so the off-VM bundle is a
         # RESTORABLE set, not just secrets. Snapshot to a local temp first
@@ -296,7 +293,6 @@ def backup_vault() -> dict:
                 if integrity_check_file(tmp_db) == "ok":
                     for target in (dest / db_name, hist_dir / db_name):
                         shutil.copy2(tmp_db, target)
-                        copied_paths.append(target)
                 else:
                     logger.warning("db snapshot failed integrity check; not shipped to Unraid")
             finally:
@@ -304,26 +300,6 @@ def backup_vault() -> dict:
                     os.remove(tmp_db)
         except Exception as e:
             logger.warning("db snapshot for Unraid backup failed (non-fatal): %s", e)
-
-        # Strip Hidden attribute from backup copies so they're visible in Explorer.
-        # Exception: the vault key. setup.ps1 deliberately marks the LOCAL
-        # .vault.key Hidden (attrib +H) as an extra obscurity layer -- clearing
-        # it here would make the remote copy MORE discoverable than the local
-        # one, for no functional reason (nothing depends on it being visible).
-        if os.name == "nt":
-            import stat as _stat
-            for p in copied_paths:
-                try:
-                    p.chmod(p.stat().st_mode | _stat.S_IRUSR | _stat.S_IWUSR)
-                    if p.name == KEY_PATH.name:
-                        continue
-                    # Clear Hidden via ctypes FILE_ATTRIBUTE_HIDDEN (0x2)
-                    import ctypes
-                    attrs = ctypes.windll.kernel32.GetFileAttributesW(str(p))
-                    if attrs != -1 and (attrs & 0x2):
-                        ctypes.windll.kernel32.SetFileAttributesW(str(p), attrs & ~0x2)
-                except Exception:
-                    pass
 
         # Prune history to _HISTORY_KEEP most recent entries
         entries = sorted(history.iterdir(), key=lambda p: p.name)
