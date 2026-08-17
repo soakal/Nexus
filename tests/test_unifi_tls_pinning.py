@@ -18,7 +18,6 @@ import datetime
 import json
 import socket
 import ssl
-import sys
 
 import httpx
 import pytest
@@ -31,22 +30,11 @@ from backend.integrations import unifi_tls_pinning as pinning
 
 
 def _run_on_selector_loop(coro):
-    """Runs `coro` to completion on a fresh SelectorEventLoop rather than
-    whatever loop pytest-asyncio's `asyncio_mode = "auto"` would otherwise
-    hand us (WindowsProactorEventLoopPolicy's default on this platform).
-
-    This test constructs its own SelectorEventLoop to exercise that code
-    path deliberately: abruptly closing a TLS stream after a pinning
-    mismatch -- exactly what `_PinningNetworkStream.start_tls` does on
-    purpose, to refuse the connection before any data is sent -- triggers a
-    Proactor-specific SSL-transport teardown bug on Windows that hangs the
-    test process (reproduced independently of this test suite while writing
-    it).
+    """Runs `coro` to completion on a fresh event loop constructed explicitly,
+    rather than whatever loop pytest-asyncio's `asyncio_mode = "auto"` would
+    otherwise hand us.
     """
-    if sys.platform == "win32":
-        loop = asyncio.SelectorEventLoop()
-    else:
-        loop = asyncio.new_event_loop()
+    loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
     finally:
