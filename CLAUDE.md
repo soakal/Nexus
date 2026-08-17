@@ -2,8 +2,6 @@
 
 Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-agent layer that talks to a homelab.
 
-> Also read the user's master map at `C:\Users\Brian\CLAUDE.md` for global rules (model pipeline, secrets, deploy confirmations). This file is the project-local detail.
-
 > **Branch policy.** This branch — the Ubuntu LXC port (real host: Proxmox LXC 207,
 > `192.168.1.62`, live clone at `/opt/nexus`) — is `main`, the sole actively-developed branch,
 > as of 2026-08-15. Windows production (formerly on `master`) was fully shut down the same day:
