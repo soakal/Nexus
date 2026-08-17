@@ -239,9 +239,10 @@ since they're one continuous piece of work:
   `nexus-unraid` remote (pre-configured once via `rclone config create`, not in this repo).
   New `backup_knowledge()` (every 30 min, a different freshness need than the daily
   secrets/DB job) mirrors the knowledge store the same way, with a `--exclude "/knowledge/**"`
-  guard on `backup_vault()`'s own sync so the two jobs can never stomp each other. Windows's
-  `_mount_unc`/PowerShell `New-SmbMapping` path is untouched — POSIX and Windows are separate
-  branches inside the same `backup_vault()` function, gated on `os.name`.
+  guard on `backup_vault()`'s own sync so the two jobs can never stomp each other. The Windows
+  `_mount_unc`/PowerShell `New-SmbMapping` path was removed from `backup_vault()` on `main` in
+  commit `7069cbd` (cycle 15); `backup_vault()` now has a single POSIX path here, and the old
+  `os.name`-gated branch survives only on the `windows-archive` branch.
   `restore_vault()` gained an early POSIX guard (`if dest_root.startswith("\\\\") and os.name
   != "nt": return {"ok": False, ...}`) rather than silently attempting a UNC-path restore that
   can't work here — restore on POSIX is manual (`rclone copy nexus-unraid:<share>/<path>
