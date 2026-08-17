@@ -4,7 +4,6 @@ nexus.vault
 .nexus-setup-token
 .env
 .env.local
-.nexus.pids
 
 # Brain Organizer config -- vault_path/logs_folder/processed_file are
 # environment-specific absolute paths (found during the Linux port: this file
