@@ -196,7 +196,7 @@ def backup_vault() -> dict:
             except Exception:
                 pass
 
-        if is_unc and os.name != "nt":
+        if is_unc:
             synced = _rclone_sync(dest, dest_root)
             if not synced:
                 # Local staging copy succeeded, but nothing actually reached
@@ -271,7 +271,7 @@ def restore_vault(timestamp: str | None = None) -> dict:
         if not dest_root:
             return {"ok": False, "src": "", "error": "unraid_backup_path not configured"}
 
-        if dest_root.startswith("\\\\") and os.name != "nt":
+        if dest_root.startswith("\\\\"):
             # No POSIX restore path is built (YAGNI -- the 2026-08-14 restore
             # drill used a manual `rclone copy` from nexus-unraid: just fine).
             # Fail loud and say what to do instead of silently mis-resolving

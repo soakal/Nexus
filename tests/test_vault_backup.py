@@ -108,7 +108,6 @@ def test_backup_vault_posix_unc_stages_locally_and_rclone_syncs(env, monkeypatch
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
     staging = tmp_path / "staging"
     monkeypatch.setattr("backend.backup._STAGING_ROOT", staging)
-    monkeypatch.setattr("backend.backup.os.name", "posix")
 
     sync_calls = []
 
@@ -133,7 +132,6 @@ def test_backup_knowledge_posix_calls_rclone_sync(env, monkeypatch, tmp_path):
     knowledge.mkdir()
     (knowledge / "Brain").mkdir()
     env["s"].obsidian_vault_path = str(knowledge)
-    monkeypatch.setattr("backend.backup.os.name", "posix")
 
     captured = {}
     def _fake_run(cmd, timeout=None):
@@ -217,7 +215,6 @@ def test_backup_vault_posix_reports_failure_when_rclone_sync_fails(env, monkeypa
     got this right; this is backup_vault() catching up."""
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
     monkeypatch.setattr("backend.backup._STAGING_ROOT", tmp_path / "staging")
-    monkeypatch.setattr("backend.backup.os.name", "posix")
 
     def _failing_run(cmd, timeout=None):
         return MagicMock(returncode=1, stderr="connection refused")
@@ -293,7 +290,6 @@ def test_restore_vault_posix_unc_fails_loud_not_silent(env, monkeypatch):
     backslash-literal filenames (which used to "fail safe" only by
     accident, with a misleading "no vault files found" message)."""
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
-    monkeypatch.setattr("backend.backup.os.name", "posix")
 
     from backend.backup import restore_vault
     result = restore_vault()
@@ -306,7 +302,6 @@ def test_restore_vault_posix_unc_fails_loud_not_silent(env, monkeypatch):
 def test_backup_knowledge_missing_vault_path_fails_cleanly(env, monkeypatch, tmp_path):
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
     env["s"].obsidian_vault_path = str(tmp_path / "does-not-exist")
-    monkeypatch.setattr("backend.backup.os.name", "posix")
 
     from backend.backup import backup_knowledge
     result = backup_knowledge()
