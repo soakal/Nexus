@@ -112,8 +112,11 @@ async def _wait_for_stable_size(
 
     A recorder may still be writing a large .m4a/.wav/.mp3 when the watchdog
     FileCreatedEvent fires; transcribing it then yields a truncated memo. Poll the
-    size (async sleeps only — never time.sleep, which would freeze the event loop and
-    risk WinError 64) until it is unchanged for `stable_checks` consecutive reads.
+    size using async sleeps only — never time.sleep, which would freeze the event
+    loop — until it is unchanged for `stable_checks` consecutive reads. (Historical
+    note: on Windows this also risked WinError 64, killing the IOCP accept socket;
+    not applicable to the Linux inotify observer used here, but the async-sleep-only
+    rule still applies.)
 
     Returns True once the size settles. Returns False on timeout (the caller still
     processes, with a warning, rather than dropping the memo) or if the file vanishes
@@ -157,12 +160,15 @@ def start_watcher_blocking(watch_folder: str, loop: asyncio.AbstractEventLoop) -
     """Start the watchdog observer. This MUST be called from a plain OS thread
     (e.g. threading.Thread), NOT scheduled on the asyncio event loop.
 
-    The heavy watchdog C-extension import (watchdog.observers.read_directory_changes
-    on Windows) holds the GIL for 10-25s. If this ran on the loop thread, or if the
-    loop were awaiting it, the whole event loop would freeze long enough for the
-    Windows IOCP accept socket to die with WinError 64. Running on a separate OS
-    thread lets the GIL be released back to the loop between bytecode ops, so the
-    loop keeps servicing connections while the import grinds.
+    Historical note: on Windows, the heavy watchdog C-extension import
+    (watchdog.observers.read_directory_changes) held the GIL for 10-25s, and if this
+    ran on the loop thread — or the loop were awaiting it — the frozen event loop
+    could let the Windows IOCP accept socket die with WinError 64. Running on a
+    separate OS thread let the GIL be released back to the loop between bytecode
+    ops, keeping the loop servicing connections while the import ground on. That
+    mechanism doesn't apply here (this deployment uses the Linux inotify observer,
+    not read_directory_changes), but the rule still holds: never run this on the
+    loop thread.
     """
     global _observer, _loop
 
