@@ -49,7 +49,7 @@ def _clear_bootstrap_token() -> None:
 
 def ensure_bootstrap_token() -> None:
     """Called once from lifespan startup. Setup pending -> mint+publish a
-    fresh token, ACL-hardened like .vault.key. Setup done -> clear any stale
+    fresh token, chmod 0600 (owner-only) like .vault.key. Setup done -> clear any stale
     token. Never raises."""
     global _bootstrap_token
     try:
@@ -59,7 +59,7 @@ def ensure_bootstrap_token() -> None:
         _bootstrap_token = _secrets.token_urlsafe(32)
         try:
             _BOOTSTRAP_TOKEN_PATH.write_text(_bootstrap_token, encoding="utf-8")
-            secure_key_file(_BOOTSTRAP_TOKEN_PATH)  # same ACL hardening .vault.key gets — this token is equally sensitive (it gates minting the master key)
+            secure_key_file(_BOOTSTRAP_TOKEN_PATH)  # same chmod 0600 owner-only permissions .vault.key gets — this token is equally sensitive (it gates minting the master key)
             where = _BOOTSTRAP_TOKEN_PATH.resolve()
         except Exception as e:
             where = f"(could not write token file: {e})"
