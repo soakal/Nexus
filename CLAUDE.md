@@ -241,8 +241,8 @@ since they're one continuous piece of work:
   `_mount_unc`/PowerShell `New-SmbMapping` path was removed from `backup_vault()` on `main` in
   commit `7069cbd` (cycle 15); `backup_vault()` now has a single POSIX path here, and the old
   `os.name`-gated branch survives only on the `windows-archive` branch.
-  `restore_vault()` gained an early POSIX guard (`if dest_root.startswith("\\\\") and os.name
-  != "nt": return {"ok": False, ...}`) rather than silently attempting a UNC-path restore that
+  `restore_vault()` gained an early POSIX guard (`if dest_root.startswith("\\\\"): return
+  {"ok": False, ...}`) rather than silently attempting a UNC-path restore that
   can't work here — restore on POSIX is manual (`rclone copy nexus-unraid:<share>/<path>
   <dest>`), not automated in v1.
 - **`_dispatch_system_restart`'s Linux branch fixed a real collision bug**: the original used
