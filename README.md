@@ -65,7 +65,7 @@ Losing `.vault.key` makes all vault secrets permanently unrecoverable.
 
 ### CLI Tools
 
-```powershell
+```bash
 # Add/update a secret
 python tools/encrypt_secret.py
 
