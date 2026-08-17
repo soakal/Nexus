@@ -114,7 +114,7 @@ export default function SetupWizard() {
           setError(
             data.detail ||
             'Invalid or missing first-run setup token. Check .nexus-setup-token ' +
-            'in the NEXUS folder (also printed in logs\\backend.err.log).'
+            'in the NEXUS folder (also printed via journalctl -u nexus-backend).'
           )
         } else {
           setError(data.error || data.detail || 'Setup failed')
@@ -183,7 +183,7 @@ export default function SetupWizard() {
                     FIRST-RUN SETUP TOKEN <span style={{ color: '#fb7185' }}>*</span>
                   </label>
                   <div style={{ fontSize: '11px', color: '#465069', marginBottom: '5px' }}>
-                    Printed in the startup banner in <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>logs\backend.err.log</span> (NEXUS's stderr log — check <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.err.log</span>, not <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.log</span>), and saved to <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.nexus-setup-token</span> in the NEXUS folder. It changes every time the backend restarts.
+                    Printed in the startup banner via <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>journalctl -u nexus-backend</span>, and saved to <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.nexus-setup-token</span> in the NEXUS folder. It changes every time the backend restarts.
                   </div>
                   <TextInput
                     type="password"
