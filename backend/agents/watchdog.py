@@ -469,12 +469,14 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
             if d["surface"]:
                 await events.notify_phone(
                     msg, kind="deploy_drift",
-                    # target="lxc", not "nexus": this alert originates on the
-                    # LXC, but only Windows's Telegram poller is active
-                    # (2026-08-15 instance-ownership split) -- a "nexus"
-                    # (self) target on THIS button would be consumed by
-                    # Windows's poller and wrongly restart Windows while the
-                    # actually-drifted LXC stays broken. See CLAUDE.md.
+                    # target="lxc" (not "nexus"): the broker maps
+                    # nexus/lxc/self all to THIS instance (backend/safety/
+                    # broker.py), so "lxc" restarts the actually-drifted
+                    # instance either way. (Historical: pre-2026-08-15
+                    # shutdown, "lxc" also avoided Windows's Telegram
+                    # poller consuming a "nexus" (self) target and wrongly
+                    # restarting Windows -- moot now Windows is shut down.
+                    # See CLAUDE.md.)
                     buttons=[{"text": "🔄 Restart NEXUS (LXC)", "callback_data": "system:restart:lxc"}],
                 )
 
