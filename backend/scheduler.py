@@ -363,6 +363,15 @@ async def _spend_report():
         raise
 
 
+async def _weekly_review():
+    try:
+        from backend.agents.weekly_review import run_weekly_review
+        await run_weekly_review()
+    except Exception as e:
+        logger.error(f"Weekly review job error: {e}")
+        raise
+
+
 async def _anthropic_balance_watch():
     try:
         from backend.agents.anthropic_balance_watch import check_anthropic_balance_feature
@@ -829,6 +838,24 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Spend report enabled: weekly on {report_day} at {rh:02d}:{rm:02d} {timezone}")
+    if getattr(s, "weekly_review_enabled", True):
+        review_time = getattr(s, "weekly_review_time", "18:00")
+        try:
+            wrh, wrm = review_time.split(":")
+            wrh, wrm = int(wrh), int(wrm)
+        except Exception:
+            logger.warning(
+                f"Invalid weekly_review_time {review_time!r}; falling back to 18:00"
+            )
+            wrh, wrm = 18, 0
+        review_day = getattr(s, "weekly_review_day", "sun")
+        scheduler.add_job(
+            _weekly_review,
+            CronTrigger(day_of_week=review_day, hour=wrh, minute=wrm, timezone=timezone),
+            id="weekly_review",
+            replace_existing=True,
+        )
+        logger.info(f"Weekly review enabled: weekly on {review_day} at {wrh:02d}:{wrm:02d} {timezone}")
     if getattr(s, "anthropic_balance_watch_enabled", True):
         # 1st of each month, briefing-time-adjacent — a monthly cadence
         # comfortably outlives any transient GitHub/Anthropic API hiccup.

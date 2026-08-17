@@ -379,6 +379,26 @@ class Settings(BaseSettings):
     # explicitly rather than getting a second page per incident unasked.
     homelab_recovery_notify_enabled: bool = False
 
+    # Incident diagnostician (backend/agents/incident_diag.py, 2026-08-17):
+    # a fired vm/docker/array/backup alert spawns one read-only investigation
+    # (router.run_with_tools over the existing read-only tool registry) and
+    # pages a diagnosis + the same broker-gated fix button the alert itself
+    # carries. Default True — explicitly requested feature, unlike the
+    # opt-in recovery notice above. 30min per-key cooldown is fixed in the
+    # module, not configurable here (ponytail: add a Settings field if
+    # Brian wants tuning).
+    incident_diag_enabled: bool = True
+
+    # Weekly self-review (backend/agents/weekly_review.py, 2026-08-17): a
+    # Sunday-evening Sonnet memo over the week's real ActionLog/OutcomeFlag/
+    # SpendLog aggregates, with at most 3 tappable "mute this noisy kind"
+    # buttons built deterministically from the data (never parsed from LLM
+    # prose). Sunday 18:00 is clear of spend_report (Mon 08:00), the daily
+    # digest (20:00), and the Sunday-night 01:30/02:00/02:30 block.
+    weekly_review_enabled: bool = True
+    weekly_review_day: str = "sun"
+    weekly_review_time: str = "18:00"
+
     # Monthly watch for whether Anthropic has shipped a public API-credit-
     # balance endpoint yet (backend/agents/anthropic_balance_watch.py) — no
     # such API exists today (confirmed 2026-08-05, see that module's

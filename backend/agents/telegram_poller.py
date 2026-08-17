@@ -51,7 +51,7 @@ _message_tasks: set[asyncio.Task] = set()
 # docker/vm ids are a container NAME and a Proxmox vmid string, respectively —
 # only the DB-keyed namespaces coerce to int.
 _INT_ID_NAMESPACES = frozenset({"goal", "safety", "flag"})
-_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved"})
+_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved", "on"})
 
 
 async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool, str]:
@@ -113,6 +113,18 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
             # external side effect) -- there is no transport-error case to
             # keep the buttons for, so every mapped outcome is definitive.
             return True, mapping.get(status, status)
+
+        if namespace == "mute":
+            from backend.safety import governor
+            if verb != "on":
+                return False, f"Unknown mute verb: {verb}"
+            try:
+                await asyncio.to_thread(governor.add_muted_notify_kind, str(obj_id))
+            except ValueError as e:
+                # Definitive -- the button is single-use regardless (an
+                # invalid kind won't become valid on retry).
+                return True, str(e)
+            return True, f"Muted {obj_id}."
 
         if namespace == "docker" and verb == "restart":
             from backend.safety.broker import Decision, execute_action

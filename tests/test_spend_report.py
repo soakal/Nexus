@@ -361,6 +361,7 @@ def test_scheduler_registers_spend_report_when_enabled():
         s.spend_report_time = "08:00"
         s.spend_report_day = "mon"
         s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
+        s.weekly_review_enabled = False  # ditto
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")
@@ -386,6 +387,7 @@ def test_scheduler_no_spend_report_when_disabled():
         s.watchdog_enabled = False
         s.spend_report_enabled = False
         s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
+        s.weekly_review_enabled = False  # ditto
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")
@@ -413,6 +415,7 @@ def test_scheduler_spend_report_invalid_time_falls_back():
         s.spend_report_time = "NOT_A_TIME"
         s.spend_report_day = "mon"
         s.facts_digest_enabled = False  # disable to avoid MagicMock day_of_week error
+        s.weekly_review_enabled = False  # ditto
         mock_settings.return_value = s
 
         setup_scheduler("07:00", "America/Detroit")

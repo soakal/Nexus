@@ -390,6 +390,11 @@ async def run_homelab_watch() -> dict:
             "backups": await _run_check("backups", check_backups()),
         }
         _maybe_propose_on_alert(any(result.values()))
+        try:
+            from backend.agents import incident_diag
+            incident_diag.maybe_diagnose(result)
+        except Exception as e:
+            logger.warning(f"incident_diag hookup failed (ignored): {e}")
         return result
     except Exception as exc:
         logger.error(f"run_homelab_watch error (ignored): {exc}")

@@ -887,3 +887,47 @@ async def test_unknown_namespace_still_non_definitive():
 
     assert mock_answer.await_args.kwargs.get("show_alert") is True
     mock_edit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# handle_callback — mute namespace (weekly_review's tappable mute buttons)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mute_on_dispatches_and_edits_message():
+    with patch("backend.safety.governor.add_muted_notify_kind", new_callable=MagicMock) as mock_mute, \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("mute:on:homelab_disk_temp"))
+
+    mock_mute.assert_called_once_with("homelab_disk_temp")
+    mock_answer.assert_awaited_once()
+    edited_text = mock_edit.await_args.args[2]
+    assert "✓" in edited_text
+    assert "Muted homelab_disk_temp." in edited_text
+
+
+@pytest.mark.asyncio
+async def test_mute_on_invalid_kind_is_definitive_not_an_error_popup():
+    """add_muted_notify_kind's ValueError (unknown kind, comma, or a
+    _NEVER_MUTABLE kind) must still be a definitive, single-use outcome --
+    the button is consumed either way, it just reports why it refused."""
+    with patch("backend.safety.governor.add_muted_notify_kind",
+               side_effect=ValueError("unknown notify kind: bogus_kind")), \
+         patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("mute:on:bogus_kind"))
+
+    mock_answer.assert_awaited_once_with("cq1")  # no show_alert -- still definitive
+    edited_text = mock_edit.await_args.args[2]
+    assert "unknown notify kind: bogus_kind" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_mute_unknown_verb_non_definitive():
+    with patch("backend.integrations.telegram.answer_callback_query", new_callable=AsyncMock, return_value=True) as mock_answer, \
+         patch("backend.integrations.telegram.edit_message_text", new_callable=AsyncMock, return_value=True) as mock_edit:
+        await telegram_poller.handle_callback(_cq("mute:off:homelab_disk_temp"))
+
+    assert mock_answer.await_args.kwargs.get("show_alert") is True
+    mock_edit.assert_not_called()
