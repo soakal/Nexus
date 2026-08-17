@@ -23,9 +23,6 @@ modules/brain-organizer/config.json
 # Unraid SSH host-key store for the native docker-prune path (TOFU known_hosts, host-specific -- not portable across machines/deployments)
 .unraid_ssh_known_hosts
 
-# LXC SSH host-key store for the native /restart lxc path (TOFU known_hosts, host-specific -- not portable across machines/deployments)
-.lxc_ssh_known_hosts
-
 # Local backups — contain secrets (.vault.key, nexus.vault); NEVER commit
 backups/
 
