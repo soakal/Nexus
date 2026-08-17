@@ -101,9 +101,10 @@ async def fetch() -> ClaudeUsageData:
     # briefing. async_ttl_cache would also cache the ValueError above for
     # falsy_ttl seconds, pinning a transient torn-read failure for no benefit.
     # asyncio.to_thread is used for the same reason state_workers.py's
-    # _latest_briefing uses it: trivially cheap normally, but this host has a
-    # documented Defender-induced file-I/O stall pattern, and nothing may
-    # block the loop.
+    # _latest_briefing uses it: the read is trivially cheap normally, but a
+    # blocking file read must never run on the event loop. (Historical note:
+    # the decommissioned Windows host had a documented Defender-induced
+    # file-I/O stall pattern that made this worth the extra care.)
     return await asyncio.to_thread(_read_sync)
 
 
