@@ -1,9 +1,13 @@
 """Durable signal for the infisical -> legacy vault secret-fallback event.
 
 The legacy-vault fallback used to be signalled only by a `logger.warning` in
-backend/secrets/manager.py, but logs/backend.log and logs/backend.err.log are
-truncated fresh on every process restart -- so that signal was worthless for
-the one question it existed to answer: "has this fired since 2026-07-24?".
+backend/secrets/manager.py, but under the old Windows-era launcher,
+logs/backend.log and logs/backend.err.log were truncated fresh on every
+process restart -- so that signal was worthless for the one question it
+existed to answer: "has this fired since 2026-07-24?". (Since the 2026-08-15
+systemd migration, logs go to journald instead -- `journalctl -u
+nexus-backend` -- but the durable row this module provides is still needed:
+journald log lines aren't a queryable "has this fired" answer either.)
 This module makes it durable.
 
 Recording (`record`) is pure in-memory -- safe to call from the asyncio event
