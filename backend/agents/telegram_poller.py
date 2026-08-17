@@ -158,9 +158,7 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
             # obj_id carries the target ("nexus"/"lxc" both mean THIS
             # instance to this branch's own dispatcher, 2026-08-15 -- "system"
             # is deliberately NOT in _INT_ID_NAMESPACES, so obj_id stays the
-            # raw string a button's callback_data actually sent). Only
-            # relevant once this poller is an active getUpdates consumer;
-            # today it isn't (Windows owns Telegram interaction).
+            # raw string a button's callback_data actually sent).
             from backend.safety.broker import Decision, execute_action
             res = await execute_action(
                 actor="user", kind="system_restart", target=str(obj_id), payload={},
