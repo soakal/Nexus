@@ -103,9 +103,23 @@ deploy drift: a `git pull` landed without a restart — `systemctl restart nexus
 `secret_fallback` listing keys is informational (infisical→vault fallback counts), not a failure
 by itself.
 
-## 6. Client-side: Claude usage statusline (NOT a nexus-lxc check)
+## 6. Claude usage statusline — reads nexus-lxc's OWN copy, pushed from devbox
 
-`backend/integrations/claude_usage.py` reads `~/.claude/rate-limits.json`, written by
-`~/.claude/statusline-command.sh` on every statusline render — on the CLIENT machine running
-Claude Code, not on nexus-lxc. A stale file is normal whenever no Claude Code session is running
-(deliberately `dashboard.*`-only, no `source.*` health check). Don't chase it as a server outage.
+`backend/integrations/claude_usage.py` reads `Path.home()/.claude/rate-limits.json` — since the
+backend runs as root on nexus-lxc, that's `/root/.claude/rate-limits.json` **on nexus-lxc itself**,
+not on devbox. Fixed 2026-08-17 (previously this file never existed anywhere — see
+`devbox-setup/claude/statusline.sh`): devbox's live `~/.claude/statusline.sh` persists the
+`rate_limits` payload locally on every render, then throttle-pushes it (max once/60s, backgrounded)
+via `scp` over the existing devbox→nexus-lxc SSH key (`~/.ssh/id_ed25519` on devbox; nexus-lxc has
+NO reverse trust to devbox, so this can only be a devbox-initiated push, never a nexus-lxc pull).
+
+Check:
+```
+ssh -i ~/.ssh/id_ed25519 root@nexus-lxc cat /root/.claude/rate-limits.json
+```
+Healthy: recent `captured_at` (within the last few minutes if a Claude Code session was recently
+active on devbox — deliberately goes stale, not wrong, whenever no session is running; that's
+still correct, don't chase it as a server outage). If the file is missing entirely, check devbox's
+`~/.claude/statusline.sh` actually has the persist+push block (diff against
+`~/repos/devbox-setup/claude/statusline.sh`) and that `~/.ssh/id_ed25519` still exists/authenticates
+to nexus-lxc.
