@@ -8,7 +8,8 @@ row (label="brain_organizer"), so the organizer's LLM spend counts against the
 same daily budget/report as every in-process agent call.
 
 Everything here is SYNCHRONOUS — the scheduler invokes it via asyncio.to_thread so
-no Session/ORM crosses an await (Windows event-loop safety). The whole job is
+no Session/ORM crosses an await (a blocked loop stalls every request, `/api/health`
+included — see CLAUDE.md). The whole job is
 best-effort: it NEVER raises (a metering hiccup must not break the scheduler).
 """
 

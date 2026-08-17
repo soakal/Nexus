@@ -531,8 +531,8 @@ _DISPATCHERS = {
 # ---------------------------------------------------------------------------
 # Durable DB helpers — SYNCHRONOUS, invoked ONLY via asyncio.to_thread. They
 # open/close their own Session inside the worker thread and return plain
-# dicts/scalars so no ORM object or Session crosses an `await` (Windows
-# ProactorEventLoop safety, see CLAUDE.md).
+# dicts/scalars so no ORM object or Session crosses an `await` (a blocked
+# loop stalls every request, `/api/health` included — see CLAUDE.md).
 # ---------------------------------------------------------------------------
 
 def _insert_action_log(

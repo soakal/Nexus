@@ -348,7 +348,8 @@ Respond with JSON only — no prose before or after:
 # Durable DB helpers — every one of these is SYNCHRONOUS and must only ever be
 # invoked via `asyncio.to_thread`. They open and close their own Session inside
 # the worker thread, and return plain dicts/values so NO ORM object or Session
-# ever crosses an `await` (Windows ProactorEventLoop safety, see CLAUDE.md).
+# ever crosses an `await` (a blocked loop stalls every request, `/api/health`
+# included — see CLAUDE.md).
 # ---------------------------------------------------------------------------
 
 def _persist_plan(task_id: int, plan_steps: list) -> None:

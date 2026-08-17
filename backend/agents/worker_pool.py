@@ -7,7 +7,8 @@ every Task left in a non-terminal state so work resumes rather than being
 force-failed.
 
 All synchronous SQLite access happens inside `asyncio.to_thread` helpers so the
-event loop is never blocked (Windows ProactorEventLoop safety — see CLAUDE.md).
+event loop is never blocked (a blocked loop stalls every request, `/api/health`
+included — see CLAUDE.md).
 
 `_worker_loop` is also the single choke point for a standalone task's
 completion push (`task_completed`/`task_failed`, see `_notify_task_finished`)

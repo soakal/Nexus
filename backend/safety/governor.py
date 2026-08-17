@@ -11,7 +11,8 @@ Two safety mechanisms backed by the DB:
 
 Every function here is SYNCHRONOUS and opens/closes its own Session. Async callers
 MUST invoke them via `asyncio.to_thread` so no Session/ORM crosses an `await`
-(Windows ProactorEventLoop safety — see CLAUDE.md). The router's universal brake
+(a blocked loop stalls every request, `/api/health` included — see CLAUDE.md).
+The router's universal brake
 and the orchestrator's per-task brake both wrap these in `asyncio.to_thread`.
 """
 
