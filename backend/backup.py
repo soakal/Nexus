@@ -223,17 +223,10 @@ def backup_knowledge() -> dict:
     versioning, not from this function duplicating the whole vault every 30
     minutes. `rclone sync` both uploads new/changed files AND deletes
     anything removed locally, matching the local canonical copy exactly.
-
-    Only meaningful on POSIX today: the knowledge store is a Linux-only
-    concept for this migration (Windows's vault is the separate,
-    iCloud-synced original, backed up nowhere by this function). Never
-    raises.
+    Never raises.
     """
     try:
         from backend.config import get_settings
-
-        if os.name == "nt":
-            return {"ok": False, "error": "backup_knowledge is POSIX-only (no Windows knowledge store)"}
 
         s = get_settings()
         vault_path = s.obsidian_vault_path.strip()

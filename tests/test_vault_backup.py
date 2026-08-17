@@ -127,13 +127,6 @@ def test_backup_vault_posix_unc_stages_locally_and_rclone_syncs(env, monkeypatch
     assert sync_calls == [(staging, "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc")]
 
 
-def test_backup_knowledge_windows_is_noop(env, monkeypatch):
-    monkeypatch.setattr("backend.backup.os.name", "nt")
-    from backend.backup import backup_knowledge
-    result = backup_knowledge()
-    assert result["ok"] is False
-
-
 def test_backup_knowledge_posix_calls_rclone_sync(env, monkeypatch, tmp_path):
     env["s"].unraid_backup_path = "\\\\192.168.1.50\\Computer Backup\\Nexus_backup-lxc"
     knowledge = tmp_path / "knowledge"

@@ -761,15 +761,13 @@ def setup_scheduler(briefing_time: str, timezone: str):
                 replace_existing=True,
             )
             logger.info(f"Vault backup to Unraid enabled: daily at {bh:02d}:{(bm+5) if bm < 55 else 0:02d} {timezone}")
-            import os as _os_knowledge
-            if _os_knowledge.name != "nt":
-                scheduler.add_job(
-                    _knowledge_backup,
-                    IntervalTrigger(minutes=30),
-                    id="knowledge_backup",
-                    replace_existing=True,
-                )
-                logger.info("Knowledge store backup to Unraid enabled: every 30 min")
+            scheduler.add_job(
+                _knowledge_backup,
+                IntervalTrigger(minutes=30),
+                id="knowledge_backup",
+                replace_existing=True,
+            )
+            logger.info("Knowledge store backup to Unraid enabled: every 30 min")
         logger.info(f"Backup enabled: checkpoint hourly, backup daily at {bh:02d}:{bm:02d} {timezone}")
     if getattr(s, "watchdog_enabled", False):
         scheduler.add_job(

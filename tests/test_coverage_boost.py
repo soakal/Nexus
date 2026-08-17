@@ -1,6 +1,5 @@
 """Targeted tests to bring coverage from 72% to >=80%."""
 import asyncio
-import os
 import pathlib
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -185,13 +184,11 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # backend/state_workers.py -- one job per COLLECTOR_GROUPS interval,
     # registered via register_state_workers()) +1 "anthropic_balance_watch"
     # (2026-08-05, monthly) -1 "hermes_soak_reminder" (removed 2026-08-09,
-    # Hermes fully decommissioned) = 29, +1 "knowledge_backup" on POSIX only
-    # (2026-08-14, Linux port -- knowledge_backup is guarded `os.name != "nt"`
-    # in setup_scheduler since the knowledge store is a Linux-only concept
-    # for this migration) = 30 on POSIX. These deltas landed as separate
-    # commits; if any flips back off, drop this count and its id below
-    # deliberately, not as a side effect of an unrelated change.
-    expected_count = 29 if os.name == "nt" else 30
+    # Hermes fully decommissioned) = 29, +1 "knowledge_backup" (2026-08-14,
+    # Linux port) = 30. These deltas landed as separate commits; if any
+    # flips back off, drop this count and its id below deliberately, not as
+    # a side effect of an unrelated change.
+    expected_count = 30
     assert mock_add.call_count == expected_count
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -226,9 +223,8 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "facts_digest",
         "calibration_recompute",
         "anthropic_balance_watch",
+        "knowledge_backup",
     }
-    if os.name != "nt":
-        expected_ids = expected_ids | {"knowledge_backup"}
     assert ids_set == expected_ids
 
 
@@ -254,9 +250,9 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
-    # See test_setup_scheduler_adds_jobs for the +1 knowledge_backup-on-POSIX
+    # See test_setup_scheduler_adds_jobs for the +1 knowledge_backup
     # explanation (2026-08-14 Linux port).
-    assert mock_add.call_count == (29 if os.name == "nt" else 30)
+    assert mock_add.call_count == 30
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):
@@ -276,7 +272,7 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "morning_briefing" not in ids_set
     assert "homelab_digest" in ids_set
-    expected_count = (29 if os.name == "nt" else 30) - 1
+    expected_count = 30 - 1
     assert mock_add.call_count == expected_count
 
 
