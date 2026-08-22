@@ -190,8 +190,12 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # a side effect of an unrelated change. +1 "weekly_review" (2026-08-17).
     # +1 "obligations_check" (2026-08-21, Obligation tracker) +1
     # "record_trend_snapshot" (2026-08-21, daily -- feeds briefing.py's
-    # 7-day-average baselines) = 33.
-    expected_count = 33
+    # 7-day-average baselines) = 33. +1 "calibration_soak_reminder"
+    # (2026-08-22, one-off DateTrigger toward calibration-loop spec §9.5
+    # step 7; like infisical_soak_reminder it only registers while its gate
+    # date is still in the future, so this count drops by one again after
+    # 2026-09-05) = 34.
+    expected_count = 34
     assert mock_add.call_count == expected_count
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -225,6 +229,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "brain_organizer",
         "wiki_fragmentation_report",
         "infisical_soak_reminder",
+        "calibration_soak_reminder",
         "facts_digest",
         "calibration_recompute",
         "anthropic_balance_watch",
