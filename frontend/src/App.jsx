@@ -4,6 +4,7 @@ import {
   LayoutDashboard, FileText, CalendarDays, ListTodo, MessageSquare,
   Tv2, Home, Activity, ShieldCheck, Brain, Mail as MailIcon,
   Settings as SettingsIcon, Menu, MoreHorizontal, Waypoints, Flag, Radar,
+  BookOpen,
 } from 'lucide-react'
 import StatusDot from './components/StatusDot'
 import CommandPalette from './components/CommandPalette'
@@ -24,6 +25,7 @@ import Flags from './pages/Flags'
 import Facts from './pages/Facts'
 import Traces from './pages/Traces'
 import Pulse from './pages/Pulse'
+import Vault from './pages/Vault'
 import { API_BASE } from './lib/api'
 
 const NAV = [
@@ -32,6 +34,7 @@ const NAV = [
   { to: '/today',    icon: CalendarDays,     label: 'Today',          group: 'OVERVIEW' },
   { to: '/tasks',    icon: ListTodo,         label: 'Tasks',          group: 'OVERVIEW' },
   { to: '/chat',     icon: MessageSquare,    label: 'Chat',           group: 'OVERVIEW' },
+  { to: '/vault',    icon: BookOpen,         label: 'Vault',          group: 'OVERVIEW' },
   { to: '/media',    icon: Tv2,              label: 'Media',          group: 'OVERVIEW' },
   { to: '/ha',       icon: Home,             label: 'Home Assistant', group: 'SYSTEMS'  },
   { to: '/mail',     icon: MailIcon,         label: 'Mail',           group: 'SYSTEMS'  },
@@ -428,6 +431,7 @@ export default function App() {
             <Route path="/today" element={<Today />} />
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/chat" element={<Chat />} />
+            <Route path="/vault" element={<Vault />} />
             <Route path="/media" element={<Media />} />
             <Route path="/ha" element={<HomeAssistant />} />
             <Route path="/mail" element={<Mail />} />

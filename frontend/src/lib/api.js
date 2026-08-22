@@ -200,4 +200,10 @@ export const api = {
     archive: (payload) => req('POST', '/protonmail/archive', payload),
     remove: (payload) => req('POST', '/protonmail/delete', payload),
   },
+  vault: {
+    catalog: () => req('GET', '/vault/catalog'),
+    search: (q) => req('GET', `/vault/search?q=${encodeURIComponent(q)}`),
+    note: (path) => req('GET', `/vault/note?path=${encodeURIComponent(path)}`),
+    graph: () => req('GET', '/vault/graph'),
+  },
 }

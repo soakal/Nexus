@@ -9,6 +9,7 @@ const PAGE_CMDS = [
   { id: 'nav-today',      label: 'Go to Today',           to: '/today' },
   { id: 'nav-tasks',      label: 'Go to Tasks',           to: '/tasks' },
   { id: 'nav-chat',       label: 'Go to Chat',            to: '/chat' },
+  { id: 'nav-vault',      label: 'Go to Vault',           to: '/vault' },
   { id: 'nav-media',      label: 'Go to Media',           to: '/media' },
   { id: 'nav-ha',         label: 'Go to Home Assistant',  to: '/ha' },
   { id: 'nav-uptime',     label: 'Go to Uptime',          to: '/uptime' },
