@@ -220,3 +220,55 @@ async def test_dynamic_values_are_html_escaped():
         assert "&lt;script&gt;" in text
     finally:
         _exit_all(patches)
+
+
+# --- Action judge shadow-verdict aggregate ----------------------------------
+
+def _judge_summary(total=0, approve=0, veto=0, error=0, by_kind=None):
+    return {"total": total, "approve": approve, "veto": veto, "error": error,
+            "by_kind": by_kind or {}}
+
+
+@pytest.mark.asyncio
+async def test_judge_section_separates_vetoes_from_judge_errors():
+    """evaluate_action fails safe into verdict="error" on a timeout or budget
+    hit, which in enforce mode blocks exactly like a real veto. Summing the two
+    into one "would have been blocked" number would tell Brian his automation
+    is being second-guessed when in fact the judge was simply down."""
+    with patch("backend.config.get_settings", return_value=_settings(action_judge_mode="shadow")), \
+         patch("backend.safety.judge.verdict_summary", new_callable=AsyncMock,
+               return_value=_judge_summary(
+                   total=20, approve=15, veto=3, error=2,
+                   by_kind={"ha_service": {"veto": 3, "error": 0},
+                            "vm_power": {"veto": 0, "error": 2}})):
+        text = await homelab_digest._section_judge()
+
+    assert "shadow mode: 20 action(s) judged" in text
+    assert "5 would have been held for confirmation (3 vetoed, 2 judge error/timeout" in text
+    assert "ha_service 3v/0e" in text
+    assert "vm_power 0v/2e" in text
+
+
+@pytest.mark.asyncio
+async def test_judge_section_wording_tracks_the_mode():
+    """The same counts mean different things: in shadow every one of these
+    actions went ahead anyway."""
+    with patch("backend.config.get_settings", return_value=_settings(action_judge_mode="enforce")), \
+         patch("backend.safety.judge.verdict_summary", new_callable=AsyncMock,
+               return_value=_judge_summary(total=2, approve=1, veto=1)):
+        text = await homelab_digest._section_judge()
+    assert "1 were held for confirmation" in text
+    assert "would have been" not in text
+
+
+@pytest.mark.asyncio
+async def test_judge_section_off_and_empty_cases():
+    with patch("backend.config.get_settings", return_value=_settings(action_judge_mode="off")), \
+         patch("backend.safety.judge.verdict_summary", new_callable=AsyncMock) as summary:
+        assert "disabled" in await homelab_digest._section_judge()
+    summary.assert_not_awaited()  # mode=off must not even query
+
+    with patch("backend.config.get_settings", return_value=_settings(action_judge_mode="shadow")), \
+         patch("backend.safety.judge.verdict_summary", new_callable=AsyncMock,
+               return_value=_judge_summary()):
+        assert "no actions judged in the last 24h" in await homelab_digest._section_judge()

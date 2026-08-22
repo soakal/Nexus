@@ -435,3 +435,64 @@ def test_judge_vetoed_row_confirmable_via_endpoint(safety_client, auth_headers):
     row = _get_log(eng, aid)
     assert row.decision == "executed"
     assert row.judge_verdict == "veto"  # judge verdict is preserved, not overwritten
+
+
+# ---------------------------------------------------------------------------
+# verdict_summary — the shadow-mode aggregate that feeds the daily digest.
+# The judge has run in shadow since it shipped; nothing anywhere reported what
+# it would have blocked, which is the only evidence that could ever justify
+# flipping action_judge_mode to "enforce".
+# ---------------------------------------------------------------------------
+
+def _log_row(session, kind, verdict, *, age_hours=1):
+    from datetime import datetime, timedelta
+
+    from backend.database import ActionLog
+
+    session.add(ActionLog(
+        actor="agent", kind=kind, target="t", payload_json="{}",
+        risk="low", reversibility="reversible", decision="executed",
+        judge_verdict=verdict,
+        created_at=datetime.utcnow() - timedelta(hours=age_hours),
+    ))
+
+
+@pytest.mark.asyncio
+async def test_verdict_summary_counts_by_verdict_and_kind(eng):
+    from backend.safety import judge
+
+    with Session(eng) as s:
+        _log_row(s, "ha_service", "approve")
+        _log_row(s, "ha_service", "approve")
+        _log_row(s, "ha_service", "veto")
+        _log_row(s, "vm_power", "error")
+        # Unjudged row (mode=off / exempt kind) — not part of the denominator.
+        _log_row(s, "vm_power", None)
+        # Judged, but outside the 24h window.
+        _log_row(s, "ha_service", "veto", age_hours=48)
+        s.commit()
+
+    out = await judge.verdict_summary(24)
+
+    assert out["total"] == 4
+    assert out["approve"] == 2
+    assert out["veto"] == 1
+    assert out["error"] == 1
+    # by_kind carries only the non-approving verdicts — approvals are the
+    # boring case and would bury the signal.
+    assert out["by_kind"] == {
+        "ha_service": {"veto": 1, "error": 0},
+        "vm_power": {"veto": 0, "error": 1},
+    }
+
+
+@pytest.mark.asyncio
+async def test_verdict_summary_degrades_to_zeros_not_an_exception(monkeypatch):
+    """Same never-raises contract as the rest of this module: a digest section
+    must never be taken down by the aggregate it's reporting."""
+    from backend.safety import judge
+
+    monkeypatch.setattr("backend.database.engine", None)
+    assert await judge.verdict_summary(24) == {
+        "total": 0, "approve": 0, "veto": 0, "error": 0, "by_kind": {},
+    }

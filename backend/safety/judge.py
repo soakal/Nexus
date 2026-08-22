@@ -23,8 +23,15 @@ outage in the judge can never itself hang or crash the caller. Context is
 assembled from six independently-degrading sections; a failure in any single
 section degrades that section to "(none)" and never aborts the whole call.
 
-NOTE: this module is intentionally NOT wired into `backend/safety/broker.py`
-yet — that wiring is a later step.
+WIRING: `evaluate_action` is called from `backend/safety/broker.py`'s
+`execute_action` (the action-judge gate, after the throttle/circuit-breaker
+check and before the throttle attempt is recorded). Whether a veto actually
+BLOCKS anything is `settings.action_judge_mode`: "off" skips the judge
+entirely, "shadow" records the verdict on the ActionLog row and dispatches
+anyway, "enforce" flips the row to NEEDS_CONFIRM and pages for approval. The
+mode has been "shadow" since this shipped, so every verdict here is currently
+advisory — `verdict_summary()` below is what makes those advisory verdicts
+visible (it feeds the daily homelab digest's Action judge section).
 """
 
 import asyncio
@@ -90,6 +97,65 @@ def _db_recent_action_log(target: str, since: datetime, limit: int = 5) -> list[
         ]
     except Exception:
         return []
+
+
+def _db_verdict_summary(since: datetime) -> dict:
+    """Aggregate judged ActionLog rows since `since`. Sync only — call via
+    asyncio.to_thread. Returns a zeroed summary on any error.
+
+    "veto" and "error" are counted separately and deliberately never summed
+    into one number: a veto is the judge's actual opinion, while "error" is
+    `evaluate_action`'s fail-safe for a timeout/BudgetExceeded/unparseable
+    response. In enforce mode both would block, which is exactly why they have
+    to be distinguishable here — a digest reporting "12 would have been
+    blocked" that turns out to be 12 judge timeouts is telling Brian the
+    opposite of the truth about his automation.
+    """
+    zero = {"total": 0, "approve": 0, "veto": 0, "error": 0, "by_kind": {}}
+    try:
+        from sqlmodel import Session, select
+
+        from backend.database import ActionLog, engine
+
+        with Session(engine) as session:
+            stmt = (
+                select(ActionLog)
+                .where(ActionLog.created_at >= since)
+                .where(ActionLog.judge_verdict != None)  # noqa: E711
+            )
+            rows = session.exec(stmt).all()
+
+        out = dict(zero, by_kind={})
+        for r in rows:
+            verdict = r.judge_verdict or "error"
+            out["total"] += 1
+            if verdict in out:
+                out[verdict] += 1
+            if verdict in ("veto", "error"):
+                bucket = out["by_kind"].setdefault(r.kind, {"veto": 0, "error": 0})
+                bucket[verdict] += 1
+        return out
+    except Exception as e:
+        logger.warning(f"judge verdict summary failed: {e}")
+        return zero
+
+
+async def verdict_summary(hours: int = 24) -> dict:
+    """What the action judge has been saying, over the last `hours`.
+
+    The judge has run in shadow mode since it shipped and nothing anywhere
+    aggregated its verdicts, so "what would enforce mode have blocked?" — the
+    only question that can justify ever flipping the mode — had no answer short
+    of querying the DB by hand. NEVER raises; degrades to a zeroed summary,
+    same contract as every other read in this module.
+    """
+    try:
+        return await asyncio.to_thread(
+            _db_verdict_summary, datetime.utcnow() - timedelta(hours=hours)
+        )
+    except Exception as e:
+        logger.warning(f"verdict_summary failed: {e}")
+        return {"total": 0, "approve": 0, "veto": 0, "error": 0, "by_kind": {}}
 
 
 # ---------------------------------------------------------------------------

@@ -180,6 +180,45 @@ async def _section_spend() -> str:
     return f"${spend:.4f}"
 
 
+async def _section_judge() -> str:
+    """What the action judge has been saying for the last 24h.
+
+    The judge has run in shadow mode since it shipped -- it records a verdict on
+    every agent/autonomous action and blocks nothing -- and until this section
+    existed there was no aggregate of those verdicts anywhere, so the one
+    question that could justify ever flipping action_judge_mode to "enforce"
+    ("what would it have blocked, and was it right?") could only be answered by
+    querying the DB by hand. Reporting only; this changes no behavior.
+    """
+    from backend.config import get_settings
+    from backend.safety import judge
+
+    mode = getattr(get_settings(), "action_judge_mode", "shadow")
+    if mode == "off":
+        return "disabled (action_judge_mode=off)"
+
+    s = await judge.verdict_summary(24)
+    if not s["total"]:
+        return f"{mode} mode: no actions judged in the last 24h"
+
+    # Wording tracks the mode, because the same counts mean different things:
+    # in shadow these actions all went ahead anyway, in enforce they were
+    # actually held for confirmation.
+    verb = "would have been held for confirmation" if mode == "shadow" else "were held for confirmation"
+    lines = [
+        f"{mode} mode: {s['total']} action(s) judged, {s['approve']} approved, "
+        f"{s['veto'] + s['error']} {verb} ({s['veto']} vetoed, "
+        f"{s['error']} judge error/timeout — fail-safe, not an opinion)"
+    ]
+    if s["by_kind"]:
+        by_kind = ", ".join(
+            f"{html.escape(kind)} {c['veto']}v/{c['error']}e"
+            for kind, c in sorted(s["by_kind"].items(), key=lambda kv: -(kv[1]["veto"] + kv[1]["error"]))[:5]
+        )
+        lines.append(f"by kind: {by_kind}")
+    return "\n".join(lines)
+
+
 async def build_digest_text() -> str:
     sections = {
         "ha": await _run_section("ha", _section_ha()),
@@ -189,6 +228,7 @@ async def build_digest_text() -> str:
         "unraid": await _run_section("unraid", _section_unraid()),
         "adguard": await _run_section("adguard", _section_adguard()),
         "channels_dvr": await _run_section("channels_dvr", _section_channels_dvr()),
+        "judge": await _run_section("judge", _section_judge()),
         "spend": await _run_section("spend", _section_spend()),
     }
 
@@ -201,6 +241,7 @@ async def build_digest_text() -> str:
         f"Unraid\n{sections['unraid']}\n\n"
         f"AdGuard\n{sections['adguard']}\n\n"
         f"Channels DVR\n{sections['channels_dvr']}\n\n"
+        f"Action judge\n{sections['judge']}\n\n"
         f"API spend today: {sections['spend']}"
     )
 
