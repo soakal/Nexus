@@ -20,6 +20,7 @@ stuck. Scheduler-stall alerts use a process-local in-memory dict (acceptable
 since stalls only matter while the process is running).
 """
 import asyncio
+import html
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -548,8 +549,11 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
 
 
 def _format_stale_delivery(name: str, d: dict, overdue_minutes: int) -> str:
+    # `name` is caller-supplied (the /api/deliveries/{name}/heartbeat path
+    # segment) and this string is sent with parse_mode=HTML whenever
+    # app_base_url is set -- see events.notify_phone.
     return (
-        f"NEXUS delivery alert: '{name}' hasn't reported a heartbeat in "
+        f"NEXUS delivery alert: '{html.escape(name)}' hasn't reported a heartbeat in "
         f"{overdue_minutes} min (expected every {d['expected_interval_minutes']} min "
         f"+ {d['grace_minutes']} min grace). Its pipeline may have run and produced "
         "nothing, or never ran at all — check it."
@@ -592,6 +596,12 @@ async def check_expected_deliveries(*, cooldown_s: int) -> list[str]:
 
         for d in rows:
             if not deliveries.is_overdue(d, now=now):
+                # Falling edge: the producer came back. Auto-resolve the open
+                # flag, same discipline as homelab_watch._edge_alert -- without
+                # this a recovered delivery's flag stays open in the briefing
+                # forever. One cheap UPDATE per healthy delivery per 5min at
+                # MAX_DELIVERIES=50; not worth an in-memory latch.
+                await outcomes.clear_flag("watchdog", f"stale_delivery:{d['name']}")
                 continue
             last = d["last_heartbeat_at"]
             last_dt = datetime.fromisoformat(last) if last else now

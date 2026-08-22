@@ -2628,10 +2628,17 @@ def _send_delivery_heartbeat(http_client: httpx.Client | None = None) -> None:
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         if http_client is not None:
-            http_client.post(url, headers=headers, timeout=10.0)
+            resp = http_client.post(url, headers=headers, timeout=10.0)
         else:
             with httpx.Client(timeout=10.0) as c:
-                c.post(url, headers=headers)
+                resp = c.post(url, headers=headers)
+        # A silently-ignored 401/404 here is the worst case: the heartbeat
+        # never lands, the watchdog pages daily, and nothing says why.
+        status = getattr(resp, "status_code", None)
+        if status is not None and not (200 <= status < 300):
+            logging.getLogger("brain_organizer").warning(
+                "Delivery heartbeat rejected: HTTP %s from %s", status, url
+            )
     except Exception as exc:
         logging.getLogger("brain_organizer").warning("Delivery heartbeat failed: %s", exc)
 
