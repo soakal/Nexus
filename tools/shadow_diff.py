@@ -19,6 +19,7 @@ Powered by CwiAI
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -33,6 +34,21 @@ _HARMFUL_DIRECTION = {
 }
 
 _JSON_LABELS = {"facts_extract", "goal_proposer"}
+
+# Same fence-stripping as backend/agents/trial_report.py's _parseable --
+# duplicated on purpose (tools/ never imports backend/), keep in sync by hand.
+_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
+
+
+def _parseable(text: str) -> bool:
+    text = text.strip()
+    m = _FENCE_RE.search(text)
+    candidate = m.group(1) if m else text
+    try:
+        json.loads(candidate)
+        return True
+    except Exception:
+        return False
 
 
 def _load_rows(path: Path) -> list[dict]:
@@ -78,13 +94,7 @@ def main() -> int:
     for label, label_rows in sorted(by_label.items()):
         n = len(label_rows)
         if label in _JSON_LABELS:
-            parseable = 0
-            for r in label_rows:
-                try:
-                    json.loads(r.get("out_b", ""))
-                    parseable += 1
-                except Exception:
-                    pass
+            parseable = sum(1 for r in label_rows if _parseable(r.get("out_b", "")))
             print(f"{label:24s} n={n:4d}  shadow JSON-parseable: {parseable}/{n} ({parseable/n*100:.0f}%)")
             continue
 

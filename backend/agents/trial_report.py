@@ -58,10 +58,20 @@ _HARMFUL_DIRECTION = {
 }
 _JSON_LABELS = {"facts_extract", "goal_proposer"}
 
+# Both models routinely wrap structured output in a ```json fence -- a raw
+# json.loads() on the untouched string was failing on well-formed JSON from
+# EITHER model, not just the shadow one (verified: Claude's own out_a scored
+# 0/27 under the old check). Duplicated in tools/shadow_diff.py, same as
+# _HARMFUL_DIRECTION above -- keep both in sync by hand.
+_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
+
 
 def _parseable(text: str) -> bool:
+    text = text.strip()
+    m = _FENCE_RE.search(text)
+    candidate = m.group(1) if m else text
     try:
-        json.loads(text)
+        json.loads(candidate)
         return True
     except Exception:
         return False
