@@ -1,5 +1,5 @@
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -302,3 +302,74 @@ async def test_digest_reports_shape_rate_alongside_parseable_rate(tmp_path, monk
     # Both parse; only one matches the real output's key set.
     assert "2/2 shadow outputs parseable" in text
     assert "1/2 same key set" in text
+
+
+# --- P4: Trial B cost measurement -------------------------------------------
+
+def _openrouter(total_usage):
+    return MagicMock(account_total_usage=total_usage)
+
+
+@pytest.mark.asyncio
+async def test_credits_snapshot_is_written_once_and_never_overwritten(tmp_path, monkeypatch):
+    """Overwriting mid-trial would silently reset the measurement window, so a
+    second run must leave the original stamp alone."""
+    snap = tmp_path / "credits-start.json"
+    monkeypatch.setattr(trial_report, "_TRIAL_B_CREDITS", snap)
+
+    with patch("backend.integrations.openrouter.fetch", new_callable=AsyncMock,
+               return_value=_openrouter(10.0)):
+        await trial_report._snapshot_trial_b_credits()
+    with patch("backend.integrations.openrouter.fetch", new_callable=AsyncMock,
+               return_value=_openrouter(99.0)):
+        await trial_report._snapshot_trial_b_credits()
+
+    assert json.loads(snap.read_text(encoding="utf-8"))["total_usage"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_unknown_usage_writes_nothing_and_retries(tmp_path, monkeypatch):
+    """account_total_usage=None means unavailable, not zero -- stamping 0.0
+    would make every later delta look like the whole account's lifetime spend."""
+    snap = tmp_path / "credits-start.json"
+    monkeypatch.setattr(trial_report, "_TRIAL_B_CREDITS", snap)
+
+    with patch("backend.integrations.openrouter.fetch", new_callable=AsyncMock,
+               return_value=_openrouter(None)):
+        await trial_report._snapshot_trial_b_credits()
+    assert not snap.exists()
+
+    with patch("backend.integrations.openrouter.fetch", new_callable=AsyncMock,
+               return_value=_openrouter(4.0)):
+        await trial_report._snapshot_trial_b_credits()
+    assert json.loads(snap.read_text(encoding="utf-8"))["total_usage"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_cost_line_extrapolates_the_delta_to_a_month(tmp_path, monkeypatch):
+    snap = tmp_path / "credits-start.json"
+    start = (datetime.now() - timedelta(days=10)).isoformat()
+    snap.write_text(json.dumps({"ts": start, "total_usage": 5.0}), encoding="utf-8")
+    monkeypatch.setattr(trial_report, "_TRIAL_B_CREDITS", snap)
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.openrouter.fetch", new_callable=AsyncMock,
+               return_value=_openrouter(8.0)), \
+         patch("backend.safety.governor.spend_report", return_value={"by_label": []}):
+        line = await trial_report._trial_b_cost_line()
+
+    # $3.00 over 10 days -> $9.00/month, under the $18.84 bar.
+    assert "$3.0000" in line and "~$9.00/month" in line and "under" in line
+
+
+@pytest.mark.asyncio
+async def test_missing_snapshot_reports_unmeasured_not_zero(tmp_path, monkeypatch):
+    """The failure mode that matters: an absent measurement must never read as
+    a passing one, or the verdict scores B#4 as clean on no evidence."""
+    monkeypatch.setattr(trial_report, "_TRIAL_B_CREDITS", tmp_path / "nope.json")
+
+    with patch("backend.config.get_settings", return_value=_settings()):
+        line = await trial_report._trial_b_cost_line()
+
+    assert "UNMEASURED" in line
+    assert "must not be scored as passed" in line

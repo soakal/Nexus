@@ -30,6 +30,16 @@ _RECIPIENT = "claudeai@tbfamily.us"
 _SHADOW_LOG = Path("/var/lib/nexus/logs/shadow.jsonl")
 _TRIAL_B_NIGHTS_DIR = Path("/var/lib/nexus/brain-trial/nights")
 _TRIAL_B_NIGHTS_TOTAL = 5
+# Trial B runs the brain organizer through OpenRouter in a SUBPROCESS
+# (modules/brain-organizer/trial/), so none of its spend passes through
+# backend/safety/governor.py and none of it lands in SpendLog -- which left
+# criterion B#4 ("measured OpenRouter spend extrapolates to <= $18.84/month")
+# structurally unevaluable, and the verdict prompt was handed the literal
+# string "go check manually" in place of a number. OpenRouter's account
+# endpoint reports lifetime total_usage, so the measurable quantity is a DIFF:
+# stamp it once at the start of the trial, read it again at verdict time.
+_TRIAL_B_CREDITS = Path("/var/lib/nexus/brain-trial/credits-start.json")
+_TRIAL_B_TARGET_MONTHLY = 18.84  # criterion B#4's bar (today's real Sonnet cost)
 _VERDICT_DIR = Path("/var/lib/nexus/logs")
 _NIGHT_DIRNAME_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -388,8 +398,100 @@ async def _section_trial_b() -> str:
         lines.append(f"  Wiki diff: {d['files_changed']} files, +{d['added']} / -{d['removed']} lines.")
     if "census_status" in info:
         lines.append(f"  Census: {info.get('census_status') or 'unreadable'}.")
-    lines.append("  Cost: check OpenRouter credits — not metered in SpendLog.")
+    lines.append(f"  Cost: {await _trial_b_cost_line()}.")
     return "\n".join(lines)
+
+
+async def _snapshot_trial_b_credits() -> None:
+    """Stamp the account's lifetime OpenRouter usage once, at the start of the
+    trial window. Idempotent (never overwrites an existing stamp -- doing so
+    would silently reset the measurement window mid-trial) and best-effort: an
+    OpenRouter outage costs the criterion its number, never the digest its run.
+
+    account_total_usage of None means "unavailable", NOT zero -- same rule
+    backend/integrations/openrouter.py states for every one of these fields --
+    so an unknown reading writes nothing and simply retries tomorrow.
+    """
+    try:
+        if _TRIAL_B_CREDITS.exists():
+            return
+        from backend.integrations import openrouter
+        data = await openrouter.fetch()
+        if data.account_total_usage is None:
+            logger.info("trial B credits snapshot deferred: account_total_usage unavailable")
+            return
+        _TRIAL_B_CREDITS.parent.mkdir(parents=True, exist_ok=True)
+        _TRIAL_B_CREDITS.write_text(
+            json.dumps({
+                "ts": _now().isoformat(),
+                "total_usage": float(data.account_total_usage),
+            }),
+            encoding="utf-8",
+        )
+        logger.info("trial B credits snapshot written to %s", _TRIAL_B_CREDITS)
+    except Exception as exc:
+        logger.warning(f"trial B credits snapshot failed (non-fatal): {exc}")
+
+
+async def _trial_b_cost_line() -> str:
+    """Criterion B#4's number, or a plain statement of why there isn't one.
+
+    The delta is ACCOUNT-WIDE: OpenRouter bills one account, and Trial A's
+    shadow calls run against the same key. Rather than guess at an
+    apportionment between the two, both figures go in the line -- the
+    account-wide delta and the SpendLog-metered shadow share, which is the one
+    piece of it NEXUS does meter -- and the verdict prompt gets to see both
+    instead of a hand-wave.
+    """
+    import asyncio
+
+    try:
+        snap = json.loads(_TRIAL_B_CREDITS.read_text(encoding="utf-8"))
+        start_usage = float(snap["total_usage"])
+        start_ts = datetime.fromisoformat(snap["ts"])
+    except Exception:
+        return (
+            "no start snapshot recorded (trial began before credit snapshotting existed, "
+            "or OpenRouter was unreachable every run) — criterion B#4 is UNMEASURED, and "
+            "must not be scored as passed"
+        )
+
+    try:
+        from backend.integrations import openrouter
+        data = await openrouter.fetch()
+        if data.account_total_usage is None:
+            raise ValueError("account_total_usage unavailable")
+        delta = float(data.account_total_usage) - start_usage
+    except Exception as exc:
+        return (
+            f"start snapshot ${start_usage:.4f} at {start_ts:%Y-%m-%d}, but OpenRouter is "
+            f"unreachable right now ({exc}) — criterion B#4 is UNMEASURED this run"
+        )
+
+    now = _now()
+    # _now() is tz-aware only when briefing_timezone resolves, so a snapshot
+    # written under one config and read under another can mix aware and naive
+    # -- which subtracts into a TypeError, not a wrong number. Normalize.
+    if (start_ts.tzinfo is None) != (now.tzinfo is None):
+        start_ts = start_ts.replace(tzinfo=now.tzinfo)
+    days = max(1, (now - start_ts).days)
+    projected = delta / days * 30
+    try:
+        from backend.safety import governor
+        report = await asyncio.to_thread(governor.spend_report, max(days, 1))
+        shadow = sum(
+            e["cost_usd"] for e in report.get("by_label", []) if e["label"].startswith("shadow:")
+        )
+    except Exception:
+        shadow = 0.0
+
+    verdict = "under" if projected <= _TRIAL_B_TARGET_MONTHLY else "OVER"
+    return (
+        f"${delta:.4f} of account-wide OpenRouter usage over {days} day(s) "
+        f"→ ~${projected:.2f}/month, {verdict} criterion B#4's ${_TRIAL_B_TARGET_MONTHLY:.2f} bar. "
+        f"Of that delta, ${shadow:.4f} is Trial A shadow spend metered in SpendLog on the same "
+        "account/key; the remainder is Trial B's subprocess, which NEXUS does not meter itself"
+    )
 
 
 async def build_trial_report_text() -> str:
@@ -422,6 +524,11 @@ async def run_trial_report() -> dict:
         settings = get_settings()
         if not getattr(settings, "trial_report_enabled", False):
             return {"skipped": True}
+
+        # Before anything else: the earliest run of the trial window is the only
+        # chance to stamp a start reading for criterion B#4. No-ops after the
+        # first success.
+        await _snapshot_trial_b_credits()
 
         text = await build_trial_report_text()
 
@@ -580,8 +687,10 @@ def _build_verdict_payload_b() -> tuple[str, str, str] | None:
             hunk = text[:1500]
             sample_lines.append(f"{d.name} (first hunk):\n{hunk}")
 
-    cost_line = "see OpenRouter GET /api/v1/credits delta for the trial window (not metered in SpendLog)"
-    return ("\n".join(agg_lines), "\n\n".join(sample_lines[:2]), cost_line)
+    # Placeholder only: this function is sync (it runs under asyncio.to_thread)
+    # and the real cost line needs an await on OpenRouter, so send_trial_verdict
+    # replaces it with _trial_b_cost_line() before the prompt is formatted.
+    return ("\n".join(agg_lines), "\n\n".join(sample_lines[:2]), "")
 
 
 async def send_trial_verdict(trial: str) -> dict:
@@ -601,6 +710,8 @@ async def send_trial_verdict(trial: str) -> dict:
             return {"delivered": False, "reason": "no data"}
 
         aggregate_block, sample_block, cost_line = payload
+        if trial == "B":
+            cost_line = await _trial_b_cost_line()
         prompt = VERDICT_PROMPT.format(
             trial_name=f"Trial {trial}",
             cost_line=cost_line,
