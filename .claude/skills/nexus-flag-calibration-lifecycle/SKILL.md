@@ -16,7 +16,7 @@ The nightly recompute activates hints and fires one
 (`calibration.py:327-334`) — with no check of `calibration_suppression_enabled` anywhere in that
 path. Meanwhile `should_page` returns `(True, None)` — page anyway — whenever that flag is off
 (`outcomes.py:369`), and it is off: `calibration_suppression_enabled: bool = False`, "THE behavior
-change — off for the soak" (`config.py:451-452`).
+change — off for the soak" (`backend/config.py:451-452`).
 
 So today the page's wording is misleading: the hint is genuinely active, the measurement behind it
 is real, but **nothing is actually being suppressed.** Two deliberately separate switches:
@@ -46,7 +46,7 @@ A `should_page` "no" doesn't stop the write. The row is inserted and *then* stam
 ## The honest denominator, hysteresis, and stickiness
 
 Verdict counting excludes rows whose `resolved_by` starts with `auto:` and excludes suppressed rows
-(`calibration.py:167-169`, `:409-411`) — a flag that cleared itself isn't evidence of a false alarm.
+(`calibration.py:160-161`, `:402-403`) — a flag that cleared itself isn't evidence of a false alarm.
 
 | Value | Number |
 |---|---|

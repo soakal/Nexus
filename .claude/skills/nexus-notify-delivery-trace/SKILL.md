@@ -50,9 +50,8 @@ cadence with exponential backoff — base 60s, cap 3600s (`:30-31`) — and dead
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 root@100.84.21.43 'cd /var/lib/nexus && PYTHONPATH=/opt/nexus /opt/nexus/venv/bin/python -' <<'PY'
-import asyncio
 from backend.integrations.telegram import delivery_queue_health
-print(asyncio.run(delivery_queue_health()))
+print(delivery_queue_health())
 PY
 ```
 

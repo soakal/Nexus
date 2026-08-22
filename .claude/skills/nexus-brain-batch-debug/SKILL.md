@@ -49,6 +49,12 @@ If none of these appear for a night, batching happened and nothing needed the fa
     'grep -o "\"provider\": \"[a-z_]*\"" /opt/nexus/modules/brain-organizer/logs/usage.jsonl | sort | uniq -c'
   ```
 
+  **This one is time-sensitive:** NEXUS's `brain_spend_ingest` job claims and deletes `usage.jsonl`
+  every 5 minutes (`backend/scheduler.py:820`), so the file may simply not exist by morning. Run
+  this check mid-run or within minutes of a write; past that window, use `nexus-brain-spend-verify`'s
+  ratio check instead — the same `provider` distinction survives ingestion into spend data, just not
+  as a literal column.
+
 ## Normal slow vs. actually stuck: the lock mtime is the heartbeat
 
 During a batch wait, the poll loop touches `.organizer.lock` (path set at `:3386`) on every

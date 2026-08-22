@@ -13,8 +13,8 @@ organizer appends usage lines to `usage.jsonl`; `ingest_brain_spend` atomically 
 ## The provider marker does not survive ingestion
 
 `"provider"` is parsed from each usage line (`:117`) but consumed only by `_price_model`
-(`:120-125`), which bakes the 0.5x batch discount straight into `cost_usd` (`:67-68`). The
-`SpendLog(...)` row built at `:126-137` carries no provider field, and `SpendLog` itself
+(`:121-126`), which bakes the 0.5x batch discount straight into `cost_usd` (`:67-68`). The
+`SpendLog(...)` row built at `:127-137` carries no provider field, and `SpendLog` itself
 (`backend/database.py:239-251`) has no such column. **Verify by ratio, not by column.**
 
 The one exception: OpenRouter fallback rows *are* identifiable by column — their `model` keeps the
