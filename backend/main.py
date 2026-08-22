@@ -272,6 +272,7 @@ from backend.api import (
     channels,
     chat,
     dashboard_state,
+    deliveries,
     facts,
     goals,
     homeassistant,
@@ -297,6 +298,7 @@ app.include_router(facts.router, prefix="/api/facts", tags=["facts"])
 app.include_router(goals.router, prefix="/api/goals", tags=["goals"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(dashboard_state.router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(deliveries.router, prefix="/api/deliveries", tags=["deliveries"])
 app.include_router(briefing.router, prefix="/api/briefing", tags=["briefing"])
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 app.include_router(sources.router, prefix="/api/sources", tags=["sources"])

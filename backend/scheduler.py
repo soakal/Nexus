@@ -428,6 +428,11 @@ async def _run_brain_organizer():
                 ("openrouter_api_key", "OPENROUTER_API_KEY"),
                 ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
                 ("telegram_chat_id", "TELEGRAM_CHAT_ID"),
+                # Lets the subprocess POST its own completion heartbeat to
+                # /api/deliveries/brain_organizer/heartbeat (backend/agents/
+                # deliveries.py) -- same injection pattern as the secrets
+                # above, so the key never needs a second on-disk copy.
+                ("nexus_api_key", "NEXUS_API_KEY"),
             ]:
                 try:
                     val = getattr(s, attr, None)

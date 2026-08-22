@@ -273,6 +273,13 @@ class Settings(BaseSettings):
     # unattended, so it must be an explicit opt-in, not a surprise.
     deploy_drift_autorestart_enabled: bool = False
 
+    # Expected-delivery heartbeat check (backend/agents/deliveries.py) — pages
+    # when a registered ExpectedDelivery goes overdue past its
+    # expected_interval_minutes + grace_minutes. Runs inside the same 5-min
+    # watchdog job, so it shares watchdog_enabled's gate; independently
+    # gated/toggleable like every other check in that job.
+    expected_delivery_check_enabled: bool = True
+
     # Budget early-warning — a single phone alert per local day when spend
     # crosses budget_warn_pct of the daily cap. Runs inside the same 5-min
     # watchdog job (see run_watchdog), so it shares watchdog_enabled's gate.
