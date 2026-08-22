@@ -35,7 +35,7 @@ def _no_real_secrets_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     live credential the module reads with the same suspicion. Strip them for
     every test, unconditionally.
     """
-    for var in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
+    for var in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "NEXUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 
 

@@ -807,6 +807,18 @@ async def run_briefing() -> str:
         except Exception as e:
             logger.warning(f"Telegram delivery failed: {e}")
 
+        # Expected-delivery heartbeat (backend/agents/deliveries.py) — lets
+        # watchdog.check_expected_deliveries() page if the morning briefing
+        # ever goes silent. In-process call, no HTTP hop needed (unlike
+        # brain_organizer.py's subprocess, this runs inside the NEXUS
+        # process). Best-effort: never let a heartbeat failure mask the
+        # briefing's own success.
+        try:
+            from backend.agents import deliveries
+            await deliveries.record_heartbeat("morning_briefing")
+        except Exception as e:
+            logger.warning(f"Expected-delivery heartbeat failed: {e}")
+
         return briefing_text
     except Exception as exc:
         _trace_status = "error"

@@ -1370,3 +1370,136 @@ async def test_check_deploy_drift_streak_resets_when_drift_clears(eng):
     with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
         result2 = await watchdog.run_watchdog()
     assert result2["deploy_drift"] is False
+
+
+# ---------------------------------------------------------------------------
+# check_expected_deliveries (expected-delivery heartbeat check — 8th check)
+# ---------------------------------------------------------------------------
+
+def _delivery_settings(**overrides):
+    from backend.config import Settings
+    defaults = dict(watchdog_enabled=True, expected_delivery_check_enabled=True,
+                     watchdog_alert_cooldown_s=3600)
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+def _seed_delivery(eng, name, *, last_heartbeat_at, interval_minutes=60, grace_minutes=30):
+    from backend.database import ExpectedDelivery
+    with Session(eng) as s:
+        s.add(ExpectedDelivery(
+            name=name,
+            expected_interval_minutes=interval_minutes,
+            grace_minutes=grace_minutes,
+            last_heartbeat_at=last_heartbeat_at,
+        ))
+        s.commit()
+
+
+@pytest.mark.asyncio
+async def test_check_expected_deliveries_stale_pages_once(eng):
+    """A delivery overdue past interval+grace pages, and a repeat call within
+    the cooldown window does not re-page (same _should_alert discipline as
+    every other watchdog check)."""
+    from backend.agents import watchdog
+
+    _seed_delivery(
+        eng, "brain_organizer",
+        last_heartbeat_at=datetime.utcnow() - timedelta(minutes=200),
+        interval_minutes=60, grace_minutes=30,
+    )
+    settings = _delivery_settings()
+    notify_mock = AsyncMock(return_value=True)
+    record_flag_ex_mock = AsyncMock(return_value={"id": 1, "surface": True, "reason": None})
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.outcomes.record_flag_ex", record_flag_ex_mock), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged1 = await watchdog.check_expected_deliveries(cooldown_s=3600)
+        paged2 = await watchdog.check_expected_deliveries(cooldown_s=3600)
+
+    assert paged1 == ["brain_organizer"]
+    assert paged2 == []  # still overdue, but the cooldown suppresses a repeat page.
+    notify_mock.assert_awaited_once()
+    record_flag_ex_mock.assert_awaited_once()
+    assert record_flag_ex_mock.await_args.args[0] == "watchdog"
+    assert record_flag_ex_mock.await_args.args[1] == "stale_delivery:brain_organizer"
+    assert record_flag_ex_mock.await_args.kwargs["severity"] == "high"
+    assert notify_mock.await_args.kwargs["kind"] == "stale_delivery"
+
+
+@pytest.mark.asyncio
+async def test_check_expected_deliveries_fresh_never_pages(eng):
+    """A delivery whose last heartbeat is well within interval+grace never
+    pages."""
+    from backend.agents import watchdog
+
+    _seed_delivery(
+        eng, "morning_briefing",
+        last_heartbeat_at=datetime.utcnow() - timedelta(minutes=5),
+        interval_minutes=1440, grace_minutes=120,
+    )
+    settings = _delivery_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_expected_deliveries(cooldown_s=3600)
+
+    assert paged == []
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_expected_deliveries_no_registered_deliveries_noop(eng):
+    """No ExpectedDelivery rows at all -> no-op, no error."""
+    from backend.agents import watchdog
+
+    settings = _delivery_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_expected_deliveries(cooldown_s=3600)
+
+    assert paged == []
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_expected_deliveries_disabled_flag_noop(eng):
+    from backend.agents import watchdog
+
+    _seed_delivery(
+        eng, "brain_organizer",
+        last_heartbeat_at=datetime.utcnow() - timedelta(minutes=200),
+        interval_minutes=60, grace_minutes=30,
+    )
+    settings = _delivery_settings(expected_delivery_check_enabled=False)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_expected_deliveries(cooldown_s=3600)
+
+    assert paged == []
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_includes_stale_deliveries_key(eng):
+    from backend.agents import watchdog
+
+    settings = _delivery_settings(dead_letter_attempts=5)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", SimpleNamespace(get_jobs=lambda: [])), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+
+    assert result["stale_deliveries"] == []
+
+    # Also present (as []) in the outer-exception fallback path.
+    with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
+        result2 = await watchdog.run_watchdog()
+    assert result2["stale_deliveries"] == []

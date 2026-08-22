@@ -2606,6 +2606,36 @@ def _count_raw_remaining(config: dict[str, Any]) -> int:
     return count
 
 
+def _send_delivery_heartbeat(http_client: httpx.Client | None = None) -> None:
+    """Ping NEXUS's ExpectedDelivery heartbeat (backend/agents/deliveries.py)
+    so watchdog.check_expected_deliveries() can page if this pipeline goes
+    silent -- this module's own Telegram summary only fires when a run
+    reaches this point, so a crash/hang/OOM-kill before here (the actual
+    "silent rc=1" failure mode) is exactly what the heartbeat closes.
+
+    NEXUS_API_KEY is injected into this subprocess's env by
+    scheduler.py::_run_brain_organizer from the vault, same pattern as
+    ANTHROPIC_API_KEY/TELEGRAM_BOT_TOKEN -- best-effort, mirrors
+    send_telegram_notification's own failure handling (never raises).
+    """
+    api_key = os.environ.get("NEXUS_API_KEY", "")
+    if not api_key:
+        logging.getLogger("brain_organizer").debug(
+            "NEXUS_API_KEY not configured — skipping delivery heartbeat"
+        )
+        return
+    url = "http://localhost:8000/api/deliveries/brain_organizer/heartbeat"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        if http_client is not None:
+            http_client.post(url, headers=headers, timeout=10.0)
+        else:
+            with httpx.Client(timeout=10.0) as c:
+                c.post(url, headers=headers)
+    except Exception as exc:
+        logging.getLogger("brain_organizer").warning("Delivery heartbeat failed: %s", exc)
+
+
 def _send_run_summary(
     config: dict[str, Any],
     logger: logging.Logger,
@@ -2650,6 +2680,7 @@ def _send_run_summary(
     summary = "\n".join(lines)
     logger.info(summary)
     send_telegram_notification(config, summary, http_client=_http_client)
+    _send_delivery_heartbeat(http_client=_http_client)
 
 
 def run(

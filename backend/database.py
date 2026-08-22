@@ -732,6 +732,29 @@ class OutcomeFlag(SQLModel, table=True):
     suppressed_reason: str | None = None  # "calibration:homelab_watch:garage_open fp_rate=0.71 n=7"
 
 
+# Expected-delivery heartbeat tracker (2026-08-21) — closes the blind spot
+# watchdog.check_scheduler_stalls can't see: it only knows whether an
+# APScheduler job FIRES (next_run_time), not whether a pipeline actually
+# produced anything, and it has zero visibility into pipelines that live
+# entirely outside NEXUS's own scheduler (e.g. the devbox cron digest relay —
+# see CLAUDE.md's "nexus-digest-health-check" skill). A producer POSTs
+# /api/deliveries/{name}/heartbeat on every successful completion (or calls
+# backend/agents/deliveries.py::record_heartbeat in-process); one new row per
+# `name`, auto-registered with sensible defaults on its first heartbeat — no
+# manual pre-registration step. watchdog.check_expected_deliveries() pages via
+# outcomes.record_flag_ex() (same fingerprint/dedup/cooldown discipline as
+# every other watchdog check) when `now - last_heartbeat_at` exceeds
+# expected_interval_minutes + grace_minutes. New table (create_all only, no
+# migration shim needed — brand new).
+class ExpectedDelivery(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)   # e.g. "brain_organizer", "morning_briefing", "claude_digest_relay"
+    expected_interval_minutes: int = 1440         # default: daily
+    grace_minutes: int = 120                      # default: 2h slack before paging
+    last_heartbeat_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # Calibration Loop (docs/calibration-loop-spec.md) §1.3 — a nightly-computed,
 # per-fingerprint snapshot of OutcomeFlag's human verdicts, used to decide
 # whether a rule's Telegram page should be auto-suppressed. Brand new table,

@@ -547,10 +547,76 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
         return False
 
 
+def _format_stale_delivery(name: str, d: dict, overdue_minutes: int) -> str:
+    return (
+        f"NEXUS delivery alert: '{name}' hasn't reported a heartbeat in "
+        f"{overdue_minutes} min (expected every {d['expected_interval_minutes']} min "
+        f"+ {d['grace_minutes']} min grace). Its pipeline may have run and produced "
+        "nothing, or never ran at all — check it."
+    )
+
+
+async def check_expected_deliveries(*, cooldown_s: int) -> list[str]:
+    """Page when a registered ExpectedDelivery (backend/agents/deliveries.py)
+    goes overdue past its expected_interval_minutes + grace_minutes.
+
+    Closes a blind spot check_scheduler_stalls can't cover: a job that FIRES
+    on schedule but produces nothing, or a pipeline that lives entirely
+    outside NEXUS's own scheduler — e.g. the devbox cron digest relay (cloud
+    routine -> PR -> devbox cron -> vault/Telegram; see the
+    "nexus-digest-health-check" skill). That relay isn't wired to send a
+    heartbeat yet — it's an external cron script on a separate host, out of
+    this repo's scope — POSTing to /api/deliveries/claude_digest_relay/
+    heartbeat on success is a follow-up someone with access to that host
+    needs to add by hand.
+
+    Gated by settings.expected_delivery_check_enabled, independent of every
+    other check. Best-effort: any exception returns [] without propagating.
+    Returns the delivery names paged on THIS tick.
+    """
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "expected_delivery_check_enabled", True):
+            return []
+
+        from backend.agents import deliveries
+        rows = await deliveries.list_deliveries()
+        if not rows:
+            return []
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        paged = []
+        from backend import events
+        from backend.agents import outcomes
+
+        for d in rows:
+            if not deliveries.is_overdue(d, now=now):
+                continue
+            last = d["last_heartbeat_at"]
+            last_dt = datetime.fromisoformat(last) if last else now
+            overdue_minutes = int((now - last_dt).total_seconds() / 60)
+
+            if _should_alert(f"delivery:{d['name']}", cooldown_s):
+                msg = _format_stale_delivery(d["name"], d, overdue_minutes)
+                logger.error(f"Expected delivery '{d['name']}' overdue by {overdue_minutes} min")
+                flag = await outcomes.record_flag_ex(
+                    "watchdog", f"stale_delivery:{d['name']}", msg, severity="high",
+                )
+                if flag["surface"]:
+                    await events.notify_phone(msg, kind="stale_delivery")
+                paged.append(d["name"])
+
+        return paged
+    except Exception as exc:
+        logger.warning(f"check_expected_deliveries error (ignored): {exc}")
+        return []
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all seven checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all eight checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -570,6 +636,7 @@ async def run_watchdog() -> dict:
         contract_breaches = await check_integration_contracts()
         deferred_swept = await check_deferred_flags()
         drift = await check_deploy_drift(cooldown_s=cooldown_s)
+        stale_deliveries = await check_expected_deliveries(cooldown_s=cooldown_s)
 
         return {
             "stalled": stalled,
@@ -579,6 +646,7 @@ async def run_watchdog() -> dict:
             "contract_breaches": contract_breaches,
             "deferred_swept": deferred_swept,
             "deploy_drift": drift,
+            "stale_deliveries": stale_deliveries,
         }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
@@ -590,4 +658,5 @@ async def run_watchdog() -> dict:
             "contract_breaches": [],
             "deferred_swept": [],
             "deploy_drift": False,
+            "stale_deliveries": [],
         }
