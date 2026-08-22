@@ -396,6 +396,11 @@ async def check_expected_resources() -> list[str]:
             continue  # couldn't read live state this tick -- not a deviation, not a clear
 
         key = f"expected:{kind}:{identifier}"
+        if observed == desired and key not in _active_alerts:
+            # Never latched -> there is nothing to clear. Skip _edge_alert
+            # entirely: it would otherwise fire a clear_flag DB round-trip for
+            # EVERY healthy declared resource, every 60 seconds.
+            continue
         detail = json.dumps({"kind": kind, "identifier": identifier, "observed_state": observed})
         message = (
             f"NEXUS: {kind} '{html.escape(identifier)}' is {observed} "

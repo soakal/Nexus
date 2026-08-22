@@ -115,6 +115,35 @@ async def list_expected() -> list[dict]:
         return []
 
 
+async def observe(kind: str, identifier: str) -> str | None:
+    """Current live state of ONE declared resource, or None if unreadable.
+    Used by outcomes._maybe_sync_expected_resource so a human tapping
+    "✓ Resolved" syncs the baseline to what's true NOW, not to the snapshot
+    taken whenever the flag happened to be raised -- fixing the container and
+    then resolving used to flip desired_state to 'stopped' and invert the
+    check into a permanent inverse nag. Never raises."""
+    try:
+        if kind == "docker":
+            from backend.integrations import unraid
+            data = await unraid.fetch()
+            for c in data.docker_containers:
+                if c.get("name") == identifier:
+                    return "running" if (c.get("state") or "").upper() == "RUNNING" else "stopped"
+            return None
+        from backend.integrations import proxmox
+        pdata = await proxmox.fetch()
+        for v in pdata.vms:
+            if str(v.get("vmid")) != identifier:
+                continue
+            if ("lxc" if v.get("type") == "lxc" else "vm") != kind:
+                continue
+            return "running" if v.get("status") == "running" else "stopped"
+        return None
+    except Exception as e:
+        logger.warning(f"observe failed ({kind}:{identifier}): {e}")
+        return None
+
+
 async def seed_from_live() -> dict:
     """One-time (or re-runnable) baseline snapshot: upserts an ExpectedResource
     row for every currently-observed Docker container / Proxmox VM+LXC, with

@@ -533,7 +533,11 @@ async def _maybe_sync_expected_resource(flag: dict) -> None:
         logger.warning(f"_maybe_sync_expected_resource: unparseable detail on flag {flag.get('id')}: {e}")
         return
     from backend.agents import expected_resources
-    await expected_resources.set_desired_state(kind, identifier, observed_state)
+    # Prefer live truth over the raise-time snapshot in `detail` -- see
+    # expected_resources.observe(). Falls back to the snapshot only when the
+    # integration can't be read right now.
+    live = await expected_resources.observe(kind, identifier)
+    await expected_resources.set_desired_state(kind, identifier, live or observed_state)
 
 
 async def resolve_flag(

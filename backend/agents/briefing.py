@@ -426,11 +426,19 @@ def _build_docker_status_line(docker_containers: list, expected_rows: list) -> s
     if not docker_expected:
         return f"{len(docker_containers)} Docker container(s) running (no expected-state baseline declared)."
 
-    running = sum(
-        1 for c in docker_containers
+    # Numerator and denominator must range over the SAME set -- counting every
+    # live running container against only the declared-running ones produced
+    # "9 of 3 expected Docker containers running" the moment anything
+    # undeclared was up.
+    live_running = {
+        c.get("name") for c in docker_containers
         if (c.get("state") or "").upper() == "RUNNING"
-    )
-    expected_running = sum(1 for r in docker_expected if r.get("desired_state") == "running")
+    }
+    expected_running_names = {
+        r.get("identifier") for r in docker_expected if r.get("desired_state") == "running"
+    }
+    expected_running = len(expected_running_names)
+    running = len(expected_running_names & live_running)
     if running == expected_running:
         return f"{running} of {expected_running} expected Docker containers running."
     return f"{running} of {expected_running} expected Docker containers running — see Open Items."
