@@ -755,6 +755,24 @@ class ExpectedDelivery(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Per-entity HA unavailable-duration tracking (2026-08-2x) — closes the gap
+# where briefing/homelab_digest only ever reported one flat "N entities
+# unavailable" count, with no way to tell a just-restarted transient (self-
+# clears within minutes) from a permanently orphaned entity (dead for
+# months) — see backend/integrations/homeassistant.py's own docstrings for
+# the write (_track_unavailable, called once per real fetch()) and read
+# (unavailable_report/format_unavailable_summary) paths. New table
+# (create_all only, no migration shim needed). `suppressed` is a dedicated
+# "known-dead, stop counting" flag rather than reusing OutcomeFlag's
+# false_positive machinery — this is a much simpler, single-entity dismiss,
+# not a full audit-trailed observation.
+class HaEntityUnavailable(SQLModel, table=True):
+    entity_id: str = Field(primary_key=True)
+    first_seen_unavailable_at: datetime = Field(default_factory=datetime.utcnow)
+    last_checked_at: datetime = Field(default_factory=datetime.utcnow)
+    suppressed: bool = False
+
+
 # Calibration Loop (docs/calibration-loop-spec.md) §1.3 — a nightly-computed,
 # per-fingerprint snapshot of OutcomeFlag's human verdicts, used to decide
 # whether a rule's Telegram page should be auto-suppressed. Brand new table,

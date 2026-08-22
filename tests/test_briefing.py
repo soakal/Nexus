@@ -399,6 +399,113 @@ Focus on your priorities."""
 
 
 @pytest.mark.asyncio
+async def test_briefing_ha_context_uses_age_buckets_not_flat_count():
+    """context['home_assistant'] and the LLM prompt must carry the
+    persistent/recent unavailable-entity buckets from
+    homeassistant.unavailable_report() -- not just entity_count/alerts --
+    so the LLM's System Health line can be actionable instead of a bare
+    "N entities unavailable" number that never goes down."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock) as ha, \
+         patch("backend.integrations.homeassistant.unavailable_report", new_callable=AsyncMock,
+               return_value={"total": 15, "persistent": 12, "recent": 3, "items": []}), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock) as unifi, \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock) as unraid, \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock) as obs, \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock) as gh, \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock) as wx, \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock) as channels, \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock) as ag, \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_opus, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock, return_value="x.md"), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.integrations.homeassistant import HAData
+        from backend.integrations.unifi import UniFiData
+        from backend.integrations.unraid import UnraidData
+        from backend.integrations.obsidian import ObsidianData
+        from backend.integrations.github import GitHubData
+        from backend.integrations.weather import WeatherData
+        from backend.integrations.channels_dvr import ChannelsData
+        from backend.integrations.adguard import AdGuardData
+
+        ha.return_value = HAData()
+        unifi.return_value = UniFiData()
+        unraid.return_value = UnraidData()
+        obs.return_value = ObsidianData()
+        gh.return_value = GitHubData()
+        wx.return_value = WeatherData(summary="Clear, 72°F", high_f=78.0, low_f=65.0)
+        channels.return_value = ChannelsData()
+        ag.return_value = AdGuardData()
+        mock_opus.return_value = "## Priority Actions\n(none)"
+
+        from backend.agents.briefing import run_briefing
+        await run_briefing()
+
+    prompt = mock_opus.call_args.args[0]
+    assert '"unavailable_persistent_over_7d": 12' in prompt
+    assert '"unavailable_recent_under_1h": 3' in prompt
+    assert '"unavailable_total": 15' in prompt
+    # The prompt instructs the LLM to use the buckets, not a bare count.
+    assert "unavailable_persistent_over_7d and unavailable_recent_under_1h" in prompt
+
+
+@pytest.mark.asyncio
+async def test_briefing_ha_context_degrades_when_report_is_exception():
+    """asyncio.gather(return_exceptions=True) can hand back an Exception for
+    this slot -- context must still degrade to zeros, never crash the
+    briefing or leave the key out."""
+    with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock) as ha, \
+         patch("backend.integrations.homeassistant.unavailable_report", new_callable=AsyncMock,
+               side_effect=RuntimeError("db down")), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock) as unifi, \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock) as unraid, \
+         patch("backend.integrations.obsidian.fetch", new_callable=AsyncMock) as obs, \
+         patch("backend.integrations.github.fetch", new_callable=AsyncMock) as gh, \
+         patch("backend.integrations.weather.fetch", new_callable=AsyncMock) as wx, \
+         patch("backend.integrations.channels_dvr.fetch", new_callable=AsyncMock) as channels, \
+         patch("backend.integrations.adguard.fetch", new_callable=AsyncMock) as ag, \
+         patch("backend.integrations.calendar.get_today_events", new_callable=AsyncMock, return_value="No events in the next 7 days."), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock) as mock_opus, \
+         patch("backend.integrations.obsidian.create_note", new_callable=AsyncMock, return_value="x.md"), \
+         patch("backend.integrations.telegram.notify", new_callable=AsyncMock, return_value=True), \
+         patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value='{"emails": []}'), \
+         patch("backend.agents.mail_drafts._db_drafted_email_ids", return_value=set()), \
+         patch("backend.database.engine"), \
+         patch("sqlmodel.Session"):
+
+        from backend.integrations.homeassistant import HAData
+        from backend.integrations.unifi import UniFiData
+        from backend.integrations.unraid import UnraidData
+        from backend.integrations.obsidian import ObsidianData
+        from backend.integrations.github import GitHubData
+        from backend.integrations.weather import WeatherData
+        from backend.integrations.channels_dvr import ChannelsData
+        from backend.integrations.adguard import AdGuardData
+
+        ha.return_value = HAData()
+        unifi.return_value = UniFiData()
+        unraid.return_value = UnraidData()
+        obs.return_value = ObsidianData()
+        gh.return_value = GitHubData()
+        wx.return_value = WeatherData(summary="Clear, 72°F", high_f=78.0, low_f=65.0)
+        channels.return_value = ChannelsData()
+        ag.return_value = AdGuardData()
+        mock_opus.return_value = "## Priority Actions\n(none)"
+
+        from backend.agents.briefing import run_briefing
+        result = await run_briefing()
+
+    prompt = mock_opus.call_args.args[0]
+    assert '"unavailable_total": 0' in prompt
+    assert result  # briefing still completed
+
+
+@pytest.mark.asyncio
 async def test_briefing_obsidian_write_called():
     with patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=MagicMock(entities=[], alerts=[])), \
          patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=MagicMock(client_count=0, uplink_status="ok", new_devices=[])), \

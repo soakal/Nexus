@@ -419,6 +419,86 @@ function EntityRow({ entity, onAction, busy }) {
   )
 }
 
+function formatAge(seconds) {
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))}m`
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`
+  return `${Math.round(seconds / 86400)}d`
+}
+
+// Triage list for backend/database.py::HaEntityUnavailable -- per-entity
+// unavailable duration instead of the old flat count, with a dismiss
+// ("known-dead, stop counting") action. See backend/api/homeassistant.py's
+// GET /ha/unavailable for the report shape and the resolved_name bonus
+// (UniFi KnownDevice cross-reference for device_tracker.* raw-MAC entries).
+function UnavailableTriage() {
+  const [report, setReport] = useState(null)
+  const [error, setError] = useState(null)
+  const [busyIds, setBusyIds] = useState({})
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api.ha.unavailable()
+      setReport(data)
+      setError(null)
+    } catch (e) {
+      setError(String(e.message || e))
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const toggleSuppress = async (entityId, suppressed) => {
+    setBusyIds((b) => ({ ...b, [entityId]: true }))
+    try {
+      await api.ha.setUnavailableSuppressed(entityId, !suppressed)
+      await load()
+    } catch (e) {
+      setError(String(e.message || e))
+    } finally {
+      setBusyIds((b) => { const n = { ...b }; delete n[entityId]; return n })
+    }
+  }
+
+  if (error || !report || !report.items || report.items.length === 0) return null
+
+  const items = [...report.items].sort((a, b) => b.age_seconds - a.age_seconds)
+
+  return (
+    <Card>
+      <Eyebrow style={{ display: 'block', marginBottom: '4px' }}>Unavailable entities</Eyebrow>
+      <div style={{ fontSize: '12px', color: '#8a96ad', marginBottom: '12px' }}>
+        <strong style={{ color: '#f4d27a' }}>{report.persistent}</strong> unavailable &gt;7 days (persistently dead) ·{' '}
+        <strong style={{ color: '#8a96ad' }}>{report.recent}</strong> unavailable &lt;1h (likely transient)
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {items.map((item) => (
+          <div key={item.entity_id} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
+            padding: '10px 14px', borderRadius: '11px',
+            background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+            opacity: item.suppressed ? 0.5 : 1,
+          }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', overflowWrap: 'anywhere' }}>
+                {item.entity_id}{item.resolved_name ? ` (${item.resolved_name})` : ''}
+              </div>
+              <div style={{ fontSize: '11px', color: '#8a96ad', marginTop: '2px' }}>
+                unavailable {formatAge(item.age_seconds)}{item.suppressed ? ' · dismissed' : ''}
+              </div>
+            </div>
+            <GhostButton
+              onClick={() => toggleSuppress(item.entity_id, item.suppressed)}
+              disabled={!!busyIds[item.entity_id]}
+            >
+              {item.suppressed ? 'Restore' : 'Known-dead, dismiss'}
+            </GhostButton>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
 const QUICK_ACTIONS_KEY = 'nexus_ha_quickactions'
 
 function loadPinned() {
@@ -686,6 +766,8 @@ export default function HomeAssistant() {
           <span style={{ fontSize: '13px', color: '#fb7185' }}>{error}</span>
         </div>
       )}
+
+      <UnavailableTriage />
 
       <ProxmoxSection />
 

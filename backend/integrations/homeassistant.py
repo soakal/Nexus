@@ -1,13 +1,47 @@
+import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
+from sqlmodel import Session, select
 
 from backend.cache import async_ttl_cache
 from backend.http_client import SSL_CONTEXT
 
 logger = logging.getLogger(__name__)
+
+# Entities that are chronically unavailable and not actionable, so the
+# unavailable-duration tracker (HaEntityUnavailable) doesn't drown in noise
+# from iPads/Alexas/identify buttons/HA Cloud STT-TTS. Moved here from
+# backend/agents/homelab_digest.py (2026-08-2x) -- this module now owns
+# "what counts as an actionable unavailable entity"; homelab_digest and
+# briefing both consume the resulting unavailable_report()/
+# format_unavailable_summary() instead of re-deriving their own count.
+_UNAVAIL_IGNORE_PREFIXES = (
+    "button.",
+    "input_button.",
+    "sensor.ipad_",
+    "binary_sensor.ipad_",
+    "notify.ipad",
+    "stt.",
+    "tts.",
+    "sensor.homepage_",
+    "binary_sensor.pve_homepage",
+)
+_UNAVAIL_IGNORE_SUBSTRINGS = (
+    "_identify", "christmas", "iphone", "ipad",
+    "alexa", "echo", "firestick", "fire_stick", "fire_tv",
+    "_speak", "_announce",
+)
+
+
+def _is_ignorable_unavailable(entity_id: str) -> bool:
+    return (
+        any(entity_id.startswith(p) for p in _UNAVAIL_IGNORE_PREFIXES)
+        or any(s in entity_id for s in _UNAVAIL_IGNORE_SUBSTRINGS)
+    )
 
 
 @dataclass
@@ -105,7 +139,156 @@ async def fetch() -> HAData:
             except Exception as e:
                 logger.warning(f"HA Cloud reload attempt failed: {e}")
 
+    await _track_unavailable(entities)
+
     return HAData(entities=entities, alerts=alerts, cloud_alerts=cloud_alerts)
+
+
+def _db_track_unavailable(unavailable_ids: set, now: datetime) -> None:
+    """Sync half — MUST only ever be called via asyncio.to_thread. Session
+    work inside an `async def` blocks the whole event loop, and this runs on
+    the fetch() hot path behind /api/health and every briefing gather."""
+    from backend.database import HaEntityUnavailable, engine
+
+    with Session(engine) as session:
+        tracked = session.exec(select(HaEntityUnavailable)).all()
+        tracked_ids = set()
+        for row in tracked:
+            tracked_ids.add(row.entity_id)
+            if row.entity_id in unavailable_ids:
+                row.last_checked_at = now
+                session.add(row)
+            else:
+                session.delete(row)
+        for new_id in unavailable_ids - tracked_ids:
+            session.add(HaEntityUnavailable(
+                entity_id=new_id, first_seen_unavailable_at=now, last_checked_at=now,
+            ))
+        session.commit()
+
+
+async def _track_unavailable(entities: list) -> None:
+    """Upsert per-entity unavailable duration into HaEntityUnavailable, once
+    per real fetch() (the ~30s async_ttl_cache cadence -- see this module's
+    top-level decorator). Newly-unavailable -> insert (first_seen starts
+    now); recovered -> row deleted; still-unavailable -> only
+    last_checked_at bumped, first_seen_unavailable_at is never touched
+    (duration = now - first_seen_unavailable_at, that's the whole point).
+
+    Best-effort, like obsidian.emit_event -- a DB hiccup here must never
+    fail or slow down the main fetch() path it's called from. All DB work is
+    off-loop via asyncio.to_thread.
+    """
+    try:
+        now = datetime.utcnow()
+        unavailable_ids = {
+            e.get("entity_id")
+            for e in entities
+            if e.get("state") in ("unavailable", "unknown")
+            and e.get("entity_id")
+            and not _is_ignorable_unavailable(e.get("entity_id", ""))
+        }
+        await asyncio.to_thread(_db_track_unavailable, unavailable_ids, now)
+    except Exception as e:
+        logger.warning(f"_track_unavailable failed (ignored): {e}")
+
+
+async def unavailable_report() -> dict:
+    """Age-bucketed summary of HaEntityUnavailable -- the actionable
+    replacement for a flat "N entities unavailable" count. `persistent`
+    (>=7 days) and `recent` (<1h) are the two buckets briefing/
+    homelab_digest surface explicitly; `total` excludes suppressed rows
+    (they've been marked known-dead, stop counting) while `items` lists
+    every tracked row, suppressed or not, so a triage UI can still show
+    (and un-dismiss) a suppressed entity.
+
+    Never raises -- degrades to an all-zero/empty report on any DB error,
+    matching this module's general fetch() discipline.
+    """
+    from backend.database import HaEntityUnavailable, engine
+
+    now = datetime.utcnow()
+
+    def _read():
+        with Session(engine) as session:
+            # Materialise plain tuples inside the Session -- no ORM object may
+            # cross the to_thread boundary.
+            return [
+                (r.entity_id, r.first_seen_unavailable_at, r.last_checked_at, r.suppressed)
+                for r in session.exec(select(HaEntityUnavailable)).all()
+            ]
+
+    try:
+        raw = await asyncio.to_thread(_read)
+    except Exception as e:
+        logger.warning(f"unavailable_report failed (ignored): {e}")
+        return {"total": 0, "persistent": 0, "recent": 0, "items": []}
+
+    rows = [
+        SimpleNamespace(
+            entity_id=eid, first_seen_unavailable_at=first,
+            last_checked_at=last, suppressed=supp,
+        )
+        for eid, first, last, supp in raw
+    ]
+
+    active = [r for r in rows if not r.suppressed]
+    persistent = sum(1 for r in active if (now - r.first_seen_unavailable_at) >= timedelta(days=7))
+    recent = sum(1 for r in active if (now - r.first_seen_unavailable_at) < timedelta(hours=1))
+    items = [
+        {
+            "entity_id": r.entity_id,
+            "first_seen_unavailable_at": r.first_seen_unavailable_at.isoformat(),
+            "last_checked_at": r.last_checked_at.isoformat(),
+            "age_seconds": (now - r.first_seen_unavailable_at).total_seconds(),
+            "suppressed": r.suppressed,
+        }
+        for r in sorted(rows, key=lambda r: r.first_seen_unavailable_at)
+    ]
+    return {"total": len(active), "persistent": persistent, "recent": recent, "items": items}
+
+
+def format_unavailable_summary(report: dict) -> str:
+    """Renders unavailable_report()'s output as one actionable line, e.g.
+    "12 unavailable >7 days (persistently dead), 3 unavailable <1h (likely
+    transient)" -- what homelab_digest's HA line and the briefing prompt
+    both use instead of a bare entity count."""
+    total = report.get("total", 0)
+    if not total:
+        return "all entities OK"
+    persistent = report.get("persistent", 0)
+    recent = report.get("recent", 0)
+    middle = total - persistent - recent
+    parts = []
+    if persistent:
+        parts.append(f"{persistent} unavailable >7 days (persistently dead)")
+    if recent:
+        parts.append(f"{recent} unavailable <1h (likely transient)")
+    if middle > 0:
+        parts.append(f"{middle} unavailable 1h-7d")
+    return ", ".join(parts) if parts else f"{total} unavailable"
+
+
+async def set_unavailable_suppressed(entity_id: str, suppressed: bool) -> bool:
+    """Marks (or unmarks) a tracked-unavailable entity "known-dead, stop
+    counting" -- the triage list's dismiss action. Returns False if the
+    entity isn't currently tracked (already recovered, or never was
+    unavailable), which the API route turns into a 404."""
+    from backend.database import HaEntityUnavailable, engine
+
+    def _write() -> bool:
+        with Session(engine) as session:
+            row = session.exec(
+                select(HaEntityUnavailable).where(HaEntityUnavailable.entity_id == entity_id)
+            ).first()
+            if not row:
+                return False
+            row.suppressed = suppressed
+            session.add(row)
+            session.commit()
+        return True
+
+    return await asyncio.to_thread(_write)
 
 
 async def try_reload_cloud(host: str, headers: dict, client: httpx.AsyncClient) -> dict | None:

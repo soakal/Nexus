@@ -109,6 +109,9 @@ export const api = {
     entities: () => req('GET', '/ha/entities'),
     service: (domain, service, entity_id, service_data) =>
       req('POST', '/ha/service', { domain, service, entity_id, ...(service_data ? { service_data } : {}) }),
+    unavailable: () => req('GET', '/ha/unavailable'),
+    setUnavailableSuppressed: (entityId, suppressed) =>
+      req('POST', `/ha/unavailable/${encodeURIComponent(entityId)}/${suppressed ? 'suppress' : 'unsuppress'}`),
   },
   voice: {
     upload: async (file) => {
