@@ -110,6 +110,11 @@ _CONFIG_DEFAULTS: dict[str, Any] = {
     "tag_max_new_per_note": 1,
     "tag_max_per_page": 12,
     "tag_vocabulary_max_in_prompt": 200,
+    # Default-off: submit Sonnet synthesis calls as Anthropic Message Batches
+    # (50% off token pricing) via SynthesisBatcher instead of one _call_api
+    # per request. Off keeps the trial harness's config.json (a separate
+    # file, Gemini models) byte-identical to pre-batcher behavior.
+    "use_batch_api": False,
 }
 
 # Numeric keys with a meaningful valid range, beyond "must be the right type".
@@ -1127,7 +1132,15 @@ def find_similar_page(
 _USAGE_LOG = Path(__file__).parent / "logs" / "usage.jsonl"
 
 
-def _record_usage(model: str, provider: str, input_tokens: int, output_tokens: int) -> None:
+def _record_usage(
+    model: str,
+    provider: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> None:
     """Append one JSON line of token usage for the NEXUS spend governor to ingest.
 
     Best-effort and stdlib-only: metering must NEVER break note processing, so the
@@ -1141,6 +1154,8 @@ def _record_usage(model: str, provider: str, input_tokens: int, output_tokens: i
             "model": model,
             "input_tokens": int(input_tokens or 0),
             "output_tokens": int(output_tokens or 0),
+            "cache_creation_input_tokens": int(cache_creation_input_tokens or 0),
+            "cache_read_input_tokens": int(cache_read_input_tokens or 0),
             "provider": provider,
         })
         with open(_USAGE_LOG, "a", encoding="utf-8") as fh:
@@ -1160,10 +1175,15 @@ def _call_api(
     config: dict[str, Any],
     client: anthropic.Anthropic,
     *,
+    system: list[dict[str, Any]] | None = None,
     max_retries: int = 6,
 ) -> tuple[str, str]:
     """
     Call Anthropic with exponential-backoff retry, then fall back to OpenRouter.
+
+    `system`, when given, is Anthropic's block-list system-prompt shape (each block
+    may carry `cache_control`) -- omitted from the request entirely when None, so
+    existing callers that never pass it get the exact same request as before.
 
     Returns (text, stop_reason).
     Raises _APIUsageCapped when both providers are hard-capped (abort the run).
@@ -1175,11 +1195,14 @@ def _call_api(
 
     for attempt in range(1, max_retries + 1):
         try:
-            msg = client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=messages,  # type: ignore[arg-type]
-            )
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": messages,
+            }
+            if system is not None:
+                kwargs["system"] = system
+            msg = client.messages.create(**kwargs)  # type: ignore[arg-type]
             block = next((b for b in msg.content if isinstance(b, TextBlock)), None)
             if block is None:
                 raise ValueError("Anthropic response contained no text block")
@@ -1188,6 +1211,8 @@ def _call_api(
                 model, "anthropic",
                 getattr(usage, "input_tokens", 0) or 0,
                 getattr(usage, "output_tokens", 0) or 0,
+                cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
             )
             return block.text.strip(), (msg.stop_reason or "")
         except _RETRYABLE_ERRORS as exc:
@@ -1230,13 +1255,27 @@ def _call_api(
 
     try:
         or_model = "anthropic/" + re.sub(r"-\d{8}$", "", model)
+        or_messages = messages
+        if system is not None:
+            # OpenRouter's chat-completions shape has no separate system param and
+            # no cache_control -- fold the (uncached) text into the first user
+            # message, matching how every other _call_api caller already folds
+            # instructions into the prompt today.
+            system_text = "\n\n".join(
+                b.get("text", "") for b in system if isinstance(b, dict)
+            )
+            or_messages = [dict(m) for m in messages]
+            if or_messages and or_messages[0].get("role") == "user":
+                or_messages[0]["content"] = f"{system_text}\n\n{or_messages[0]['content']}"
+            else:
+                or_messages = [{"role": "user", "content": system_text}] + or_messages
         resp = httpx.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {or_key}",
                 "Content-Type": "application/json",
             },
-            json={"model": or_model, "max_tokens": max_tokens, "messages": messages},
+            json={"model": or_model, "max_tokens": max_tokens, "messages": or_messages},
             timeout=60.0,
         )
         if resp.status_code == 403:
@@ -2006,18 +2045,18 @@ def _defuse_unknown_wikilinks(
     return WIKILINK_PAT.sub(_replace, text)
 
 
-def synthesize_wiki(
+def build_synthesis_request(
     topic: str,
     new_content: str,
     existing_content: str,
     config: dict[str, Any],
-    client: anthropic.Anthropic,
     *,
     catalog_entry: dict[str, Any] | None = None,
     catalog: list[dict[str, Any]] | None = None,
-    stats: dict[str, int] | None = None,
-) -> str:
-    """Synthesize or merge a wiki page for *topic*.
+) -> dict[str, Any]:
+    """Build the prompt + branch selection for one synthesize_wiki call, WITHOUT
+    calling the API. Split out of synthesize_wiki so a caller (SynthesisBatcher)
+    can collect many requests and submit them together as one Message Batch.
 
     Branch selector:
         is_merge + is_large → 5b: section-splice (returns only changed ## blocks)
@@ -2028,17 +2067,18 @@ def synthesize_wiki(
         catalog_entry: Populated for EXISTING pages (is_merge). Provides scope
             contract (headers, title) so the model stays on-topic.
         catalog:       Full page list. Used in the CREATE branch (5c) to compute
-            related-page wikilink suggestions.
-        stats:         Optional mutable accumulator threaded straight through to
-            every _defuse_unknown_wikilinks call in this function (both the
-            5b splice loop and the 5a/5c final normalizer), so a caller can
-            tally rewritten/backticked links across one synthesis call.
+            related-page wikilink suggestions, and threaded through to
+            finish_synthesis for wikilink defusing.
+
+    Returns a dict consumed by finish_synthesis: prompt, model, max_tokens,
+    branch ("5a"|"5b"|"5c"), topic, existing_content, catalog, config.
     """
     max_chars: int = config["max_file_chars"]
     large_threshold: int = config["large_page_threshold_chars"]
 
     is_merge = bool(existing_content)
     is_large = is_merge and len(existing_content) > large_threshold
+    max_tokens: int = config["sonnet_max_tokens"]
 
     # -----------------------------------------------------------------
     # Scope-contract block (injected into merge prompts when we have a
@@ -2080,17 +2120,129 @@ def synthesize_wiki(
             f"{new_content[:max_chars]}\n\n"
             "Return only the changed/new ## blocks (or NO_CHANGES)."
         )
+        return {
+            "prompt": prompt,
+            "model": config["sonnet_model"],
+            "max_tokens": max_tokens,
+            "branch": "5b",
+            "topic": topic,
+            "existing_content": existing_content,
+            "catalog": catalog,
+            "config": config,
+        }
 
-        logger = logging.getLogger("brain_organizer")
-        max_tokens: int = config["sonnet_max_tokens"]
-        text, stop_reason = _call_api(
-            config["sonnet_model"],
-            [{"role": "user", "content": prompt}],
-            max_tokens,
-            config,
-            client,
+    # -----------------------------------------------------------------
+    # 5a — Normal MERGE (existing page, within size threshold)
+    # -----------------------------------------------------------------
+    if is_merge:
+        prompt = (
+            "You are a personal knowledge base curator. "
+            "Intelligently merge new information into an existing Wiki document.\n\n"
+            "Rules:\n"
+            "- Never lose any existing information\n"
+            "- Add new info where it logically fits within existing sections\n"
+            "- Create new sections if needed\n"
+            "- Remove duplicates\n"
+            "- Clean Markdown with ## headers\n"
+            "- No commentary about what you changed\n"
+            + (scope_block + "\n" if scope_block else "\n")
+            + f'Existing Wiki for topic "{topic}":\n'
+            f"{existing_content[:max_chars]}\n\n"
+            "New information to merge:\n"
+            f"{new_content[:max_chars]}\n\n"
+            "Return the complete updated Wiki document only."
         )
+        branch = "5a"
+    else:
+        # -----------------------------------------------------------------
+        # 5c — CREATE branch: new page with related-pages wikilink hint
+        # -----------------------------------------------------------------
+        related_block = ""
+        if catalog:
+            # Rank catalog by normalized-title similarity to topic, exclude
+            # an exact title match (would be the page being created itself).
+            norm_topic = _normalize_title(topic)
+            scored = []
+            for entry in catalog:
+                if entry["title"] == topic:
+                    continue
+                ratio = difflib.SequenceMatcher(
+                    None, norm_topic, _normalize_title(entry["title"])
+                ).ratio()
+                # Filename-less catalog entries (title-only, seen in the wild)
+                # degrade to the title as its own stem -- same as today's
+                # [[title]] form -- rather than KeyError.
+                filename = entry.get("filename")
+                stem = Path(filename).stem if filename else entry["title"]
+                scored.append((ratio, entry["title"], stem))
+            scored.sort(reverse=True)
+            top5 = [(t, s) for r, t, s in scored[:5] if r > 0.0]
+            if top5:
+                def _related_link(title: str, stem: str) -> str:
+                    # Obsidian resolves by filename, not title -- link to the
+                    # hyphenated stem and alias back to the display title so
+                    # the model doesn't need to guess/rewrite it later.
+                    return f"[[{stem}]]" if stem == title else f"[[{stem}|{title}]]"
 
+                related_block = (
+                    "Related pages in this wiki: "
+                    + ", ".join(_related_link(t, s) for t, s in top5)
+                    + ".\n"
+                    "Use [[wikilinks]] ONLY for titles from this exact list -- do not "
+                    "wikilink anything else, even if it looks like it should be a page "
+                    "(e.g. a tool name, a file name, or something else the source "
+                    "material mentions). If in doubt, use plain text instead. Use the "
+                    "exact link text shown, including the hyphenated target before "
+                    "the |. Do not duplicate content from those pages.\n\n"
+                )
+
+        prompt = (
+            f'You are a personal knowledge base curator. Create a new Wiki document for the topic "{topic}".\n\n'
+            "Rules:\n"
+            "- Organize into logical ## sections\n"
+            "- Clean Markdown formatting\n"
+            "- Thorough but concise\n"
+            "- No commentary\n\n"
+            + related_block
+            + "Source material:\n"
+            f"{new_content[:max_chars]}\n\n"
+            "Return the complete Wiki document only."
+        )
+        branch = "5c"
+
+    return {
+        "prompt": prompt,
+        "model": config["sonnet_model"],
+        "max_tokens": max_tokens,
+        "branch": branch,
+        "topic": topic,
+        "existing_content": existing_content,
+        "catalog": catalog,
+        "config": config,
+    }
+
+
+def finish_synthesis(
+    req: dict[str, Any],
+    text: str,
+    stop_reason: str,
+    *,
+    stats: dict[str, int] | None = None,
+) -> str:
+    """Turn one _call_api result (or Batch API result) back into final wiki-page
+    text, per the branch build_synthesis_request selected. Mirrors exactly what
+    synthesize_wiki used to do inline after each of its three _call_api calls.
+
+    stats: same mutable accumulator synthesize_wiki always accepted, threaded
+        through to every _defuse_unknown_wikilinks call.
+    """
+    topic = req["topic"]
+    existing_content = req["existing_content"]
+    catalog = req["catalog"]
+    config = req["config"]
+    max_tokens = req["max_tokens"]
+
+    if req["branch"] == "5b":
         # The large-merge path outputs small diffs; max_tokens here is anomalous.
         if stop_reason == "max_tokens":
             raise ValueError(
@@ -2179,91 +2331,10 @@ def synthesize_wiki(
             ) from exc
 
     # -----------------------------------------------------------------
-    # 5a — Normal MERGE (existing page, within size threshold)
+    # 5a/5c — Normal MERGE or CREATE (branch already selected by
+    # build_synthesis_request; both share the same completion logic).
     # -----------------------------------------------------------------
-    if is_merge:
-        prompt = (
-            "You are a personal knowledge base curator. "
-            "Intelligently merge new information into an existing Wiki document.\n\n"
-            "Rules:\n"
-            "- Never lose any existing information\n"
-            "- Add new info where it logically fits within existing sections\n"
-            "- Create new sections if needed\n"
-            "- Remove duplicates\n"
-            "- Clean Markdown with ## headers\n"
-            "- No commentary about what you changed\n"
-            + (scope_block + "\n" if scope_block else "\n")
-            + f'Existing Wiki for topic "{topic}":\n'
-            f"{existing_content[:max_chars]}\n\n"
-            "New information to merge:\n"
-            f"{new_content[:max_chars]}\n\n"
-            "Return the complete updated Wiki document only."
-        )
-    else:
-        # -----------------------------------------------------------------
-        # 5c — CREATE branch: new page with related-pages wikilink hint
-        # -----------------------------------------------------------------
-        related_block = ""
-        if catalog:
-            # Rank catalog by normalized-title similarity to topic, exclude
-            # an exact title match (would be the page being created itself).
-            norm_topic = _normalize_title(topic)
-            scored = []
-            for entry in catalog:
-                if entry["title"] == topic:
-                    continue
-                ratio = difflib.SequenceMatcher(
-                    None, norm_topic, _normalize_title(entry["title"])
-                ).ratio()
-                # Filename-less catalog entries (title-only, seen in the wild)
-                # degrade to the title as its own stem -- same as today's
-                # [[title]] form -- rather than KeyError.
-                filename = entry.get("filename")
-                stem = Path(filename).stem if filename else entry["title"]
-                scored.append((ratio, entry["title"], stem))
-            scored.sort(reverse=True)
-            top5 = [(t, s) for r, t, s in scored[:5] if r > 0.0]
-            if top5:
-                def _related_link(title: str, stem: str) -> str:
-                    # Obsidian resolves by filename, not title -- link to the
-                    # hyphenated stem and alias back to the display title so
-                    # the model doesn't need to guess/rewrite it later.
-                    return f"[[{stem}]]" if stem == title else f"[[{stem}|{title}]]"
-
-                related_block = (
-                    "Related pages in this wiki: "
-                    + ", ".join(_related_link(t, s) for t, s in top5)
-                    + ".\n"
-                    "Use [[wikilinks]] ONLY for titles from this exact list -- do not "
-                    "wikilink anything else, even if it looks like it should be a page "
-                    "(e.g. a tool name, a file name, or something else the source "
-                    "material mentions). If in doubt, use plain text instead. Use the "
-                    "exact link text shown, including the hyphenated target before "
-                    "the |. Do not duplicate content from those pages.\n\n"
-                )
-
-        prompt = (
-            f'You are a personal knowledge base curator. Create a new Wiki document for the topic "{topic}".\n\n'
-            "Rules:\n"
-            "- Organize into logical ## sections\n"
-            "- Clean Markdown formatting\n"
-            "- Thorough but concise\n"
-            "- No commentary\n\n"
-            + related_block
-            + "Source material:\n"
-            f"{new_content[:max_chars]}\n\n"
-            "Return the complete Wiki document only."
-        )
-
-    # 8192 tokens gives room for large wiki merges; still check for truncation.
-    max_tokens = config["sonnet_max_tokens"]
-    text, stop_reason = _call_api(
-        config["sonnet_model"],
-        [{"role": "user", "content": prompt}],
-        max_tokens,
-        config,
-        client,
-    )
+    is_merge = req["branch"] == "5a"
 
     if stop_reason == "max_tokens":
         raise ValueError(
@@ -2291,6 +2362,271 @@ def synthesize_wiki(
         stats=stats,
     )
     return text
+
+
+def synthesize_wiki(
+    topic: str,
+    new_content: str,
+    existing_content: str,
+    config: dict[str, Any],
+    client: anthropic.Anthropic,
+    *,
+    catalog_entry: dict[str, Any] | None = None,
+    catalog: list[dict[str, Any]] | None = None,
+    stats: dict[str, int] | None = None,
+) -> str:
+    """Synthesize or merge a wiki page for *topic* -- thin synchronous wrapper
+    around build_synthesis_request + _call_api + finish_synthesis, preserved for
+    every caller that doesn't go through a SynthesisBatcher (non-batch mode,
+    tests). See build_synthesis_request for the branch selector and args.
+    """
+    req = build_synthesis_request(
+        topic, new_content, existing_content, config,
+        catalog_entry=catalog_entry, catalog=catalog,
+    )
+    text, stop_reason = _call_api(
+        req["model"],
+        [{"role": "user", "content": req["prompt"]}],
+        req["max_tokens"],
+        config,
+        client,
+    )
+    return finish_synthesis(req, text, stop_reason, stats=stats)
+
+
+# ---------------------------------------------------------------------------
+# SynthesisBatcher — collects synthesize_wiki requests from multiple worker
+# threads within one run and submits them together as one Anthropic Message
+# Batch (50% off token pricing) instead of one _call_api per request.
+# ---------------------------------------------------------------------------
+
+class SynthesisBatcher:
+    """Blocking collector for Sonnet synthesis calls.
+
+    `config["use_batch_api"]` False (default): call_many is a thin per-request
+    _call_api loop -- no batches.* call ever happens, byte-identical to the
+    pre-batcher code path.
+
+    True: callers (one per group-thread, via process_file) block in call_many()
+    until every request they submitted has a result. A flush happens when
+    either every still-active group-thread is currently blocked waiting
+    (`_waiters >= active_workers_fn()`) or a 30s debounce since the first
+    still-pending request expires -- whichever comes first. Exactly one
+    thread performs a given flush: the pending list is claimed (and cleared)
+    atomically under the Condition's lock, so every other thread that wakes
+    for the same reason (in particular every thread woken by the same
+    debounce timeout) sees an already-empty pending list and goes back to
+    waiting instead of double-submitting the batch.
+
+    A batch-create failure, a usage-cap error, or any individual result that
+    comes back errored/expired/missing falls back to the normal synchronous
+    _call_api path (full existing retry + OpenRouter chain) for just that
+    item -- never a second Message Batch.
+    """
+
+    _DEBOUNCE_SECONDS = 30.0
+    _POLL_SECONDS = 30.0
+    _MAX_BATCH_WAIT_SECONDS = 25 * 3600  # server guarantees <=24h; this is a belt-only backstop
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        client: anthropic.Anthropic,
+        active_workers_fn: Callable[[], int],
+        *,
+        lock_path: Path | None = None,
+        debounce_seconds: float | None = None,
+        poll_seconds: float | None = None,
+        max_wait_seconds: float | None = None,
+    ) -> None:
+        self._config = config
+        self._client = client
+        self._active_workers_fn = active_workers_fn
+        self._lock_path = lock_path
+        self._use_batch = bool(config.get("use_batch_api", False))
+        self._logger = logging.getLogger("brain_organizer")
+        self._cond = threading.Condition()
+        self._pending: list[dict[str, Any]] = []
+        self._waiters = 0
+        self._deadline: float | None = None
+        # Per-instance overrides (tests only -- production always gets the
+        # class defaults) so a test can exercise real threading/timing
+        # without a real 30-minute wall-clock wait.
+        self._debounce_seconds = debounce_seconds if debounce_seconds is not None else self._DEBOUNCE_SECONDS
+        self._poll_seconds = poll_seconds if poll_seconds is not None else self._POLL_SECONDS
+        self._max_wait_seconds = max_wait_seconds if max_wait_seconds is not None else self._MAX_BATCH_WAIT_SECONDS
+
+    def call_many(self, requests: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        """Blocks until every request has a (text, stop_reason) result, in the
+        same order as `requests`. Raises the first exception (in request
+        order) if any request in THIS call's own batch failed even after the
+        sync fallback."""
+        if not requests:
+            return []
+        if not self._use_batch:
+            return [
+                _call_api(
+                    r["model"], [{"role": "user", "content": r["prompt"]}],
+                    r["max_tokens"], self._config, self._client,
+                )
+                for r in requests
+            ]
+
+        my_items = [{"req": r, "event": threading.Event(), "result": None} for r in requests]
+
+        with self._cond:
+            self._pending.extend(my_items)
+            self._waiters += 1
+            if self._deadline is None:
+                self._deadline = time.monotonic() + self._debounce_seconds
+            self._cond.notify_all()
+            try:
+                while not all(it["event"].is_set() for it in my_items):
+                    now = time.monotonic()
+                    converged = self._waiters >= self._active_workers_fn()
+                    timed_out = self._deadline is not None and now >= self._deadline
+                    if (converged or timed_out) and self._pending:
+                        # Atomically claim the pending list -- only the thread
+                        # that empties it here proceeds to flush; every other
+                        # thread waking for the same reason (esp. the same
+                        # debounce timeout) re-checks with an empty pending
+                        # list below and goes back to waiting.
+                        claim = self._pending
+                        self._pending = []
+                        self._deadline = None
+                        self._cond.release()
+                        try:
+                            self._flush(claim)
+                        finally:
+                            self._cond.acquire()
+                        self._cond.notify_all()
+                        continue
+                    timeout = None if self._deadline is None else max(0.01, self._deadline - now)
+                    self._cond.wait(timeout=timeout)
+            finally:
+                self._waiters -= 1
+
+        for it in my_items:
+            if isinstance(it["result"], BaseException):
+                raise it["result"]
+        return [it["result"] for it in my_items]
+
+    def on_worker_exit(self) -> None:
+        """Call when a group-thread finishes ALL its files (the active-worker
+        count just dropped). Not required for correctness -- the debounce
+        timer bounds the wait regardless -- but without this, a lone
+        remaining waiter can sit for the full debounce even though it's now
+        the only active worker left, since nothing else re-triggers the
+        `waiters >= active_workers_fn()` check. Safe to call even in
+        non-batch mode (just wakes nobody)."""
+        with self._cond:
+            self._cond.notify_all()
+
+    def _flush(self, claim: list[dict[str, Any]]) -> None:
+        """Submit `claim` as one Message Batch, poll to completion, and set
+        each item's result + event. Called with the Condition's lock
+        released -- must not touch self._pending/_waiters/_deadline."""
+        requests = [
+            {
+                "custom_id": f"{i:04d}",
+                "params": {
+                    "model": item["req"]["model"],
+                    "max_tokens": item["req"]["max_tokens"],
+                    "messages": [{"role": "user", "content": item["req"]["prompt"]}],
+                },
+            }
+            for i, item in enumerate(claim)
+        ]
+
+        try:
+            batch = self._client.messages.batches.create(requests=requests)
+        except Exception as exc:
+            if self._is_usage_capped(exc):
+                self._logger.error("SynthesisBatcher: batch create hard-capped — aborting: %s", exc)
+                capped = _APIUsageCapped(str(exc))
+                for item in claim:
+                    item["result"] = capped
+                    item["event"].set()
+                return
+            self._logger.warning(
+                "SynthesisBatcher: batch create failed (%s) — falling back to sync for %d request(s)",
+                exc, len(claim),
+            )
+            for item in claim:
+                self._sync_fill(item)
+            return
+
+        deadline = time.monotonic() + self._max_wait_seconds
+        while batch.processing_status != "ended":
+            if self._lock_path is not None:
+                try:
+                    self._lock_path.touch()
+                except Exception:
+                    pass
+            if time.monotonic() >= deadline:
+                self._logger.error(
+                    "SynthesisBatcher: batch %s exceeded %ds guard — treating unreturned items as errored",
+                    batch.id, self._max_wait_seconds,
+                )
+                break
+            time.sleep(self._poll_seconds)
+            batch = self._client.messages.batches.retrieve(batch.id)
+
+        seen: set[int] = set()
+        try:
+            for result in self._client.messages.batches.results(batch.id):
+                try:
+                    idx = int(result.custom_id)
+                    item = claim[idx]
+                except (ValueError, IndexError):
+                    continue
+                seen.add(idx)
+                if result.result.type != "succeeded":
+                    self._sync_fill(item)
+                    continue
+                msg = result.result.message
+                block = next((b for b in msg.content if isinstance(b, TextBlock)), None)
+                if block is None:
+                    self._sync_fill(item)
+                    continue
+                usage = getattr(msg, "usage", None)
+                _record_usage(
+                    item["req"]["model"], "anthropic_batch",
+                    getattr(usage, "input_tokens", 0) or 0,
+                    getattr(usage, "output_tokens", 0) or 0,
+                    cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                    cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+                )
+                item["result"] = (block.text.strip(), msg.stop_reason or "")
+                item["event"].set()
+        except Exception as exc:
+            self._logger.warning("SynthesisBatcher: reading batch results failed: %s", exc)
+
+        # Any item never seen in results() (missing/expired/timed-out) -- sync fallback.
+        for idx, item in enumerate(claim):
+            if idx not in seen and item["result"] is None:
+                self._sync_fill(item)
+
+    def _sync_fill(self, item: dict[str, Any]) -> None:
+        """Synchronous _call_api fallback for one item -- full existing
+        retry + OpenRouter chain. Always sets result + event."""
+        r = item["req"]
+        try:
+            item["result"] = _call_api(
+                r["model"], [{"role": "user", "content": r["prompt"]}],
+                r["max_tokens"], self._config, self._client,
+            )
+        except Exception as exc:
+            item["result"] = exc
+        item["event"].set()
+
+    @staticmethod
+    def _is_usage_capped(exc: Exception) -> bool:
+        return (
+            isinstance(exc, anthropic.APIStatusError)
+            and exc.status_code == 400
+            and "usage limits" in str(exc).lower()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2340,6 +2676,7 @@ def process_file(
     _catalog_lock: threading.Lock | None = None,
     _registry_lock: threading.Lock | None = None,
     stats: dict[str, int] | None = None,
+    _batcher: SynthesisBatcher | None = None,
 ) -> list[str]:
     """
     Backup → route to existing/new pages → synthesize ALL wikis first → write all atomically
@@ -2418,25 +2755,62 @@ def process_file(
     # Phase 1: synthesize ALL routes into memory before touching the filesystem.
     # (topic, wiki_file_path, wiki_content, existing_tags, orig_fm)
     topic_results: list[tuple[str, Path, str, list[str], str | None]] = []
-    for topic, wiki_path, is_new in routes:
-        existing = wiki_path.read_text(encoding="utf-8") if wiki_path.exists() else ""
-        existing_tags = _parse_frontmatter_tags(existing)
-        existing_fm = _find_frontmatter(existing)
-        if existing_fm is not None:
-            _, fm_end = existing_fm
-            fm_lines = existing.lstrip("﻿").splitlines(keepends=True)
-            orig_fm = "".join(fm_lines[: fm_end + 1])
-        else:
-            orig_fm = None
-        catalog_entry = None if is_new else catalog_by_title.get(topic)
-        wiki_content = synthesize_wiki(
-            topic, content, existing, config, client,
-            catalog_entry=catalog_entry,
-            catalog=catalog,
-            stats=stats,
-        )
-        topic_results.append((topic, wiki_path, wiki_content, existing_tags, orig_fm))
-        logger.info("Synthesis complete for route: %s (new=%s)", topic, is_new)
+
+    if _batcher is None:
+        # No batcher wired in (every existing caller/test) -- exact prior
+        # behavior, unchanged: one synthesize_wiki call per route.
+        for topic, wiki_path, is_new in routes:
+            existing = wiki_path.read_text(encoding="utf-8") if wiki_path.exists() else ""
+            existing_tags = _parse_frontmatter_tags(existing)
+            existing_fm = _find_frontmatter(existing)
+            if existing_fm is not None:
+                _, fm_end = existing_fm
+                fm_lines = existing.lstrip("﻿").splitlines(keepends=True)
+                orig_fm = "".join(fm_lines[: fm_end + 1])
+            else:
+                orig_fm = None
+            catalog_entry = None if is_new else catalog_by_title.get(topic)
+            wiki_content = synthesize_wiki(
+                topic, content, existing, config, client,
+                catalog_entry=catalog_entry,
+                catalog=catalog,
+                stats=stats,
+            )
+            topic_results.append((topic, wiki_path, wiki_content, existing_tags, orig_fm))
+            logger.info("Synthesis complete for route: %s (new=%s)", topic, is_new)
+    else:
+        # Batcher wired in: build every route's request first, submit them
+        # all together via one call_many (one Message Batch when
+        # use_batch_api is on, an equivalent sync loop otherwise), then
+        # finish each in route order. Within-file route order is preserved
+        # so a build/finish failure on route 1 still raises before route 2's
+        # result is even read, same as the sequential path.
+        route_meta: list[tuple[str, Path, list[str], str | None, dict[str, Any]]] = []
+        requests: list[dict[str, Any]] = []
+        for topic, wiki_path, is_new in routes:
+            existing = wiki_path.read_text(encoding="utf-8") if wiki_path.exists() else ""
+            existing_tags = _parse_frontmatter_tags(existing)
+            existing_fm = _find_frontmatter(existing)
+            if existing_fm is not None:
+                _, fm_end = existing_fm
+                fm_lines = existing.lstrip("﻿").splitlines(keepends=True)
+                orig_fm = "".join(fm_lines[: fm_end + 1])
+            else:
+                orig_fm = None
+            catalog_entry = None if is_new else catalog_by_title.get(topic)
+            req = build_synthesis_request(
+                topic, content, existing, config,
+                catalog_entry=catalog_entry, catalog=catalog,
+            )
+            route_meta.append((topic, wiki_path, existing_tags, orig_fm, req))
+            requests.append(req)
+
+        results = _batcher.call_many(requests)
+
+        for (topic, wiki_path, existing_tags, orig_fm, req), (text, stop_reason) in zip(route_meta, results):
+            wiki_content = finish_synthesis(req, text, stop_reason, stats=stats)
+            topic_results.append((topic, wiki_path, wiki_content, existing_tags, orig_fm))
+            logger.info("Synthesis complete for route: %s", topic)
 
     # Phase 2: all synthesized — write each wiki atomically to its RESOLVED path
     updated_topics: list[tuple[str, Path]] = []
@@ -2696,6 +3070,7 @@ def run(
     _client: anthropic.Anthropic | None = None,
     _http_client: httpx.Client | None = None,
     _config: dict[str, Any] | None = None,
+    _lock_path: Path | None = None,
 ) -> int:
     """Run the organizer. Returns 0 on full success, 1 if any file failed."""
     config = validate_config(_config if _config is not None else load_config(config_path))
@@ -2830,6 +3205,31 @@ def run(
         len(files), len(groups), max_workers,
     )
 
+    # Active-worker count for SynthesisBatcher's convergence check: one
+    # group-thread is "active" from just before it's submitted to the
+    # executor until it fully finishes ALL its files (not per-file --
+    # _process_group is a plain sequential loop, so a thread can never
+    # decrement this while it's still blocked inside a call_many()).
+    active_workers = len(groups)
+    active_workers_lock = threading.Lock()
+
+    def _active_workers_fn() -> int:
+        with active_workers_lock:
+            return active_workers
+
+    # Only wire a real batcher into process_file when batch mode is actually
+    # on. When it's off (the default), _batcher stays None so process_file
+    # takes its original synthesize_wiki-calling branch untouched -- this
+    # matters beyond performance: several existing tests monkeypatch
+    # bo.synthesize_wiki directly as their mocking seam, which the batcher's
+    # build_synthesis_request/_call_api/finish_synthesis path would bypass
+    # even in its own non-batch sync mode.
+    batcher = (
+        SynthesisBatcher(config, client, _active_workers_fn, lock_path=_lock_path)
+        if config.get("use_batch_api")
+        else None
+    )
+
     def _record_success(
         sha: str, fp: Path, updated: list[str], routes: list[tuple[str, Path, bool]],
         file_stats: dict[str, int] | None = None,
@@ -2897,46 +3297,58 @@ def run(
         )
 
     def _process_group(group_items: list) -> None:
-        for fp, sha, routes, route_exc in group_items:
-            if aborted.is_set():
-                return
-            try:
-                if route_exc is not None:
-                    raise route_exc
-                if not routes:
-                    # route_topics always returns at least the Uncategorized
-                    # fallback on success, so an empty/None route list here
-                    # can only mean routing raised and was swallowed
-                    # upstream. Treat it as a failure (raw file kept, retried
-                    # next run) instead of silently deleting the raw file
-                    # with nowhere for its content to have gone.
-                    raise RuntimeError("routing produced no routes")
-                # Per-file, not shared: this dict is only ever touched by
-                # this file's own worker thread before _record_success
-                # aggregates it under state_lock -- no lock needed here.
-                file_stats: dict[str, int] = {"rewritten": 0, "backticked": 0}
-                updated = process_file(
-                    fp, config, client, logger, catalog,
-                    _routes=routes,
-                    _catalog_lock=catalog_lock,
-                    _registry_lock=registry_lock,
-                    stats=file_stats,
-                )
-                _record_success(sha, fp, updated, routes, file_stats)
-            except _APIUsageCapped as exc:
-                logger.error("API hard-capped — aborting run: %s", exc)
-                if not aborted.is_set():
-                    aborted.set()
-                    send_telegram_notification(
-                        config,
-                        f"🧠 Brain Organizer — API capped, run aborted.\n{exc}",
-                        priority="high",
-                        http_client=_http_client,
+        nonlocal active_workers
+        try:
+            for fp, sha, routes, route_exc in group_items:
+                if aborted.is_set():
+                    return
+                try:
+                    if route_exc is not None:
+                        raise route_exc
+                    if not routes:
+                        # route_topics always returns at least the Uncategorized
+                        # fallback on success, so an empty/None route list here
+                        # can only mean routing raised and was swallowed
+                        # upstream. Treat it as a failure (raw file kept, retried
+                        # next run) instead of silently deleting the raw file
+                        # with nowhere for its content to have gone.
+                        raise RuntimeError("routing produced no routes")
+                    # Per-file, not shared: this dict is only ever touched by
+                    # this file's own worker thread before _record_success
+                    # aggregates it under state_lock -- no lock needed here.
+                    file_stats: dict[str, int] = {"rewritten": 0, "backticked": 0}
+                    updated = process_file(
+                        fp, config, client, logger, catalog,
+                        _routes=routes,
+                        _catalog_lock=catalog_lock,
+                        _registry_lock=registry_lock,
+                        stats=file_stats,
+                        _batcher=batcher,
                     )
-                return
-            except Exception as exc:
-                logger.error("Failed to process %s: %s", fp.name, exc, exc_info=True)
-                _record_failure(sha, fp, exc)
+                    _record_success(sha, fp, updated, routes, file_stats)
+                except _APIUsageCapped as exc:
+                    logger.error("API hard-capped — aborting run: %s", exc)
+                    if not aborted.is_set():
+                        aborted.set()
+                        send_telegram_notification(
+                            config,
+                            f"🧠 Brain Organizer — API capped, run aborted.\n{exc}",
+                            priority="high",
+                            http_client=_http_client,
+                        )
+                    return
+                except Exception as exc:
+                    logger.error("Failed to process %s: %s", fp.name, exc, exc_info=True)
+                    _record_failure(sha, fp, exc)
+        finally:
+            # This group-thread is done, whatever the exit path -- update the
+            # SynthesisBatcher's convergence count (see active_workers_fn
+            # above) and wake anyone still waiting so they don't sit out the
+            # full debounce window for no reason.
+            with active_workers_lock:
+                active_workers -= 1
+            if batcher is not None:
+                batcher.on_worker_exit()
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = [ex.submit(_process_group, items) for items in groups.values()]
@@ -2987,7 +3399,7 @@ def main() -> None:
 
     lock_path.write_text(str(os.getpid()))
     try:
-        sys.exit(run(args.config))
+        sys.exit(run(args.config, _lock_path=lock_path))
     finally:
         lock_path.unlink(missing_ok=True)
 

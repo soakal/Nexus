@@ -7,6 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -1977,6 +1978,94 @@ def test_openrouter_fallback_fails_without_key(
 
 
 # ---------------------------------------------------------------------------
+# _call_api's optional `system` param (prompt-caching plumbing) + cache
+# telemetry -- no current caller passes `system`, so these exercise
+# _call_api directly rather than through a public wrapper.
+# ---------------------------------------------------------------------------
+
+def test_call_api_omits_system_kwarg_when_none(tmp_config: dict[str, Any]) -> None:
+    client = MagicMock()
+    client.messages.create.return_value = make_message("ok")
+    bo._call_api("claude-sonnet-4-6", [{"role": "user", "content": "hi"}], 100, tmp_config, client)
+    assert "system" not in client.messages.create.call_args.kwargs
+
+
+def test_call_api_passes_system_through_when_given(tmp_config: dict[str, Any]) -> None:
+    client = MagicMock()
+    client.messages.create.return_value = make_message("ok")
+    system = [{"type": "text", "text": "instructions"}, {"type": "text", "text": "catalog", "cache_control": {"type": "ephemeral"}}]
+    bo._call_api("claude-sonnet-4-6", [{"role": "user", "content": "hi"}], 100, tmp_config, client, system=system)
+    assert client.messages.create.call_args.kwargs["system"] == system
+
+
+def test_call_api_openrouter_fallback_folds_system_into_first_user_message(
+    tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    client = MagicMock()
+    client.messages.create.side_effect = anthropic.APITimeoutError(request=MagicMock())
+    system = [{"type": "text", "text": "SYS_TEXT"}, {"type": "text", "text": "MORE", "cache_control": {"type": "ephemeral"}}]
+
+    or_response = {
+        "choices": [{"message": {"content": "or-result"}, "finish_reason": "stop"}]
+    }
+    with patch("brain_organizer.time.sleep"), patch("brain_organizer.httpx.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: or_response, raise_for_status=lambda: None)
+        text, _ = bo._call_api(
+            "claude-sonnet-4-6", [{"role": "user", "content": "USER_TEXT"}], 100, tmp_config, client,
+            system=system,
+        )
+
+    assert text == "or-result"
+    sent_messages = mock_post.call_args.kwargs["json"]["messages"]
+    assert sent_messages[0]["role"] == "user"
+    assert "SYS_TEXT" in sent_messages[0]["content"]
+    assert "MORE" in sent_messages[0]["content"]
+    assert "USER_TEXT" in sent_messages[0]["content"]
+    # cache_control is an Anthropic-only concept -- must never reach OpenRouter.
+    assert "cache_control" not in json.dumps(mock_post.call_args.kwargs["json"])
+
+
+def test_record_usage_writes_cache_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    usage_log = tmp_path / "usage.jsonl"
+    monkeypatch.setattr(bo, "_USAGE_LOG", usage_log)
+    bo._record_usage(
+        "claude-sonnet-4-6", "anthropic", 100, 50,
+        cache_creation_input_tokens=20, cache_read_input_tokens=80,
+    )
+    line = json.loads(usage_log.read_text(encoding="utf-8").strip())
+    assert line["cache_creation_input_tokens"] == 20
+    assert line["cache_read_input_tokens"] == 80
+
+
+def test_record_usage_defaults_cache_fields_to_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    usage_log = tmp_path / "usage.jsonl"
+    monkeypatch.setattr(bo, "_USAGE_LOG", usage_log)
+    bo._record_usage("claude-sonnet-4-6", "anthropic", 100, 50)
+    line = json.loads(usage_log.read_text(encoding="utf-8").strip())
+    assert line["cache_creation_input_tokens"] == 0
+    assert line["cache_read_input_tokens"] == 0
+
+
+def test_call_api_forwards_anthropic_cache_usage_to_record_usage(
+    tmp_path: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    usage_log = tmp_path / "usage.jsonl"
+    monkeypatch.setattr(bo, "_USAGE_LOG", usage_log)
+    client = MagicMock()
+    msg = make_message("ok")
+    msg.usage = MagicMock(
+        input_tokens=10, output_tokens=5,
+        cache_creation_input_tokens=3, cache_read_input_tokens=7,
+    )
+    client.messages.create.return_value = msg
+    bo._call_api("claude-sonnet-4-6", [{"role": "user", "content": "hi"}], 100, tmp_config, client)
+    line = json.loads(usage_log.read_text(encoding="utf-8").strip())
+    assert line["cache_creation_input_tokens"] == 3
+    assert line["cache_read_input_tokens"] == 7
+
+
+# ---------------------------------------------------------------------------
 # Multi-topic atomicity (M4)
 # ---------------------------------------------------------------------------
 
@@ -2247,6 +2336,90 @@ def test_run_parallel_path_processes_multiple_files(
     assert (tmp_vault / "wiki" / "Hermes.md").exists()
     assert not (tmp_vault / "raw" / "note1.md").exists()
     assert not (tmp_vault / "raw" / "note2.md").exists()
+
+
+def test_run_use_batch_api_false_never_calls_batches_create(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Default config (use_batch_api unset -> False): a real end-to-end run()
+    must never touch the Batch API at all, matching pre-batcher behavior
+    exactly."""
+    write_raw(tmp_vault, "note.md", "NEXUS content")
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"routes": [{"title":"NEXUS", "match": "new"}]}'),
+        make_message('{"tags": []}'),
+        make_message("# NEXUS\n\nContent."),
+    ]
+    result = bo.run(_client=client, _config=tmp_config)
+    assert result == 0
+    client.messages.batches.create.assert_not_called()
+
+
+def test_run_two_files_same_page_batch_mode_second_wave_sees_first_waves_write(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one cross-file dependency SynthesisBatcher must respect: two files
+    routed to the SAME existing page are processed sequentially within one
+    page-group (never batched together into a single Message Batch), so the
+    second file's synthesis prompt is built against the page content the
+    FIRST file's synthesis actually wrote -- not a stale pre-run snapshot.
+    """
+    tmp_config["tags_enabled"] = False
+    tmp_config["max_parallel_files"] = 1
+    tmp_config["use_batch_api"] = True
+
+    wiki_file = tmp_vault / "wiki" / "Shared.md"
+    wiki_file.write_text("# Shared\n\nOriginal content.", encoding="utf-8")
+
+    write_raw(tmp_vault, "note1.md", "First addition content")
+    write_raw(tmp_vault, "note2.md", "Second addition content")
+
+    def fake_route_topics(content, catalog, config, client):
+        return [("Shared", wiki_file, False)]
+
+    monkeypatch.setattr(bo, "route_topics", fake_route_topics)
+
+    client = MagicMock()
+    batch_calls: list[list[dict]] = []
+
+    def fake_batches_create(requests):
+        idx = len(batch_calls)
+        batch_calls.append(requests)
+        return SimpleNamespace(id=f"batch_{idx}", processing_status="ended")
+
+    def fake_batches_retrieve(batch_id):
+        return SimpleNamespace(id=batch_id, processing_status="ended")
+
+    def fake_batches_results(batch_id):
+        idx = int(batch_id.split("_")[1])
+        text = f"# Shared\n\nWave {idx} merged content."
+        message = SimpleNamespace(
+            content=[TextBlock(type="text", text=text)],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(
+                input_tokens=1, output_tokens=1,
+                cache_creation_input_tokens=0, cache_read_input_tokens=0,
+            ),
+        )
+        return [SimpleNamespace(custom_id="0000", result=SimpleNamespace(type="succeeded", message=message))]
+
+    client.messages.batches.create.side_effect = fake_batches_create
+    client.messages.batches.retrieve.side_effect = fake_batches_retrieve
+    client.messages.batches.results.side_effect = fake_batches_results
+
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 0
+    assert client.messages.batches.create.call_count == 2, "two files, same group, sequential -> two separate waves"
+
+    first_wave_prompt = batch_calls[0][0]["params"]["messages"][0]["content"]
+    second_wave_prompt = batch_calls[1][0]["params"]["messages"][0]["content"]
+    assert "Original content" in first_wave_prompt
+    assert "Wave 0 merged content" in second_wave_prompt, (
+        "second wave must have read the page AFTER the first wave's write, not before"
+    )
+    assert wiki_file.read_text(encoding="utf-8") == "# Shared\n\nWave 1 merged content."
 
 
 def test_run_routing_failure_keeps_raw_and_records_failure_not_success(
