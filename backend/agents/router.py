@@ -930,8 +930,13 @@ async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: s
             "model_a": HAIKU_MODEL,
             "model_b": shadow_model,
             "prompt": prompt[:4000],
-            "out_a": primary_text[:2000],
-            "out_b": shadow_text[:2000],
+            # 2000 was cutting long facts_extract/goal_proposer JSON arrays
+            # mid-array, which then read as a parseable-JSON failure for
+            # BOTH models even when the actual output was well-formed.
+            # 8000 comfortably covers the shadow call's own max_tokens=4096
+            # budget above.
+            "out_a": primary_text[:8000],
+            "out_b": shadow_text[:8000],
             "agree": agree,
             "latency_ms": latency_ms,
         }
