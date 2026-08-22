@@ -100,3 +100,75 @@ def test_catalog_missing_returns_503(vault_client, tmp_path):
     (tmp_path / "Brain" / "_meta" / "wiki-catalog.json").unlink()
     resp = vault_client.get("/api/vault/catalog", headers=AUTH)
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers (read_note_text, resolve_note_candidates) -- called directly
+# by both /api/vault/note (above) and the vault_read_note chat tool
+# (tests/test_tools.py). vault_client isn't needed here: these are plain
+# functions, no FastAPI/TestClient/app-boot involved.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def brain_tree(tmp_path, monkeypatch):
+    """A fake Brain/ tree wired via the same _brain_root() monkeypatch seam
+    as vault_client, without the TestClient/app-boot overhead."""
+    brain = tmp_path / "Brain"
+    (brain / "wiki").mkdir(parents=True)
+    (brain / "_meta").mkdir()
+    (brain / "_meta" / "wiki-catalog.json").write_text(json.dumps(CATALOG))
+    (brain / "wiki" / "A.md").write_text("# A\ncontent")
+    (brain / "wiki" / "B.md").write_text("# B\ncontent")
+    (brain / "wiki" / "C-Page.md").write_text("# C Title\ncontent")
+    monkeypatch.setattr("backend.api.vault._brain_root", lambda: brain)
+    return brain
+
+
+def test_read_note_text_guards(brain_tree):
+    from backend.api.vault import read_note_text
+
+    assert "content" in read_note_text("wiki/A.md")
+    with pytest.raises(ValueError):
+        read_note_text("../outside.md")
+    with pytest.raises(ValueError):
+        read_note_text("wiki/A.txt")
+    with pytest.raises(FileNotFoundError):
+        read_note_text("wiki/nope.md")
+
+
+def test_resolve_note_candidates_rung_order(brain_tree):
+    from backend.api.vault import resolve_note_candidates
+
+    # Rung 1: exact stem match.
+    assert resolve_note_candidates("A") == ["wiki/A.md"]
+    # Rung 2: exact title match, where title != filename stem.
+    assert resolve_note_candidates("C Title") == ["wiki/C-Page.md"]
+    # Rung 3: case-insensitive stem.
+    assert resolve_note_candidates("a") == ["wiki/A.md"]
+    # Rung 4: case-insensitive title.
+    assert resolve_note_candidates("c title") == ["wiki/C-Page.md"]
+    # No fuzzy rung -- a real but non-exact miss resolves to nothing.
+    assert resolve_note_candidates("A Page") == []
+
+
+def test_resolve_note_candidates_surfaces_ambiguity(tmp_path, monkeypatch):
+    """Unlike the graph's first-wins resolve(), this must return every match
+    at the winning rung so the caller (the chat tool) can ask a clarifying
+    question instead of silently guessing."""
+    from backend.api.vault import resolve_note_candidates
+
+    brain = tmp_path / "Brain"
+    (brain / "wiki").mkdir(parents=True)
+    (brain / "_meta").mkdir()
+    ambiguous_catalog = {
+        "built_at": "2026-08-22T03:00:00Z",
+        "pages": [
+            {"title": "Charlee", "filename": "Charlee-Vet-Visit.md", "headers": "", "summary": "", "tags": []},
+            {"title": "Charlee", "filename": "Charlee-Medication.md", "headers": "", "summary": "", "tags": []},
+        ],
+    }
+    (brain / "_meta" / "wiki-catalog.json").write_text(json.dumps(ambiguous_catalog))
+    monkeypatch.setattr("backend.api.vault._brain_root", lambda: brain)
+
+    candidates = resolve_note_candidates("Charlee")
+    assert set(candidates) == {"wiki/Charlee-Vet-Visit.md", "wiki/Charlee-Medication.md"}

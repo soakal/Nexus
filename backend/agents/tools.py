@@ -21,6 +21,7 @@ try/except and always returns a short string (success summary or
 "<name> unavailable: <error>"), truncated to MAX_TOOL_RESULT_CHARS.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -331,6 +332,62 @@ async def _vault_search(input: dict) -> str:
         return _truncate(f"vault_search unavailable: {e}")
 
 
+# Own cap, NOT _truncate/MAX_TOOL_RESULT_CHARS (1500) -- that would gut a
+# full note read back down to a snippet, defeating the whole point of this
+# tool over vault_search. Checked against the live vault (1287 notes):
+# p90 = 16.4 KB, p99 = 87 KB -- 30,000 chars covers the large majority of
+# real notes whole; only pathological session-transcript notes truncate,
+# and the message below says so explicitly rather than silently clipping.
+VAULT_NOTE_MAX_CHARS = 30_000
+
+_VAULT_READ_NOTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "note": {
+            "type": "string",
+            "description": (
+                "Note path relative to Brain/ (e.g. 'wiki/Charlee Health Report.md' -- "
+                "vault_search results may prefix 'Brain/', which is fine) or a bare note title."
+            ),
+        },
+    },
+    "required": ["note"],
+}
+
+
+async def _vault_read_note(input: dict) -> str:
+    note = (input or {}).get("note")
+    if not note or not str(note).strip():
+        return "vault_read_note unavailable: missing 'note'"
+    note = str(note).strip()
+    try:
+        from backend.api.vault import read_note_text, resolve_note_candidates
+
+        path = note[len("Brain/"):] if note.startswith("Brain/") else note
+        if not path.endswith(".md"):
+            path += ".md"
+        try:
+            content = await asyncio.to_thread(read_note_text, path)
+        except (ValueError, FileNotFoundError):
+            # Not a direct hit as a path -- try resolving it as a bare title.
+            candidates = await asyncio.to_thread(resolve_note_candidates, note)
+            if not candidates:
+                return f"No note found for '{note}'. Use vault_search to find the exact path."
+            if len(candidates) > 1:
+                return (
+                    "Ambiguous -- multiple notes match '" + note + "': "
+                    + "; ".join(candidates[:10])
+                    + ". Ask the user which one, or pass the exact path."
+                )
+            path = candidates[0]
+            content = await asyncio.to_thread(read_note_text, path)
+        if len(content) > VAULT_NOTE_MAX_CHARS:
+            content = content[:VAULT_NOTE_MAX_CHARS] + f"\n…[truncated -- note is {len(content)} chars total]"
+        return f"[{path}]\n{content}"
+    except Exception as e:
+        return _truncate(f"vault_read_note unavailable: {e}")
+
+
 async def _open_flags(_input: dict) -> str:
     """Read-only: open + needs_follow_up + deferred-past-due OutcomeFlag rows
     (docs/outcome-tracker-spec.md §3.4), newest first. Imports
@@ -447,6 +504,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Search the user's personal Obsidian knowledge vault. Use for 'my notes', 'my vault', or saved personal knowledge.",
         input_schema=_QUERY_SCHEMA,
         dispatch=_vault_search,
+    ),
+    ReadTool(
+        name="vault_read_note",
+        description="Read the FULL content of one note from the user's Obsidian vault, by path (from vault_search results) or exact title. Use after vault_search whenever answering a factual question about the user's notes -- never answer from a search snippet alone. READ ONLY.",
+        input_schema=_VAULT_READ_NOTE_SCHEMA,
+        dispatch=_vault_read_note,
     ),
     ReadTool(
         name="open_flags",

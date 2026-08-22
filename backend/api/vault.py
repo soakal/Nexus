@@ -67,15 +67,65 @@ async def search(q: str, max_results: int = 20, _: str = Depends(require_api_key
     return {"query": q, "result": result}
 
 
-@router.get("/note")
-async def get_note(path: str, _: str = Depends(require_api_key)):
+def read_note_text(path: str) -> str:
+    """Guarded Brain/-relative note read. Raises ValueError on a bad path
+    (including a malformed path Path.resolve() itself rejects, e.g. an
+    embedded null byte) and FileNotFoundError when absent. Shared by GET
+    /note and the vault_read_note chat tool (backend/agents/tools.py) --
+    the path-traversal guard must exist in exactly one place."""
     root = _brain_root().resolve()
     target = (root / path).resolve()
     if target.suffix != ".md" or not target.is_relative_to(root):
-        raise HTTPException(status_code=400, detail="invalid note path")
+        raise ValueError("invalid note path")
     if not target.is_file():
+        raise FileNotFoundError(path)
+    return target.read_text("utf-8", "ignore")
+
+
+def resolve_note_candidates(name: str) -> list[str]:
+    """Resolve a bare title/stem to Brain/-relative wiki paths via the
+    catalog. Same rung ORDER as _build_graph_sync's resolve() (exact stem ->
+    exact title -> case-insensitive stem -> case-insensitive title, mirroring
+    _defuse_unknown_wikilinks), but returns ALL matches at the first rung
+    that hits, not just one -- the chat tool must surface ambiguity to the
+    model rather than silently first-winning like the graph's resolve() (that
+    function feeds edges where a wrong-but-plausible guess is harmless noise;
+    this one feeds an answer, where it's a wrong fact). Fuzzy rung
+    deliberately absent, same reasoning as the module docstring.
+    """
+    pages = _load_catalog().get("pages", [])
+    name_lower = name.lower()
+
+    def _matches(pred) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in pages:
+            filename = p.get("filename")
+            if filename and pred(p) and filename not in seen:
+                seen.add(filename)
+                out.append(f"wiki/{filename}")
+        return out
+
+    for pred in (
+        lambda p: Path(p["filename"]).stem == name,
+        lambda p: p.get("title") == name,
+        lambda p: Path(p["filename"]).stem.lower() == name_lower,
+        lambda p: (p.get("title") or "").lower() == name_lower,
+    ):
+        hits = _matches(pred)
+        if hits:
+            return hits
+    return []
+
+
+@router.get("/note")
+async def get_note(path: str, _: str = Depends(require_api_key)):
+    try:
+        content = await asyncio.to_thread(read_note_text, path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid note path")
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"note not found: {path}")
-    content = await asyncio.to_thread(target.read_text, "utf-8", "ignore")
     return {"path": path, "content": content}
 
 

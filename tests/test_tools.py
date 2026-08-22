@@ -294,6 +294,120 @@ async def test_vault_search_passthrough_and_missing_query():
     assert out.startswith("vault_search unavailable:")
 
 
+CATALOG_FOR_READ_NOTE = {
+    "built_at": "2026-08-22T03:00:00Z",
+    "pages": [
+        {"title": "A", "filename": "A.md", "headers": "", "summary": "", "tags": []},
+        {"title": "C Title", "filename": "C-Page.md", "headers": "", "summary": "", "tags": []},
+        {"title": "Charlee", "filename": "Charlee-Vet.md", "headers": "", "summary": "", "tags": []},
+        {"title": "Charlee", "filename": "Charlee-Med.md", "headers": "", "summary": "", "tags": []},
+    ],
+}
+
+
+@pytest.fixture
+def brain_tree_for_tools(tmp_path, monkeypatch):
+    import json
+    brain = tmp_path / "Brain"
+    (brain / "wiki").mkdir(parents=True)
+    (brain / "_meta").mkdir()
+    (brain / "_meta" / "wiki-catalog.json").write_text(json.dumps(CATALOG_FOR_READ_NOTE))
+    (brain / "wiki" / "A.md").write_text("A" * 100)
+    (brain / "wiki" / "C-Page.md").write_text("# C Title\nsome content")
+    (brain / "wiki" / "Charlee-Vet.md").write_text("vet visit notes")
+    (brain / "wiki" / "Charlee-Med.md").write_text("medication notes")
+    monkeypatch.setattr("backend.api.vault._brain_root", lambda: brain)
+    return brain
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_missing_input():
+    from backend.agents import tools
+
+    assert await tools._vault_read_note({}) == "vault_read_note unavailable: missing 'note'"
+    assert await tools._vault_read_note({"note": "  "}) == "vault_read_note unavailable: missing 'note'"
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_direct_path_hit(brain_tree_for_tools):
+    from backend.agents import tools
+
+    out = await tools._vault_read_note({"note": "wiki/A.md"})
+    assert out.startswith("[wiki/A.md]\n")
+    assert "A" * 100 in out
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_brain_prefix_and_md_suffix_inferred(brain_tree_for_tools):
+    from backend.agents import tools
+
+    # "Brain/" prefix (as vault_search would return) is stripped.
+    out = await tools._vault_read_note({"note": "Brain/wiki/A.md"})
+    assert out.startswith("[wiki/A.md]\n")
+    # Missing .md is appended before the direct-path attempt.
+    out2 = await tools._vault_read_note({"note": "wiki/A"})
+    assert out2.startswith("[wiki/A.md]\n")
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_title_resolution_fallback(brain_tree_for_tools):
+    from backend.agents import tools
+
+    # "C Title" isn't a path -- falls through to resolve_note_candidates,
+    # which resolves it via the title rung to C-Page.md.
+    out = await tools._vault_read_note({"note": "C Title"})
+    assert out.startswith("[wiki/C-Page.md]\n")
+    assert "some content" in out
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_ambiguous_title(brain_tree_for_tools):
+    from backend.agents import tools
+
+    out = await tools._vault_read_note({"note": "Charlee"})
+    assert out.startswith("Ambiguous")
+    assert "Charlee-Vet.md" in out and "Charlee-Med.md" in out
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_not_found(brain_tree_for_tools):
+    from backend.agents import tools
+
+    out = await tools._vault_read_note({"note": "Nonexistent Page"})
+    assert out.startswith("No note found for 'Nonexistent Page'")
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_truncates_large_notes(brain_tree_for_tools):
+    from backend.agents import tools
+    from backend.agents.tools import VAULT_NOTE_MAX_CHARS
+
+    (brain_tree_for_tools / "wiki" / "A.md").write_text("x" * (VAULT_NOTE_MAX_CHARS + 500))
+    out = await tools._vault_read_note({"note": "wiki/A.md"})
+    assert "…[truncated -- note is" in out
+    # The cap applies to the note content; the "[path]\n" prefix and
+    # truncation message are allowed to push the total slightly over it --
+    # this tool's own cap, not the generic MAX_TOOL_RESULT_CHARS ceiling.
+    assert out.count("x") <= VAULT_NOTE_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_vault_read_note_exception_reported(tmp_path, monkeypatch):
+    from backend.agents import tools
+
+    # Empty-but-real Brain/ so the initial direct-path read_note_text cleanly
+    # misses (FileNotFoundError, falls through to resolve_note_candidates)
+    # rather than touching any real default vault path.
+    (tmp_path / "Brain" / "wiki").mkdir(parents=True)
+    monkeypatch.setattr("backend.api.vault._brain_root", lambda: tmp_path / "Brain")
+
+    def _boom():
+        raise RuntimeError("catalog corrupt")
+    monkeypatch.setattr("backend.api.vault._load_catalog", lambda: _boom())
+    out = await tools._vault_read_note({"note": "Some Title"})
+    assert out.startswith("vault_read_note unavailable:")
+
+
 @pytest.mark.asyncio
 async def test_web_search_passthrough_and_missing_query():
     from backend.agents import tools
@@ -394,7 +508,7 @@ def test_dispatcher_map_keys_match_registry():
     expected = {
         "homeassistant_status", "homeassistant_temperatures", "unraid_status", "unifi_status",
         "adguard_status", "channels_status", "weather", "github_status",
-        "proxmox_updates", "proxmox_backups", "vault_search", "ddg_search",
+        "proxmox_updates", "proxmox_backups", "vault_search", "vault_read_note", "ddg_search",
         "protonmail_inbox", "protonmail_read_email", "protonmail_status",
         "open_flags",
     }

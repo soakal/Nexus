@@ -427,16 +427,17 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
 User message: "{user_message}"
 
 Return exactly:
-{{"intent": "HOME_CONTROL|TASK|CHAT|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR", "reason": "brief reason"}}
+{{"intent": "HOME_CONTROL|TASK|CHAT|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR|VAULT", "reason": "brief reason"}}
 
 HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, open/close/stop a garage door or cover, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
-CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) searching or reading your notes/vault ("search my vault for X", "what do my notes say about X", "find X in my brain") is CHAT — vault is searched automatically; (3) anything about the user's calendar, schedule, appointments, or when an event is happening is CALENDAR, not CHAT. The chat can also search the web.
+CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) anything about the user's calendar, schedule, appointments, or when an event is happening is CALENDAR, not CHAT. The chat can also search the web.
 NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status".
 MAIL = a question about the user's own email/inbox — "any new email?", "unread emails?", "what did X email me about?", "read the email from X", "what's in my inbox". Reading/searching email, not sending.
 MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "send an email to X about ...", "reply to X and tell them ...".
-CALENDAR = a question about the user's own calendar, schedule, or appointments — "when is my dr appointment?", "what's on my calendar today?", "what do I have this week?", "when is my next meeting?", "am I free Friday?". Reading the calendar only, never creating or changing an event."""
+CALENDAR = a question about the user's own calendar, schedule, or appointments — "when is my dr appointment?", "what's on my calendar today?", "what do I have this week?", "when is my next meeting?", "am I free Friday?". Reading the calendar only, never creating or changing an event.
+VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain") — their own history, family, pets, health, projects, past decisions ("when did Charlee start medication?", "what do my notes say about X", "pull up my note on Y", "read the Charlee health report", "search my vault for X", "find X in my brain"). Reading only, never saving — saving new content is NOTE."""
 
         # Fast-path: /status command bypasses haiku classify
         _msg_stripped = user_message.strip()
@@ -464,7 +465,7 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments �
                 if start >= 0 and end > start:
                     parsed = json.loads(raw_intent[start:end])
                     intent = parsed.get("intent", "CHAT")
-                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR"):
+                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR", "VAULT"):
                         intent = "CHAT"
                     route_reason = str(parsed.get("reason") or "")[:300]
             except Exception:
@@ -579,6 +580,50 @@ CALENDAR = a question about the user's own calendar, schedule, or appointments �
                             await token_queue.put(token)
                     else:
                         reply = await sonnet(user_prompt, system=system, label="chat_reply")
+
+            elif intent == "VAULT":
+                # A dedicated lane, not a CHAT-branch tool -- CHAT's stream_sonnet
+                # path only ever carries Anthropic's hosted web search (router.py's
+                # _WEB_SEARCH_TOOL); custom client-side tools like vault_search/
+                # vault_read_note aren't reachable from there, and converting CHAT
+                # itself to a tool loop would kill token streaming for every message,
+                # not just vault questions. run_with_tools already exists for exactly
+                # this (search -> read -> answer, up to 5 rounds) — it's just never
+                # had a lane in from chat before. A misrouted vault question just
+                # falls through to CHAT's existing snippet-based vault_recall
+                # injection, so this lane's only failure mode is "as good as before".
+                from backend.agents.router import SONNET_MODEL, run_with_tools
+                from backend.agents.tools import READ_TOOLS
+
+                _vault_tools = [t for t in READ_TOOLS if t.name in ("vault_search", "vault_read_note")]
+                vault_system = (
+                    "You are Carl, answering a question from the user's personal Obsidian vault "
+                    "(their 'Brain'). Workflow: call vault_search to find candidate notes, then call "
+                    "vault_read_note on the most relevant result(s) and answer from the FULL note "
+                    "content — a search snippet is never enough to state a fact. If the user named a "
+                    "specific note, read it directly. If a title is ambiguous, the tool lists the "
+                    "candidates — ask the user which one rather than guessing. If the notes genuinely "
+                    "don't contain the answer, say so plainly. Be concise and cite the note path you used."
+                )
+                vault_prompt = (
+                    f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
+                    else f"User: {user_message}"
+                )
+                try:
+                    reply = await run_with_tools(
+                        model=SONNET_MODEL,
+                        max_tokens=8192,
+                        prompt=vault_prompt,
+                        system=vault_system,
+                        tool_specs=[t.anthropic_spec() for t in _vault_tools],
+                        dispatch={t.name: t.dispatch for t in _vault_tools},
+                        web_search=False,
+                        label="chat_vault",
+                    )
+                except BudgetExceeded:
+                    raise
+                except Exception as e:
+                    reply = f"Couldn't search your vault right now: {e}"
 
             elif intent == "HOME_CONTROL":
                 from backend.integrations import homeassistant
@@ -1039,7 +1084,7 @@ If a recipient, subject, or body is missing/unclear, return an empty string for 
             await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
 
         # 6. Fact extraction — only for conversational intents (not imperatives/status)
-        if intent in ("CHAT", "TASK", "NOTE"):
+        if intent in ("CHAT", "TASK", "NOTE", "VAULT"):
             from backend.agents import facts
             await facts.extract_and_store(user_message, conversation_id)
 
