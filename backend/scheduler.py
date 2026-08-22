@@ -153,6 +153,41 @@ async def _record_speedtest():
         raise
 
 
+async def _record_trend_snapshot():
+    """Daily TrendSnapshot write for the two metrics briefing.py's 7-day-average
+    claim actually reads back (AdGuard blocked_pct, Unraid storage_used_gb) --
+    see backend/database.py's TrendSnapshot docstring for why this table went
+    quiet in the first place (Trends *page* removed 2026-07-07) and
+    briefing.py's _gather_trend_baselines for the read side. Each source is
+    independent -- one integration being down doesn't block the other's row."""
+    try:
+        from sqlmodel import Session
+        from backend.database import TrendSnapshot, engine
+        from backend.integrations import adguard, unraid
+
+        rows = []
+        try:
+            ag = await adguard.fetch()
+            rows.append(TrendSnapshot(source="adguard", metric="blocked_pct", value=ag.blocked_pct))
+        except Exception as e:
+            logger.warning(f"Trend snapshot: adguard fetch failed: {e}")
+        try:
+            un = await unraid.fetch()
+            rows.append(TrendSnapshot(source="unraid", metric="storage_used_gb", value=un.storage_used_gb))
+        except Exception as e:
+            logger.warning(f"Trend snapshot: unraid fetch failed: {e}")
+
+        if rows:
+            with Session(engine) as session:
+                for row in rows:
+                    session.add(row)
+                session.commit()
+        logger.info(f"Trend snapshot recorded: {len(rows)} row(s)")
+    except Exception as e:
+        logger.error(f"Trend snapshot job error: {e}")
+        raise
+
+
 async def _retry_pending_deliveries():
     try:
         from backend.integrations.telegram import deliver_pending
@@ -691,6 +726,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
         # disruptive to run more often.
         IntervalTrigger(hours=3),
         id="record_speedtest",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _record_trend_snapshot,
+        # Daily is plenty for a 7-day average -- see briefing.py's
+        # _gather_trend_baselines (the read side this job feeds).
+        IntervalTrigger(hours=24),
+        id="record_trend_snapshot",
         replace_existing=True,
     )
     from backend.config import get_settings

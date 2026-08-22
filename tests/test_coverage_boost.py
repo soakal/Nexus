@@ -188,7 +188,9 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # Linux port) = 30. These deltas landed as separate commits; if any
     # flips back off, drop this count and its id below deliberately, not as
     # a side effect of an unrelated change. +1 "weekly_review" (2026-08-17).
-    expected_count = 31
+    # +1 "record_trend_snapshot" (2026-08-21, daily -- feeds briefing.py's
+    # 7-day-average baselines) = 32.
+    expected_count = 32
     assert mock_add.call_count == expected_count
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -225,6 +227,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "anthropic_balance_watch",
         "knowledge_backup",
         "weekly_review",
+        "record_trend_snapshot",
     }
     assert ids_set == expected_ids
 
@@ -252,8 +255,9 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     assert "auth_burst" not in ids_set
     assert "auth_failure" not in ids_set
     # See test_setup_scheduler_adds_jobs for the +1 knowledge_backup
-    # (2026-08-14) and +1 weekly_review (2026-08-17) explanations.
-    assert mock_add.call_count == 31
+    # (2026-08-14), +1 weekly_review (2026-08-17), and +1
+    # record_trend_snapshot (2026-08-21) explanations.
+    assert mock_add.call_count == 32
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):
@@ -273,7 +277,7 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "morning_briefing" not in ids_set
     assert "homelab_digest" in ids_set
-    expected_count = 31 - 1
+    expected_count = 32 - 1
     assert mock_add.call_count == expected_count
 
 

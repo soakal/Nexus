@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +492,53 @@ async def _record_briefing_flags(context: dict) -> None:
         await _clear("adguard_filtering_off")
 
 
+# 7-day trend baselines (2026-08-21). TrendSnapshot stopped being written when
+# the Trends *page* was removed (2026-07-07, Grafana/UptimeKuma cover charting
+# externally) -- but BRIEFING_PROMPT's Network Security line still asserts
+# "Flag any spike vs 7-day average" with nothing behind it (Brian's own vault
+# notes show the LLM correctly, uselessly, saying "No 7-day average available
+# for comparison" every day). scheduler.py's daily `record_trend_snapshot` job
+# resumed writing rows for exactly the two metrics this file actually asks
+# about (AdGuard blocked_pct, Unraid storage_used_gb); these helpers read them
+# back. Deliberately NOT reviving the Trends page itself -- out of scope.
+def _trend_baseline_avg(source: str, metric: str, min_samples: int = 7) -> float | None:
+    """Mean TrendSnapshot.value for source/metric over the trailing 7 days, or
+    None when fewer than min_samples rows exist yet (feature just shipped, or
+    the daily snapshot job missed a day) -- never builds a "7-day average"
+    out of partial history that could misreport a false spike/no-spike. Sync
+    (Session) -- call via asyncio.to_thread like every other durable-DB read
+    in this file.
+    """
+    from sqlmodel import Session, select
+    from backend.database import TrendSnapshot, engine
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    with Session(engine) as session:
+        rows = session.exec(
+            select(TrendSnapshot.value)
+            .where(TrendSnapshot.source == source)
+            .where(TrendSnapshot.metric == metric)
+            .where(TrendSnapshot.captured_at >= cutoff)
+        ).all()
+    if len(rows) < min_samples:
+        return None
+    return sum(rows) / len(rows)
+
+
+def _gather_trend_baselines() -> dict:
+    """Best-effort 7-day averages for the two metrics BRIEFING_PROMPT/context
+    reference. Never raises -- a DB hiccup degrades both to None (same
+    "insufficient history" rendering as too few real rows), matching every
+    other best-effort fetch in this file."""
+    try:
+        return {
+            "adguard_blocked_pct": _trend_baseline_avg("adguard", "blocked_pct"),
+            "unraid_storage_used_gb": _trend_baseline_avg("unraid", "storage_used_gb"),
+        }
+    except Exception as e:
+        logger.warning(f"Trend baseline gather failed: {e}")
+        return {"adguard_blocked_pct": None, "unraid_storage_used_gb": None}
+
+
 BRIEFING_PROMPT = """You are Carl, a direct, high-conviction personal AI assistant, briefing a solo power user starting their day.
 Be direct. No filler, no hedging ("try," "hope," "maybe"). Assume high technical literacy. Flag anomalies clearly.
 Never say "as of my last update" or similar hedges — this is live data.
@@ -522,7 +569,7 @@ One line per system: Unraid, UniFi, Home Assistant, AdGuard.
 Flag parity check if running. Flag mover if active. Flag new unknown devices on network.
 
 ## Network Security
-Queries today: {blocked_today} blocked ({blocked_pct}%). Flag any spike vs 7-day average.
+Queries today: {blocked_today} blocked ({blocked_pct}%). {adguard_trend_line}
 Filtering: {filtering_enabled}.
 
 ## GitHub Pulse
@@ -638,6 +685,14 @@ async def run_briefing() -> str:
         except Exception:
             drafted_ids = set()
 
+        trend_baselines = await asyncio.to_thread(_gather_trend_baselines)
+        ag_avg = trend_baselines.get("adguard_blocked_pct")
+        adguard_trend_line = (
+            f"7-day avg: {ag_avg:.1f}%. Flag any spike vs that average."
+            if ag_avg is not None
+            else "No 7-day average available yet (insufficient history)."
+        )
+
         def safe(obj, attr, default="N/A"):
             if isinstance(obj, Exception):
                 return default
@@ -667,6 +722,7 @@ async def run_briefing() -> str:
                 "parity_status": safe(unraid_d, "parity_status", "unknown"),
                 "mover_running": safe(unraid_d, "mover_running", False),
                 "storage_used_gb": safe(unraid_d, "storage_used_gb", 0),
+                "storage_used_gb_7day_avg": trend_baselines.get("unraid_storage_used_gb"),
                 "storage_total_gb": safe(unraid_d, "storage_total_gb", 0),
                 "docker_containers": len(safe(unraid_d, "docker_containers", [])),
             },
@@ -688,6 +744,7 @@ async def run_briefing() -> str:
                 "queries_today": safe(ag, "queries_today", 0),
                 "blocked_today": safe(ag, "blocked_today", 0),
                 "blocked_pct": safe(ag, "blocked_pct", 0),
+                "blocked_pct_7day_avg": ag_avg,
                 "filtering_enabled": ag_filtering,
             },
         }
@@ -709,6 +766,7 @@ async def run_briefing() -> str:
             weather_summary=weather_summary,
             blocked_today=safe(ag, "blocked_today", 0),
             blocked_pct=safe(ag, "blocked_pct", 0),
+            adguard_trend_line=adguard_trend_line,
             filtering_enabled=ag_filtering,
             recording_now=rec_str,
             dvr_used=safe(channels, "storage_used_gb", 0),
