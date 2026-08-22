@@ -401,6 +401,16 @@ async def _goal_recurrence():
         raise
 
 
+async def _obligations_check():
+    try:
+        from backend.agents.obligations import run_obligations_check
+        result = await run_obligations_check()
+        logger.info(f"Obligations check: {result}")
+    except Exception as e:
+        logger.error(f"Obligations check job error: {e}")
+        raise
+
+
 async def _run_brain_organizer():
     try:
         import asyncio
@@ -879,6 +889,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Goal recurrence tick enabled: runs every 30 minutes")
+    if getattr(s, "obligations_check_enabled", True):
+        scheduler.add_job(
+            _obligations_check,
+            CronTrigger(hour=9, minute=15, timezone=timezone),
+            id="obligations_check",
+            replace_existing=True,
+        )
+        logger.info(f"Obligations check enabled: daily at 09:15 {timezone}")
     if getattr(s, "facts_digest_enabled", False):
         digest_time = getattr(s, "facts_digest_time", "01:30")
         try:

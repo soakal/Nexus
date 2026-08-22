@@ -436,6 +436,12 @@ class Settings(BaseSettings):
     outcome_flag_retention_days: int = 180
     outcome_flag_briefing_max: int = 10
 
+    # Obligation tracker (backend/agents/obligations.py, 2026-08-21) — daily
+    # check for overdue recurring/one-off obligations (bill confirmations,
+    # vet follow-ups). Surfaces through the EXISTING OutcomeFlag machinery
+    # above (record_flag_ex), not a parallel notification path.
+    obligations_check_enabled: bool = True
+
     # Calibration Loop (docs/calibration-loop-spec.md), rollout step 1 — the
     # schema/config foundation only; nothing computes and nothing suppresses
     # yet. Two master switches on purpose: calibration_enabled ships the

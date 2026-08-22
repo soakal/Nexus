@@ -585,6 +585,27 @@ async def resolve_flag(
         except Exception as e:
             logger.warning(f"resolve_flag: expected-resource sync failed (ignored): {e}")
 
+    # Obligation-tracker hookup: a flag with source=="obligation" carries the
+    # obligation's id plus its due timestamp as `check` (fingerprint
+    # f"obligation:{id}:{next_due_at}", see
+    # backend/agents/obligations.py::run_obligations_check). Resolving it —
+    # the SAME flag-resolve chokepoint every caller (Telegram flag:resolved:
+    # button, /resolve, POST /api/safety/flags/{id}/resolve) already goes
+    # through — is what stamps the obligation confirmed and advances its
+    # next_due_at for a recurring one. Only "resolved" confirms; a
+    # false_positive/deferred/needs_follow_up resolution is not a human
+    # saying "this got handled". Best-effort: a confirm failure must not
+    # un-resolve the flag itself.
+    if status == "resolved" and row["source"] == "obligation":
+        try:
+            # `check` is f"{obligation_id}:{next_due_at_iso}" -- per-due-cycle,
+            # see obligations.run_obligations_check.
+            obligation_id = int(row["check"].split(":", 1)[0])
+            from backend.agents import obligations
+            await obligations.confirm_obligation(obligation_id)
+        except Exception as e:
+            logger.warning(f"resolve_flag: obligation confirm failed for flag {flag_id}: {e}")
+
     return status
 
 

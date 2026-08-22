@@ -26,11 +26,11 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "council_postmortem", "dead_letter", "deploy_drift", "flag_followup",
     "goal_criteria_failed", "goal_failed", "goal_proposed", "homelab_array",
     "homelab_backup_failed", "homelab_digest", "homelab_disk_temp",
-    "homelab_docker_stopped", "homelab_expected_mismatch", "homelab_garage", "homelab_recovered",
-    "homelab_vm_stopped", "incident_diagnosis",
-    "mail_draft_created", "needs_confirm", "scheduler_stall", "soak_reminder",
-    "spend_report", "stale_delivery", "throttled", "task_completed", "task_failed",
-    "trial_verdict", "weekly_review",
+    "homelab_docker_stopped", "homelab_expected_mismatch", "homelab_garage",
+    "homelab_recovered", "homelab_vm_stopped", "incident_diagnosis",
+    "mail_draft_created", "needs_confirm", "obligation_due", "scheduler_stall",
+    "soak_reminder", "spend_report", "stale_delivery", "throttled",
+    "task_completed", "task_failed", "trial_verdict", "weekly_review",
 })
 
 
