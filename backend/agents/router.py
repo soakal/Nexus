@@ -846,6 +846,51 @@ async def _run_billed(loop, func):
 _shadow_tasks: set[asyncio.Task] = set()
 _SHADOW_LOG = Path("/var/lib/nexus/logs/shadow.jsonl")
 
+# Labels whose output is a JSON object carrying ONE decision plus free prose,
+# not a one-word verdict. Case-insensitive text equality -- the comparator every
+# other shadow label uses -- can essentially never be True for these: both
+# action_judge and goal_criteria_eval return a "reason"/rationale string that no
+# two models phrase identically, so the whole label logged as ~100%
+# disagreement, and that fiction was then blended into the daily trial digest's
+# single headline percentage (backend/agents/trial_report.py::_section_trial_a).
+# The decision field is the thing the trial is actually asking about.
+_SHADOW_DECISION_FIELD = {"action_judge": "allow", "goal_criteria_eval": "met"}
+
+
+def shadow_decision(label: str, text: str) -> bool | None:
+    """The bool decision field out of a decision-shaped label's JSON output.
+
+    None means "no decision to compare": the label isn't decision-shaped, the
+    text doesn't parse, or the field is missing/not a bool. None is deliberately
+    NOT folded into False -- "the shadow model emitted garbage" and "the shadow
+    model said no" are different findings, and only the second one is a
+    disagreement.
+
+    Uses the same defensive find("{")/rfind("}") extraction as
+    backend/safety/judge.py::evaluate_action, which also skips over any ```json
+    fence for free. Duplicated by hand in tools/shadow_diff.py (tools/ never
+    imports backend/, same standing rule as _HARMFUL_DIRECTION/_FENCE_RE over in
+    trial_report.py); backend/agents/trial_report.py imports THIS copy.
+    """
+    field = _SHADOW_DECISION_FIELD.get(label)
+    if field is None:
+        return None
+    try:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        value = json.loads(text[start:end]).get(field)
+    except Exception:
+        return None
+    return value if isinstance(value, bool) else None
+
+
+def shadow_agree(label: str, out_a: str, out_b: str) -> bool:
+    """Did the shadow model agree with the real one on this call?"""
+    if label in _SHADOW_DECISION_FIELD:
+        a = shadow_decision(label, out_a)
+        return a is not None and a == shadow_decision(label, out_b)
+    return out_a.strip().upper() == out_b.strip().upper()
+
 
 def _shadow_active(label: str, settings) -> bool:
     model = getattr(settings, "shadow_model", "") or ""
@@ -920,7 +965,7 @@ async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: s
         # caller that's a plain asyncio task, so it must hop threads itself.
         await asyncio.to_thread(_record_spend, shadow_model, fake_resp, f"shadow:{label}")
 
-        agree = primary_text.strip().upper() == shadow_text.strip().upper()
+        agree = shadow_agree(label, primary_text, shadow_text)
 
         import json as _json
 

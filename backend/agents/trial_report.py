@@ -54,9 +54,50 @@ def _night_dirs() -> list[Path]:
 _HARMFUL_DIRECTION = {
     "mail_junk_classify": lambda a, b: a.strip().upper() == "KEEP" and b.strip().upper() == "JUNK",
     "mail_reply_classify": lambda a, b: a.strip().upper() == "NO" and b.strip().upper() == "YES",
-    "action_judge": lambda a, b: "veto" in a.lower() and "veto" not in b.lower(),
+    # The old check here grepped for the literal string "veto", which the judge
+    # never emits: its schema is {"allow": bool, "confidence": float,
+    # "reason": str} (backend/safety/judge.py's prompt), and "veto" only ever
+    # appears in the DERIVED verdict field the broker writes to ActionLog, not
+    # in the model's own output this log captures. So it scored 0 harmful rows
+    # by construction. Harmful = the real model vetoed and the shadow model
+    # would have let it through.
+    "action_judge": lambda a, b: (
+        _decision("action_judge", a) is False and _decision("action_judge", b) is True
+    ),
 }
 _JSON_LABELS = {"facts_extract", "goal_proposer"}
+# Labels whose "agreement" is a decision field inside JSON, not text equality
+# (backend/agents/router.py::_SHADOW_DECISION_FIELD). Reported on their own line
+# rather than blended into the headline disagreement rate, because criterion A#1
+# is explicitly about the two mail classifiers only -- blending action_judge's
+# always-100%-disagree text comparison in was what turned a real ~18% mail rate
+# into a reported ~41%.
+_DECISION_LABELS = {"action_judge", "goal_criteria_eval"}
+
+
+def _decision(label: str, text: str) -> bool | None:
+    return _router().shadow_decision(label, text)
+
+
+def _router():
+    """Lazy import, matching this module's convention of importing backend
+    packages inside the function that needs them."""
+    from backend.agents import router
+    return router
+
+
+def _agree(row: dict) -> bool:
+    """Whether the shadow model agreed on one logged row.
+
+    RECOMPUTED from out_a/out_b for decision-shaped labels instead of trusting
+    the row's own `agree` field: every row logged before 2026-08-22 recorded raw
+    text equality, so action_judge/goal_criteria_eval history is uniformly
+    (and wrongly) `false`. Text-comparator labels keep using the logged value.
+    """
+    label = row.get("label", "")
+    if label in _DECISION_LABELS:
+        return _router().shadow_agree(label, row.get("out_a", ""), row.get("out_b", ""))
+    return bool(row.get("agree", True))
 
 # Both models routinely wrap structured output in a ```json fence -- a raw
 # json.loads() on the untouched string was failing on well-formed JSON from
@@ -224,24 +265,33 @@ async def _section_trial_a() -> str:
     # generation -- meaningless. Judge them by JSON-parseability instead,
     # same split tools/shadow_diff.py already makes.
     json_rows = [r for r in all_rows if r.get("label") in _JSON_LABELS]
-    rows = [r for r in all_rows if r.get("label") not in _JSON_LABELS]
+    decision_rows = [r for r in all_rows if r.get("label") in _DECISION_LABELS]
+    rows = [
+        r for r in all_rows
+        if r.get("label") not in _JSON_LABELS and r.get("label") not in _DECISION_LABELS
+    ]
 
-    if not rows and not json_rows:
+    if not rows and not json_rows and not decision_rows:
         return f"{header}\n  No shadow calls logged for {yesterday.isoformat()} yet."
 
     lines = [header]
 
-    if rows:
-        n = len(rows)
-        disagreements = [r for r in rows if not r.get("agree", True)]
-        harmful = []
-        for r in disagreements:
+    def _harmful(candidates: list[dict]) -> list[dict]:
+        out = []
+        for r in candidates:
             check = _HARMFUL_DIRECTION.get(r.get("label", ""))
             if check and check(r.get("out_a", ""), r.get("out_b", "")):
-                harmful.append(r)
+                out.append(r)
+        return out
+
+    if rows:
+        n = len(rows)
+        disagreements = [r for r in rows if not _agree(r)]
+        harmful = _harmful(disagreements)
         pct = len(disagreements) / n * 100 if n else 0.0
         lines.append(
-            f"  Yesterday: {n} calls, {len(disagreements)} disagreed ({pct:.1f}%), "
+            f"  Yesterday (text-comparator labels — this is criterion A#1's number): "
+            f"{n} calls, {len(disagreements)} disagreed ({pct:.1f}%), "
             f"{len(harmful)} in the harmful direction."
         )
         if harmful:
@@ -250,6 +300,16 @@ async def _section_trial_a() -> str:
                 f"  Worst: {worst.get('label')} — real said {worst.get('out_a', '')[:40]!r}, "
                 f"shadow said {worst.get('out_b', '')[:40]!r}."
             )
+    if decision_rows:
+        n = len(decision_rows)
+        disagreements = [r for r in decision_rows if not _agree(r)]
+        harmful = _harmful(disagreements)
+        pct = len(disagreements) / n * 100 if n else 0.0
+        lines.append(
+            f"  Decision labels ({', '.join(sorted(_DECISION_LABELS))}, compared on their "
+            f"decision field, NOT counted above): {n} calls, {len(disagreements)} "
+            f"disagreed ({pct:.1f}%), {len(harmful)} in the harmful direction."
+        )
     if json_rows:
         ok = sum(1 for r in json_rows if _parseable(r.get("out_b", "")))
         lines.append(f"  JSON labels: {ok}/{len(json_rows)} shadow outputs parseable.")
@@ -418,7 +478,7 @@ def _build_verdict_payload_a() -> tuple[str, str, str] | None:
             ok = sum(1 for r in rows if _parseable(r.get("out_b", "")))
             agg_lines.append(f"{label}: {n} calls, {ok}/{n} shadow outputs parseable JSON")
             continue
-        disagreements = [r for r in rows if not r.get("agree", True)]
+        disagreements = [r for r in rows if not _agree(r)]
         harmful = [
             r for r in disagreements
             if (_HARMFUL_DIRECTION.get(label) or (lambda a, b: False))(r.get("out_a", ""), r.get("out_b", ""))
