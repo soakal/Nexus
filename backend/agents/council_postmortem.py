@@ -340,12 +340,6 @@ async def run_postmortem(payload: dict | None = None) -> dict:
         findings += _check_placeholders(payload.get("py_files") or {}, payload.get("py_changed_count", 0), max_files)
         findings += _check_test_claims(payload.get("ls_tree_last") or [], last, history, transcripts)
 
-        if getattr(s, "council_postmortem_run_tests", False):
-            # Opt-in only (default False) — running a foreign repo's configured
-            # test_commands inside this process is a much bigger trust step
-            # than reading its git history. Not implemented in v1.
-            logger.info("council_postmortem_run_tests is True but running tests is not yet implemented")
-
         notified = False
         if findings:
             from backend import events

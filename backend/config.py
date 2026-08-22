@@ -356,13 +356,14 @@ class Settings(BaseSettings):
     # from checks 1-3 being pure regex/AST/set-membership over the supplied data,
     # with no model in the loop at all.
     #
-    # run_tests defaults False: executing a foreign repo's configured test_commands
-    # inside the NEXUS process is a much bigger trust step than reading its git
-    # history, and ProcessForge's runner (pip-audit + pytest) takes minutes and
-    # reaches the network. Opt in deliberately.
+    # There is deliberately no run-the-target-repo's-tests knob: executing a
+    # foreign repo's configured test_commands inside the NEXUS process is a much
+    # bigger trust step than reading its git history. The old
+    # council_postmortem_run_tests flag was removed 2026-08-22 — it had never
+    # done anything but log "not yet implemented", and the reason it was never
+    # implemented is the reason it should not exist.
     council_postmortem_enabled: bool = True
     council_postmortem_model: str = "claude-haiku-4-5-20251001"
-    council_postmortem_run_tests: bool = False
     # Bounds the placeholder-code scan — ProcessForge's largest real council
     # cycle range touched ~12 files, so 200 is a generous ceiling, not a real
     # limit on ordinary sessions. Enforced client-side too (postmortem_payload.py
