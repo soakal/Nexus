@@ -982,3 +982,95 @@ def test_api_approve_same_id_twice_409(goals_client, auth_headers, monkeypatch):
     goals_client.post(f"/api/goals/{goal_id}/approve", headers=auth_headers)
     resp = goals_client.post(f"/api/goals/{goal_id}/approve", headers=auth_headers)
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Permanent rejection + fuzzy rejected-title matching
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_plain_reject_is_not_permanent(eng):
+    """Most rejections mean "not now" -- "the garage door is open" is a fine
+    goal again tomorrow. Making every rejection forever would starve the
+    proposer, so permanence has to be opted into."""
+    from backend.agents import goals
+
+    gid = (await goals.propose("Close the garage door", "It is open."))["goal"]["id"]
+    with patch("backend.integrations.obsidian.emit_event", new_callable=AsyncMock):
+        r = await goals.reject(gid, reason="not now")
+
+    assert r["status"] == "abandoned"
+    assert r["permanent"] is False
+    assert await __import__("asyncio").to_thread(goals._db_permanently_rejected) == []
+
+
+@pytest.mark.asyncio
+async def test_permanent_rejection_survives_the_eight_row_window(eng):
+    """The bug this column exists for: _db_recent_abandoned only ever returned
+    the 8 most recent rejections, so the 9th rejection silently made the 1st
+    proposable again — nothing about that rejection had changed."""
+    import asyncio
+
+    from backend.agents import goals
+
+    gid = (await goals.propose("Buy a second UPS", "For the rack."))["goal"]["id"]
+    with patch("backend.integrations.obsidian.emit_event", new_callable=AsyncMock):
+        await goals.reject(gid, reason="not spending that", permanent=True)
+
+        # Push it well past the recency window with ordinary rejections.
+        for i in range(10):
+            other = (await goals.propose(f"Filler goal {i}", f"Body {i}"))["goal"]["id"]
+            await goals.reject(other, reason="no")
+
+    recent = await asyncio.to_thread(goals._db_recent_abandoned, 8)
+    forever = await asyncio.to_thread(goals._db_permanently_rejected)
+
+    assert "Buy a second UPS" not in [r["title"] for r in recent]  # aged out, as before
+    assert [r["title"] for r in forever] == ["Buy a second UPS"]   # but still suppressed
+
+
+def test_similar_to_rejected_catches_rewordings_but_not_neighbours():
+    """The proposer re-proposes by paraphrasing, and an exact fingerprint hash
+    changes completely on a single reworded word — so the hash has never caught
+    a re-proposal even once. The threshold has to clear paraphrases without
+    swallowing genuinely different goals about the same device."""
+    from backend.agents import goals
+
+    rejected = ["Investigate high temperature on switch-1"]
+
+    assert goals.similar_to_rejected(
+        "Investigate high temperature on switch-1", rejected) == rejected[0]
+    assert goals.similar_to_rejected(
+        "Investigate the high temperature on switch-1", rejected) == rejected[0]
+    # A different goal about the same device must still get through.
+    assert goals.similar_to_rejected("Update firmware on switch-1", rejected) is None
+    assert goals.similar_to_rejected("Check free disk space on unraid", rejected) is None
+    # Empty/garbage input never matches anything.
+    assert goals.similar_to_rejected("", rejected) is None
+    assert goals.similar_to_rejected("anything", [""]) is None
+
+
+def test_api_reject_passes_permanent_through(goals_client, auth_headers, monkeypatch):
+    """The REST path has to reach the same column the Telegram "Never" button
+    does, or the two surfaces disagree about what rejection means."""
+    pool = _mock_pool()
+    monkeypatch.setattr("backend.agents.goals.get_pool", lambda: pool)
+
+    resp = goals_client.post(
+        "/api/goals/propose",
+        headers=auth_headers,
+        json={"title": "Rebuild the RustDesk server", "description": "CT 208."},
+    )
+    gid = resp.json()["goal"]["id"]
+
+    with patch("backend.integrations.obsidian.emit_event", new_callable=AsyncMock):
+        resp = goals_client.post(
+            f"/api/goals/{gid}/reject",
+            headers=auth_headers,
+            json={"reason": "no", "permanent": True},
+        )
+    assert resp.status_code == 200
+
+    from backend.database import Goal
+    with Session(goals_client._engine) as s:
+        assert s.get(Goal, gid).permanently_rejected is True

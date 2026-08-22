@@ -355,6 +355,15 @@ async def propose_goals_tick() -> dict:
         except Exception:
             abandoned_rows = []
 
+        # Permanently-rejected goals are NOT subject to the 8-row recency window
+        # above: "never" has to mean never, not "until eight other rejections
+        # push it off the list". Gathered separately and merged below so a
+        # failure of either query still leaves the other's suppressions intact.
+        try:
+            forever_rows = await asyncio.to_thread(goals._db_permanently_rejected)
+        except Exception:
+            forever_rows = []
+
         try:
             completed_rows = await asyncio.to_thread(goals._db_recent_completed, 12)
         except Exception:
@@ -397,16 +406,21 @@ async def propose_goals_tick() -> dict:
             failed_text = "(none)"
 
         # Format abandoned lines: "- {title} — {reason}" (reason omitted if None)
-        if abandoned_rows:
-            abandoned_lines = []
-            for ab in abandoned_rows:
-                line = f"- {ab['title']}"
-                if ab.get("rejection_reason"):
-                    line += f" — {ab['rejection_reason']}"
-                abandoned_lines.append(line)
-            abandoned_text = "\n".join(abandoned_lines)
-        else:
-            abandoned_text = "(none)"
+        # Permanent rejections lead, marked, and de-duplicated by title against
+        # the recency window (a goal can legitimately appear in both queries).
+        forever_titles = {r["title"] for r in forever_rows}
+        abandoned_lines = [
+            "- (NEVER) " + fr["title"] + (f" — {fr['rejection_reason']}" if fr.get("rejection_reason") else "")
+            for fr in forever_rows
+        ]
+        for ab in abandoned_rows:
+            if ab["title"] in forever_titles:
+                continue
+            line = f"- {ab['title']}"
+            if ab.get("rejection_reason"):
+                line += f" — {ab['rejection_reason']}"
+            abandoned_lines.append(line)
+        abandoned_text = "\n".join(abandoned_lines) if abandoned_lines else "(none)"
 
         # Format fact lines: "- {subject} {predicate}: {value}"
         if fact_rows:
@@ -559,6 +573,24 @@ async def propose_goals_tick() -> dict:
                 filtered.append({"title": title[:80], "reason": "hardware_issue"})
                 continue
 
+            # Deterministic backstop for rejection memory. The prompt above
+            # already carries a DO NOT RE-PROPOSE list, and the model already
+            # ignores it sometimes; goals.propose()'s fingerprint debounce was
+            # supposed to catch that, but a fingerprint is an exact hash of the
+            # normalised text, so a single reworded word sails straight through
+            # it. A fuzzy title match against everything Brian has said no to
+            # catches the paraphrase, which is the only form the re-proposal
+            # actually takes.
+            rejected_titles = [r["title"] for r in forever_rows] + [r["title"] for r in abandoned_rows]
+            match = goals.similar_to_rejected(title, rejected_titles)
+            if match is not None:
+                logger.info(
+                    "proposer: dropped goal %r as a reworded re-proposal of rejected %r",
+                    title, match,
+                )
+                filtered.append({"title": title[:80], "reason": "similar_to_rejected"})
+                continue
+
             risk = str(item.get("risk") or "medium")
             reversibility = str(item.get("reversibility") or "unknown")
             try:
@@ -629,6 +661,11 @@ async def propose_goals_tick() -> dict:
                     buttons=[
                         {"text": "✓ Approve", "callback_data": f"goal:approve:{goal_id}"},
                         {"text": "✗ Reject", "callback_data": f"goal:reject:{goal_id}"},
+                        # "Not now" vs "never" are different answers and only
+                        # the second one should outlive the 8-row recency
+                        # window, so it gets its own tap rather than changing
+                        # what plain Reject means.
+                        {"text": "🚫 Never", "callback_data": f"goal:reject_forever:{goal_id}"},
                     ],
                 )
 

@@ -67,6 +67,13 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
             elif verb == "reject":
                 r = await goals.reject(obj_id, reason="rejected via Telegram")
                 default_msg = "Rejected."
+            elif verb == "reject_forever":
+                r = await goals.reject(
+                    obj_id,
+                    reason="permanently rejected via Telegram",
+                    permanent=True,
+                )
+                default_msg = "Rejected — never proposing this again."
             else:
                 return False, f"Unknown goal verb: {verb}"
             mapping = {

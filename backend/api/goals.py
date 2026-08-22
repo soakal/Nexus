@@ -32,6 +32,10 @@ class GoalPropose(BaseModel):
 
 class GoalReject(BaseModel):
     reason: str | None = None
+    # "Never propose this again", not just "not now" -- see goals.reject().
+    # Defaults False so an existing client's plain reject keeps meaning what it
+    # always meant.
+    permanent: bool = False
 
 
 class GoalEdit(BaseModel):
@@ -109,7 +113,7 @@ async def approve_goal(goal_id: int, _=Depends(require_api_key)):
 async def reject_goal(goal_id: int, body: GoalReject = GoalReject(), _=Depends(require_api_key)):
     from backend.agents import goals
 
-    r = await goals.reject(goal_id, reason=body.reason)
+    r = await goals.reject(goal_id, reason=body.reason, permanent=body.permanent)
     if r["status"] == "not_found":
         raise HTTPException(status_code=404, detail="Goal not found")
     if r["status"] == "conflict":

@@ -10,6 +10,7 @@ SAFETY CONTRACT assertions are spread across every test:
   - The proposer NEVER calls execute_action, run_task, or get_pool directly.
 """
 import json
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1020,3 +1021,106 @@ async def test_night_exempt_uses_live_sun_entity_not_fixed_hour(eng, monkeypatch
     assert result["status"] == "ok"
     assert result["count_proposed"] == 0
     assert _all_goals(eng) == []
+
+
+# ---------------------------------------------------------------------------
+# Rejection memory: permanent rejections + fuzzy re-proposal suppression
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reworded_rejected_goal_is_dropped(eng, monkeypatch):
+    """The real failure mode: the proposer re-proposes a rejected idea by
+    paraphrasing it, and goals.propose()'s fingerprint is an exact hash, so a
+    single changed word produces a different fingerprint and sails through."""
+    from backend.agents import goals, proposer
+    from backend.database import Goal
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    with Session(eng) as s:
+        s.add(Goal(
+            actor="autonomous", title="Investigate high temperature on switch-1",
+            description="Switch is warm.", status="abandoned",
+            rejection_reason="that is normal for PoE gear",
+            permanently_rejected=True,
+        ))
+        s.commit()
+
+    haiku_response = json.dumps([
+        {
+            "title": "Investigate the high temperature on switch-1",
+            "description": "The switch reports an elevated temperature.",
+            "success_criteria": "Temperature is explained.",
+            "risk": "low", "reversibility": "reversible", "confidence": 0.8,
+        },
+        {
+            "title": "Update firmware on switch-1",
+            "description": "A newer firmware is available.",
+            "success_criteria": "Switch reports the new firmware version.",
+            "risk": "low", "reversibility": "reversible", "confidence": 0.8,
+        },
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=haiku_response)), \
+         patch("backend.config.get_settings") as mock_settings:
+        s_cfg = MagicMock()
+        s_cfg.proposer_max_per_tick = 3
+        s_cfg.goal_ttl_seconds = 86400
+        s_cfg.goal_debounce_seconds = 3600
+        s_cfg.auto_approve_low_risk = False
+        s_cfg.briefing_timezone = "UTC"
+        mock_settings.return_value = s_cfg
+        result = await proposer.propose_goals_tick()
+
+    assert result["status"] == "ok"
+    assert result["count_proposed"] == 1
+    assert [f["reason"] for f in result["filtered"]] == ["similar_to_rejected"]
+    # The genuinely different goal about the same device still gets through --
+    # a threshold low enough to swallow it would be worse than no filter.
+    titles = [g.title for g in _all_goals(eng) if g.status == "proposed"]
+    assert titles == ["Update firmware on switch-1"]
+
+
+@pytest.mark.asyncio
+async def test_permanently_rejected_bypasses_the_recency_window(eng, monkeypatch):
+    """A permanent rejection has to reach the prompt even when eight newer
+    rejections have pushed it out of _db_recent_abandoned's window."""
+    from backend.agents import proposer
+    from backend.database import Goal
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    with Session(eng) as s:
+        s.add(Goal(
+            actor="autonomous", title="Buy a second UPS", description="For the rack.",
+            status="abandoned", rejection_reason="not spending that",
+            permanently_rejected=True,
+            updated_at=datetime.utcnow() - timedelta(days=90),
+        ))
+        for i in range(10):
+            s.add(Goal(
+                actor="autonomous", title=f"Filler goal {i}", description=f"Body {i}",
+                status="abandoned", rejection_reason="no",
+            ))
+        s.commit()
+
+    captured = {}
+
+    async def _capture(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "[]"
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(side_effect=_capture)), \
+         patch("backend.config.get_settings") as mock_settings:
+        s_cfg = MagicMock()
+        s_cfg.proposer_max_per_tick = 3
+        s_cfg.goal_ttl_seconds = 86400
+        s_cfg.goal_debounce_seconds = 3600
+        s_cfg.auto_approve_low_risk = False
+        s_cfg.briefing_timezone = "UTC"
+        mock_settings.return_value = s_cfg
+        await proposer.propose_goals_tick()
+
+    assert "(NEVER) Buy a second UPS" in captured["prompt"]

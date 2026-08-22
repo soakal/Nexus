@@ -438,6 +438,15 @@ class Goal(SQLModel, table=True):
     # recurring scheduler. Re-enable to resume. Does not affect a one-shot goal's
     # existing state; it just gates future recurrence ticks.
     disabled: bool = False
+    # "Never propose this again", as opposed to plain rejection's "not now".
+    # Plain rejection only ever reached the proposer through an 8-row recency
+    # window (goals._db_recent_abandoned), so the 9th rejection silently made
+    # the 1st proposable again -- a goal Brian had already said no to came back
+    # purely because he had rejected eight other things since. A row with this
+    # set is injected into the proposer's DO NOT RE-PROPOSE block regardless of
+    # that window, and never ages out. Set explicitly (the "Never" button /
+    # permanent=true), never as a side effect of an ordinary reject.
+    permanently_rejected: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -528,6 +537,7 @@ def _ensure_goal_columns():
     _safe_add_column("goal", "rejection_reason", "TEXT")
     _safe_add_column("goal", "disabled", "BOOLEAN DEFAULT 0")
     _safe_add_column("goal", "outcome_summary", "TEXT")
+    _safe_add_column("goal", "permanently_rejected", "BOOLEAN DEFAULT 0")
     try:
         with engine.connect() as conn:
             # Hard backstop against the TOCTOU race in goals.propose(): its

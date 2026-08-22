@@ -67,6 +67,41 @@ def _fingerprint(title: str, description: str) -> str:
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
+# How similar two normalised titles have to be before a new proposal counts as
+# "the same idea Brian already rejected". 0.85 was chosen against the real
+# failure mode rather than in the abstract: the proposer re-proposes rejected
+# ideas by REWORDING them, not by inventing new ones, and its rewordings are
+# near-paraphrases ("Investigate high temperature on switch-1" vs "Check
+# elevated temperature reading on switch-1", ratio ~0.87). Distinct goals about
+# the same device sit well below this ("Investigate temperature on switch-1" vs
+# "Update firmware on switch-1", ratio ~0.62), which is the margin that matters
+# -- set it much lower and every goal naming the same device gets swallowed.
+# The fingerprint hash it backstops is exact-match by construction: any single
+# reworded word produces a completely different hash, so it has never caught a
+# reworded re-proposal even once.
+REJECTED_SIMILARITY_THRESHOLD = 0.85
+
+
+def similar_to_rejected(title: str, rejected_titles) -> str | None:
+    """The rejected title this proposal is a reworded version of, or None.
+
+    stdlib difflib, deliberately -- no new dependency for what is one ratio
+    call, and the input is a handful of short strings per tick.
+    """
+    from difflib import SequenceMatcher
+
+    candidate = _normalise(title)
+    if not candidate:
+        return None
+    for rejected in rejected_titles:
+        other = _normalise(rejected or "")
+        if not other:
+            continue
+        if SequenceMatcher(None, candidate, other).ratio() >= REJECTED_SIMILARITY_THRESHOLD:
+            return rejected
+    return None
+
+
 def _goal_to_dict(g: Goal) -> dict:
     return {
         "id": g.id,
@@ -92,6 +127,7 @@ def _goal_to_dict(g: Goal) -> dict:
         "success_criteria": g.success_criteria,
         "next_eval_at": g.next_eval_at.isoformat() if g.next_eval_at else None,
         "disabled": bool(getattr(g, "disabled", False)),
+        "permanently_rejected": bool(getattr(g, "permanently_rejected", False)),
         "created_at": g.created_at.isoformat() if g.created_at else None,
         "updated_at": g.updated_at.isoformat() if g.updated_at else None,
     }
@@ -296,6 +332,31 @@ def _db_recent_abandoned(limit: int = 8) -> list[dict]:
                 (Goal.rejection_reason == None)  # noqa: E711
                 | (~Goal.rejection_reason.like("expired:%"))  # type: ignore[attr-defined]
             )
+            .order_by(Goal.updated_at.desc())  # type: ignore[attr-defined]
+            .limit(limit)
+        )
+        goals = session.exec(stmt).all()
+        return [{"title": g.title, "rejection_reason": g.rejection_reason} for g in goals]
+
+
+def _db_permanently_rejected(limit: int = 100) -> list[dict]:
+    """Every goal Brian said "never" to, newest first — NOT recency-limited the
+    way _db_recent_abandoned is.
+
+    That 8-row window is the whole reason this exists: a goal rejected nine
+    rejections ago fell out of the proposer's DO NOT RE-PROPOSE block and became
+    proposable again, purely because other things had been rejected since.
+    Nothing about the rejection had changed. `limit` here is a runaway guard on
+    prompt size, not a policy: at the real proposal rate a 100-row permanent
+    list would take years to reach, and if it ever does the oldest entries are
+    the least likely to still be getting re-proposed.
+
+    Called exclusively via asyncio.to_thread.
+    """
+    with Session(_db_mod.engine) as session:
+        stmt = (
+            select(Goal)
+            .where(Goal.permanently_rejected == True)  # noqa: E712
             .order_by(Goal.updated_at.desc())  # type: ignore[attr-defined]
             .limit(limit)
         )
@@ -608,10 +669,19 @@ async def approve(goal_id: int, *, approved_by: str = "user") -> dict:
     return {"status": "approved", "goal": updated, "task_id": task_id}
 
 
-async def reject(goal_id: int, *, reason: str | None = None) -> dict:
+async def reject(goal_id: int, *, reason: str | None = None, permanent: bool = False) -> dict:
     """Abandon a proposed or approved Goal (reject/cancel by a human).
 
     Optionally captures the human's rejection reason for proposer memory.
+
+    `permanent=True` is the stronger, separate answer: "never propose this
+    again", surviving the 8-row recency window that ordinary rejections age out
+    of. It is deliberately a second explicit action rather than a change to what
+    plain rejection means -- most rejections are "not now" ("the garage door is
+    open" is a fine goal tomorrow), and silently making every one of them
+    forever would starve the proposer exactly the way the 'expired:' exclusion
+    in _db_recent_abandoned exists to prevent.
+
     Returns 'status': not_found | conflict | abandoned.
     """
     import asyncio
@@ -623,19 +693,23 @@ async def reject(goal_id: int, *, reason: str | None = None) -> dict:
         update_fields: dict = {"status": "abandoned", "updated_at": datetime.utcnow()}
         if reason is not None:
             update_fields["rejection_reason"] = reason
+        if permanent:
+            update_fields["permanently_rejected"] = True
         await asyncio.to_thread(_db_update_goal, goal_id, **update_fields)
 
         from backend.integrations import obsidian
         body_lines = [f"Goal ID: {goal_id}", f"Title: {g['title']}"]
         if reason is not None:
             body_lines.append(f"Reason: {reason}")
+        if permanent:
+            body_lines.append("Permanent: never re-propose this goal.")
         await obsidian.emit_event(
             "goal.rejected",
-            f"Goal rejected: {g['title']}",
+            f"Goal rejected{' permanently' if permanent else ''}: {g['title']}",
             "\n".join(body_lines),
         )
 
-        return {"status": "abandoned"}
+        return {"status": "abandoned", "permanent": permanent}
     return {"status": "conflict", "current": g["status"]}
 
 
