@@ -185,6 +185,23 @@ export default function Vault() {
     }
   }, [graphData, degree, minDegree])
 
+  // Zoom level past which every node's name renders on-canvas, not just the
+  // hovered/selected one. Tuned so a fully zoomed-out 260-node graph stays
+  // dots-only (no label soup); zooming in toward a cluster reveals names
+  // progressively. globalScale is force-graph's own pan/zoom multiplier, so
+  // this threshold is scale-relative, not tied to any fixed pixel count.
+  const LABEL_ZOOM_THRESHOLD = 2.4
+  // Plain refs, not state: these are read inside the canvas draw callback on
+  // every animation frame, and must never trigger a React re-render on mouse
+  // move -- only the imperative force-graph instance needs to know they
+  // changed, via its own hover-triggered repaint.
+  const hoveredIdRef = useRef(null)
+  const selectedIdRef = useRef(null)
+
+  function nodeRadius(n) {
+    return 2 + Math.sqrt(degree[n.id] || 0) * 1.3
+  }
+
   // Graph lifecycle: build the force-graph instance once when data first
   // arrives, then just call .graphData() again on re-filter -- no rebuild.
   useEffect(() => {
@@ -194,17 +211,61 @@ export default function Vault() {
       const fg = ForceGraph()(el)
         .width(el.clientWidth)
         .height(el.clientHeight)
-        .nodeLabel((n) => `${n.title} (${degree[n.id] || 0} link${degree[n.id] === 1 ? '' : 's'})`)
-        .nodeColor(() => '#2fd4ee')
         .linkColor(() => 'rgba(120,160,220,0.25)')
         .backgroundColor('rgba(0,0,0,0)')
-        .onNodeClick((n) => { openNote(`wiki/${n.filename}`); setTab('browse') })
+        // Custom paint so a name can render on-canvas (at zoom, on hover, or
+        // on selection) instead of only in a hover tooltip -- overriding
+        // this requires also overriding nodePointerAreaPaint below, or
+        // click/hover hit-testing silently stops working (force-graph uses
+        // a separate off-screen hit-canvas for pointer events).
+        .nodeCanvasObject((n, ctx, globalScale) => {
+          const r = nodeRadius(n)
+          const isFocused = n.id === hoveredIdRef.current || n.id === selectedIdRef.current
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, r, 0, 2 * Math.PI, false)
+          ctx.fillStyle = isFocused ? '#ffffff' : '#2fd4ee'
+          ctx.fill()
+
+          if (globalScale >= LABEL_ZOOM_THRESHOLD || isFocused) {
+            const fontSize = Math.max(10, 12 / globalScale)
+            ctx.font = `${isFocused ? '600 ' : ''}${fontSize}px sans-serif`
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'top'
+            ctx.fillStyle = isFocused ? '#ffffff' : '#cdd6e6'
+            ctx.fillText(n.title, n.x, n.y + r + 2)
+          }
+        })
+        .nodePointerAreaPaint((n, color, ctx) => {
+          ctx.fillStyle = color
+          ctx.beginPath()
+          ctx.arc(n.x, n.y, nodeRadius(n), 0, 2 * Math.PI, false)
+          ctx.fill()
+        })
+        .onNodeHover((n) => {
+          hoveredIdRef.current = n ? n.id : null
+          el.style.cursor = n ? 'pointer' : 'default'
+        })
+        .onNodeClick((n) => {
+          // First click on a new node selects it (shows its name, matches
+          // "select" from the graph); clicking the already-selected node is
+          // what actually opens it -- a bare click can't preview a name AND
+          // navigate away in the same gesture, since navigating away is
+          // instant. Consistent with clicking empty canvas to deselect.
+          if (selectedIdRef.current === n.id) {
+            openNote(`wiki/${n.filename}`)
+            setTab('browse')
+          } else {
+            selectedIdRef.current = n.id
+          }
+        })
+        .onBackgroundClick(() => { selectedIdRef.current = null })
       fg.__onResize = () => fg.width(el.clientWidth).height(el.clientHeight)
       window.addEventListener('resize', fg.__onResize)
       fgRef.current = fg
     }
-    // nodeVal reads the live `degree` map via closure, so this must be reset
-    // on every filter change even though nodeVal itself was set once above.
+    // nodeVal still drives simulation physics (charge/collision) even though
+    // nodeCanvasObject now owns the visuals -- reads `degree` via closure, so
+    // this must be reset on every filter change like the paint callback.
     fgRef.current.nodeVal((n) => 1 + (degree[n.id] || 0))
     // force-graph mutates link.source/target into node object refs the first
     // time a given links array is bound -- pass a fresh array each call so
