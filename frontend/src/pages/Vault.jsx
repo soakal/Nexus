@@ -215,13 +215,20 @@ export default function Vault() {
     })
   }, [tab, filteredGraph, degree])
 
-  // Teardown only on tab exit, not on every filter change.
+  // Teardown on tab exit OR page unmount -- a cleanup function (not a
+  // tab-watching effect body) is required for the unmount case: navigating
+  // away from /vault while on the Graph tab unmounts this component without
+  // ever changing `tab`, so a body-only effect never tears down the running
+  // instance and its rAF animation loop leaks forever against a detached
+  // canvas.
   useEffect(() => {
-    if (tab === 'graph') return
-    if (fgRef.current) {
-      window.removeEventListener('resize', fgRef.current.__onResize)
-      fgRef.current._destructor()
-      fgRef.current = null
+    if (tab !== 'graph') return
+    return () => {
+      if (fgRef.current) {
+        window.removeEventListener('resize', fgRef.current.__onResize)
+        fgRef.current._destructor()
+        fgRef.current = null
+      }
     }
   }, [tab])
 
