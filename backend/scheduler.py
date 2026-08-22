@@ -13,12 +13,27 @@ logger = logging.getLogger(__name__)
 # to include (error is at the end of a run, not the start).
 _ORGANIZER_OUTPUT_CHARS = 2000
 
-# One-off: fires once, two days before the 2026-08-07 Infisical soak gate
-# (14-day soak started 2026-07-24). Safe to delete this constant, the
-# _infisical_soak_reminder job, its registration block below, and
-# tests/test_infisical_soak_reminder.py once Phase 6 (Fernet vault
-# retirement) ships.
-INFISICAL_SOAK_REMINDER_AT = datetime(2026, 8, 5, 9, 0)
+# One-off nag toward Phase 6 (retiring the Fernet vault fallback). RESCHEDULED
+# ONCE, 2026-08-22: the original date (2026-08-05, two days before the
+# 2026-08-07 gate that closed the 14-day soak started 2026-07-24) came and went
+# while Phase 6 still hadn't shipped, which left the registration block below
+# permanently taking its "window passed — not registering" branch. A gate date
+# in the past is a reminder that fires never, so it now points 30 days out.
+# Bump it again the same way if Phase 6 still hasn't shipped by then. Safe to
+# delete this constant, the _infisical_soak_reminder job, its registration
+# block below, and tests/test_infisical_soak_reminder.py once Phase 6 ships.
+INFISICAL_SOAK_REMINDER_AT = datetime(2026, 9, 21, 9, 0)
+# The soak window itself closed long ago (14 days after the 2026-07-24
+# Infisical flip, i.e. 2026-08-07). What is outstanding is the Phase 6
+# decision, not more soak time -- so the reminder says that, instead of
+# quoting a gate date that is now in the past. Interpolated into every branch
+# of _infisical_soak_reminder's message.
+_SOAK_REMINDER_LEAD = (
+    "NEXUS reminder: the Infisical soak closed 2026-08-07 (14 days after the "
+    "2026-07-24 flip) and Phase 6 still has not shipped."
+)
+
+
 scheduler = AsyncIOScheduler(
     job_defaults={
         "coalesce": True,        # collapse a backlog of missed runs into one
@@ -549,16 +564,14 @@ async def _infisical_soak_reminder():
         # than "N events".
         if summary.get("error"):
             message = (
-                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
-                "days since the 2026-07-24 flip). Could not read the "
+                f"{_SOAK_REMINDER_LEAD} Could not read the "
                 "SecretFallback table this run — treat the fallback signal as "
                 "UNKNOWN, not clean, before green-lighting Phase 6 (retiring "
                 f"the Fernet vault). Error: {html.escape(str(summary['error']))}"
             )
         elif summary.get("pending", 0) > 0:
             message = (
-                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
-                f"days since the 2026-07-24 flip). {summary.get('total_events', 0)} "
+                f"{_SOAK_REMINDER_LEAD} {summary.get('total_events', 0)} "
                 "total fallback event(s) recorded so far, plus "
                 f"{summary['pending']} more event(s) buffered but not yet "
                 "drained to the SecretFallback table (drains every 5 min) — "
@@ -567,8 +580,7 @@ async def _infisical_soak_reminder():
             )
         elif summary.get("total_events", 0) == 0:
             message = (
-                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
-                "days since the 2026-07-24 flip). Zero legacy-vault fallbacks "
+                f"{_SOAK_REMINDER_LEAD} Zero legacy-vault fallbacks "
                 "have been recorded since durable tracking began (SecretFallback "
                 "table, DB-backed — survives restarts). Looks clear to green-light Phase 6 (retiring the "
                 "Fernet vault) on that front."
@@ -579,8 +591,7 @@ async def _infisical_soak_reminder():
                 for k in summary.get("keys", [])[:3]
             )
             message = (
-                "NEXUS reminder: the Infisical soak gate arrives 2026-08-07 (14 "
-                f"days since the 2026-07-24 flip). {summary.get('key_count', 0)} "
+                f"{_SOAK_REMINDER_LEAD} {summary.get('key_count', 0)} "
                 f"secret key(s) have fallen back to the legacy vault since "
                 f"durable tracking began, {summary.get('total_events', 0)} total "
                 f"event(s) (DB-backed via the SecretFallback table). Top keys: "
