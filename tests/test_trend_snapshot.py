@@ -114,8 +114,9 @@ def test_trend_baseline_avg_returns_none_under_7_days(tmp_path, monkeypatch):
 
 
 def test_trend_baseline_avg_ignores_rows_older_than_7_days(tmp_path, monkeypatch):
-    """A stale row outside the trailing 7-day window must not count toward
-    min_samples nor pollute the average."""
+    """A stale row outside the trailing 7-day window must not pollute the
+    average -- the 9999.0 row from 30 days ago is excluded, so the mean is
+    exactly the in-window value."""
     from backend.database import TrendSnapshot
     from backend.agents.briefing import _trend_baseline_avg
 
@@ -135,7 +136,8 @@ def test_trend_baseline_avg_ignores_rows_older_than_7_days(tmp_path, monkeypatch
         ))
         s.commit()
 
-    assert _trend_baseline_avg("adguard", "blocked_pct") is None
+    # 6 in-window rows >= min_samples (5); the 30-day-old 9999.0 is excluded.
+    assert _trend_baseline_avg("adguard", "blocked_pct") == pytest.approx(10.0)
 
 
 def test_gather_trend_baselines_never_raises_on_db_failure(monkeypatch):

@@ -730,9 +730,12 @@ def setup_scheduler(briefing_time: str, timezone: str):
     )
     scheduler.add_job(
         _record_trend_snapshot,
-        # Daily is plenty for a 7-day average -- see briefing.py's
-        # _gather_trend_baselines (the read side this job feeds).
-        IntervalTrigger(hours=24),
+        # Wall-clock CronTrigger, NOT IntervalTrigger(hours=24): an interval
+        # trigger with no start_date first fires at now+24h, and
+        # replace_existing=True re-arms it on every restart -- on a box that
+        # restarts more than daily it would never fire at all. 03:20 is before
+        # the morning briefing that reads these rows back.
+        CronTrigger(hour=3, minute=20, timezone=timezone),
         id="record_trend_snapshot",
         replace_existing=True,
     )

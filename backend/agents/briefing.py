@@ -501,13 +501,17 @@ async def _record_briefing_flags(context: dict) -> None:
 # resumed writing rows for exactly the two metrics this file actually asks
 # about (AdGuard blocked_pct, Unraid storage_used_gb); these helpers read them
 # back. Deliberately NOT reviving the Trends page itself -- out of scope.
-def _trend_baseline_avg(source: str, metric: str, min_samples: int = 7) -> float | None:
+def _trend_baseline_avg(source: str, metric: str, min_samples: int = 5) -> float | None:
     """Mean TrendSnapshot.value for source/metric over the trailing 7 days, or
     None when fewer than min_samples rows exist yet (feature just shipped, or
     the daily snapshot job missed a day) -- never builds a "7-day average"
     out of partial history that could misreport a false spike/no-spike. Sync
     (Session) -- call via asyncio.to_thread like every other durable-DB read
     in this file.
+
+    min_samples is 5, not 7: a daily writer over a 7-day window has zero
+    margin at 7, so a single missed day (restart, integration outage) blanks
+    the baseline entirely. 5 of 7 days still averages honestly.
     """
     from sqlmodel import Session, select
     from backend.database import TrendSnapshot, engine
