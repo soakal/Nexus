@@ -107,15 +107,51 @@ def _agree(row: dict) -> bool:
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
 
 
-def _parseable(text: str) -> bool:
+def _loads(text: str):
+    """Parsed JSON, or None if it doesn't parse. None is also a legal JSON
+    document, hence the separate _parseable() below rather than one function
+    doing both jobs."""
     text = text.strip()
     m = _FENCE_RE.search(text)
     candidate = m.group(1) if m else text
     try:
-        json.loads(candidate)
-        return True
+        return json.loads(candidate), True
     except Exception:
+        return None, False
+
+
+def _parseable(text: str) -> bool:
+    return _loads(text)[1]
+
+
+def _shape(value) -> frozenset | None:
+    """Top-level key set of a parsed JSON value, or None if there isn't one.
+
+    facts_extract/goal_proposer are array-valued, and an array has no keys of
+    its own -- its ELEMENTS carry the shape, and its length is expected to vary
+    between two models looking at the same input. So the shape of an array is
+    its first element's key set, and the shape of an empty array is the empty
+    set (a real, matchable answer: "found nothing", which both models can agree
+    on).
+    """
+    if isinstance(value, list):
+        if not value:
+            return frozenset()
+        value = value[0]
+    return frozenset(value) if isinstance(value, dict) else None
+
+
+def _same_shape(out_a: str, out_b: str) -> bool:
+    """Criterion A#3 asks for "parseable JSON of the EXPECTED SHAPE" and this
+    module only ever checked the first half -- a shadow model returning
+    well-formed JSON with entirely different field names scored a clean pass.
+    Both sides must parse AND agree on the key set."""
+    a, a_ok = _loads(out_a)
+    b, b_ok = _loads(out_b)
+    if not (a_ok and b_ok):
         return False
+    shape_a = _shape(a)
+    return shape_a is not None and shape_a == _shape(b)
 
 
 def _now() -> datetime:
@@ -312,7 +348,12 @@ async def _section_trial_a() -> str:
         )
     if json_rows:
         ok = sum(1 for r in json_rows if _parseable(r.get("out_b", "")))
-        lines.append(f"  JSON labels: {ok}/{len(json_rows)} shadow outputs parseable.")
+        shaped = sum(1 for r in json_rows if _same_shape(r.get("out_a", ""), r.get("out_b", "")))
+        lines.append(
+            f"  JSON labels: {ok}/{len(json_rows)} shadow outputs parseable, "
+            f"{shaped}/{len(json_rows)} same key set as the real output "
+            "(criterion A#3 wants both)."
+        )
 
     from backend.safety import governor
     report = await asyncio.to_thread(governor.spend_report, 30)
@@ -476,7 +517,11 @@ def _build_verdict_payload_a() -> tuple[str, str, str] | None:
         n = len(rows)
         if label in _JSON_LABELS:
             ok = sum(1 for r in rows if _parseable(r.get("out_b", "")))
-            agg_lines.append(f"{label}: {n} calls, {ok}/{n} shadow outputs parseable JSON")
+            shaped = sum(1 for r in rows if _same_shape(r.get("out_a", ""), r.get("out_b", "")))
+            agg_lines.append(
+                f"{label}: {n} calls, {ok}/{n} shadow outputs parseable JSON, "
+                f"{shaped}/{n} with the same top-level key set as the real output"
+            )
             continue
         disagreements = [r for r in rows if not _agree(r)]
         harmful = [

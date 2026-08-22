@@ -88,15 +88,43 @@ def _agree(row: dict) -> bool:
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
 
 
-def _parseable(text: str) -> bool:
+def _loads(text: str):
+    """(parsed_value, ok). Separate ok flag because None is itself legal JSON."""
     text = text.strip()
     m = _FENCE_RE.search(text)
     candidate = m.group(1) if m else text
     try:
-        json.loads(candidate)
-        return True
+        return json.loads(candidate), True
     except Exception:
+        return None, False
+
+
+def _parseable(text: str) -> bool:
+    return _loads(text)[1]
+
+
+def _shape(value):
+    """Top-level key set, or None if there isn't one. An array's shape is its
+    first element's keys (the array itself has none, and its length is expected
+    to vary); an empty array's shape is the empty set -- a real answer both
+    models can agree on ("found nothing")."""
+    if isinstance(value, list):
+        if not value:
+            return frozenset()
+        value = value[0]
+    return frozenset(value) if isinstance(value, dict) else None
+
+
+def _same_shape(out_a: str, out_b: str) -> bool:
+    """This file's own docstring has always claimed it compares "JSON-
+    parseability + top-level key set" while only ever doing the first half.
+    Hand-synced with backend/agents/trial_report.py::_same_shape."""
+    a, a_ok = _loads(out_a)
+    b, b_ok = _loads(out_b)
+    if not (a_ok and b_ok):
         return False
+    shape_a = _shape(a)
+    return shape_a is not None and shape_a == _shape(b)
 
 
 def _load_rows(path: Path) -> list[dict]:
@@ -143,7 +171,11 @@ def main() -> int:
         n = len(label_rows)
         if label in _JSON_LABELS:
             parseable = sum(1 for r in label_rows if _parseable(r.get("out_b", "")))
-            print(f"{label:24s} n={n:4d}  shadow JSON-parseable: {parseable}/{n} ({parseable/n*100:.0f}%)")
+            shaped = sum(1 for r in label_rows if _same_shape(r.get("out_a", ""), r.get("out_b", "")))
+            print(
+                f"{label:24s} n={n:4d}  shadow JSON-parseable: {parseable}/{n} "
+                f"({parseable/n*100:.0f}%)  same key set: {shaped}/{n} ({shaped/n*100:.0f}%)"
+            )
             continue
 
         n_dis = sum(1 for r in label_rows if not _agree(r))

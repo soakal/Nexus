@@ -259,3 +259,46 @@ def test_verdict_payload_uses_the_recomputed_agreement(tmp_path, monkeypatch):
         aggregate, _sample, _cost = trial_report._build_verdict_payload_a()
 
     assert "action_judge: 2 calls, 1 disagreed (50.0%)" in aggregate
+
+
+# --- P3: shape check, not just parseability ---------------------------------
+
+def test_same_shape_rejects_well_formed_json_with_the_wrong_keys():
+    """Criterion A#3 is "parseable JSON of the EXPECTED SHAPE". A shadow model
+    that returns immaculate JSON with entirely different field names used to
+    score a clean pass, because only json.loads() was ever checked."""
+    real = json.dumps([{"subject": "a", "predicate": "b", "value": "c"}])
+    same = json.dumps([{"subject": "x", "predicate": "y", "value": "z"}])
+    wrong = json.dumps([{"who": "x", "what": "y"}])
+
+    assert trial_report._same_shape(real, same) is True
+    assert trial_report._same_shape(real, wrong) is False
+    # Fences on either side are stripped before the comparison, same as _parseable.
+    assert trial_report._same_shape(real, f"```json\n{same}\n```") is True
+    # Unparseable can't have a shape.
+    assert trial_report._same_shape(real, "sorry, I can't") is False
+    # Two empty arrays agree ("found nothing"); empty vs non-empty does not.
+    assert trial_report._same_shape("[]", "[]") is True
+    assert trial_report._same_shape(real, "[]") is False
+    # A bare scalar has no key set at all.
+    assert trial_report._same_shape("42", "42") is False
+
+
+@pytest.mark.asyncio
+async def test_digest_reports_shape_rate_alongside_parseable_rate(tmp_path, monkeypatch):
+    log = tmp_path / "shadow.jsonl"
+    real = json.dumps([{"title": "t", "risk": "low"}])
+    rows = [
+        _row("goal_proposer", real, json.dumps([{"title": "u", "risk": "low"}]), agree=False),
+        _row("goal_proposer", real, json.dumps([{"headline": "u"}]), agree=False),
+    ]
+    log.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(trial_report, "_SHADOW_LOG", log)
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.safety.governor.spend_report", return_value={"by_label": []}):
+        text = await trial_report._section_trial_a()
+
+    # Both parse; only one matches the real output's key set.
+    assert "2/2 shadow outputs parseable" in text
+    assert "1/2 same key set" in text
