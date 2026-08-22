@@ -26,40 +26,6 @@ def _now() -> datetime:
         tz = None
     return datetime.now(tz)
 
-# Entities that are chronically unavailable and not actionable, so the daily
-# unavailable-count doesn't drown in noise from iPads/Alexas/identify buttons.
-_HA_IGNORE_PREFIXES = (
-    "button.",
-    "input_button.",
-    "sensor.ipad_",
-    "binary_sensor.ipad_",
-    "notify.ipad",
-    "stt.",
-    "tts.",
-    "sensor.homepage_",
-    "binary_sensor.pve_homepage",
-)
-_HA_IGNORE_SUBSTRINGS = (
-    "_identify", "christmas", "iphone", "ipad",
-    "alexa", "echo", "firestick", "fire_stick", "fire_tv",
-    "_speak", "_announce",
-)
-
-
-def _count_unavailable(ha) -> int:
-    count = 0
-    for e in getattr(ha, "entities", []) or []:
-        if not isinstance(e, dict) or e.get("state") not in ("unavailable", "unknown"):
-            continue
-        eid = e.get("entity_id", "")
-        if any(eid.startswith(p) for p in _HA_IGNORE_PREFIXES):
-            continue
-        if any(s in eid for s in _HA_IGNORE_SUBSTRINGS):
-            continue
-        count += 1
-    return count
-
-
 async def _section_proxmox() -> str:
     from backend.integrations import proxmox
     data = await proxmox.fetch()
@@ -160,8 +126,12 @@ async def _section_ha() -> str:
         if temps else "(none)"
     )
 
-    unavail = _count_unavailable(data)
-    ha_line = f"{unavail} entities unavailable" if unavail else "all entities OK"
+    # Age-bucketed, not a flat count -- see homeassistant.py's
+    # unavailable_report()/format_unavailable_summary() docstrings for why a
+    # bare "144 entities unavailable" number was the whole problem (no way
+    # to tell a just-restarted transient from a permanently orphaned one).
+    report = await homeassistant.unavailable_report()
+    ha_line = homeassistant.format_unavailable_summary(report)
 
     return f"Garage: {garage}\nTemps: {temps_line}\nHA: {ha_line}"
 

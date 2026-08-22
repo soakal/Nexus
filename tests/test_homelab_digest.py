@@ -1,9 +1,12 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlmodel import Session, select
 
 from backend.agents import homelab_digest
+from backend.database import HaEntityUnavailable
 
 
 def _settings(**overrides):
@@ -123,6 +126,71 @@ async def test_run_sends_with_kind_and_emits_brain_event():
         assert mock_emit.call_args.args[0] == "nexus.daily-digest"
     finally:
         _exit_all(patches)
+
+
+@pytest.fixture(autouse=True)
+def _clean_ha_unavailable_table():
+    """HaEntityUnavailable is a session-scoped shared test table -- isolate
+    this file's assertions on the HA digest line from any other test that
+    also exercises the real homeassistant.fetch()/tracking path.
+
+    Reads backend.database.engine via module attribute access, not a
+    top-level import -- see test_ha_unavailable_tracking.py's identical
+    fixture docstring for why a top-level import binds the stale
+    pre-patch engine."""
+    import backend.database as db
+
+    def _clear():
+        with Session(db.engine) as session:
+            for row in session.exec(select(HaEntityUnavailable)).all():
+                session.delete(row)
+            session.commit()
+    _clear()
+    yield
+    _clear()
+
+
+@pytest.mark.asyncio
+async def test_ha_line_reports_actionable_buckets_not_a_flat_count():
+    """The exact symptom this feature closes: 'HA: 144 entities unavailable'
+    told Brian nothing actionable. The digest line must now break the count
+    into persistent (>=7d) vs recent (<1h) buckets instead."""
+    import backend.database as db
+    now = datetime.utcnow()
+    with Session(db.engine) as session:
+        session.add(HaEntityUnavailable(
+            entity_id="sensor.orphan_zigbee",
+            first_seen_unavailable_at=now - timedelta(days=40),
+            last_checked_at=now,
+        ))
+        session.add(HaEntityUnavailable(
+            entity_id="light.just_restarted",
+            first_seen_unavailable_at=now - timedelta(minutes=5),
+            last_checked_at=now,
+        ))
+        session.commit()
+
+    patches = _patch_all_healthy()
+    started, _ = _enter_all(patches)
+    try:
+        text = await homelab_digest.build_digest_text()
+    finally:
+        _exit_all(patches)
+
+    assert "1 unavailable >7 days (persistently dead)" in text
+    assert "1 unavailable <1h (likely transient)" in text
+    assert "144 entities unavailable" not in text
+
+
+@pytest.mark.asyncio
+async def test_ha_line_all_ok_when_nothing_tracked():
+    patches = _patch_all_healthy()
+    started, _ = _enter_all(patches)
+    try:
+        text = await homelab_digest.build_digest_text()
+    finally:
+        _exit_all(patches)
+    assert "HA: all entities OK" in text
 
 
 def test_count_or_plus_marks_truncation_at_cap():

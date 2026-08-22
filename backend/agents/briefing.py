@@ -519,6 +519,10 @@ Items requiring action TODAY, ranked by urgency. If nothing urgent, say so.
 
 ## System Health
 One line per system: Unraid, UniFi, Home Assistant, AdGuard.
+For Home Assistant, report unavailable_persistent_over_7d and unavailable_recent_under_1h
+from the snapshot (e.g. "12 unavailable >7 days (persistently dead), 3 unavailable <1h
+(likely transient)") -- NOT unavailable_total or entity_count as a bare number, that hides
+which entities are actually worth acting on.
 Flag parity check if running. Flag mover if active. Flag new unknown devices on network.
 
 ## Network Security
@@ -600,6 +604,7 @@ async def run_briefing() -> str:
             calibration.hint_report(30),
             claude_usage.fetch(),
             openrouter.fetch(),
+            homeassistant.unavailable_report(),
             return_exceptions=True,
         )
 
@@ -607,8 +612,16 @@ async def run_briefing() -> str:
             ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data,
             proton_unread, proton_drafts, open_flags_result, closed_flags_result,
             calibration_result, hint_report_result, claude_usage_result,
-            openrouter_result,
+            openrouter_result, ha_unavail_result,
         ) = results
+
+        # ha_unavailable_report() already never raises on its own (degrades
+        # internally to an all-zero dict) -- this guard only covers the
+        # unlikely case of asyncio.gather itself handing back an Exception
+        # object for this slot (return_exceptions=True).
+        ha_unavail_report = ha_unavail_result if isinstance(ha_unavail_result, dict) else {
+            "total": 0, "persistent": 0, "recent": 0, "items": [],
+        }
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
 
@@ -656,6 +669,14 @@ async def run_briefing() -> str:
             "home_assistant": {
                 "entity_count": len(safe(ha, "entities", [])),
                 "alerts": safe(ha, "alerts", []),
+                # Age-bucketed, not a flat count -- see
+                # homeassistant.py::unavailable_report's docstring. Lets the
+                # prompt distinguish "just restarted, self-clears in
+                # minutes" from "been dead for months" instead of a single
+                # number that never goes down and never gets acted on.
+                "unavailable_total": ha_unavail_report.get("total", 0),
+                "unavailable_persistent_over_7d": ha_unavail_report.get("persistent", 0),
+                "unavailable_recent_under_1h": ha_unavail_report.get("recent", 0),
             },
             "unifi": {
                 "clients": safe(unifi_d, "client_count", 0),
