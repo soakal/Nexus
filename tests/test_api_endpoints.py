@@ -532,6 +532,94 @@ def test_flags_full_lifecycle(app_client, auth_headers):
 
 
 # ---------------------------------------------------------------------------
+# Expected Resource baseline REST routes (2026-08-21) -- declares "what
+# should be running" (docker/vm/lxc) for homelab_watch.check_expected_resources
+# to diff live state against.
+# ---------------------------------------------------------------------------
+
+def test_expected_resources_endpoints_require_auth(app_client):
+    assert app_client.get("/api/safety/expected-resources").status_code == 401
+    assert app_client.post(
+        "/api/safety/expected-resources",
+        json={"kind": "docker", "identifier": "sonarr", "desired_state": "running"},
+    ).status_code == 401
+    assert app_client.post("/api/safety/expected-resources/seed").status_code == 401
+
+
+def test_expected_resources_upsert_and_list(app_client, auth_headers):
+    create = app_client.post(
+        "/api/safety/expected-resources",
+        json={"kind": "docker", "identifier": "sonarr", "desired_state": "running", "note": "media stack"},
+        headers=auth_headers,
+    )
+    assert create.status_code == 200
+    body = create.json()
+    assert body["kind"] == "docker"
+    assert body["identifier"] == "sonarr"
+    assert body["desired_state"] == "running"
+    assert body["note"] == "media stack"
+
+    listed = app_client.get("/api/safety/expected-resources", headers=auth_headers)
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    assert rows[0]["identifier"] == "sonarr"
+
+    # Re-declaring the same (kind, identifier) upserts in place, not a new row.
+    update = app_client.post(
+        "/api/safety/expected-resources",
+        json={"kind": "docker", "identifier": "sonarr", "desired_state": "stopped"},
+        headers=auth_headers,
+    )
+    assert update.status_code == 200
+    assert update.json()["desired_state"] == "stopped"
+    listed2 = app_client.get("/api/safety/expected-resources", headers=auth_headers)
+    assert len(listed2.json()) == 1
+    assert listed2.json()[0]["desired_state"] == "stopped"
+
+
+def test_expected_resources_upsert_rejects_unknown_kind_or_state(app_client, auth_headers):
+    bad_kind = app_client.post(
+        "/api/safety/expected-resources",
+        json={"kind": "potato", "identifier": "x", "desired_state": "running"},
+        headers=auth_headers,
+    )
+    assert bad_kind.status_code == 400
+
+    bad_state = app_client.post(
+        "/api/safety/expected-resources",
+        json={"kind": "docker", "identifier": "x", "desired_state": "sideways"},
+        headers=auth_headers,
+    )
+    assert bad_state.status_code == 400
+
+    missing_field = app_client.post(
+        "/api/safety/expected-resources", json={"kind": "docker"}, headers=auth_headers,
+    )
+    assert missing_field.status_code == 400
+
+
+def test_expected_resources_seed_from_live(app_client, auth_headers):
+    from types import SimpleNamespace
+
+    unraid_data = SimpleNamespace(docker_containers=[{"name": "sonarr", "state": "RUNNING"}])
+    proxmox_data = SimpleNamespace(vms=[{"vmid": 201, "name": "plex-lxc", "status": "running", "type": "lxc"}])
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=unraid_data), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=proxmox_data):
+        seeded = app_client.post("/api/safety/expected-resources/seed", headers=auth_headers)
+
+    assert seeded.status_code == 200
+    body = seeded.json()
+    assert body["docker"] == 1
+    assert body["lxc"] == 1
+
+    listed = app_client.get("/api/safety/expected-resources", headers=auth_headers)
+    rows = {r["identifier"]: r for r in listed.json()}
+    assert rows["sonarr"]["desired_state"] == "running"
+    assert rows["201"]["desired_state"] == "running"
+
+
+# ---------------------------------------------------------------------------
 # Calibration Loop REST routes (docs/calibration-loop-spec.md §4/§5.2,
 # rollout §9.5 step 3 first slice): GET /flags/calibration/hints and
 # POST /flags/calibration/{fingerprint}/override.

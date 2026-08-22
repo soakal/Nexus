@@ -1,7 +1,11 @@
 """NEXUS-native homelab alert watcher — a 60s edge-alert loop over NEXUS's own
 integrations. Covers: VM/LXC stopped, Docker container stopped, Unraid array
-unhealthy, disk temp over threshold, garage door left open, and a failed
-vzdump backup.
+unhealthy, disk temp over threshold, garage door left open, a failed
+vzdump backup, and (check_expected_resources, 2026-08-21) any live Docker/
+VM/LXC state that deviates from a DECLARED baseline (backend/agents/
+expected_resources.py) -- unlike the transition-triggered checks above, this
+one catches a resource that was already in the wrong state before NEXUS ever
+booted, which the others structurally cannot.
 
 Deliberately NOT built here: doorbell/camera alerts (declined by Brian — needs
 a separate 5s poll + send_photo, not worth it yet), and NEXUS's own liveness
@@ -23,6 +27,7 @@ latches — muting must not replay a stale alert.
 """
 import asyncio
 import html
+import json
 import logging
 import time
 from datetime import datetime
@@ -92,7 +97,7 @@ async def _clear_flag_safe(key: str) -> None:
         logger.warning(f"clear_flag failed for {key!r} (ignored): {e}")
 
 
-async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> bool:
+async def _edge_alert(key: str, active: bool, message: str, *, kind: str, detail: str | None = None) -> bool:
     """Level-triggered latch: fires once when `active` transitions True, clears
     when it goes False. Returns whether it fired THIS call.
 
@@ -107,6 +112,11 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
     not to surface (calibration suppression or dedup), notify_phone is
     skipped entirely -- the latch still fires (return value below tracks
     that, not paging) so re-alert suppression stays correct.
+
+    `detail` is passed through to record_flag_ex verbatim -- optional,
+    used by check_expected_resources to carry the {kind, identifier,
+    observed_state} JSON that outcomes.resolve_flag reads back to sync the
+    ExpectedResource baseline when a human resolves the flag.
     """
     if not active:
         await _clear_flag_safe(key)
@@ -118,7 +128,7 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str) -> boo
     _active_alerts.add(key)
     from backend.agents import outcomes
     severity = "high" if key in ("unraid_array", "vzdump_failed") else "medium"
-    d = await outcomes.record_flag_ex("homelab_watch", key, message, severity=severity)
+    d = await outcomes.record_flag_ex("homelab_watch", key, message, severity=severity, detail=detail)
     if d["surface"]:
         buttons = None
         if d["id"] is not None:
@@ -325,6 +335,80 @@ async def check_backups() -> list[str]:
     return ["vzdump_failed"] if fired else []
 
 
+async def check_expected_resources() -> list[str]:
+    """Diffs live Docker/VM/LXC state against the declared ExpectedResource
+    baseline (backend/agents/expected_resources.py) -- closes the structural
+    blind spot check_docker/check_proxmox_vms above can't: those only fire on
+    a TRANSITION observed after NEXUS was already running, so anything that
+    was already stopped (or already running when it shouldn't be) before
+    NEXUS booted stays invisible to them forever. This check re-derives the
+    mismatch from scratch every tick regardless of when it started -- exactly
+    the "Only N Docker containers running -- verify this is intentional"
+    briefing nag this feature exists to close.
+
+    A resource with no declared row is not evaluated at all -- declaring a
+    baseline is opt-in (via the REST endpoint or expected_resources.seed_from_live()),
+    so an undeclared, intentionally-stopped Unraid container never generates
+    noise merely by existing. A resource whose live state couldn't be read
+    this tick (fetch failure) is skipped, not treated as a mismatch or a
+    clear.
+    """
+    from backend.agents import expected_resources
+    rows = await expected_resources.list_expected()
+    if not rows:
+        return []
+
+    live_docker: dict[str, str] | None = None
+    live_vm: dict[str, str] | None = None
+    fired: list[str] = []
+
+    for row in rows:
+        kind, identifier, desired = row["kind"], row["identifier"], row["desired_state"]
+        if kind == "docker":
+            if live_docker is None:
+                try:
+                    from backend.integrations import unraid
+                    data = await unraid.fetch()
+                    live_docker = {
+                        c["name"]: ("running" if (c.get("state") or "").upper() == "RUNNING" else "stopped")
+                        for c in data.docker_containers if c.get("name")
+                    }
+                except Exception as e:
+                    logger.warning(f"check_expected_resources: unraid fetch failed (ignored): {e}")
+                    live_docker = {}
+            observed = live_docker.get(identifier)
+        else:  # vm | lxc
+            if live_vm is None:
+                try:
+                    from backend.integrations import proxmox
+                    pdata = await proxmox.fetch()
+                    live_vm = {
+                        f"{('lxc' if v.get('type') == 'lxc' else 'vm')}:{v.get('vmid')}":
+                            ("running" if v.get("status") == "running" else "stopped")
+                        for v in pdata.vms
+                    }
+                except Exception as e:
+                    logger.warning(f"check_expected_resources: proxmox fetch failed (ignored): {e}")
+                    live_vm = {}
+            observed = live_vm.get(f"{kind}:{identifier}")
+
+        if observed is None:
+            continue  # couldn't read live state this tick -- not a deviation, not a clear
+
+        key = f"expected:{kind}:{identifier}"
+        detail = json.dumps({"kind": kind, "identifier": identifier, "observed_state": observed})
+        message = (
+            f"NEXUS: {kind} '{html.escape(identifier)}' is {observed} "
+            f"but expected {desired} (declared baseline)."
+        )
+        did_fire = await _edge_alert(
+            key, observed != desired, message, kind="homelab_expected_mismatch", detail=detail,
+        )
+        if did_fire:
+            fired.append(key)
+    return fired
+
+
 async def _run_check(name: str, coro) -> list[str]:
     """Runs one check in isolation -- a bug/exception in one check (e.g. a
     malformed field from an integration) must not cancel the other five."""
@@ -373,8 +457,9 @@ def _maybe_propose_on_alert(fired_any: bool) -> None:
 async def run_homelab_watch() -> dict:
     """Top-level entry point called by the scheduler every 60 seconds.
 
-    Gated by settings.homelab_watch_enabled. Runs all six checks and returns a
-    summary dict. NEVER raises — any exception is caught and logged."""
+    Gated by settings.homelab_watch_enabled. Runs all seven checks and
+    returns a summary dict. NEVER raises — any exception is caught and
+    logged."""
     try:
         from backend.config import get_settings
         s = get_settings()
@@ -388,6 +473,7 @@ async def run_homelab_watch() -> dict:
             "disk_temps": await _run_check("disk_temps", check_disk_temps()),
             "garage": await _run_check("garage", check_garage()),
             "backups": await _run_check("backups", check_backups()),
+            "expected": await _run_check("expected", check_expected_resources()),
         }
         _maybe_propose_on_alert(any(result.values()))
         try:
@@ -398,4 +484,7 @@ async def run_homelab_watch() -> dict:
         return result
     except Exception as exc:
         logger.error(f"run_homelab_watch error (ignored): {exc}")
-        return {"vms": [], "docker": [], "array": [], "disk_temps": [], "garage": [], "backups": []}
+        return {
+            "vms": [], "docker": [], "array": [], "disk_temps": [], "garage": [],
+            "backups": [], "expected": [],
+        }

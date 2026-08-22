@@ -291,6 +291,48 @@ async def resolve_flag_route(
     return {"id": flag_id, "status": result}
 
 
+@router.get("/expected-resources")
+async def list_expected_resources(_=Depends(require_api_key)):
+    """Declared 'what should be running' baseline (docker/vm/lxc) that
+    homelab_watch.check_expected_resources diffs live state against."""
+    from backend.agents import expected_resources
+    return await expected_resources.list_expected()
+
+
+@router.post("/expected-resources")
+async def upsert_expected_resource(
+    body: dict = Body(...),
+    _=Depends(require_api_key),
+):
+    """Declare (or update) one resource's expected state. Body:
+    {kind, identifier, desired_state, note?}. kind is one of docker|vm|lxc,
+    desired_state is one of running|stopped."""
+    from backend.agents import expected_resources
+
+    kind = body.get("kind")
+    identifier = body.get("identifier")
+    desired_state = body.get("desired_state")
+    if not kind or not identifier or not desired_state:
+        raise HTTPException(status_code=400, detail="kind, identifier, and desired_state are required")
+
+    try:
+        row = await expected_resources.upsert(kind, identifier, desired_state, note=body.get("note"))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return row
+
+
+@router.post("/expected-resources/seed")
+async def seed_expected_resources(_=Depends(require_api_key)):
+    """One-time (or re-runnable) baseline snapshot: declares every currently-
+    observed Docker container / Proxmox VM+LXC's expected state to be
+    whatever it's observed at right now -- so the feature has a real
+    baseline on day one instead of being useless until manually populated.
+    Safe to re-run."""
+    from backend.agents import expected_resources
+    return await expected_resources.seed_from_live()
+
+
 @router.post("/actions/{action_id}/confirm")
 async def confirm_action(
     action_id: int,

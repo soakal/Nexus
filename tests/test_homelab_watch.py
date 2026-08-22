@@ -784,6 +784,152 @@ async def test_edge_alert_severity_high_for_array_and_backup_medium_for_others()
 
 
 # ---------------------------------------------------------------------------
+# check_expected_resources — declared-baseline comparison (2026-08-21)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_expected_resources_no_baseline_declared_is_noop(eng):
+    """No ExpectedResource rows declared -> nothing evaluated, no fetch calls
+    at all -- declaring a baseline is opt-in."""
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock) as mock_unraid, \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock) as mock_proxmox, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify:
+        fired = await homelab_watch.check_expected_resources()
+
+    assert fired == []
+    mock_unraid.assert_not_called()
+    mock_proxmox.assert_not_called()
+    mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_expected_resources_mismatch_fires_with_resolve_buttons_and_detail(eng):
+    """A docker container declared 'running' but observed stopped fires once,
+    pages with the standard flag:resolved/flag:false_positive buttons, and
+    records a detail blob outcomes.resolve_flag can read back to sync the
+    baseline (kind/identifier/observed_state)."""
+    import json as _json
+
+    from backend.agents import expected_resources
+    from backend.database import OutcomeFlag
+
+    await expected_resources.upsert("docker", "sonarr", "running")
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+               return_value=_unraid_data(docker_containers=[{"name": "sonarr", "state": "EXITED"}])), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        fired1 = await homelab_watch.check_expected_resources()
+        fired2 = await homelab_watch.check_expected_resources()  # steady state, no re-fire
+
+    assert fired1 == ["expected:docker:sonarr"]
+    assert fired2 == []
+    mock_notify.assert_awaited_once()
+    assert mock_notify.await_args.kwargs["kind"] == "homelab_expected_mismatch"
+
+    with Session(eng) as s:
+        row = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == "homelab_watch:expected:docker:sonarr")).all()
+    assert len(row) == 1
+    detail = _json.loads(row[0].detail)
+    assert detail == {"kind": "docker", "identifier": "sonarr", "observed_state": "stopped"}
+    assert mock_notify.await_args.kwargs["buttons"] == [
+        {"text": "✓ Resolved", "callback_data": f"flag:resolved:{row[0].id}"},
+        {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{row[0].id}"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_expected_resources_match_does_not_fire(eng):
+    from backend.agents import expected_resources
+
+    await expected_resources.upsert("docker", "sonarr", "running")
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+               return_value=_unraid_data(docker_containers=[{"name": "sonarr", "state": "RUNNING"}])), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        fired = await homelab_watch.check_expected_resources()
+
+    assert fired == []
+    mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_expected_resources_vm_and_lxc_kinds_use_proxmox(eng):
+    from backend.agents import expected_resources
+
+    await expected_resources.upsert("lxc", "201", "running")
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock,
+               return_value=_proxmox_data([{"vmid": 201, "name": "plex-lxc", "status": "stopped", "type": "lxc"}])), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        fired = await homelab_watch.check_expected_resources()
+
+    assert fired == ["expected:lxc:201"]
+    mock_notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_expected_resources_unreadable_live_state_skips_not_fires(eng):
+    """A fetch failure means the live state couldn't be read this tick -- must
+    be skipped (not treated as a mismatch or a clear), never raise."""
+    from backend.agents import expected_resources
+
+    await expected_resources.upsert("docker", "sonarr", "running")
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=RuntimeError("down")), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify:
+        fired = await homelab_watch.check_expected_resources()
+
+    assert fired == []
+    mock_notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_expected_resources_recovers_and_clears_flag(eng):
+    from backend.agents import expected_resources
+    from backend.database import OutcomeFlag
+
+    await expected_resources.upsert("docker", "sonarr", "running")
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
+        with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+                   return_value=_unraid_data(docker_containers=[{"name": "sonarr", "state": "EXITED"}])):
+            await homelab_watch.check_expected_resources()
+        with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+                   return_value=_unraid_data(docker_containers=[{"name": "sonarr", "state": "RUNNING"}])):
+            fired = await homelab_watch.check_expected_resources()
+
+    assert fired == []
+    with Session(eng) as s:
+        row = s.exec(select(OutcomeFlag).where(OutcomeFlag.fingerprint == "homelab_watch:expected:docker:sonarr")).first()
+    assert row.status == "resolved"
+    assert row.resolved_by == "auto:condition_cleared"
+
+
+@pytest.mark.asyncio
+async def test_expected_resources_included_in_run_homelab_watch(eng):
+    from backend.agents import expected_resources
+
+    await expected_resources.upsert("docker", "sonarr", "running")
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=_proxmox_data([])), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
+               return_value=_unraid_data(docker_containers=[{"name": "sonarr", "state": "EXITED"}])), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data([])), \
+         patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value={"node": "pve", "status": "none"}), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
+        result = await homelab_watch.run_homelab_watch()
+
+    assert result["expected"] == ["expected:docker:sonarr"]
+
+
+# ---------------------------------------------------------------------------
 # run_homelab_watch — top-level entry point
 # ---------------------------------------------------------------------------
 
@@ -840,7 +986,7 @@ async def test_run_homelab_watch_returns_summary_dict_shape():
          patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value={"node": "pve", "status": "none"}):
         result = await homelab_watch.run_homelab_watch()
 
-    assert set(result.keys()) == {"vms", "docker", "array", "disk_temps", "garage", "backups"}
+    assert set(result.keys()) == {"vms", "docker", "array", "disk_temps", "garage", "backups", "expected"}
 
 
 # ---------------------------------------------------------------------------

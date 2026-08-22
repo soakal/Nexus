@@ -764,6 +764,29 @@ class CalibrationHint(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Declared "what should be running" baseline (2026-08-21) — closes the
+# structural blind spot in homelab_watch.py's check_docker/check_proxmox_vms:
+# those are edge-triggered off in-memory state cleared on every NEXUS
+# restart, so a container/VM already stopped BEFORE NEXUS booted is invisible
+# to them forever (the "Only 3 Docker containers running -- verify this is
+# intentional" briefing nag, open since 2026-06-08, could never resolve on
+# its own). This table is the declared, DB-persisted baseline
+# homelab_watch.check_expected_resources diffs live state against every
+# tick, regardless of when the mismatch started. New table (create_all only,
+# no migration shim needed — brand new, matches OutcomeFlag/CalibrationHint).
+# `key` = f"{kind}:{identifier}", unique, same singleton-lookup idiom as
+# OutcomeFlag.fingerprint/CalibrationHint.fingerprint.
+class ExpectedResource(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    kind: str = Field(index=True)              # docker | vm | lxc
+    identifier: str                            # container name, or Proxmox vmid (str)
+    key: str = Field(unique=True, index=True)  # f"{kind}:{identifier}" -- dedup key
+    desired_state: str = "running"             # running | stopped
+    note: str | None = None                    # e.g. "seeded from live state"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_outcomeflag_columns():
     """Idempotently add the calibration-loop columns to an OutcomeFlag table
     that predates them. Best-effort — never fatal to startup."""
