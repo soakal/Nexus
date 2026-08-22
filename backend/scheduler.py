@@ -23,6 +23,16 @@ _ORGANIZER_OUTPUT_CHARS = 2000
 # delete this constant, the _infisical_soak_reminder job, its registration
 # block below, and tests/test_infisical_soak_reminder.py once Phase 6 ships.
 INFISICAL_SOAK_REMINDER_AT = datetime(2026, 9, 21, 9, 0)
+
+# Same one-off shape, for the Calibration Loop's parked step-7 decision
+# (docs/calibration-loop-spec.md §9.5). The spec's own 14-day soak began when
+# the observability surface shipped 2026-08-02, so the real gate (2026-08-16)
+# is already behind us -- registering that would just take the "window passed"
+# branch and fire never, which is the exact failure the Infisical reminder
+# above was rescheduled to fix. Dated 14 days out from 2026-08-22 instead.
+# Safe to delete this constant, _calibration_soak_reminder, and its
+# registration block once calibration_suppression_enabled is decided either way.
+CALIBRATION_SOAK_REMINDER_AT = datetime(2026, 9, 5, 9, 0)
 # The soak window itself closed long ago (14 days after the 2026-07-24
 # Infisical flip, i.e. 2026-08-07). What is outstanding is the Phase 6
 # decision, not more soak time -- so the reminder says that, instead of
@@ -605,6 +615,79 @@ async def _infisical_soak_reminder():
         logger.error(f"Infisical soak reminder job error: {e}")
 
 
+async def _calibration_soak_reminder():
+    """Same shape as _infisical_soak_reminder above, for the Calibration Loop's
+    own parked decision (docs/calibration-loop-spec.md §9.5 step 7). Reads
+    nothing off disk and changes nothing -- it renders today's hint_report and
+    pushes it once so the flip becomes a dated decision rather than a flag
+    everyone forgets. Deliberately does NOT flip
+    calibration_suppression_enabled: §9.5 step 7 is explicitly "an ops step,
+    not a code step", Brian's call after reading the numbers."""
+    try:
+        import html
+        from backend import events
+        from backend.agents import calibration
+        from backend.config import get_settings
+
+        settings = get_settings()
+        if getattr(settings, "calibration_suppression_enabled", False):
+            logger.info("Calibration soak reminder skipped — suppression already enabled")
+            return
+
+        report = await calibration.hint_report(
+            days=int(getattr(settings, "calibration_window_days", 30))
+        )
+        watching = report.get("watching") or []
+        # hint_report() degrades to a zeroed structure rather than raising, so
+        # an empty `watching` can mean "genuinely no noisy rules" OR "the read
+        # failed" -- same ambiguity _infisical_soak_reminder handles above, and
+        # the same resolution: say which one it is instead of implying "clean".
+        eligible = [
+            w for w in watching
+            if w.get("verdict_count", 0) >= report.get("min_verdicts", 5)
+            and w.get("fp_rate", 0.0) >= report.get("fp_threshold", 0.60)
+        ]
+
+        if eligible:
+            top = ", ".join(
+                f"{html.escape(str(w.get('fingerprint')))} "
+                f"({w.get('fp_rate', 0.0):.0%} FP over {w.get('verdict_count', 0)} verdicts)"
+                for w in eligible[:3]
+            )
+            detail = (
+                f"{len(eligible)} rule(s) now clear both bars "
+                f"(>={report.get('min_verdicts')} verdicts, "
+                f">={report.get('fp_threshold', 0.6):.0%} false-positive rate): {top}. "
+                "Those are what suppression would silence."
+            )
+        elif watching:
+            detail = (
+                f"{len(watching)} fingerprint(s) under observation but NONE yet clear both "
+                f"bars (>={report.get('min_verdicts')} verdicts, "
+                f">={report.get('fp_threshold', 0.6):.0%} false-positive rate), so flipping "
+                "the flag today would change nothing — spec §9.6 says that is the expected "
+                "outcome, not a bug."
+            )
+        else:
+            detail = (
+                "No fingerprints under observation at all this window — either genuinely "
+                "quiet or the CalibrationHint read came back empty. Check /calibration "
+                "yourself before concluding anything."
+            )
+
+        await events.notify_phone(
+            "NEXUS reminder: the Calibration Loop has been fully built and observable since "
+            "2026-08-02 with calibration_suppression_enabled still False (spec §9.5 rollout "
+            f"steps 1-6 shipped, step 7 — the ops flip — never taken). {detail} "
+            "Run /calibration, then either flip CALIBRATION_SUPPRESSION_ENABLED=true in .env "
+            "and restart, or decide it stays off and say so.",
+            kind="soak_reminder",
+        )
+        logger.info("Calibration soak reminder sent")
+    except Exception as e:
+        logger.error(f"Calibration soak reminder job error: {e}")
+
+
 # Pulse ticker noise control (backend/activity.py) — job completions still
 # update the actor board via begin()/end() regardless, this only trims which
 # jobs also write a ticker line. High-frequency housekeeping jobs would
@@ -1025,5 +1108,24 @@ def setup_scheduler(briefing_time: str, timezone: str):
             logger.info("Infisical soak reminder window passed — not registering")
     except Exception as e:
         logger.warning(f"Infisical soak reminder registration skipped: {e}")
+
+    try:
+        tz = ZoneInfo(timezone)
+        fire_at = CALIBRATION_SOAK_REMINDER_AT.replace(tzinfo=tz)
+        if datetime.now(tz) < fire_at:
+            scheduler.add_job(
+                _calibration_soak_reminder,
+                DateTrigger(run_date=CALIBRATION_SOAK_REMINDER_AT, timezone=timezone),
+                id="calibration_soak_reminder",
+                replace_existing=True,
+            )
+            logger.info(
+                "Calibration soak reminder registered: fires once at %s %s",
+                CALIBRATION_SOAK_REMINDER_AT, timezone,
+            )
+        else:
+            logger.info("Calibration soak reminder window passed — not registering")
+    except Exception as e:
+        logger.warning(f"Calibration soak reminder registration skipped: {e}")
 
     logger.info(f"Scheduler configured: briefing at {briefing_time} {timezone}")
