@@ -25,6 +25,7 @@ destroy the signal the feature exists to capture), no frontend page, no
 Obsidian/Vault write path.
 """
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -509,6 +510,36 @@ async def record_flag(
     return d["id"] if d["surface"] or d["id"] else None
 
 
+async def _maybe_sync_expected_resource(flag: dict) -> None:
+    """When a homelab_watch 'declared baseline mismatch' flag (check
+    "expected:{kind}:{identifier}", see homelab_watch.check_expected_resources)
+    is RESOLVED, sync the ExpectedResource baseline to the state that was
+    observed when the flag was raised -- a human tapping Resolved means "this
+    is fine now, stop flagging it," not "stop watching entirely." Without
+    this the same mismatch would re-flag forever on every tick, exactly the
+    never-resolvable nag this feature exists to close. Best-effort, never
+    raises -- mirrors homelab_watch._clear_flag_safe's discipline for a
+    non-guaranteed downstream call inside a flag lifecycle transition."""
+    check = str(flag.get("check") or "")
+    if flag.get("source") != "homelab_watch" or not check.startswith("expected:"):
+        return
+    detail = flag.get("detail")
+    if not detail:
+        return
+    try:
+        info = json.loads(detail)
+        kind, identifier, observed_state = info["kind"], info["identifier"], info["observed_state"]
+    except Exception as e:
+        logger.warning(f"_maybe_sync_expected_resource: unparseable detail on flag {flag.get('id')}: {e}")
+        return
+    from backend.agents import expected_resources
+    # Prefer live truth over the raise-time snapshot in `detail` -- see
+    # expected_resources.observe(). Falls back to the snapshot only when the
+    # integration can't be read right now.
+    live = await expected_resources.observe(kind, identifier)
+    await expected_resources.set_desired_state(kind, identifier, live or observed_state)
+
+
 async def resolve_flag(
     flag_id: int,
     status: str,
@@ -547,6 +578,13 @@ async def resolve_flag(
     updated = await asyncio.to_thread(_db_update_flag, flag_id, **update_fields)
     if updated is None:
         return "not_found"
+
+    if status == "resolved":
+        try:
+            await _maybe_sync_expected_resource(row)
+        except Exception as e:
+            logger.warning(f"resolve_flag: expected-resource sync failed (ignored): {e}")
+
     return status
 
 

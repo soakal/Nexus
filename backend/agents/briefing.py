@@ -412,6 +412,38 @@ def _build_openrouter_section(result) -> str:
 _UNRAID_PARITY_HEALTHY_STATUSES = {"idle", "disk_ok"}
 
 
+def _build_docker_status_line(docker_containers: list, expected_rows: list) -> str:
+    """Deterministic 'N of M expected' Docker status line for the briefing's
+    System Health section -- replaces raw container-count narration (the
+    briefing repeatedly said "Only 3 Docker containers running -- verify
+    this is intentional" with no baseline to judge that against, an
+    unresolvable nag open in Brian's vault since 2026-06-08) with a computed
+    comparison against the declared ExpectedResource baseline
+    (backend/agents/expected_resources.py). Falls back to a bare count when
+    no baseline has been declared yet (expected_resources.seed_from_live()
+    hasn't run), so the line is never blank."""
+    docker_expected = [r for r in expected_rows if r.get("kind") == "docker"]
+    if not docker_expected:
+        return f"{len(docker_containers)} Docker container(s) running (no expected-state baseline declared)."
+
+    # Numerator and denominator must range over the SAME set -- counting every
+    # live running container against only the declared-running ones produced
+    # "9 of 3 expected Docker containers running" the moment anything
+    # undeclared was up.
+    live_running = {
+        c.get("name") for c in docker_containers
+        if (c.get("state") or "").upper() == "RUNNING"
+    }
+    expected_running_names = {
+        r.get("identifier") for r in docker_expected if r.get("desired_state") == "running"
+    }
+    expected_running = len(expected_running_names)
+    running = len(expected_running_names & live_running)
+    if running == expected_running:
+        return f"{running} of {expected_running} expected Docker containers running."
+    return f"{running} of {expected_running} expected Docker containers running — see Open Items."
+
+
 async def _record_briefing_flags(context: dict) -> None:
     """Deterministic, structured flag write path for the briefing (spec
     docs/outcome-tracker-spec.md §2.2-C, rollout step 5 of 7). Reads only
@@ -519,6 +551,9 @@ Items requiring action TODAY, ranked by urgency. If nothing urgent, say so.
 
 ## System Health
 One line per system: Unraid, UniFi, Home Assistant, AdGuard.
+Docker: {docker_status_line} — state this exactly, verbatim, as its own line. It is
+already a computed comparison against a known baseline, so do NOT add any caveat
+about verifying whether the count is intentional.
 Flag parity check if running. Flag mover if active. Flag new unknown devices on network.
 
 ## Network Security
@@ -565,7 +600,7 @@ async def run_briefing() -> str:
     )
     from backend.integrations.calendar import get_today_events
     from backend.integrations import protonmail, claude_usage, openrouter
-    from backend.agents import calibration, mail_drafts, outcomes
+    from backend.agents import calibration, expected_resources, mail_drafts, outcomes
 
     logger.info("Running morning briefing")
 
@@ -600,6 +635,7 @@ async def run_briefing() -> str:
             calibration.hint_report(30),
             claude_usage.fetch(),
             openrouter.fetch(),
+            expected_resources.list_expected(),
             return_exceptions=True,
         )
 
@@ -607,7 +643,7 @@ async def run_briefing() -> str:
             ha, unifi_d, unraid_d, obs, gh, wx, channels, ag, cal_data,
             proton_unread, proton_drafts, open_flags_result, closed_flags_result,
             calibration_result, hint_report_result, claude_usage_result,
-            openrouter_result,
+            openrouter_result, expected_resources_result,
         ) = results
 
         cal_str = cal_data if not isinstance(cal_data, Exception) else "Calendar unavailable"
@@ -652,6 +688,11 @@ async def run_briefing() -> str:
         ag_filtering = safe(ag, "filtering_enabled", None)
         ag_filtering = "unknown" if ag_filtering is None else ag_filtering
 
+        expected_resources_list = expected_resources_result if isinstance(expected_resources_result, list) else []
+        docker_status_line = _build_docker_status_line(
+            safe(unraid_d, "docker_containers", []), expected_resources_list,
+        )
+
         context = {
             "home_assistant": {
                 "entity_count": len(safe(ha, "entities", [])),
@@ -669,6 +710,7 @@ async def run_briefing() -> str:
                 "storage_used_gb": safe(unraid_d, "storage_used_gb", 0),
                 "storage_total_gb": safe(unraid_d, "storage_total_gb", 0),
                 "docker_containers": len(safe(unraid_d, "docker_containers", [])),
+                "docker_status": docker_status_line,
             },
             "github": {
                 "open_prs": len(safe(gh, "open_prs", [])),
@@ -714,6 +756,7 @@ async def run_briefing() -> str:
             dvr_used=safe(channels, "storage_used_gb", 0),
             dvr_total=safe(channels, "storage_total_gb", 0),
             calendar_block=cal_str,
+            docker_status_line=docker_status_line,
         )
 
         # Added AFTER the prompt is built, on purpose — this must never reach the

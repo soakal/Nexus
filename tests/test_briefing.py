@@ -10,10 +10,52 @@ from backend.agents.briefing import (
     _build_protonmail_section,
     _build_claude_usage_section,
     _build_openrouter_section,
+    _build_docker_status_line,
     _format_calibration_line,
 )
 from backend.integrations.claude_usage import ClaudeUsageData, ClaudeUsageWindow
 from backend.integrations.openrouter import OpenRouterData
+
+
+def test_docker_status_line_no_baseline_falls_back_to_bare_count():
+    """No ExpectedResource rows declared yet -- falls back to the old bare
+    count rather than a blank/misleading '0 of 0' line."""
+    line = _build_docker_status_line([{"name": "sonarr", "state": "RUNNING"}], [])
+    assert line == "1 Docker container(s) running (no expected-state baseline declared)."
+
+
+def test_docker_status_line_all_match():
+    containers = [{"name": "sonarr", "state": "RUNNING"}, {"name": "radarr", "state": "RUNNING"}]
+    expected = [
+        {"kind": "docker", "identifier": "sonarr", "desired_state": "running"},
+        {"kind": "docker", "identifier": "radarr", "desired_state": "running"},
+    ]
+    line = _build_docker_status_line(containers, expected)
+    assert line == "2 of 2 expected Docker containers running."
+
+
+def test_docker_status_line_mismatch_points_to_open_items():
+    """The exact regression this feature closes: a running count below the
+    declared baseline must read as a computed comparison, not an unresolvable
+    'verify this is intentional' nag."""
+    containers = [{"name": "sonarr", "state": "RUNNING"}]
+    expected = [
+        {"kind": "docker", "identifier": "sonarr", "desired_state": "running"},
+        {"kind": "docker", "identifier": "radarr", "desired_state": "running"},
+    ]
+    line = _build_docker_status_line(containers, expected)
+    assert line == "1 of 2 expected Docker containers running — see Open Items."
+    assert "verify" not in line.lower()
+
+
+def test_docker_status_line_ignores_non_docker_expected_rows():
+    containers = [{"name": "sonarr", "state": "RUNNING"}]
+    expected = [
+        {"kind": "docker", "identifier": "sonarr", "desired_state": "running"},
+        {"kind": "vm", "identifier": "102", "desired_state": "running"},
+    ]
+    line = _build_docker_status_line(containers, expected)
+    assert line == "1 of 1 expected Docker containers running."
 
 
 def test_strip_unverified_sections_drops_priority_actions_and_inbox():

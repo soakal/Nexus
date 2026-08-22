@@ -466,6 +466,65 @@ async def test_ac12_resolve_flag_sets_fields_leaves_others_untouched(eng):
     assert row.summary == summary_before
 
 
+@pytest.mark.asyncio
+async def test_resolve_flag_syncs_expected_resource_baseline(eng):
+    """2026-08-21: resolving a homelab_watch 'expected:{kind}:{identifier}'
+    flag (the shape check_expected_resources writes, with a {kind,
+    identifier, observed_state} JSON detail blob) as "resolved" must sync
+    ExpectedResource.desired_state to the observed state that was flagged --
+    otherwise the exact same mismatch re-flags forever after a human already
+    said "this is fine now." A resolve to a non-"resolved" status (e.g.
+    false_positive/deferred) must NOT touch the baseline."""
+    import json
+
+    from backend.agents import expected_resources, outcomes
+    from backend.database import ExpectedResource
+
+    with Session(eng) as session:
+        session.add(ExpectedResource(kind="docker", identifier="sonarr", key="docker:sonarr", desired_state="running"))
+        session.commit()
+
+    detail = json.dumps({"kind": "docker", "identifier": "sonarr", "observed_state": "stopped"})
+    flag_id = await outcomes.record_flag(
+        "homelab_watch", "expected:docker:sonarr", "sonarr is stopped but expected running", detail=detail,
+    )
+
+    result = await outcomes.resolve_flag(flag_id, "resolved", by="telegram")
+    assert result == "resolved"
+
+    rows = await expected_resources.list_expected()
+    row = next(r for r in rows if r["kind"] == "docker" and r["identifier"] == "sonarr")
+    assert row["desired_state"] == "stopped"
+
+    # A false_positive resolution must NOT touch the baseline.
+    with Session(eng) as session:
+        session.exec(select(ExpectedResource)).first()  # sanity: table still queryable
+    flag_id2 = await outcomes.record_flag(
+        "homelab_watch", "expected:docker:radarr", "radarr mismatch",
+        detail=json.dumps({"kind": "docker", "identifier": "radarr", "observed_state": "stopped"}),
+    )
+    with Session(eng) as session:
+        session.add(ExpectedResource(kind="docker", identifier="radarr", key="docker:radarr", desired_state="running"))
+        session.commit()
+    await outcomes.resolve_flag(flag_id2, "false_positive")
+    rows2 = await expected_resources.list_expected()
+    row2 = next(r for r in rows2 if r["kind"] == "docker" and r["identifier"] == "radarr")
+    assert row2["desired_state"] == "running"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_resolve_flag_ignores_non_expected_resource_flags(eng):
+    """A plain homelab_watch flag (e.g. "garage_open", not the
+    "expected:{kind}:{identifier}" shape) resolves normally with no
+    ExpectedResource side effect and no error -- _maybe_sync_expected_resource
+    must be a no-op for every existing flag shape."""
+    from backend.agents import outcomes
+
+    flag_id = await outcomes.record_flag("homelab_watch", "garage_open", "Garage door open 35 min")
+    result = await outcomes.resolve_flag(flag_id, "resolved")
+    assert result == "resolved"
+
+
 # ---------------------------------------------------------------------------
 # 6.5 Read path (calibration only — the rest of §6.5 belongs to briefing's
 # own test file, later rollout steps)
