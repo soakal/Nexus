@@ -87,6 +87,35 @@ def test_graph_resolution_rungs(vault_client):
     assert links == {("A", "B"), ("A", "C-Page"), ("C-Page", "A")}
 
 
+def test_graph_rejects_traversal_filename_in_catalog(vault_client, tmp_path):
+    """Defense-in-depth: even though the catalog is trusted (nightly-job
+    output, never user/LLM input), a malicious/corrupt `filename` must not
+    let the graph builder read outside wiki/ -- same containment guard as
+    read_note_text, just applied here too.
+
+    Discriminating setup, not just pointing at a file with no wikilinks in
+    it (which would pass this test whether or not the guard existed): the
+    out-of-bounds file DOES contain a real [[A]] link, so if the guard were
+    missing, a real "outside-secret -> A" edge would appear.
+    """
+    (tmp_path / "outside-secret.md").write_text("[[A]]")
+    poisoned = dict(CATALOG)
+    poisoned["pages"] = CATALOG["pages"] + [
+        {"title": "Evil", "filename": "../../outside-secret.md", "headers": "", "summary": "", "tags": []},
+    ]
+    (tmp_path / "Brain" / "_meta" / "wiki-catalog.json").write_text(json.dumps(poisoned))
+
+    resp = vault_client.get("/api/vault/graph", headers=AUTH)
+    assert resp.status_code == 200
+    data = resp.json()
+    # The poisoned node is still listed -- its filename/title come straight
+    # from the catalog, not from reading the file, so echoing them back is
+    # fine. What must NOT happen is an edge from it: that would only exist
+    # if outside-secret.md's real [[A]] link had actually been read.
+    assert {n["id"] for n in data["nodes"]} == {"A", "B", "C-Page", "outside-secret"}
+    assert all("outside-secret" not in (l["source"], l["target"]) for l in data["links"])
+
+
 def test_search_delegates(vault_client):
     with patch("backend.api.vault.vault_search", new_callable=AsyncMock) as vs:
         vs.return_value = "**Brain/wiki/A.md**\ncontext line"

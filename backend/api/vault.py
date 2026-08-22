@@ -131,7 +131,7 @@ async def get_note(path: str, _: str = Depends(require_api_key)):
 
 def _build_graph_sync() -> dict:
     catalog = _load_catalog()
-    wiki = _brain_root() / "wiki"
+    wiki = (_brain_root() / "wiki").resolve()
 
     nodes: list[dict] = []
     by_stem: dict[str, str] = {}
@@ -166,8 +166,15 @@ def _build_graph_sync() -> dict:
 
     edges: set[tuple[str, str]] = set()
     for node in nodes:
+        # Same containment guard as read_note_text -- the catalog is trusted
+        # (nightly job output, never user/LLM input) so this is defense in
+        # depth, not a live exploit path, but it costs nothing to match the
+        # rest of this file's convention instead of being the one exception.
+        candidate = (wiki / node["filename"]).resolve()
+        if not candidate.is_relative_to(wiki):
+            continue
         try:
-            text = (wiki / node["filename"]).read_text(encoding="utf-8", errors="ignore")
+            text = candidate.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue  # catalog is nightly -- a file deleted since then is not an error
         for m in WIKILINK_PAT.finditer(text):
