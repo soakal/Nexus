@@ -28,12 +28,28 @@ _USAGE_FILE = _MODULE_DIR / "logs" / "usage.jsonl"
 _CLAIM_FILE = _MODULE_DIR / "logs" / "usage.jsonl.ingest"
 
 
-def _price_model(model: str, input_tokens: int, output_tokens: int) -> float:
+def _price_model(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+    provider: str = "",
+) -> float:
     """USD cost for a usage line using router._PRICE_PER_MTOK.
 
     Unknown model -> 0.0 (tokens are still recorded on the row). OpenRouter logs a
     model like "anthropic/claude-sonnet-4-6"; strip the provider prefix so those
     rows price against the same table instead of falling through to 0.0.
+
+    Cache writes bill at 1.25x the base input rate, cache reads at 0.1x -- standard
+    Anthropic ephemeral-cache pricing. `input_tokens` from the API is already the
+    uncached remainder, so these are additive, not overlapping.
+
+    Batch API is 50% off every token type -- applied as a flat multiplier on the
+    whole priced amount when provider == "anthropic_batch", matching how Anthropic
+    actually bills it (each rate simply halved).
     """
     from backend.agents.router import _PRICE_PER_MTOK
 
@@ -42,10 +58,15 @@ def _price_model(model: str, input_tokens: int, output_tokens: int) -> float:
         price = _PRICE_PER_MTOK.get(model.split("/", 1)[1])
     if price is None:
         return 0.0
-    return (
+    cost = (
         input_tokens / 1e6 * price["input"]
         + output_tokens / 1e6 * price["output"]
+        + cache_creation_input_tokens / 1e6 * price["input"] * 1.25
+        + cache_read_input_tokens / 1e6 * price["input"] * 0.10
     )
+    if provider == "anthropic_batch":
+        cost *= 0.5
+    return cost
 
 
 def _parse_ts(raw) -> datetime:
@@ -91,14 +112,24 @@ def _ingest_claim_file() -> int:
             model = str(rec.get("model") or "unknown")
             input_tokens = int(rec.get("input_tokens") or 0)
             output_tokens = int(rec.get("output_tokens") or 0)
+            cache_creation_input_tokens = int(rec.get("cache_creation_input_tokens") or 0)
+            cache_read_input_tokens = int(rec.get("cache_read_input_tokens") or 0)
+            provider = str(rec.get("provider") or "")
         except Exception:
             logger.warning(f"brain_spend: skipping malformed usage line: {line!r}")
             continue
-        cost = _price_model(model, input_tokens, output_tokens)
+        cost = _price_model(
+            model, input_tokens, output_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            provider=provider,
+        )
         rows.append(SpendLog(
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
             cost_usd=cost,
             label="brain_organizer",
             task_id=None,

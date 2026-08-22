@@ -45,10 +45,15 @@ def usage_paths(monkeypatch, tmp_path):
     return usage, claim
 
 
-def _line(model, inp, out, ts="2026-07-01T12:00:00+00:00", provider="anthropic"):
+def _line(
+    model, inp, out, ts="2026-07-01T12:00:00+00:00", provider="anthropic",
+    cache_creation_input_tokens=0, cache_read_input_tokens=0,
+):
     return json.dumps({
         "ts": ts, "model": model,
         "input_tokens": inp, "output_tokens": out,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
         "provider": provider,
     })
 
@@ -96,6 +101,63 @@ def test_unknown_model_zero_cost_but_records_tokens(eng, usage_paths):
     assert rows[0].cost_usd == 0.0
     assert rows[0].input_tokens == 500
     assert rows[0].output_tokens == 500
+
+
+def test_cache_tokens_priced_at_write_and_read_multipliers(eng, usage_paths):
+    """sonnet-4-6 input rate is $3/MTok -- cache write bills at 1.25x that,
+    cache read at 0.10x. Additive with (not overlapping) input/output tokens,
+    since the API's `input_tokens` is already the uncached remainder."""
+    from backend.agents.brain_spend import ingest_brain_spend
+
+    usage, _ = usage_paths
+    usage.write_text(
+        _line(
+            "claude-sonnet-4-6", 0, 0,
+            cache_creation_input_tokens=1_000_000, cache_read_input_tokens=1_000_000,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    assert ingest_brain_spend() == 1
+    row = _rows(eng)[0]
+    # 1M cache-write @ $3 * 1.25 = $3.75, 1M cache-read @ $3 * 0.10 = $0.30
+    assert row.cost_usd == pytest.approx(3.75 + 0.30)
+    assert row.cache_creation_input_tokens == 1_000_000
+    assert row.cache_read_input_tokens == 1_000_000
+
+
+def test_anthropic_batch_provider_halves_the_priced_cost(eng, usage_paths):
+    """Batch API is 50% off every token type -- applied as a flat multiplier
+    on the whole priced amount, matching how Anthropic actually bills it."""
+    from backend.agents.brain_spend import ingest_brain_spend
+
+    usage, _ = usage_paths
+    usage.write_text(
+        _line("claude-sonnet-4-6", 1_000_000, 1_000_000, provider="anthropic_batch") + "\n",
+        encoding="utf-8",
+    )
+
+    assert ingest_brain_spend() == 1
+    row = _rows(eng)[0]
+    # Non-batch would be $3 + $15 = $18.00 (see test_happy_path_two_lines) -- halved.
+    assert row.cost_usd == pytest.approx(9.0)
+
+
+def test_anthropic_batch_provider_also_halves_cache_pricing(eng, usage_paths):
+    from backend.agents.brain_spend import ingest_brain_spend
+
+    usage, _ = usage_paths
+    usage.write_text(
+        _line(
+            "claude-sonnet-4-6", 0, 0, provider="anthropic_batch",
+            cache_creation_input_tokens=1_000_000, cache_read_input_tokens=1_000_000,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    assert ingest_brain_spend() == 1
+    row = _rows(eng)[0]
+    assert row.cost_usd == pytest.approx((3.75 + 0.30) * 0.5)
 
 
 def test_openrouter_prefixed_model_prices(eng, usage_paths):
