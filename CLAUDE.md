@@ -17,6 +17,21 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**nexus-lxc can push to GitHub on its own (2026-08-22)** — the deployed checkout at
+`/opt/nexus` on nexus-lxc now has its own SSH deploy key with **write** access to
+`github.com/soakal/Nexus`, so a commit authored on nexus-lxc reaches `origin/main` with a plain
+`git push`. Key: `/root/.ssh/id_ed25519_nexus_deploy`, registered on GitHub as a write-enabled
+deploy key; reached through the SSH config alias `github.com-nexus-deploy` in `/root/.ssh/config`;
+`/opt/nexus`'s `origin` remote already points at `git@github.com-nexus-deploy:soakal/Nexus.git`.
+Tested working. This closes a long-standing undocumented gap — previously the only way to get a
+nexus-lxc-authored commit upstream was to borrow devbox's `gh auth token` and push over
+`https://x-access-token:$TOKEN@github.com/...`, which is now a **fallback only** (for a
+revoked/rotated deploy key) and must never write that token into `.git/config` or shell history —
+this repo runs gitleaks in CI. Full procedure, including that fallback and the
+author-on-devbox-and-pull alternative, is documented in `.claude/skills/nexus-push-from-lxc/`.
+Ordinary deploys are unchanged and still simplest as: push from devbox, then on nexus-lxc
+`cd /opt/nexus && git pull && systemctl restart nexus-backend`.
+
 **Council-loop post-mortem repointed off local filesystem access (2026-08-16)** — closes a gap
 introduced by the Windows→nexus-lxc migration and never caught until a Fable-led NEXUS feature-gap
 review: `council_postmortem_enabled` was `True` and `council_loop_path` still hardcoded
