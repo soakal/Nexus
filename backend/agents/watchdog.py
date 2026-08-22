@@ -437,6 +437,15 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
     _should_alert debounce (not the DB-backed dead-letter one — a drift
     condition only matters while this process is still running the old code).
 
+    Escalation (opt-in, settings.deploy_drift_autorestart_enabled): tracks
+    CONSECUTIVE ticks that observed drift via governor.record_deploy_drift_tick
+    (persisted on SystemState.deploy_drift_streak). On the 2nd consecutive
+    tick — not the first, which only alerts exactly as before — auto-restarts
+    NEXUS through the broker's existing system_restart dispatch, the same
+    mechanism the manual Telegram button already uses. See the call site
+    below for why confirmed=True is used and how the kill switch still gates
+    it.
+
     Best-effort: any exception returns False without propagating. Returns
     whether drift was detected on this tick (independent of whether the
     alert itself was debounced).
@@ -453,8 +462,18 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
 
         if running is None or current is None:
             return False
+
+        from backend.safety import governor
+
         if running == current:
+            # No drift this tick -- reset the consecutive streak. Mirrors the
+            # self-clear-on-restart behavior this check already relies on:
+            # a real restart makes running==current too, so both paths reset
+            # the same way.
+            await asyncio.to_thread(governor.record_deploy_drift_tick, False)
             return False
+
+        streak = await asyncio.to_thread(governor.record_deploy_drift_tick, True)
 
         msg = (
             f"⚠️ Deploy drift: NEXUS is running {running[:12]} but the repo is at "
@@ -479,6 +498,48 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
                     # See CLAUDE.md.)
                     buttons=[{"text": "🔄 Restart NEXUS (LXC)", "callback_data": "system:restart:lxc"}],
                 )
+
+        # Auto-restart escalation -- fires on the 2nd CONSECUTIVE drift tick
+        # only (streak == 2, not >=2 or first-tick): a human still gets one
+        # full tick (up to 5 min) to tap the manual button above before this
+        # takes over, matching today's behavior on tick 1. Using == rather
+        # than >= also means a failed/refused attempt does not retry every
+        # tick afterward -- the manual button remains the fallback.
+        if streak == 2 and getattr(s, "deploy_drift_autorestart_enabled", False):
+            from backend.safety import broker
+            # broker.classify("system_restart", ...) is HIGH / REVERSIBLE_BY_
+            # INVERSE (backend/safety/broker.py) -- decide() would normally
+            # return NEEDS_CONFIRM for an unconfirmed autonomous actor at
+            # that risk band, i.e. it would park this restart behind the
+            # SAME Telegram confirm/reject tap this whole feature exists to
+            # stop depending on (Brian not tapping a button is the bug being
+            # fixed here -- requiring a different button would just move the
+            # failure mode, not close it). confirmed=True is a deliberate,
+            # narrow bypass of that one gate, scoped to this one call site --
+            # not a broker policy change -- and only ever reached after the
+            # 2nd-consecutive-tick + opt-in-flag gate above.
+            #
+            # The kill switch is NOT re-checked separately here: execute_action
+            # already checks governor.get_system_state().autonomy_enabled for
+            # ANY agent/autonomous actor BEFORE classify/decide ever runs,
+            # unconditionally on `confirmed` (see broker.py's execute_action
+            # docstring / CLAUDE.md's "Kill switch" section) -- so
+            # autonomy_enabled=False still hard-FORBIDs this exact call,
+            # confirmed=True included. A second pre-check here would just be
+            # a driftable duplicate of that same read, not a stronger guard.
+            # Every attempt -- allowed or forbidden -- is still fully audited
+            # via the normal ActionLog row either way.
+            await broker.execute_action(
+                actor="autonomous",
+                kind="system_restart",
+                target="lxc",
+                payload={
+                    "reason": "deploy_drift_autorestart",
+                    "running_sha": running,
+                    "current_sha": current,
+                },
+                confirmed=True,
+            )
 
         return True
     except Exception as exc:

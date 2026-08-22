@@ -263,6 +263,16 @@ class Settings(BaseSettings):
     # watchdog_enabled's gate. Reuses watchdog_alert_cooldown_s for repeat alerts.
     deploy_drift_check_enabled: bool = True
 
+    # Deploy-drift auto-restart — Brian's own vault notes show the manual
+    # "Restart NEXUS (LXC)" Telegram button sitting untapped for 2-3 days
+    # across multiple incidents, re-paging the whole time. When True, the
+    # watchdog restarts NEXUS itself (via the same broker system_restart
+    # dispatch the button uses) on the 2nd CONSECUTIVE drift tick, not the
+    # first — a human still gets one full alert cycle to act first, same as
+    # today. Default False: this restarts a live production process
+    # unattended, so it must be an explicit opt-in, not a surprise.
+    deploy_drift_autorestart_enabled: bool = False
+
     # Budget early-warning — a single phone alert per local day when spend
     # crosses budget_warn_pct of the daily cap. Runs inside the same 5-min
     # watchdog job (see run_watchdog), so it shares watchdog_enabled's gate.

@@ -1210,6 +1210,162 @@ async def test_run_watchdog_includes_deploy_drift_key(eng):
         result = await watchdog.run_watchdog()
     assert "deploy_drift" in result
 
+
+# ---------------------------------------------------------------------------
+# check_deploy_drift auto-restart escalation (deploy_drift_autorestart_enabled)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_first_tick_no_autorestart(eng):
+    """First consecutive drift tick only alerts, exactly like today -- the
+    auto-restart escalation never fires on tick 1, even with the flag on."""
+    from backend.agents import watchdog
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings(deploy_drift_autorestart_enabled=True)
+    execute_mock = AsyncMock()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex",
+               AsyncMock(return_value={"id": 1, "surface": True, "reason": None})), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)), \
+         patch("backend.safety.broker.execute_action", execute_mock):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is True
+    execute_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_second_tick_autorestarts_when_enabled(eng):
+    """2nd CONSECUTIVE drift tick, flag on, kill switch on (default
+    SystemState.autonomy_enabled) -> broker.execute_action dispatches the
+    same system_restart/lxc target the manual button uses, self-confirmed."""
+    from backend.agents import watchdog
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings(deploy_drift_autorestart_enabled=True)
+    execute_mock = AsyncMock()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex",
+               AsyncMock(return_value={"id": 1, "surface": True, "reason": None})), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)), \
+         patch("backend.safety.broker.execute_action", execute_mock):
+        await watchdog.check_deploy_drift(cooldown_s=3600)
+        fired2 = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired2 is True
+    execute_mock.assert_awaited_once()
+    assert execute_mock.await_args.kwargs["actor"] == "autonomous"
+    assert execute_mock.await_args.kwargs["kind"] == "system_restart"
+    assert execute_mock.await_args.kwargs["target"] == "lxc"
+    assert execute_mock.await_args.kwargs["confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_second_tick_no_autorestart_when_flag_disabled(eng):
+    """Flag stays default-off -> the 2nd consecutive tick still only alerts,
+    matching today's behavior byte for byte."""
+    from backend.agents import watchdog
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings()  # deploy_drift_autorestart_enabled defaults False
+    execute_mock = AsyncMock()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex",
+               AsyncMock(return_value={"id": 1, "surface": True, "reason": None})), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)), \
+         patch("backend.safety.broker.execute_action", execute_mock):
+        await watchdog.check_deploy_drift(cooldown_s=3600)
+        await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    execute_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_kill_switch_off_prevents_autorestart(eng):
+    """Flag on but the global kill switch (SystemState.autonomy_enabled) is
+    off -> the broker's own kill-switch check (BEFORE classify/decide,
+    unconditional on confirmed=True) FORBIDs the call outright and the
+    restart is never actually dispatched. Runs the REAL broker, not a mock,
+    to prove the enforcement this call site relies on instead of assuming it."""
+    from backend.database import SystemState
+    from backend.agents import watchdog
+
+    with Session(eng) as session:
+        session.add(SystemState(id=1, autonomy_enabled=False))
+        session.commit()
+
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings(deploy_drift_autorestart_enabled=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=running), \
+         patch("backend.version.get_git_head", return_value=current), \
+         patch("backend.agents.outcomes.record_flag_ex",
+               AsyncMock(return_value={"id": 1, "surface": True, "reason": None})), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)), \
+         patch("subprocess.run") as subprocess_run_mock:
+        await watchdog.check_deploy_drift(cooldown_s=3600)
+        fired2 = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired2 is True
+    subprocess_run_mock.assert_not_called()
+
+    from backend.database import ActionLog
+    with Session(eng) as session:
+        rows = session.exec(
+            select(ActionLog).where(ActionLog.kind == "system_restart")
+        ).all()
+    assert len(rows) == 1
+    assert rows[0].decision == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_check_deploy_drift_streak_resets_when_drift_clears(eng):
+    """The consecutive-tick counter resets to 0 the moment a tick observes no
+    drift -- a later new drift incident starts back at tick 1, so the
+    auto-restart escalation only fires on ITS 2nd consecutive tick, not by
+    accumulating across an intervening clear."""
+    from backend.agents import watchdog
+
+    same = "a" * 40
+    running = "a" * 40
+    current = "b" * 40
+    settings = _drift_settings(deploy_drift_autorestart_enabled=True)
+    execute_mock = AsyncMock()
+
+    sha_pairs = [
+        (running, current),  # tick 1: drift (streak 1)
+        (same, same),        # tick 2: clears (streak resets to 0)
+        (running, current),  # tick 3: drift again (streak 1, NOT 3)
+        (running, current),  # tick 4: drift again (streak 2 -> autorestart)
+    ]
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.agents.outcomes.record_flag_ex",
+               AsyncMock(return_value={"id": 1, "surface": True, "reason": None})), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)), \
+         patch("backend.safety.broker.execute_action", execute_mock):
+        for run_sha, cur_sha in sha_pairs:
+            with patch("backend.version.running_sha", return_value=run_sha), \
+                 patch("backend.version.get_git_head", return_value=cur_sha):
+                await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    execute_mock.assert_awaited_once()
+
     # Also present in the outer-exception fallback path.
     with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
         result2 = await watchdog.run_watchdog()

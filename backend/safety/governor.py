@@ -817,3 +817,39 @@ def get_proposer_tick_stats(hours: int = 24) -> dict | None:
         # Newest first, capped -- matches the digest's other "recent items" blocks.
         "filtered_items": list(reversed(filtered_items))[:5],
     }
+
+
+def record_deploy_drift_tick(drift: bool) -> int:
+    """Sync. Track consecutive 5-min watchdog ticks that have observed deploy
+    drift in a row, persisted on SystemState.deploy_drift_streak -- same
+    singleton-row persisted-counter idiom as last_budget_warn_day/
+    auth_burst_alert_json above, rather than a new mechanism.
+
+    drift=True increments and returns the new streak; drift=False resets to
+    0 (self-clears the moment a tick sees no drift, matching the boot-time
+    self-clear the check itself already relies on) and returns 0. Skips the
+    write entirely when the value wouldn't change (already 0, still no
+    drift) -- the common case on every quiet tick. Creates SystemState row
+    id=1 if it doesn't exist yet, same as budget_warning_due.
+    """
+    from sqlmodel import Session
+    from backend.database import SystemState, engine
+
+    with Session(engine) as session:
+        row = session.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+
+        current = row.deploy_drift_streak or 0
+        new = (current + 1) if drift else 0
+        if new == current:
+            return current
+
+        row.deploy_drift_streak = new
+        row.updated_at = datetime.utcnow()
+        session.add(row)
+        session.commit()
+        return new

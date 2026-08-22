@@ -334,6 +334,17 @@ class SystemState(SQLModel, table=True):
     # "Proposer (24h)" block — previously computed every tick and discarded.
     # Same singleton-row *_json TEXT idiom as auth_burst_alert_json above.
     proposer_tick_stats_json: str | None = Field(default=None)
+    # Consecutive 5-min watchdog ticks that have observed deploy drift in a
+    # row (backend/agents/watchdog.py::check_deploy_drift, backend/safety/
+    # governor.py::record_deploy_drift_tick) -- drives the deploy-drift
+    # auto-restart escalation (2nd consecutive tick, not the first). Reset to
+    # 0 the moment a tick observes no drift. Persisted rather than kept
+    # process-local (contrast _contract_fail_streak in watchdog.py) --
+    # belt-and-suspenders durability, matching last_budget_warn_day/
+    # auth_burst_alert_json's idiom, even though in practice any real
+    # restart already re-captures a matching running_sha and clears the
+    # underlying drift condition (and this counter with it) on its own.
+    deploy_drift_streak: int = 0
 
 
 class StateSnapshot(SQLModel, table=True):
@@ -588,6 +599,7 @@ def _ensure_system_state_columns():
     _safe_add_column("systemstate", "anthropic_balance_watch_last_comment_count", "INTEGER")
     _safe_add_column("systemstate", "anthropic_balance_watch_last_probe_status", "INTEGER")
     _safe_add_column("systemstate", "proposer_tick_stats_json", "TEXT")
+    _safe_add_column("systemstate", "deploy_drift_streak", "INTEGER DEFAULT 0")
 
 
 def _ensure_system_state():
