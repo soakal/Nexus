@@ -153,6 +153,41 @@ async def _record_speedtest():
         raise
 
 
+async def _record_trend_snapshot():
+    """Daily TrendSnapshot write for the two metrics briefing.py's 7-day-average
+    claim actually reads back (AdGuard blocked_pct, Unraid storage_used_gb) --
+    see backend/database.py's TrendSnapshot docstring for why this table went
+    quiet in the first place (Trends *page* removed 2026-07-07) and
+    briefing.py's _gather_trend_baselines for the read side. Each source is
+    independent -- one integration being down doesn't block the other's row."""
+    try:
+        from sqlmodel import Session
+        from backend.database import TrendSnapshot, engine
+        from backend.integrations import adguard, unraid
+
+        rows = []
+        try:
+            ag = await adguard.fetch()
+            rows.append(TrendSnapshot(source="adguard", metric="blocked_pct", value=ag.blocked_pct))
+        except Exception as e:
+            logger.warning(f"Trend snapshot: adguard fetch failed: {e}")
+        try:
+            un = await unraid.fetch()
+            rows.append(TrendSnapshot(source="unraid", metric="storage_used_gb", value=un.storage_used_gb))
+        except Exception as e:
+            logger.warning(f"Trend snapshot: unraid fetch failed: {e}")
+
+        if rows:
+            with Session(engine) as session:
+                for row in rows:
+                    session.add(row)
+                session.commit()
+        logger.info(f"Trend snapshot recorded: {len(rows)} row(s)")
+    except Exception as e:
+        logger.error(f"Trend snapshot job error: {e}")
+        raise
+
+
 async def _retry_pending_deliveries():
     try:
         from backend.integrations.telegram import deliver_pending
@@ -706,6 +741,17 @@ def setup_scheduler(briefing_time: str, timezone: str):
         # disruptive to run more often.
         IntervalTrigger(hours=3),
         id="record_speedtest",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _record_trend_snapshot,
+        # Wall-clock CronTrigger, NOT IntervalTrigger(hours=24): an interval
+        # trigger with no start_date first fires at now+24h, and
+        # replace_existing=True re-arms it on every restart -- on a box that
+        # restarts more than daily it would never fire at all. 03:20 is before
+        # the morning briefing that reads these rows back.
+        CronTrigger(hour=3, minute=20, timezone=timezone),
+        id="record_trend_snapshot",
         replace_existing=True,
     )
     from backend.config import get_settings
