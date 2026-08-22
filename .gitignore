@@ -61,8 +61,13 @@ logs/
 Thumbs.db
 
 # Claude Code session directory -- but skills are real reusable content, not
-# ephemeral session state, so track those
-.claude/
+# ephemeral session state, so track those.
+# `.claude/*` and NOT `.claude/`: git never descends into an excluded
+# DIRECTORY, so the negations below are inert against `.claude/` and every
+# skill had to be `git add -f`'d by hand (which is how the first four got in,
+# and why the next two nearly didn't). Excluding the contents instead lets the
+# re-includes actually work.
+.claude/*
 !.claude/skills/
 !.claude/skills/**
 
