@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, select
@@ -289,6 +290,90 @@ async def resolve_flag_route(
         raise HTTPException(status_code=400, detail="Invalid target status")
 
     return {"id": flag_id, "status": result}
+
+
+# ---------------------------------------------------------------------------
+# Obligation tracker CRUD (backend/agents/obligations.py, 2026-08-21) — a
+# recurring/one-off "did a human confirm this got handled" reminder (bill
+# payments, vet follow-ups). Overdue detection + paging is a scheduler job
+# (obligations.run_obligations_check) that reuses record_flag_ex above;
+# confirming is done via the EXISTING /flags/{id}/resolve route, not here —
+# these routes are only for defining/editing/listing obligations themselves.
+# NOTE: last_confirmed_at reflects Brian's own confirmation, never verified
+# bank/lab truth — see obligations.py's module docstring.
+# ---------------------------------------------------------------------------
+
+def _parse_due(raw) -> datetime:
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="next_due_at must be ISO-8601")
+
+
+@router.get("/obligations")
+async def list_obligations_route(active_only: bool = False, _=Depends(require_api_key)):
+    from backend.agents import obligations
+    return await obligations.list_obligations(active_only=active_only)
+
+
+@router.post("/obligations")
+async def create_obligation_route(body: dict = Body(...), _=Depends(require_api_key)):
+    from backend.agents import obligations
+
+    title = body.get("title")
+    next_due_at = body.get("next_due_at")
+    if not title or not next_due_at:
+        raise HTTPException(status_code=400, detail="title and next_due_at are required")
+
+    cadence_days = body.get("cadence_days")
+    if cadence_days is not None and (isinstance(cadence_days, bool) or not isinstance(cadence_days, int) or cadence_days <= 0):
+        raise HTTPException(status_code=400, detail="cadence_days must be a positive integer")
+
+    return await obligations.create_obligation(
+        title=title,
+        next_due_at=_parse_due(next_due_at),
+        category=body.get("category", "other"),
+        cadence_description=body.get("cadence_description", ""),
+        cadence_days=cadence_days,
+        note=body.get("note"),
+    )
+
+
+@router.get("/obligations/{obligation_id}")
+async def get_obligation_route(obligation_id: int, _=Depends(require_api_key)):
+    from backend.agents import obligations
+    row = await obligations.get_obligation(obligation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Obligation not found")
+    return row
+
+
+@router.patch("/obligations/{obligation_id}")
+async def update_obligation_route(
+    obligation_id: int, body: dict = Body(...), _=Depends(require_api_key)
+):
+    from backend.agents import obligations
+
+    fields: dict = {}
+    for key in ("title", "category", "cadence_description", "cadence_days", "note", "active"):
+        if key in body:
+            fields[key] = body[key]
+    if "next_due_at" in body:
+        fields["next_due_at"] = _parse_due(body["next_due_at"])
+
+    row = await obligations.update_obligation(obligation_id, **fields)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Obligation not found")
+    return row
+
+
+@router.delete("/obligations/{obligation_id}")
+async def delete_obligation_route(obligation_id: int, _=Depends(require_api_key)):
+    from backend.agents import obligations
+    ok = await obligations.delete_obligation(obligation_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Obligation not found")
+    return {"deleted": True}
 
 
 @router.post("/actions/{action_id}/confirm")

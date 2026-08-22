@@ -764,6 +764,31 @@ class CalibrationHint(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+# Obligation Tracker (2026-08-21) — recurring/one-off "did a human confirm
+# this got handled" reminders (a bill payment, a vet appointment) that close
+# the loop the outcome tracker above already established for other signal
+# sources. See backend/agents/obligations.py's module docstring for the full
+# design and the important caveat: this tracks CONFIRMATION, not verified
+# bank/lab truth — NEXUS cannot independently confirm a payment cleared or an
+# appointment happened. Brand new table (create_all only, no migration shim
+# needed — same "genuinely new table" precedent as CalibrationHint/OutcomeFlag
+# above). Overdue rows are surfaced through the EXISTING OutcomeFlag/
+# record_flag_ex machinery (fingerprint f"obligation:{id}") rather than a
+# parallel notification path — see backend/agents/obligations.py.
+class Obligation(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    title: str
+    category: str = "other"               # bill | medical | other (free text, not an enum)
+    cadence_description: str = ""         # free text -- "monthly", "as needed per vet" (display only)
+    cadence_days: int | None = None       # optional numeric interval; None = one-off, never auto-advances
+    next_due_at: datetime = Field(index=True)
+    last_confirmed_at: datetime | None = None
+    note: str | None = None
+    active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def _ensure_outcomeflag_columns():
     """Idempotently add the calibration-loop columns to an OutcomeFlag table
     that predates them. Best-effort — never fatal to startup."""

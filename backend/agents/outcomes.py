@@ -547,6 +547,25 @@ async def resolve_flag(
     updated = await asyncio.to_thread(_db_update_flag, flag_id, **update_fields)
     if updated is None:
         return "not_found"
+
+    # Obligation-tracker hookup: a flag with source=="obligation" carries the
+    # obligation's own id as `check` (fingerprint f"obligation:{id}", see
+    # backend/agents/obligations.py::run_obligations_check). Resolving it —
+    # the SAME flag-resolve chokepoint every caller (Telegram flag:resolved:
+    # button, /resolve, POST /api/safety/flags/{id}/resolve) already goes
+    # through — is what stamps the obligation confirmed and advances its
+    # next_due_at for a recurring one. Only "resolved" confirms; a
+    # false_positive/deferred/needs_follow_up resolution is not a human
+    # saying "this got handled". Best-effort: a confirm failure must not
+    # un-resolve the flag itself.
+    if status == "resolved" and row["source"] == "obligation":
+        try:
+            obligation_id = int(row["check"])
+            from backend.agents import obligations
+            await obligations.confirm_obligation(obligation_id, note=note)
+        except Exception as e:
+            logger.warning(f"resolve_flag: obligation confirm failed for flag {flag_id}: {e}")
+
     return status
 
 
