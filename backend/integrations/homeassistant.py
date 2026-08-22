@@ -1,6 +1,8 @@
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 from sqlmodel import Session, select
@@ -142,6 +144,29 @@ async def fetch() -> HAData:
     return HAData(entities=entities, alerts=alerts, cloud_alerts=cloud_alerts)
 
 
+def _db_track_unavailable(unavailable_ids: set, now: datetime) -> None:
+    """Sync half — MUST only ever be called via asyncio.to_thread. Session
+    work inside an `async def` blocks the whole event loop, and this runs on
+    the fetch() hot path behind /api/health and every briefing gather."""
+    from backend.database import HaEntityUnavailable, engine
+
+    with Session(engine) as session:
+        tracked = session.exec(select(HaEntityUnavailable)).all()
+        tracked_ids = set()
+        for row in tracked:
+            tracked_ids.add(row.entity_id)
+            if row.entity_id in unavailable_ids:
+                row.last_checked_at = now
+                session.add(row)
+            else:
+                session.delete(row)
+        for new_id in unavailable_ids - tracked_ids:
+            session.add(HaEntityUnavailable(
+                entity_id=new_id, first_seen_unavailable_at=now, last_checked_at=now,
+            ))
+        session.commit()
+
+
 async def _track_unavailable(entities: list) -> None:
     """Upsert per-entity unavailable duration into HaEntityUnavailable, once
     per real fetch() (the ~30s async_ttl_cache cadence -- see this module's
@@ -151,11 +176,10 @@ async def _track_unavailable(entities: list) -> None:
     (duration = now - first_seen_unavailable_at, that's the whole point).
 
     Best-effort, like obsidian.emit_event -- a DB hiccup here must never
-    fail or slow down the main fetch() path it's called from.
+    fail or slow down the main fetch() path it's called from. All DB work is
+    off-loop via asyncio.to_thread.
     """
     try:
-        from backend.database import HaEntityUnavailable, engine
-
         now = datetime.utcnow()
         unavailable_ids = {
             e.get("entity_id")
@@ -164,21 +188,7 @@ async def _track_unavailable(entities: list) -> None:
             and e.get("entity_id")
             and not _is_ignorable_unavailable(e.get("entity_id", ""))
         }
-        with Session(engine) as session:
-            tracked = session.exec(select(HaEntityUnavailable)).all()
-            tracked_ids = set()
-            for row in tracked:
-                tracked_ids.add(row.entity_id)
-                if row.entity_id in unavailable_ids:
-                    row.last_checked_at = now
-                    session.add(row)
-                else:
-                    session.delete(row)
-            for new_id in unavailable_ids - tracked_ids:
-                session.add(HaEntityUnavailable(
-                    entity_id=new_id, first_seen_unavailable_at=now, last_checked_at=now,
-                ))
-            session.commit()
+        await asyncio.to_thread(_db_track_unavailable, unavailable_ids, now)
     except Exception as e:
         logger.warning(f"_track_unavailable failed (ignored): {e}")
 
@@ -198,12 +208,29 @@ async def unavailable_report() -> dict:
     from backend.database import HaEntityUnavailable, engine
 
     now = datetime.utcnow()
-    try:
+
+    def _read():
         with Session(engine) as session:
-            rows = session.exec(select(HaEntityUnavailable)).all()
+            # Materialise plain tuples inside the Session -- no ORM object may
+            # cross the to_thread boundary.
+            return [
+                (r.entity_id, r.first_seen_unavailable_at, r.last_checked_at, r.suppressed)
+                for r in session.exec(select(HaEntityUnavailable)).all()
+            ]
+
+    try:
+        raw = await asyncio.to_thread(_read)
     except Exception as e:
         logger.warning(f"unavailable_report failed (ignored): {e}")
         return {"total": 0, "persistent": 0, "recent": 0, "items": []}
+
+    rows = [
+        SimpleNamespace(
+            entity_id=eid, first_seen_unavailable_at=first,
+            last_checked_at=last, suppressed=supp,
+        )
+        for eid, first, last, supp in raw
+    ]
 
     active = [r for r in rows if not r.suppressed]
     persistent = sum(1 for r in active if (now - r.first_seen_unavailable_at) >= timedelta(days=7))
@@ -249,16 +276,19 @@ async def set_unavailable_suppressed(entity_id: str, suppressed: bool) -> bool:
     unavailable), which the API route turns into a 404."""
     from backend.database import HaEntityUnavailable, engine
 
-    with Session(engine) as session:
-        row = session.exec(
-            select(HaEntityUnavailable).where(HaEntityUnavailable.entity_id == entity_id)
-        ).first()
-        if not row:
-            return False
-        row.suppressed = suppressed
-        session.add(row)
-        session.commit()
-    return True
+    def _write() -> bool:
+        with Session(engine) as session:
+            row = session.exec(
+                select(HaEntityUnavailable).where(HaEntityUnavailable.entity_id == entity_id)
+            ).first()
+            if not row:
+                return False
+            row.suppressed = suppressed
+            session.add(row)
+            session.commit()
+        return True
+
+    return await asyncio.to_thread(_write)
 
 
 async def try_reload_cloud(host: str, headers: dict, client: httpx.AsyncClient) -> dict | None:

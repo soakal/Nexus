@@ -16,15 +16,33 @@ router = APIRouter()
 _MAC_CANDIDATE_RE = re.compile(r"(?:[0-9a-f]{2}[:_-]?){5}[0-9a-f]{2}", re.IGNORECASE)
 
 
-async def _resolve_device_tracker_name(entity_id: str, attributes: dict | None) -> str | None:
+def _load_known_macs() -> dict:
+    """One Session, one query — the whole {normalised_mac: hostname} map.
+    MUST be called via asyncio.to_thread. Replaces a per-item Session opened
+    inside an async loop, which both N+1'd and blocked the event loop."""
+    from sqlmodel import Session, select
+
+    from backend.database import KnownDevice, engine
+    with Session(engine) as session:
+        return {
+            d.mac: d.hostname
+            for d in session.exec(select(KnownDevice)).all()
+            if d.mac and d.hostname
+        }
+
+
+def _resolve_device_tracker_name(
+    entity_id: str, attributes: dict | None, known_macs: dict
+) -> str | None:
     """Best-effort cross-reference of a device_tracker.* entity's raw MAC
     against UniFi's already-populated KnownDevice table
     (backend/integrations/unifi.py) -- closes part of the vault-flagged
     "15+ unidentified device tracker entries with raw MACs" gap by
     resolving a hostname where UniFi has already seen the same device on
-    the network. Returns None on any miss (not a device_tracker, no MAC
-    found, MAC not known to UniFi, or any error) -- this is an
-    annotation only and must never break the triage list.
+    the network. Pure lookup against a pre-loaded map; returns None on any
+    miss (not a device_tracker, no MAC found, MAC not known to UniFi, or any
+    error) -- this is an annotation only and must never break the triage
+    list.
     """
     if not entity_id.startswith("device_tracker."):
         return None
@@ -40,14 +58,7 @@ async def _resolve_device_tracker_name(entity_id: str, attributes: dict | None) 
         # entity_id to lowercase alnum + underscore), so strip everything
         # down to bare hex here before handing it off.
         bare_hex = re.sub(r"[^0-9a-fA-F]", "", match.group(0))
-        mac = _normalize_mac(bare_hex)
-
-        from sqlmodel import Session, select
-
-        from backend.database import KnownDevice, engine
-        with Session(engine) as session:
-            dev = session.exec(select(KnownDevice).where(KnownDevice.mac == mac)).first()
-        return dev.hostname if dev and dev.hostname else None
+        return known_macs.get(_normalize_mac(bare_hex))
     except Exception:
         return None
 
@@ -119,10 +130,16 @@ async def get_unavailable(_=Depends(require_api_key)):
     except Exception as e:
         logger.warning(f"get_unavailable: HA entity fetch failed, resolved_name omitted: {e}")
         by_id = {}
+    import asyncio
+    try:
+        known_macs = await asyncio.to_thread(_load_known_macs)
+    except Exception as e:
+        logger.warning(f"get_unavailable: KnownDevice load failed, resolved_name omitted: {e}")
+        known_macs = {}
     for item in report["items"]:
         ent = by_id.get(item["entity_id"]) or {}
-        item["resolved_name"] = await _resolve_device_tracker_name(
-            item["entity_id"], ent.get("attributes"),
+        item["resolved_name"] = _resolve_device_tracker_name(
+            item["entity_id"], ent.get("attributes"), known_macs,
         )
     return report
 
