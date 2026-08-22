@@ -101,6 +101,19 @@ export default function Vault() {
   const [note, setNote] = useState(null)             // { path, content }
   const [error, setError] = useState('')
 
+  // Narrow-viewport (phone) layout: the list panel and note viewer can't sit
+  // side by side below ~720px, and the list panel alone claims up to 65vh --
+  // stacking them (the default flex-wrap behavior) buries an opened note
+  // below the fold with no visible sign anything happened. Below the
+  // breakpoint, show ONLY the list or ONLY the viewer (master-detail),
+  // switching on whether a note is open, instead of ever stacking both.
+  const [isNarrow, setIsNarrow] = useState(() => window.innerWidth < 720)
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 720)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   // Graph state: raw fetch is separate from the degree-filter threshold, so
   // adjusting the slider re-filters in place instead of re-fetching.
   const [graphData, setGraphData] = useState(null)   // { nodes, links } from the API
@@ -312,7 +325,7 @@ export default function Vault() {
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
             <Eyebrow>{note.path}</Eyebrow>
-            <GhostButton onClick={() => setNote(null)}>Close</GhostButton>
+            <GhostButton onClick={() => setNote(null)}>{isNarrow ? '← Back' : 'Close'}</GhostButton>
           </div>
           <NoteBody content={note.content} onOpen={openNote} resolve={resolve} />
         </>
@@ -355,7 +368,9 @@ export default function Vault() {
         </Card>
       ) : (
         <div style={{ display: 'flex', gap: 'var(--gap)', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <Card flex="1 1 300px" style={{ minWidth: 0 }}>
+          {/* Master-detail below 720px: never show both the list and the
+              viewer at once -- see isNarrow's comment above for why. */}
+          {(!isNarrow || !note) && <Card flex="1 1 300px" style={{ minWidth: 0 }}>
             {tab === 'browse' ? (
               <>
                 <TextInput placeholder="Filter pages…" value={filter}
@@ -396,8 +411,8 @@ export default function Vault() {
                 </div>
               </>
             )}
-          </Card>
-          {viewer}
+          </Card>}
+          {(!isNarrow || note) && viewer}
         </div>
       )}
     </div>
