@@ -310,6 +310,18 @@ def _parse_due(raw) -> datetime:
         raise HTTPException(status_code=400, detail="next_due_at must be ISO-8601")
 
 
+def _validate_cadence_days(value):
+    """Shared by POST and PATCH. PATCH used to skip this entirely, so a
+    string/0/negative cadence_days landed in the DB and then broke
+    confirm_obligation via its swallowed exception -- the obligation just
+    silently stopped advancing."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise HTTPException(status_code=400, detail="cadence_days must be a positive integer")
+    return value
+
+
 @router.get("/obligations")
 async def list_obligations_route(active_only: bool = False, _=Depends(require_api_key)):
     from backend.agents import obligations
@@ -325,9 +337,7 @@ async def create_obligation_route(body: dict = Body(...), _=Depends(require_api_
     if not title or not next_due_at:
         raise HTTPException(status_code=400, detail="title and next_due_at are required")
 
-    cadence_days = body.get("cadence_days")
-    if cadence_days is not None and (isinstance(cadence_days, bool) or not isinstance(cadence_days, int) or cadence_days <= 0):
-        raise HTTPException(status_code=400, detail="cadence_days must be a positive integer")
+    cadence_days = _validate_cadence_days(body.get("cadence_days"))
 
     return await obligations.create_obligation(
         title=title,
@@ -355,9 +365,11 @@ async def update_obligation_route(
     from backend.agents import obligations
 
     fields: dict = {}
-    for key in ("title", "category", "cadence_description", "cadence_days", "note", "active"):
+    for key in ("title", "category", "cadence_description", "note", "active"):
         if key in body:
             fields[key] = body[key]
+    if "cadence_days" in body:
+        fields["cadence_days"] = _validate_cadence_days(body["cadence_days"])
     if "next_due_at" in body:
         fields["next_due_at"] = _parse_due(body["next_due_at"])
 

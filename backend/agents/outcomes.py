@@ -549,7 +549,8 @@ async def resolve_flag(
         return "not_found"
 
     # Obligation-tracker hookup: a flag with source=="obligation" carries the
-    # obligation's own id as `check` (fingerprint f"obligation:{id}", see
+    # obligation's id plus its due timestamp as `check` (fingerprint
+    # f"obligation:{id}:{next_due_at}", see
     # backend/agents/obligations.py::run_obligations_check). Resolving it —
     # the SAME flag-resolve chokepoint every caller (Telegram flag:resolved:
     # button, /resolve, POST /api/safety/flags/{id}/resolve) already goes
@@ -560,9 +561,11 @@ async def resolve_flag(
     # un-resolve the flag itself.
     if status == "resolved" and row["source"] == "obligation":
         try:
-            obligation_id = int(row["check"])
+            # `check` is f"{obligation_id}:{next_due_at_iso}" -- per-due-cycle,
+            # see obligations.run_obligations_check.
+            obligation_id = int(row["check"].split(":", 1)[0])
             from backend.agents import obligations
-            await obligations.confirm_obligation(obligation_id, note=note)
+            await obligations.confirm_obligation(obligation_id)
         except Exception as e:
             logger.warning(f"resolve_flag: obligation confirm failed for flag {flag_id}: {e}")
 

@@ -42,6 +42,7 @@ monkeypatch backend.database.engine are honoured), public async functions
 call them via asyncio.to_thread. No Session/ORM object crosses an await.
 """
 import asyncio
+import html
 import logging
 from datetime import datetime, timedelta
 
@@ -152,7 +153,7 @@ def _db_due() -> list[dict]:
         return [_row_to_dict(r) for r in out]
 
 
-def _db_confirm(obligation_id: int, *, note: str | None) -> dict | None:
+def _db_confirm(obligation_id: int) -> dict | None:
     from sqlmodel import Session
     from backend.database import Obligation, engine
 
@@ -162,8 +163,10 @@ def _db_confirm(obligation_id: int, *, note: str | None) -> dict | None:
             return None
         now = datetime.utcnow()
         row.last_confirmed_at = now
-        if note:
-            row.note = note
+        # Obligation.note is the STANDING description ("autopay from checking").
+        # A one-off resolution note belongs on OutcomeFlag.resolution_note,
+        # where resolve_flag already stores it -- writing it here silently
+        # destroyed the description on every confirm.
         if row.cadence_days:
             row.next_due_at = now + timedelta(days=row.cadence_days)
         row.updated_at = now
@@ -217,7 +220,7 @@ async def due_obligations() -> list[dict]:
     return await asyncio.to_thread(_db_due)
 
 
-async def confirm_obligation(obligation_id: int, *, note: str | None = None) -> dict | None:
+async def confirm_obligation(obligation_id: int) -> dict | None:
     """Stamp last_confirmed_at=now and, for a recurring obligation
     (cadence_days set), advance next_due_at by that many days. Called from
     outcomes.resolve_flag() when a flag with source=="obligation" is resolved
@@ -225,7 +228,7 @@ async def confirm_obligation(obligation_id: int, *, note: str | None = None) -> 
     every other write path in this module's neighborhood — a confirm failure
     must not un-resolve the flag that triggered it)."""
     try:
-        return await asyncio.to_thread(_db_confirm, obligation_id, note=note)
+        return await asyncio.to_thread(_db_confirm, obligation_id)
     except Exception as e:
         logger.warning(f"confirm_obligation failed (id={obligation_id}): {e}")
         return None
@@ -240,16 +243,33 @@ async def run_obligations_check() -> dict:
     resulting flag (Telegram `flag:resolved:<id>`, `/resolve`, or
     POST /api/safety/flags/{id}/resolve) is what stamps this obligation
     confirmed — see confirm_obligation / outcomes.resolve_flag."""
+    from backend.config import get_settings
     from backend.agents import outcomes
     from backend import events
+
+    # Re-check inside the job, not only at registration -- flipping the flag
+    # off at runtime otherwise does nothing until a restart (same discipline
+    # as homelab_watch.run_homelab_watch / watchdog.run_watchdog).
+    if not getattr(get_settings(), "obligations_check_enabled", True):
+        return {"checked": 0, "flagged": 0}
 
     due = await due_obligations()
     flagged = 0
     for o in due:
         severity = "high" if o["category"] == "medical" else "medium"
         summary = f"Obligation overdue: {o['title']} (due {o['next_due_at']})"
+        # `title` is user-supplied and notify_phone sends with parse_mode=HTML
+        # whenever app_base_url is set. The DB/frontend copy stays unescaped.
+        alert = (
+            f"Obligation overdue: {html.escape(str(o['title']))} (due {o['next_due_at']})"
+        )
+        # Fingerprint is PER DUE CYCLE, not per obligation. A stable
+        # f"obligation:{id}" meant one "✗ False alarm" tap armed the 30-day
+        # false-positive cooldown in record_flag_ex and silently swallowed the
+        # NEXT real due cycle. next_due_at advances on every confirm, so dedup
+        # still works within a cycle and correctly resets between them.
         d = await outcomes.record_flag_ex(
-            "obligation", str(o["id"]), summary,
+            "obligation", f"{o['id']}:{o['next_due_at']}", summary,
             detail=o.get("note"), severity=severity,
         )
         if d["surface"]:
@@ -259,6 +279,6 @@ async def run_obligations_check() -> dict:
                     {"text": "✓ Resolved", "callback_data": f"flag:resolved:{d['id']}"},
                     {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{d['id']}"},
                 ]
-            await events.notify_phone(summary, kind="obligation_due", buttons=buttons)
+            await events.notify_phone(alert, kind="obligation_due", buttons=buttons)
             flagged += 1
     return {"checked": len(due), "flagged": flagged}

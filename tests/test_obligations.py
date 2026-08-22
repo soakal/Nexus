@@ -94,8 +94,10 @@ async def test_overdue_unconfirmed_obligation_opens_a_flag(eng):
         rows = session.exec(select(OutcomeFlag)).all()
     assert len(rows) == 1
     assert rows[0].source == "obligation"
-    assert rows[0].check == str(obligation_id)
-    assert rows[0].fingerprint == f"obligation:{obligation_id}"
+    # `check` is per-due-cycle: f"{obligation_id}:{next_due_at_iso}", not a
+    # bare id -- see obligations.run_obligations_check.
+    assert rows[0].check.startswith(f"{obligation_id}:")
+    assert rows[0].fingerprint.startswith(f"obligation:{obligation_id}:")
     assert rows[0].status == "open"
     assert rows[0].severity == "medium"
 
