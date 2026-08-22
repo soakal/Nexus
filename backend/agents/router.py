@@ -3,6 +3,7 @@ import contextvars
 import functools
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -225,6 +226,33 @@ _PRICE_PER_MTOK = {
     # GET https://openrouter.ai/api/v1/models 2026-08-16.
     "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
     "google/gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+    # OpenRouter fallback for Anthropic account exhaustion (2026-08-21, see
+    # _OPENROUTER_FALLBACK_MODEL below) -- verified live against GET
+    # https://openrouter.ai/api/v1/models: these Anthropic-proxied ids bill
+    # identically to the direct-API entries above ($/MTok, same numbers),
+    # since OpenRouter passes Anthropic's own list price through unchanged.
+    "anthropic/claude-opus-4.8": {"input": 5.0, "output": 25.0},
+    "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
+    "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
+}
+
+# Anthropic model id -> roughly-equivalent OpenRouter model id, used only when
+# falling back off a failed Anthropic call in _maybe_openrouter_fallback.
+# Live-verified 2026-08-21 against GET https://openrouter.ai/api/v1/models --
+# these happen to be the SAME model, just proxied through OpenRouter's own
+# Anthropic capacity/billing rather than NEXUS's own ANTHROPIC_API_KEY, which
+# is exactly why they work as a fallback for an account-level exhaustion
+# (zero credit or a monthly usage cap) on that key specifically. Still
+# "approximate" in the sense that OpenRouter is a different backend/account --
+# no guarantee of identical latency/availability, and this map only covers
+# the three _run entry points (opus/sonnet/haiku) that hit the real 2026-08-21
+# incident (three goal_proposer Haiku calls). A model reached only via
+# run_model() (e.g. an orchestrator .env override) with no entry here simply
+# gets no fallback -- see _maybe_openrouter_fallback's early return.
+_OPENROUTER_FALLBACK_MODEL = {
+    OPUS_MODEL: "anthropic/claude-opus-4.8",
+    SONNET_MODEL: "anthropic/claude-sonnet-4.6",
+    HAIKU_MODEL: "anthropic/claude-haiku-4.5",
 }
 
 # Hosted web-search server tool: $10 per 1,000 searches (Anthropic pricing,
@@ -640,11 +668,69 @@ _CREDIT_ALERT = (
     "Briefings, goals, chat and tasks stay broken until you do."
 )
 
+# Matches "You will regain access on 2026-09-01 at 00:00 UTC." -- the
+# reinstatement instant the org-level usage-limit error carries. Used by both
+# _is_usage_limit_exceeded (existence check) and _usage_limit_reset_at
+# (extraction) below.
+_USAGE_LIMIT_RESET_RE = re.compile(
+    r"regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) (UTC)", re.IGNORECASE
+)
 
-async def _maybe_alert_credit_exhausted(exc) -> None:
-    """Page distinctly, at most once per watchdog_alert_cooldown_s, when the Anthropic
-    account is out of credit. Best-effort — never raises; the caller re-raises the
-    original error either way, so behavior is byte-identical when this is a no-op.
+
+def _is_usage_limit_exceeded(exc) -> bool:
+    """True when Anthropic rejected the call because the ORG has hit its monthly
+    API usage limit -- a DIFFERENT failure mode than _is_credit_exhausted's zero
+    balance. Confirmed live 2026-08-21: three scheduled goal_proposer Haiku
+    calls ("Unraid array capacity watch"/"AdGuard protection enabled"/"Proxmox
+    pending-update check") all failed with this exact message, and NONE of the
+    credit-exhaustion machinery fired because the text doesn't contain "credit
+    balance is too low" -- same HTTP 400 invalid_request_error, no
+    distinguishing status code, so this is matched on message text for the
+    same reason _is_credit_exhausted is (see that docstring).
+    """
+    # ponytail: English-prose match, same discipline as _is_credit_exhausted above.
+    body = getattr(exc, "body", None)
+    msg = (body.get("error") or {}).get("message", "") if isinstance(body, dict) else ""
+    return "reached your specified api usage limits" in f"{msg} {exc}".lower()
+
+
+def _usage_limit_reset_at(exc) -> str | None:
+    """Parse the reinstatement instant out of a usage-limit error message, e.g.
+    "2026-09-01 00:00 UTC" from "...You will regain access on 2026-09-01 at
+    00:00 UTC." Returns None if the message doesn't contain a recognizable
+    date/time (still a valid, if vaguer, alert -- see _usage_limit_alert)."""
+    body = getattr(exc, "body", None)
+    msg = (body.get("error") or {}).get("message", "") if isinstance(body, dict) else ""
+    m = _USAGE_LIMIT_RESET_RE.search(f"{msg} {exc}")
+    return f"{m.group(1)} {m.group(2)} {m.group(3)}" if m else None
+
+
+def _usage_limit_alert(exc) -> str:
+    reset_at = _usage_limit_reset_at(exc)
+    when = f"back at {reset_at}" if reset_at else "reinstatement time not found in the error -- check console.anthropic.com"
+    return (
+        "NEXUS has hit Anthropic's ORG-LEVEL monthly API usage limit — every "
+        "LLM call is failing right now (HTTP 400, \"you have reached your "
+        "specified API usage limits\"). This is different from running out of "
+        f"credit: it self-clears with no action needed, {when}. NEXUS "
+        "attempts an OpenRouter fallback for billed calls in the meantime."
+    )
+
+
+async def _maybe_alert_provider_exhausted(exc) -> None:
+    """Page distinctly, at most once per watchdog_alert_cooldown_s PER CONDITION,
+    for either Anthropic exhaustion failure mode this module recognizes: zero
+    balance (_is_credit_exhausted, notify kind anthropic_credit_exhausted) or
+    an org-level monthly usage cap (_is_usage_limit_exceeded, notify kind
+    anthropic_usage_limit_exceeded -- added 2026-08-21). Both share the exact
+    same debounce/record_flag_ex/notify_phone machinery -- only the matched
+    condition, notify kind, and alert text differ; this is deliberately ONE
+    function, not two, so the two conditions can never drift onto separate
+    alert paths. Best-effort — never raises; the caller re-raises the
+    original error either way, so behavior is byte-identical when this is a
+    no-op. Renamed from _maybe_alert_credit_exhausted when the usage-limit
+    case was added -- the credit-exhausted branch is byte-identical to the
+    old function's only behavior.
 
     Debounce is watchdog._should_alert (the same in-memory per-key cooldown the
     scheduler-stall and deploy-drift checks use) -- this condition only matters while
@@ -652,32 +738,102 @@ async def _maybe_alert_credit_exhausted(exc) -> None:
     survive a restart.
     """
     try:
-        if not _is_credit_exhausted(exc):
+        if _is_credit_exhausted(exc):
+            kind, check, alert = "anthropic_credit_exhausted", "anthropic_credit", _CREDIT_ALERT
+        elif _is_usage_limit_exceeded(exc):
+            kind, check, alert = "anthropic_usage_limit_exceeded", "anthropic_usage_limit", _usage_limit_alert(exc)
+        else:
             return
         from backend.agents.watchdog import _should_alert
         from backend.config import get_settings
         cooldown = getattr(get_settings(), "watchdog_alert_cooldown_s", 3600)
-        if not _should_alert("anthropic_credit_exhausted", cooldown):
+        if not _should_alert(kind, cooldown):
             return
         from backend.agents import outcomes
         d = await outcomes.record_flag_ex(
-            "router", "anthropic_credit", _CREDIT_ALERT, severity="high",
+            "router", check, alert, severity="high",
         )
         if d["surface"]:
             from backend import events
-            await events.notify_phone(_CREDIT_ALERT, kind="anthropic_credit_exhausted")
+            await events.notify_phone(alert, kind=kind)
     except Exception as e:  # never let alerting break the failing call's own error
-        logger.warning(f"credit-exhausted alert failed (non-fatal): {e}")
+        logger.warning(f"provider-exhausted alert failed (non-fatal): {e}")
+
+
+async def _maybe_openrouter_fallback(exc, model: str, max_tokens: int, prompt: str, system: str, label: str, task_id) -> str | None:
+    """Try OpenRouter once when `exc` is one of the two Anthropic exhaustion
+    failure modes this module recognizes, using the roughly-equivalent model
+    from _OPENROUTER_FALLBACK_MODEL. Returns the fallback text on success, or
+    None on ANY failure (non-exhaustion error, unmapped model, no
+    OPENROUTER_API_KEY configured, or OpenRouter itself erroring/rate-limited)
+    -- callers must then re-raise the ORIGINAL Anthropic error, never
+    fabricate one from this function, so a fallback that also fails can never
+    swallow the real failure.
+
+    Only wired into `_run` (opus/sonnet/haiku single-shot calls) -- the exact
+    entry point the real 2026-08-21 incident hit. Metered via _record_spend
+    exactly like the shadow-call path (_run_shadow_call) reuses, same label as
+    the real call so spend/label reporting needs no new bucket.
+    # ponytail: not wired into run_with_tools's multi-round tool loop -- an
+    # OpenRouter fallback mid-tool-loop would need to translate Anthropic's
+    # tool_use/tool_result blocks to OpenAI-style tool calling, a materially
+    # bigger feature the reported incident (goal_proposer's plain Haiku call)
+    # never needed. Add it there if a tool-loop caller ever hits this.
+    """
+    if not (_is_credit_exhausted(exc) or _is_usage_limit_exceeded(exc)):
+        return None
+    or_model = _OPENROUTER_FALLBACK_MODEL.get(model)
+    if not or_model:
+        return None
+    try:
+        import httpx
+
+        from backend.config import get_settings
+        from backend.http_client import SSL_CONTEXT
+
+        api_key = get_settings().openrouter_api_key
+        if not api_key:
+            return None
+
+        messages = ([{"role": "system", "content": system}] if system else []) + [
+            {"role": "user", "content": prompt}
+        ]
+        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": or_model, "max_tokens": max_tokens, "messages": messages},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        text = (data["choices"][0]["message"]["content"] or "").strip()
+        if not text:
+            return None
+
+        or_usage = data.get("usage") or {}
+        from types import SimpleNamespace
+        fake_resp = SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=int(or_usage.get("prompt_tokens") or 0),
+            output_tokens=int(or_usage.get("completion_tokens") or 0),
+        ))
+        await asyncio.to_thread(_record_spend, or_model, fake_resp, label or "openrouter_fallback", task_id)
+        logger.info(f"OpenRouter fallback succeeded for {model!r} (label={label!r})")
+        return text
+    except Exception as fallback_exc:  # the ORIGINAL error must still propagate
+        logger.warning(f"OpenRouter fallback failed (non-fatal, label={label!r}): {fallback_exc}")
+        return None
 
 
 async def _run_billed(loop, func):
     """Run a blocking Anthropic call in the executor, paging once if the account is
-    out of credit. The single choke point every billed call's FAILURE passes through
-    (mirroring _budget_brake, which owns the pre-call side)."""
+    exhausted (out of credit, or the org-level usage cap). The single choke point
+    every billed call's FAILURE passes through (mirroring _budget_brake, which owns
+    the pre-call side)."""
     try:
         return await loop.run_in_executor(None, func)
     except Exception as e:
-        await _maybe_alert_credit_exhausted(e)
+        await _maybe_alert_provider_exhausted(e)
         raise
 
 
@@ -809,7 +965,17 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
 
     loop = asyncio.get_event_loop()
     func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id)
-    result = await _run_billed(loop, func)
+    try:
+        result = await _run_billed(loop, func)
+    except Exception as e:
+        # _run_billed already paged (_maybe_alert_provider_exhausted) before
+        # re-raising -- the alert fires either way, independent of whether the
+        # fallback below picks up the slack, since "Anthropic is down" is
+        # useful to know even when nothing else broke.
+        fallback = await _maybe_openrouter_fallback(e, model, max_tokens, prompt, system, label, task_id)
+        if fallback is not None:
+            return fallback
+        raise
     if model == HAIKU_MODEL:
         await _maybe_shadow(model, prompt, system, label, result)
     return result
@@ -1048,7 +1214,7 @@ async def stream_sonnet(prompt: str, system: str = "", web_search: bool = False)
             break
         elif kind == "error":
             await fut
-            await _maybe_alert_credit_exhausted(data)
+            await _maybe_alert_provider_exhausted(data)
             raise RuntimeError(data)
     await fut
 

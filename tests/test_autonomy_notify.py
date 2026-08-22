@@ -218,8 +218,12 @@ def test_notify_kinds_registry_covers_every_call_site():
     # its own literal-only parameter through to notify_phone; worker_pool's
     # _notify_task_finished assigns `kind` to one of two literals
     # ("task_completed"/"task_failed") depending on a status branch, then
-    # calls notify_phone(kind=kind) once at the end of the function.
-    PASSTHROUGH = {("homelab_watch.py", "kind"), ("worker_pool.py", "kind")}
+    # calls notify_phone(kind=kind) once at the end of the function. router's
+    # _maybe_alert_provider_exhausted (2026-08-21) is the same shape: `kind`
+    # is assigned one of two literals ("anthropic_credit_exhausted"/
+    # "anthropic_usage_limit_exceeded") depending on which exhaustion
+    # condition matched, then passed through to one notify_phone call.
+    PASSTHROUGH = {("homelab_watch.py", "kind"), ("worker_pool.py", "kind"), ("router.py", "kind")}
 
     found, dynamic = set(), []
     for f in pathlib.Path("backend").rglob("*.py"):

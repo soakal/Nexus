@@ -566,7 +566,12 @@ async def test_run_pages_once_on_credit_exhaustion(spend_eng):
     with patch("anthropic.Anthropic") as mock_anthropic, \
          patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify, \
          patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
-               return_value={"id": 1, "surface": True, "reason": None}) as mock_flag:
+               return_value={"id": 1, "surface": True, "reason": None}) as mock_flag, \
+         patch("httpx.AsyncClient", side_effect=RuntimeError("no network in tests")):
+        # The httpx.AsyncClient patch above forces _maybe_openrouter_fallback to fail
+        # fast (no real network I/O) so the ORIGINAL credit-exhausted error still
+        # propagates -- see test_openrouter_fallback_used_on_credit_exhaustion for
+        # the case where the fallback actually succeeds.
         mock_client = MagicMock()
         mock_client.messages.create.side_effect = err
         mock_anthropic.return_value = mock_client
@@ -633,7 +638,8 @@ async def test_credit_alert_failure_never_swallows_the_original_error(spend_eng)
 
     with patch("anthropic.Anthropic") as mock_anthropic, \
          patch("backend.events.notify_phone", new_callable=AsyncMock,
-               side_effect=RuntimeError("telegram down")):
+               side_effect=RuntimeError("telegram down")), \
+         patch("httpx.AsyncClient", side_effect=RuntimeError("no network in tests")):
         mock_client = MagicMock()
         mock_client.messages.create.side_effect = err
         mock_anthropic.return_value = mock_client
@@ -642,6 +648,239 @@ async def test_credit_alert_failure_never_swallows_the_original_error(spend_eng)
             await router.sonnet("prompt")
 
     assert "credit balance is too low" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Anthropic org-level usage-limit detection + paging (2026-08-21)
+#
+# 2026-08-21 three scheduled goal_proposer Haiku calls failed with a DIFFERENT
+# Anthropic 400 than the credit-exhaustion case above ("reached your specified
+# API usage limits... regain access on <date>") and none of the existing
+# credit-exhaustion machinery fired. These pin the fix, mirroring the
+# credit-exhaustion tests above one-for-one.
+# ---------------------------------------------------------------------------
+
+def _usage_limit_error(message="You have reached your specified API usage limits. "
+                                "You will regain access on 2026-09-01 at 00:00 UTC."):
+    """A real anthropic.BadRequestError shaped exactly like the live 2026-08-21
+    failure -- constructed via the SDK's own class, not a fake/duck-typed stand-in."""
+    import anthropic
+    import httpx
+
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    resp = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        json=body,
+    )
+    return anthropic.BadRequestError(message=f"Error code: 400 - {body}", response=resp, body=body)
+
+
+def test_is_usage_limit_exceeded_matches_real_sdk_error():
+    from backend.agents import router
+
+    assert router._is_usage_limit_exceeded(_usage_limit_error()) is True
+    # The streaming path only has the stringified form, no .body -- must still match.
+    assert router._is_usage_limit_exceeded(RuntimeError(str(_usage_limit_error()))) is True
+
+
+def test_is_usage_limit_exceeded_does_not_match_credit_exhaustion():
+    """The two Anthropic exhaustion failure modes must classify as mutually
+    exclusive -- confusing one for the other would page/fall back with the
+    wrong message (a stale top-up instruction for a self-clearing usage cap,
+    or vice versa)."""
+    from backend.agents import router
+
+    credit_err = _credit_exhausted_error()
+    usage_err = _usage_limit_error()
+    assert router._is_usage_limit_exceeded(credit_err) is False
+    assert router._is_credit_exhausted(usage_err) is False
+
+
+def test_generic_llm_failure_does_not_match_usage_limit():
+    from backend.agents import router
+
+    assert router._is_usage_limit_exceeded(RuntimeError("network timeout")) is False
+
+
+def test_usage_limit_reset_at_parses_date():
+    from backend.agents import router
+
+    assert router._usage_limit_reset_at(_usage_limit_error()) == "2026-09-01 00:00 UTC"
+
+
+def test_usage_limit_reset_at_none_when_absent():
+    """A usage-limit message that -- for whatever reason -- doesn't carry a
+    parseable reinstatement instant must not crash the alert; the caller
+    (_usage_limit_alert) falls back to vaguer wording."""
+    from backend.agents import router
+
+    err = _usage_limit_error(message="You have reached your specified API usage limits.")
+    assert router._is_usage_limit_exceeded(err) is True
+    assert router._usage_limit_reset_at(err) is None
+    assert "console.anthropic.com" in router._usage_limit_alert(err)
+
+
+@pytest.mark.asyncio
+async def test_run_pages_once_on_usage_limit_exceeded(spend_eng):
+    """Mirrors test_run_pages_once_on_credit_exhaustion: same machinery
+    (_should_alert / record_flag_ex / notify_phone), distinct kind and
+    message, and the parsed reset date surfaces in the alert text."""
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _usage_limit_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify, \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}) as mock_flag, \
+         patch("httpx.AsyncClient", side_effect=RuntimeError("no network in tests")):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        with pytest.raises(Exception):
+            await router.haiku("prompt")
+
+    assert mock_notify.await_count == 1
+    assert mock_notify.await_args[1]["kind"] == "anthropic_usage_limit_exceeded"
+    assert "2026-09-01 00:00 UTC" in mock_notify.await_args[0][0]
+    mock_flag.assert_awaited_once()
+    assert mock_flag.await_args[0][0:2] == ("router", "anthropic_usage_limit")
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter fallback on either Anthropic exhaustion failure mode (2026-08-21)
+# ---------------------------------------------------------------------------
+
+def _openrouter_success_response(text="fallback answer", prompt_tokens=5, completion_tokens=3):
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "choices": [{"message": {"content": text}}],
+        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+    }
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_openrouter_fallback_used_on_credit_exhaustion(spend_eng):
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _credit_exhausted_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}), \
+         patch("httpx.AsyncClient") as mock_httpx_cls:
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        mock_httpx = AsyncMock()
+        mock_httpx.post.return_value = _openrouter_success_response()
+        mock_httpx_cls.return_value.__aenter__.return_value = mock_httpx
+
+        result = await router.sonnet("prompt")
+
+    assert result == "fallback answer"
+    call_kwargs = mock_httpx.post.call_args[1]
+    assert call_kwargs["json"]["model"] == "anthropic/claude-sonnet-4.6"
+
+    from sqlmodel import Session, select
+    from backend.database import SpendLog
+    with Session(spend_eng) as s:
+        rows = s.exec(select(SpendLog).where(SpendLog.model == "anthropic/claude-sonnet-4.6")).all()
+    assert len(rows) == 1
+    assert rows[0].input_tokens == 5
+    assert rows[0].output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_openrouter_fallback_used_on_usage_limit_exceeded(spend_eng):
+    """Same as above but for the OTHER exhaustion condition -- both must reach
+    the fallback, not just credit exhaustion."""
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _usage_limit_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}), \
+         patch("httpx.AsyncClient") as mock_httpx_cls:
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        mock_httpx = AsyncMock()
+        mock_httpx.post.return_value = _openrouter_success_response(text="haiku fallback")
+        mock_httpx_cls.return_value.__aenter__.return_value = mock_httpx
+
+        result = await router.haiku("prompt")
+
+    assert result == "haiku fallback"
+    call_kwargs = mock_httpx.post.call_args[1]
+    assert call_kwargs["json"]["model"] == "anthropic/claude-haiku-4.5"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_fallback_failure_reraises_original_error(spend_eng):
+    """A fallback that ALSO fails (e.g. OpenRouter is rate-limited too) must
+    never swallow or replace the real Anthropic error -- same 'poisoned X
+    doesn't break Y' contract as test_credit_alert_failure_never_swallows_the_original_error."""
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _credit_exhausted_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}), \
+         patch("httpx.AsyncClient", side_effect=RuntimeError("openrouter also down")):
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        with pytest.raises(Exception) as excinfo:
+            await router.sonnet("prompt")
+
+    assert "credit balance is too low" in str(excinfo.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_openrouter_fallback_not_attempted_for_unrelated_errors(spend_eng):
+    """_maybe_openrouter_fallback must short-circuit (no httpx call at all) for
+    any error that isn't one of the two recognized exhaustion conditions."""
+    from backend.agents import router
+
+    with patch("httpx.AsyncClient") as mock_httpx_cls:
+        result = await router._maybe_openrouter_fallback(
+            RuntimeError("network timeout"), router.SONNET_MODEL, 100, "p", "s", "lbl", None,
+        )
+
+    assert result is None
+    mock_httpx_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_openrouter_fallback_none_for_unmapped_model(spend_eng):
+    """A model with no entry in _OPENROUTER_FALLBACK_MODEL (e.g. reached only
+    via run_model()) gets no fallback rather than an AttributeError/KeyError."""
+    from backend.agents import router
+
+    with patch("httpx.AsyncClient") as mock_httpx_cls:
+        result = await router._maybe_openrouter_fallback(
+            _credit_exhausted_error(), "some-future-model-id", 100, "p", "s", "lbl", None,
+        )
+
+    assert result is None
+    mock_httpx_cls.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
