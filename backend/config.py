@@ -257,6 +257,31 @@ class Settings(BaseSettings):
     dead_letter_attempts: int = 8
     watchdog_alert_cooldown_s: int = 3600
 
+    # Failing-job detector — the complement to scheduler_stall_grace_s above.
+    # A stall is an overdue next_run_time; this catches the opposite failure,
+    # a job that fires exactly on schedule and RAISES every single run. Every
+    # job wrapper logs and re-raises into APScheduler's default handler, so
+    # nothing turned a repeating job-level exception into a signal: the
+    # 2026-08-21/22 Anthropic-quota outage ran ~36h with every LLM-backed job
+    # erroring and produced zero alerts. Runs inside the same 5-min watchdog
+    # job, so it shares watchdog_enabled's gate, and reuses
+    # watchdog_alert_cooldown_s for repeat alerts (no new cooldown knob).
+    #
+    # job_failure_min_minutes is the cadence-aware half of the gate, and the
+    # reason there is no per-job threshold table. This scheduler's jobs run
+    # anywhere from every 30s to once a day, so a bare consecutive-failure
+    # count means something completely different for each one -- "3 in a row"
+    # is 90 seconds of noise for state_refresh_30s and 3 days of silence for
+    # retention_prune. Pairing a fixed 2-in-a-row floor (watchdog.
+    # _JOB_FAIL_MIN_CONSECUTIVE, "not a one-off blip") with a minimum elapsed
+    # streak duration makes one setting correct for all of them: a 5-min job
+    # pages ~30 min into an outage, a 30s job needs ~60 consecutive failures
+    # before the floor opens, and a 6h job pages on its 2nd failure. 30 min is
+    # short enough that a broken overnight pipeline is caught before the 07:00
+    # briefing consumes its empty output.
+    job_failure_check_enabled: bool = True
+    job_failure_min_minutes: int = 30
+
     # Deploy-drift check — pages when the repo HEAD has moved but the running
     # process was booted from an older commit (stale process after a git pull
     # without a restart). Runs inside the 5-min watchdog job, so it shares

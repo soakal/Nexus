@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from backend.auth import require_api_key
-from backend.database import Task, TaskStep, get_session
+from backend.database import Task, TaskOutcome, TaskStep, get_session
 
 router = APIRouter()
 
@@ -32,7 +32,7 @@ async def list_tasks(_=Depends(require_api_key), session: Session = Depends(get_
 
 @router.delete("/{task_id}")
 async def cancel_task(task_id: int, _=Depends(require_api_key), session: Session = Depends(get_session)):
-    """Cooperatively stop a running task, then delete it from the database."""
+    """Cooperatively stop a running task, then delete it and its children."""
     task = session.get(Task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -41,6 +41,17 @@ async def cancel_task(task_id: int, _=Depends(require_api_key), session: Session
     # the row. A missing row downstream is a no-op for the worker.
     from backend.agents.worker_pool import get_pool
     await get_pool().request_cancel(task_id)
+
+    # Children first, same pattern as retry_task's step wipe below. Neither
+    # table carries a real FK (both are a plain indexed task_id), so nothing
+    # cascades on its own -- 32 TaskStep and 11 TaskOutcome rows had already
+    # accumulated with no surviving parent. Hard delete, not soft: these are
+    # the task's working state, not an audit log (the audit trail for a
+    # dispatched action is ActionLog, which this never touches).
+    for step in session.exec(select(TaskStep).where(TaskStep.task_id == task_id)).all():
+        session.delete(step)
+    for outcome in session.exec(select(TaskOutcome).where(TaskOutcome.task_id == task_id)).all():
+        session.delete(outcome)
 
     session.delete(task)
     session.commit()

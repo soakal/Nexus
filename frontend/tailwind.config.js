@@ -7,7 +7,7 @@ export default {
         'bg-secondary': '#1c1c1c',
         'bg-card': '#1c1c1c',
         'accent-cyan': '#ff8a3d',
-        'accent-orange': '#ff8a3d',
+        'accent-orange': '#e8c468',  // warning gold — matches the auth banner's own dot/border/bg (#e8c468); NOT the brand amber accent-cyan carries
         'accent-green': '#00ff9d',
         'accent-red': '#ff2d2d',
         'accent-gold': '#ffd700',

@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock, MagicMock
-from sqlmodel import SQLModel, create_engine, Session
+from sqlmodel import SQLModel, create_engine, Session, select
 from sqlmodel.pool import StaticPool
 from datetime import datetime
 
@@ -203,6 +203,46 @@ def test_list_tasks(app_client, auth_headers):
     resp = app_client.get("/api/tasks/", headers=auth_headers)
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+def test_cancel_task_deletes_child_steps_and_outcomes(app_client, auth_headers):
+    """DELETE /api/tasks/{id} must also remove that task's TaskStep and
+    TaskOutcome rows -- neither carries a real FK/cascade, so these were
+    accumulating as permanent orphans (32 TaskStep + 11 TaskOutcome rows on
+    the live DB). A sibling task's rows must survive untouched."""
+    import backend.database as db
+    from backend.database import Task, TaskOutcome, TaskStep
+    from backend.agents.worker_pool import get_pool
+
+    with Session(db.engine) as s:
+        target = Task(prompt="cancel me", status="running")
+        sibling = Task(prompt="leave me alone", status="pending")
+        s.add(target)
+        s.add(sibling)
+        s.commit()
+        s.refresh(target)
+        s.refresh(sibling)
+        target_id, sibling_id = target.id, sibling.id
+
+        s.add(TaskStep(task_id=target_id, step_index=1, prompt="step 1"))
+        s.add(TaskStep(task_id=target_id, step_index=2, prompt="step 2"))
+        s.add(TaskOutcome(task_id=target_id, verdict="partial"))
+        s.add(TaskStep(task_id=sibling_id, step_index=1, prompt="sibling step"))
+        s.add(TaskOutcome(task_id=sibling_id, verdict="success"))
+        s.commit()
+
+    with patch.object(get_pool(), "request_cancel", new_callable=AsyncMock):
+        resp = app_client.delete(f"/api/tasks/{target_id}", headers=auth_headers)
+    assert resp.status_code == 200
+
+    with Session(db.engine) as s:
+        assert s.get(Task, target_id) is None
+        assert s.exec(select(TaskStep).where(TaskStep.task_id == target_id)).all() == []
+        assert s.exec(select(TaskOutcome).where(TaskOutcome.task_id == target_id)).all() == []
+
+        assert s.get(Task, sibling_id) is not None
+        assert len(s.exec(select(TaskStep).where(TaskStep.task_id == sibling_id)).all()) == 1
+        assert len(s.exec(select(TaskOutcome).where(TaskOutcome.task_id == sibling_id)).all()) == 1
 
 
 # ---------------------------------------------------------------------------

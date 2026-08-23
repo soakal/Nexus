@@ -98,6 +98,25 @@ def test_job_error_ends_error_with_exception_message(monkeypatch):
     assert any(ev["actor_id"] == "job:db_backup" and "disk full" in ev["summary"] for ev in events)
 
 
+def test_job_error_then_executed_resets_failure_streak(monkeypatch):
+    """The listener also feeds watchdog's cadence-aware failing-jobs streak
+    (note_job_failure/note_job_success) -- a clean run after a failure must
+    zero the streak, not just leave the board/ticker pulse behind."""
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
+    from backend.agents import watchdog
+    callback = _capture_listener(monkeypatch)
+
+    watchdog.reset()
+    try:
+        callback(SimpleNamespace(code=EVENT_JOB_ERROR, job_id="brain_organizer", exception=RuntimeError("boom")))
+        assert watchdog._job_fail_streak["brain_organizer"][0] == 1
+
+        callback(SimpleNamespace(code=EVENT_JOB_EXECUTED, job_id="brain_organizer"))
+        assert watchdog._job_fail_streak["brain_organizer"][0] == 0
+    finally:
+        watchdog.reset()
+
+
 def test_job_missed_pulses_without_creating_board_entry(monkeypatch):
     from apscheduler.events import EVENT_JOB_MISSED
     callback = _capture_listener(monkeypatch)

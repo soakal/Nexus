@@ -80,11 +80,53 @@ def _should_alert_dead_letters_db(cooldown_s: float) -> bool:
 # integration name. Reset by reset() in tests.
 _contract_fail_streak: dict[str, int] = {}
 
+# Process-local consecutive-failure streak per scheduler job id, fed by
+# backend/scheduler.py's existing APScheduler listener (the same one Pulse
+# uses) through note_job_failure/note_job_success below.
+# {job_id: (consecutive_failures, monotonic_ts_of_first_failure, last_error)}.
+# In-memory on purpose, matching _contract_fail_streak and homelab_watch's
+# own latches: a restart clears the streak, and a job that is still broken
+# re-earns it inside one job_failure_min_minutes window. Bounded by the
+# number of registered jobs (~35), and in practice holds only jobs that have
+# errored at least once since boot. Reset by reset() in tests.
+_job_fail_streak: dict[str, tuple[int, float, str]] = {}
+
+# "Not a one-off blip" floor, deliberately a constant and not a setting: the
+# knob that carries real meaning is job_failure_min_minutes, because job
+# cadences here span 30s to daily and a bare consecutive count means something
+# different for every one of them (3-in-a-row is 90 seconds for
+# state_refresh_30s and 3 days for retention_prune).
+_JOB_FAIL_MIN_CONSECUTIVE = 2
+
+
+def note_job_failure(job_id: str, error: str) -> None:
+    """Record one scheduler job-level exception (EVENT_JOB_ERROR).
+
+    Sync and I/O-free -- called straight from backend/scheduler.py's listener
+    callback, which APScheduler dispatches on the event loop and which may
+    never await."""
+    count, first_ts, _ = _job_fail_streak.get(job_id, (0, 0.0, ""))
+    if count == 0:
+        first_ts = time.monotonic()
+    _job_fail_streak[job_id] = (count + 1, first_ts, error[:200])
+
+
+def note_job_success(job_id: str) -> None:
+    """Record one clean scheduler job run (EVENT_JOB_EXECUTED).
+
+    Only touches jobs already in the map, so a healthy box keeps it empty and
+    check_failing_jobs' falling-edge loop stays a no-op. The zeroed entry is
+    kept, not popped: it is what tells the next tick there may be a flag to
+    resolve."""
+    if job_id in _job_fail_streak:
+        _job_fail_streak[job_id] = (0, 0.0, "")
+
 
 def reset() -> None:
     """Clear all debounce state.  Test hook — call at the start of each test."""
     _last_alert.clear()
     _contract_fail_streak.clear()
+    _job_fail_streak.clear()
 
 
 async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
@@ -100,6 +142,7 @@ async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
     try:
         from backend import events
         from backend import scheduler as _sched_mod
+        from backend.agents import outcomes
 
         sched = _sched_mod.scheduler
         now_utc = datetime.now(timezone.utc)
@@ -117,7 +160,6 @@ async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
             if overdue > grace_s:
                 stalled.append(job.id)
                 if _should_alert(f"sched:{job.id}", cooldown_s):
-                    from backend.agents import outcomes
                     d = await outcomes.record_flag_ex(
                         "watchdog", f"stall:{job.id}",
                         f"NEXUS scheduler job '{job.id}' is overdue by {int(overdue)}s"
@@ -130,10 +172,96 @@ async def check_scheduler_stalls(*, grace_s: int, cooldown_s: int) -> list[str]:
                             " (possible stall).",
                             kind="scheduler_stall",
                         )
+            else:
+                # Falling edge: the job is back on schedule. Same discipline as
+                # check_expected_deliveries' healthy branch -- ~35 registered
+                # jobs x one indexed SELECT per 5-min tick.
+                await outcomes.clear_flag("watchdog", f"stall:{job.id}")
 
         return stalled
     except Exception as exc:
         logger.warning(f"check_scheduler_stalls error (ignored): {exc}")
+        return []
+
+
+def _format_job_failing(job_id: str, count: int, minutes: int, err: str) -> str:
+    return (
+        f"NEXUS scheduler job '{job_id}' has raised on {count} consecutive runs "
+        f"over {minutes} min. It is firing on schedule but producing nothing — "
+        f"check_scheduler_stalls cannot see this. Last error: {err}"
+    )
+
+
+async def check_failing_jobs() -> list[str]:
+    """Page when a scheduled job FIRES on time but raises every single run.
+
+    check_scheduler_stalls only catches an overdue next_run_time. A job that
+    keeps its schedule perfectly and throws on every execution is not
+    "stalled", it is silently broken: the 2026-08-21/22 Anthropic-quota outage
+    ran ~36h with every LLM-backed job erroring, each one logging and
+    re-raising into APScheduler's default handler, and produced ZERO alerts.
+
+    Streaks are fed by backend/scheduler.py's EXISTING APScheduler listener
+    (_register_activity_listener, the one Pulse already uses) via
+    note_job_failure/note_job_success -- no second listener, no per-job
+    wrapper code, and every present and future job is covered for free.
+
+    The alert gate is deliberately two-part: >= _JOB_FAIL_MIN_CONSECUTIVE
+    failures in a row AND the streak lasting >= job_failure_min_minutes. A
+    bare consecutive count cannot work across a scheduler whose cadences span
+    30 seconds to daily; the time floor is what makes one threshold correct
+    for all of them.
+
+    Gated by settings.job_failure_check_enabled, independent of every other
+    check. Reuses watchdog_alert_cooldown_s for repeat alerts (no new knob,
+    same as the stall/dead-letter/contract/deploy-drift checks). Best-effort:
+    any exception returns [] without propagating. Returns the job ids paged
+    on THIS tick.
+    """
+    try:
+        from backend.config import get_settings
+        s = get_settings()
+        if not getattr(s, "job_failure_check_enabled", True):
+            return []
+
+        min_minutes = getattr(s, "job_failure_min_minutes", 30)
+        cooldown_s = getattr(s, "watchdog_alert_cooldown_s", 3600)
+        now = time.monotonic()
+
+        from backend import events
+        from backend.agents import outcomes
+
+        paged: list[str] = []
+        # list() -- the listener can mutate the dict from the same loop while
+        # this coroutine is suspended on an await.
+        for job_id, (count, first_ts, err) in list(_job_fail_streak.items()):
+            if count == 0:
+                # Falling edge: the job ran clean again. Same discipline as
+                # check_expected_deliveries' healthy branch, and cheaper --
+                # this dict only ever holds jobs that failed since boot.
+                await outcomes.clear_flag("watchdog", f"job_failing:{job_id}")
+                continue
+
+            minutes = int((now - first_ts) / 60)
+            if count < _JOB_FAIL_MIN_CONSECUTIVE or minutes < min_minutes:
+                continue
+            if not _should_alert(f"job_failing:{job_id}", cooldown_s):
+                continue
+
+            msg = _format_job_failing(job_id, count, minutes, err)
+            logger.error(
+                f"Scheduler job '{job_id}' failing: {count} consecutive errors over {minutes} min"
+            )
+            d = await outcomes.record_flag_ex(
+                "watchdog", f"job_failing:{job_id}", msg, severity="high",
+            )
+            if d["surface"]:
+                await events.notify_phone(msg, kind="job_failing")
+            paged.append(job_id)
+
+        return paged
+    except Exception as exc:
+        logger.warning(f"check_failing_jobs error (ignored): {exc}")
         return []
 
 
@@ -282,6 +410,25 @@ async def check_auth_failure_burst() -> list[str]:
             if d["surface"]:
                 await events.notify_phone(_format_auth_burst(src, stats[src], window_min), kind="auth_burst")
 
+        # Falling edge. Unlike every other check here there is nothing left to
+        # iterate once a source goes quiet -- it drops out of authfail.recent()
+        # entirely, so a healthy-branch clear can never reach it (live flag 347
+        # sat open from 2026-08-22 with the storm long over). Enumerate the
+        # open rows instead and resolve any whose source is no longer over
+        # threshold. include_suppressed=True or a calibration-suppressed row
+        # would be invisible here and never clear.
+        #
+        # governor.claim_auth_burst_alert is deliberately NOT consulted or
+        # changed: it owns page-once/re-arm (quiet for a full window), which is
+        # a longer, different lifetime than "is this source bursting now". A
+        # source that re-storms before re-arming still gets no page, and no new
+        # flag, because `paged` above stays empty.
+        _AB = "watchdog:auth_burst:"
+        for f in await outcomes.open_flags(limit=200, include_suppressed=True):
+            fp = f["fingerprint"]
+            if fp.startswith(_AB) and fp[len(_AB):] not in over:
+                await outcomes.clear_flag("watchdog", f"auth_burst:{fp[len(_AB):]}")
+
         return paged
     except Exception as exc:
         logger.warning(f"check_auth_failure_burst error (ignored): {exc}")
@@ -346,6 +493,12 @@ async def check_integration_contracts() -> list[str]:
             breaches = contracts.check_object(data, field_contracts)
             if not breaches:
                 _contract_fail_streak[name] = 0
+                # Shape is back. Resolve the flag alongside the streak --
+                # fingerprint is contracts:breach:{name} (source "contracts",
+                # NOT "watchdog"; the "contract:{name}" string above is only
+                # the _should_alert debounce key).
+                from backend.agents import outcomes
+                await outcomes.clear_flag("contracts", f"breach:{name}")
                 continue
 
             _contract_fail_streak[name] = _contract_fail_streak.get(name, 0) + 1
@@ -432,7 +585,9 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
     """Detect a stale NEXUS process serving old code after a git pull with no
     restart. Compares the SHA captured once at boot (backend/version.py) to
     the repo's live HEAD, re-read fresh on every tick — restart-safe by
-    construction, since a fresh boot always re-captures a matching SHA.
+    construction, since a fresh boot always re-captures a matching SHA, which
+    both resets the streak and (below) auto-resolves the OutcomeFlag. No
+    explicit restart hook is needed for either.
 
     Gated by settings.deploy_drift_check_enabled. Uses the plain in-memory
     _should_alert debounce (not the DB-backed dead-letter one — a drift
@@ -472,6 +627,15 @@ async def check_deploy_drift(*, cooldown_s: int) -> bool:
             # a real restart makes running==current too, so both paths reset
             # the same way.
             await asyncio.to_thread(governor.record_deploy_drift_tick, False)
+            # ...and resolve the flag, not just the streak. Without this the
+            # row stayed open forever after the restart that fixed the drift
+            # (live flag 346: cleared condition 09:19, still open a day later,
+            # still in the briefing's KNOWN OPEN ITEMS). Unconditional, same
+            # trade as check_expected_deliveries' healthy branch below: one
+            # indexed SELECT on ix_outcomeflag_fingerprint per 5-min tick,
+            # cheaper than a latch that a restart would desync anyway.
+            from backend.agents import outcomes
+            await outcomes.clear_flag("watchdog", "deploy_drift")
             return False
 
         streak = await asyncio.to_thread(governor.record_deploy_drift_tick, True)
@@ -626,7 +790,7 @@ async def check_expected_deliveries(*, cooldown_s: int) -> list[str]:
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all eight checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all nine checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -640,6 +804,7 @@ async def run_watchdog() -> dict:
         cooldown_s = getattr(s, "watchdog_alert_cooldown_s", 3600)
 
         stalled = await check_scheduler_stalls(grace_s=grace_s, cooldown_s=cooldown_s)
+        failing_jobs = await check_failing_jobs()
         dead_count = await check_dead_letters(threshold=threshold, cooldown_s=cooldown_s)
         budget_warn_fired = await check_budget_warning()
         auth_bursts = await check_auth_failure_burst()
@@ -650,6 +815,7 @@ async def run_watchdog() -> dict:
 
         return {
             "stalled": stalled,
+            "failing_jobs": failing_jobs,
             "dead_letters": dead_count,
             "budget_warn_fired": budget_warn_fired,
             "auth_bursts": auth_bursts,
@@ -662,6 +828,7 @@ async def run_watchdog() -> dict:
         logger.error(f"run_watchdog error (ignored): {exc}")
         return {
             "stalled": [],
+            "failing_jobs": [],
             "dead_letters": 0,
             "budget_warn_fired": False,
             "auth_bursts": [],

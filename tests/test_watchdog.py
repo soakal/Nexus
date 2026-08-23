@@ -20,6 +20,7 @@ Safety contract being verified:
 17. The canary calls the cached fetch(), never bypasses it via __wrapped__.
 """
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -288,6 +289,195 @@ async def test_check_scheduler_stalls_get_jobs_raises():
 
 
 # ---------------------------------------------------------------------------
+# check_scheduler_stalls — falling edge auto-clears the OutcomeFlag
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_scheduler_stall_clears_flag_when_job_back_on_schedule(eng):
+    """A job that was stalled and is now on time gets its open
+    watchdog:stall:{job_id} flag auto-resolved -- regression for live flag
+    346-style rows that stayed open long after the condition cleared."""
+    from backend.agents import watchdog
+    from backend.database import OutcomeFlag
+
+    with Session(eng) as s:
+        flag = OutcomeFlag(
+            source="watchdog", check="stall:morning_briefing",
+            fingerprint="watchdog:stall:morning_briefing",
+            summary="NEXUS scheduler job 'morning_briefing' is overdue by 400s",
+            status="open",
+        )
+        s.add(flag)
+        s.commit()
+        flag_id = flag.id
+
+    now_utc = _utcnow()
+    ontime_job = _fake_job("morning_briefing", now_utc + timedelta(seconds=60))
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [ontime_job])
+
+    with patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.check_scheduler_stalls(grace_s=300, cooldown_s=3600)
+
+    assert result == []
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, flag_id)
+    assert row.status == "resolved"
+    assert row.resolved_by == "auto:condition_cleared"
+
+
+# ---------------------------------------------------------------------------
+# check_failing_jobs (cadence-aware "job fires but always raises" detector)
+# ---------------------------------------------------------------------------
+
+def _failing_jobs_settings(**overrides):
+    from backend.config import Settings
+    defaults = dict(job_failure_check_enabled=True, job_failure_min_minutes=30,
+                     watchdog_alert_cooldown_s=3600)
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_failing_job_pages_after_threshold_and_duration(eng):
+    """>= 2 consecutive failures AND >= job_failure_min_minutes elapsed pages
+    once, with kind="job_failing" and the job id in the message."""
+    from backend.agents import watchdog
+
+    watchdog.note_job_failure("brain_organizer", "boom 1")
+    watchdog.note_job_failure("brain_organizer", "boom 2")
+    # Backdate the streak's first-failure timestamp past the duration floor.
+    count, _first_ts, err = watchdog._job_fail_streak["brain_organizer"]
+    watchdog._job_fail_streak["brain_organizer"] = (count, time.monotonic() - 31 * 60, err)
+
+    settings = _failing_jobs_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_failing_jobs()
+
+    assert paged == ["brain_organizer"]
+    notify_mock.assert_awaited_once()
+    assert notify_mock.await_args.kwargs["kind"] == "job_failing"
+    assert "brain_organizer" in notify_mock.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_failing_job_below_duration_floor_does_not_page(eng):
+    """This is the test that encodes the whole cadence-aware design: 2
+    consecutive failures is not enough on its own -- a fast-cadence job (e.g.
+    every 30s) can rack up 2 failures in under a minute, well short of
+    job_failure_min_minutes, and must NOT page yet."""
+    from backend.agents import watchdog
+
+    watchdog.note_job_failure("state_refresh_30s", "boom 1")
+    watchdog.note_job_failure("state_refresh_30s", "boom 2")
+    # No backdating -- first failure was "just now", elapsed minutes ~= 0.
+
+    settings = _failing_jobs_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_failing_jobs()
+
+    assert paged == []
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failing_job_below_consecutive_floor_does_not_page(eng):
+    """A single failure, even after job_failure_min_minutes has elapsed, is
+    not "consecutive" enough on its own -- _JOB_FAIL_MIN_CONSECUTIVE gates it
+    regardless of duration."""
+    from backend.agents import watchdog
+
+    watchdog.note_job_failure("retention_prune", "boom 1")
+    count, _first_ts, err = watchdog._job_fail_streak["retention_prune"]
+    watchdog._job_fail_streak["retention_prune"] = (count, time.monotonic() - 31 * 60, err)
+
+    settings = _failing_jobs_settings()
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_failing_jobs()
+
+    assert paged == []
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failing_job_clears_flag_on_next_success(eng):
+    """note_job_success zeroes the streak; the next check_failing_jobs tick
+    auto-resolves any open watchdog:job_failing:{job_id} flag."""
+    from backend.agents import watchdog
+    from backend.database import OutcomeFlag
+
+    with Session(eng) as s:
+        flag = OutcomeFlag(
+            source="watchdog", check="job_failing:brain_organizer",
+            fingerprint="watchdog:job_failing:brain_organizer",
+            summary="NEXUS scheduler job 'brain_organizer' has raised on 5 consecutive runs",
+            status="open",
+        )
+        s.add(flag)
+        s.commit()
+        flag_id = flag.id
+
+    watchdog.note_job_failure("brain_organizer", "boom")
+    watchdog.note_job_success("brain_organizer")
+
+    settings = _failing_jobs_settings()
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        paged = await watchdog.check_failing_jobs()
+
+    assert paged == []
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, flag_id)
+    assert row.status == "resolved"
+    assert row.resolved_by == "auto:condition_cleared"
+
+
+@pytest.mark.asyncio
+async def test_failing_job_disabled_flag_short_circuits(eng):
+    from backend.agents import watchdog
+
+    watchdog.note_job_failure("brain_organizer", "boom 1")
+    watchdog.note_job_failure("brain_organizer", "boom 2")
+    count, _first_ts, err = watchdog._job_fail_streak["brain_organizer"]
+    watchdog._job_fail_streak["brain_organizer"] = (count, time.monotonic() - 31 * 60, err)
+
+    settings = _failing_jobs_settings(job_failure_check_enabled=False)
+    notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", notify_mock):
+        paged = await watchdog.check_failing_jobs()
+
+    assert paged == []
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_summary_includes_failing_jobs(eng):
+    from backend.agents import watchdog
+    from backend.config import Settings
+
+    settings = Settings(watchdog_enabled=True)
+    fake_scheduler = SimpleNamespace(get_jobs=lambda: [])
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", fake_scheduler), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+
+    assert "failing_jobs" in result
+
+
+# ---------------------------------------------------------------------------
 # Test 7 — run_watchdog never raises even if internals explode
 # ---------------------------------------------------------------------------
 
@@ -545,6 +735,58 @@ async def test_check_auth_failure_burst_below_threshold_no_alert(eng):
 
     assert paged == []
     notify_mock.assert_not_called()
+    authfail.reset()
+
+
+@pytest.mark.asyncio
+async def test_auth_burst_clears_flag_for_source_no_longer_over_threshold(eng):
+    """Once a source drops out of authfail.recent() entirely (quiet, or the
+    window rolled past it), its open watchdog:auth_burst:{source} flag is
+    auto-resolved -- regression for live flag 347, which sat open with the
+    storm long over because there's no falling-edge source to iterate once a
+    source vanishes from recent(). A calibration-suppressed row for a
+    different, still-quiet source is also cleared (include_suppressed=True),
+    while a still-bursting source's flag is left untouched."""
+    from backend.agents import watchdog
+    from backend.config import Settings
+    from backend.database import OutcomeFlag, SystemState
+    from backend.safety import authfail
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1))
+        s.add(OutcomeFlag(
+            source="watchdog", check="auth_burst:9.9.9.9",
+            fingerprint="watchdog:auth_burst:9.9.9.9",
+            summary="quiet now", status="open",
+        ))
+        s.add(OutcomeFlag(
+            source="watchdog", check="auth_burst:8.8.8.8",
+            fingerprint="watchdog:auth_burst:8.8.8.8",
+            summary="quiet, suppressed", status="open", suppressed=True,
+            suppressed_reason="calibration:watchdog:auth_burst fp_rate=1.0",
+        ))
+        s.add(OutcomeFlag(
+            source="watchdog", check="auth_burst:1.2.3.4",
+            fingerprint="watchdog:auth_burst:1.2.3.4",
+            summary="still bursting", status="open",
+        ))
+        s.commit()
+
+    authfail.reset()
+    for _ in range(30):
+        authfail.record_failure("1.2.3.4", "/api/ha/entities")
+
+    settings = Settings(auth_burst_enabled=True, auth_burst_threshold=25, auth_burst_window_minutes=30)
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        await watchdog.check_auth_failure_burst()
+
+    with Session(eng) as s:
+        rows = {r.check: r.status for r in s.exec(select(OutcomeFlag)).all()}
+    assert rows["auth_burst:9.9.9.9"] == "resolved"
+    assert rows["auth_burst:8.8.8.8"] == "resolved"
+    assert rows["auth_burst:1.2.3.4"] == "open"
     authfail.reset()
 
 
@@ -943,6 +1185,42 @@ async def test_contract_canary_does_not_bypass_cache():
     wrapped_original.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_contract_canary_clears_flag_on_healthy_shape(eng):
+    """A healthy tick auto-resolves an open contract-breach flag. Source is
+    "contracts", NOT "watchdog" -- that's the actual fingerprint prefix
+    record_flag_ex writes for this check (contracts:breach:{name}), distinct
+    from every other watchdog:* check."""
+    from backend.agents import watchdog
+    from backend.database import OutcomeFlag
+
+    with Session(eng) as s:
+        flag = OutcomeFlag(
+            source="contracts", check="breach:weather",
+            fingerprint="contracts:breach:weather",
+            summary="NEXUS contract alert: 'weather' returned OK but broke its expected shape",
+            status="open",
+        )
+        s.add(flag)
+        s.commit()
+        flag_id = flag.id
+
+    settings = _settings_with_canary()
+    healthy_fetch = AsyncMock(return_value=_FakeWeatherData(condition="Sunny"))
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.safety.contracts.CONTRACTS", _BREACHING_CONTRACTS), \
+         patch("backend.integrations.weather.fetch", healthy_fetch), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        paged = await watchdog.check_integration_contracts()
+
+    assert paged == []
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, flag_id)
+    assert row.status == "resolved"
+    assert row.resolved_by == "auto:condition_cleared"
+
+
 # ---------------------------------------------------------------------------
 # check_deferred_flags / deferred_swept (rollout step 7, spec §3.5, AC29/AC30)
 # ---------------------------------------------------------------------------
@@ -1064,6 +1342,41 @@ async def test_check_deploy_drift_no_drift_same_sha():
 
     assert fired is False
     notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deploy_drift_clears_flag_when_shas_match(eng):
+    """An open watchdog:deploy_drift flag is auto-resolved the tick after a
+    restart makes running_sha == current -- regression for live flag 346,
+    which stayed open a full day after the restart that fixed it."""
+    from backend.agents import watchdog
+    from backend.database import OutcomeFlag
+
+    with Session(eng) as s:
+        flag = OutcomeFlag(
+            source="watchdog", check="deploy_drift",
+            fingerprint="watchdog:deploy_drift",
+            summary="NEXUS is running aaa but the repo is at bbb",
+            status="open", severity="medium",
+        )
+        s.add(flag)
+        s.commit()
+        flag_id = flag.id
+
+    sha = "a" * 40
+    settings = _drift_settings()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.version.running_sha", return_value=sha), \
+         patch("backend.version.get_git_head", return_value=sha), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        fired = await watchdog.check_deploy_drift(cooldown_s=3600)
+
+    assert fired is False
+    with Session(eng) as s:
+        row = s.get(OutcomeFlag, flag_id)
+    assert row.status == "resolved"
+    assert row.resolved_by == "auto:condition_cleared"
 
 
 @pytest.mark.asyncio

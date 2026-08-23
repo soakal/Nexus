@@ -717,6 +717,7 @@ def _register_activity_listener() -> None:
             EVENT_JOB_SUBMITTED,
         )
         from backend import activity
+        from backend.agents import watchdog as _watchdog
 
         def _on_job_event(event) -> None:
             # Sync callback (APScheduler dispatches on the loop) -- must stay
@@ -730,10 +731,15 @@ def _register_activity_listener() -> None:
                     activity.end(actor_id, True)
                     if job_id not in _TICKER_QUIET_JOBS:
                         activity.pulse(actor_id, "job_done", f"{job_id} ok")
+                    # Consecutive-failure streak for watchdog.check_failing_jobs
+                    # -- a plain dict write, no I/O, no await. Last in the
+                    # branch so Pulse's behavior is unchanged regardless.
+                    _watchdog.note_job_success(job_id)
                 elif event.code == EVENT_JOB_ERROR:
                     err = str(getattr(event, "exception", "") or "")[:200]
                     activity.end(actor_id, False, err)
                     activity.pulse(actor_id, "job_error", f"{job_id} failed: {err}")
+                    _watchdog.note_job_failure(job_id, err)
                 elif event.code == EVENT_JOB_MISSED:
                     activity.pulse(actor_id, "job_missed", f"{job_id} missed its scheduled run")
             except Exception as ex:

@@ -106,8 +106,35 @@ def _db_latest_by_fingerprint(fingerprint: str) -> dict | None:
         return _flag_to_dict(row) if row else None
 
 
-def _db_bump_surfaced(flag_id: int) -> dict | None:
-    """Increment surfaced_count and bump last_surfaced_at on an already-open row."""
+def _db_bump_surfaced(
+    flag_id: int, *, summary: str, detail: str | None, severity: str,
+) -> dict | None:
+    """Bump surfaced_count/last_surfaced_at on an already-open row AND refresh
+    the caller's per-occurrence fields to THIS occurrence's values.
+
+    Callers recompute summary/detail/severity fresh on every tick (e.g.
+    watchdog.check_deploy_drift embeds the two live SHAs, homelab_watch's
+    check_expected_resources embeds the live observed_state JSON) and every
+    read path -- the briefing's KNOWN OPEN ITEMS block, chat's [OPEN ITEMS]
+    block, GET /api/safety/flags, the Telegram /flags list -- renders what is
+    stored, not what was passed. Keeping the raise-time text turned a
+    re-surfaced row into a confidently wrong statement: flag 346 sat open for
+    a day saying "the repo is at 7aa3615eec24" through six later commits.
+
+    NOT refreshed: created_at (the raise time IS the answer to "how long has
+    this been open"), status/resolution bookkeeping, and action_log_id -- a
+    later occurrence with no broker action would otherwise wipe the FK linking
+    the row to the ActionLog entry that accompanied the first one.
+
+    severity is taken FRESH, with no escalate-only ratchet, deliberately:
+    every automated call site passes a per-fingerprint constant, so an
+    escalation branch would be dead code. Nothing safety-relevant reads the
+    stored value either: should_page() gates on the CALLER's severity
+    argument, not the row's, and calibration.recompute_hints already takes
+    the max across rows in the window rather than trusting any single row --
+    so a row moving medium->low cannot hide a high-severity history from the
+    hint.
+    """
     from sqlmodel import Session
     from backend.database import OutcomeFlag, engine
 
@@ -116,6 +143,9 @@ def _db_bump_surfaced(flag_id: int) -> dict | None:
         if row is None:
             return None
         now = datetime.utcnow()
+        row.summary = summary
+        row.detail = detail
+        row.severity = severity
         row.surfaced_count += 1
         row.last_surfaced_at = now
         row.updated_at = now
@@ -404,7 +434,8 @@ async def record_flag_ex(
       0. Consult should_page() up front. A "no" doesn't stop the write below
          — it stamps suppressed=True/suppressed_reason on whichever row gets
          written or bumped, and the return says not to surface it.
-      1. Existing open|needs_follow_up row -> bump surfaced_count, return its
+      1. Existing open|needs_follow_up row -> bump surfaced_count AND refresh
+         summary/detail/severity to this occurrence's values, return its
          id with surface per the gate (never surface=False merely because
          the row already existed — the callers' own latches already own
          re-alert suppression, spec §3.2).
@@ -432,7 +463,10 @@ async def record_flag_ex(
         # Branch 1 — already raised and still open/needs_follow_up.
         active = await asyncio.to_thread(_db_find_active_by_fingerprint, fingerprint)
         if active:
-            bumped = await asyncio.to_thread(_db_bump_surfaced, active["id"])
+            bumped = await asyncio.to_thread(
+                _db_bump_surfaced, active["id"],
+                summary=summary, detail=detail, severity=severity,
+            )
             flag_id = bumped["id"] if bumped else active["id"]
             return {"id": flag_id, "surface": page, "reason": None if page else page_reason}
 
@@ -495,7 +529,8 @@ async def record_flag(
     existing call site — this signature and its return values are locked by
     tests/test_outcome_flags.py (CAL51).
       1. Existing open|needs_follow_up row for this fingerprint -> bump
-         surfaced_count/last_surfaced_at, return its id. No new row.
+         surfaced_count/last_surfaced_at and refresh summary/detail/severity
+         to this occurrence's values, return its id. No new row.
       2. Existing deferred row with deferred_until still in the future ->
          return None ("deferred means shut up until then").
       3. Existing false_positive row resolved within the cooldown window ->

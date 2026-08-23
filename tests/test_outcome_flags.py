@@ -200,6 +200,34 @@ async def test_ac5_record_flag_dedups_same_source_check(eng):
 
 
 @pytest.mark.asyncio
+async def test_resurface_refreshes_summary_detail_severity(eng):
+    """A re-surfaced row carries THIS occurrence's text, not the raise-time
+    snapshot. Regression for live flag 346, which re-surfaced 9 times still
+    naming a git SHA six commits stale."""
+    from backend.agents import outcomes
+    from backend.database import OutcomeFlag
+
+    _create_open_index(eng)
+
+    id1 = await outcomes.record_flag_ex(
+        "watchdog", "deploy_drift", "running aaa but repo is at bbb",
+        detail="first", severity="medium",
+    )
+    id2 = await outcomes.record_flag_ex(
+        "watchdog", "deploy_drift", "running aaa but repo is at ccc",
+        detail="second", severity="high",
+    )
+    assert id2["id"] == id1["id"]
+
+    with Session(eng) as session:
+        row = session.get(OutcomeFlag, id1["id"])
+        assert row.summary == "running aaa but repo is at ccc"
+        assert row.detail == "second"
+        assert row.severity == "high"
+        assert row.surfaced_count == 2
+
+
+@pytest.mark.asyncio
 async def test_ac6_record_flag_after_resolved_creates_new_row(eng):
     """AC6: after resolve_flag(id, "resolved"), a subsequent record_flag with
     the same fingerprint creates a NEW row (a genuinely recurring condition
