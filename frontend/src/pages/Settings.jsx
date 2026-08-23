@@ -24,7 +24,7 @@ function BrowserApiKey() {
   return (
     <Card>
       <Eyebrow style={{ marginBottom: '12px', display: 'block' }}>Browser Authentication</Eyebrow>
-      <p style={{ fontSize: '12px', color: '#8a96ad', marginBottom: '12px', margin: '0 0 12px 0' }}>
+      <p style={{ fontSize: '12px', color: '#98958c', marginBottom: '12px', margin: '0 0 12px 0' }}>
         Stored in this browser only (localStorage). Required before any other settings will load.
       </p>
 
@@ -38,7 +38,7 @@ function BrowserApiKey() {
             style={{
               width: '100%',
               paddingRight: '40px',
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: "'IBM Plex Mono', monospace",
               fontSize: '13px',
               boxSizing: 'border-box',
             }}
@@ -48,7 +48,7 @@ function BrowserApiKey() {
             onClick={() => setVisible(v => !v)}
             style={{
               position: 'absolute', right: '11px', top: '50%', transform: 'translateY(-50%)',
-              background: 'none', border: 'none', cursor: 'pointer', color: '#8a96ad',
+              background: 'none', border: 'none', cursor: 'pointer', color: '#98958c',
               display: 'flex', alignItems: 'center',
             }}
             title={visible ? 'Hide' : 'Show'}
@@ -183,7 +183,7 @@ export default function Settings() {
         }}>
           <p style={{ margin: 0, fontSize: '13px', color: '#fb7185', lineHeight: '1.5' }}>
             Phone notifications are enabled but{' '}
-            <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>TELEGRAM_BOT_TOKEN</span>
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>TELEGRAM_BOT_TOKEN</span>
             {' '}is missing — every alert is silently failing. Set it in the Notifications & Calendar section below.
           </p>
         </Card>
@@ -209,7 +209,7 @@ export default function Settings() {
 
         {SECTIONS.map(section => (
           <div key={section.title}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#465069', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '10px 0 2px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#57554c', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '10px 0 2px' }}>
               {section.title}
             </div>
             {section.secrets.map(f => (
@@ -238,12 +238,12 @@ export default function Settings() {
           )}
         </div>
 
-        <p style={{ fontSize: '12px', color: '#5d6982', margin: '0 0 12px 0' }}>
+        <p style={{ fontSize: '12px', color: '#7a776d', margin: '0 0 12px 0' }}>
           SSH and service passwords for automated deploys. Stored encrypted in the vault — never returned by any API.
         </p>
 
         {Object.keys(credentials).length === 0 && !addingCred && (
-          <div style={{ fontSize: '13px', color: '#465069', padding: '8px 0' }}>No credentials stored yet.</div>
+          <div style={{ fontSize: '13px', color: '#57554c', padding: '8px 0' }}>No credentials stored yet.</div>
         )}
 
         {Object.entries(credentials).map(([service, data]) => (
@@ -251,8 +251,8 @@ export default function Settings() {
         ))}
 
         {addingCred && (
-          <div style={{ padding: '13px 0', borderTop: '1px solid rgba(120,160,220,0.07)' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '10px' }}>New Credential</div>
+          <div style={{ padding: '13px 0', borderTop: '1px solid rgba(180,178,170,0.07)' }}>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', marginBottom: '10px' }}>New Credential</div>
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
               {[
                 { key: 'service', label: 'Service name', placeholder: 'e.g. nas, proxmox' },
@@ -261,7 +261,7 @@ export default function Settings() {
                 { key: 'port', label: 'Port (optional)', placeholder: '22' },
               ].map(({ key, label, placeholder }) => (
                 <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 140px' }}>
-                  <label style={{ fontSize: '11px', color: '#5d6982', fontWeight: 600 }}>{label}</label>
+                  <label style={{ fontSize: '11px', color: '#7a776d', fontWeight: 600 }}>{label}</label>
                   <TextInput
                     value={newCred[key]}
                     onChange={e => setNewCred(f => ({ ...f, [key]: e.target.value }))}
@@ -271,7 +271,7 @@ export default function Settings() {
                 </div>
               ))}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 140px' }}>
-                <label style={{ fontSize: '11px', color: '#5d6982', fontWeight: 600 }}>Password</label>
+                <label style={{ fontSize: '11px', color: '#7a776d', fontWeight: 600 }}>Password</label>
                 <TextInput
                   type="password"
                   value={newCred.password}

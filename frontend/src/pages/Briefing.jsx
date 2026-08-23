@@ -59,7 +59,7 @@ export default function Briefing() {
       />
 
       {loading && !briefing && (
-        <div style={{ color: '#5d6982', fontSize: 13 }}>Generating briefing…</div>
+        <div style={{ color: '#7a776d', fontSize: 13 }}>Generating briefing…</div>
       )}
 
       {error && (

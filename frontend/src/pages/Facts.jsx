@@ -106,7 +106,7 @@ export default function Facts() {
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '8px' }}>Recall Tester</Eyebrow>
-        <p style={{ fontSize: '12px', color: '#8a96ad', margin: '0 0 12px 0' }}>
+        <p style={{ fontSize: '12px', color: '#98958c', margin: '0 0 12px 0' }}>
           Test what facts a query would surface from memory recall.
         </p>
 
@@ -127,20 +127,20 @@ export default function Facts() {
         {/* Recall result */}
         {recallResult !== null && (
           <div style={{
-            background: 'rgba(47,212,238,0.04)',
-            border: '1px solid rgba(47,212,238,0.12)',
-            borderRadius: '10px',
+            background: 'rgba(255,138,61,0.04)',
+            border: '1px solid rgba(255,138,61,0.12)',
+            borderRadius: '6px',
             padding: '12px',
-            fontFamily: "'JetBrains Mono', monospace",
+            fontFamily: "'IBM Plex Mono', monospace",
             fontSize: '12px',
-            color: '#94a6c0',
+            color: '#a6a399',
             marginTop: '12px',
             whiteSpace: 'pre-wrap',
             overflowWrap: 'anywhere',
           }}>
             {recallResult.result
               ? recallResult.result
-              : <span style={{ color: '#5d6982' }}>No facts matched this query.</span>
+              : <span style={{ color: '#7a776d' }}>No facts matched this query.</span>
             }
           </div>
         )}
@@ -153,14 +153,14 @@ export default function Facts() {
         <div style={{ marginBottom: '12px' }}>
           <Eyebrow>
             Known Facts{' '}
-            <span style={{ color: '#465069' }}>({facts?.length || 0} active)</span>
+            <span style={{ color: '#57554c' }}>({facts?.length || 0} active)</span>
           </Eyebrow>
         </div>
 
         {/* Loading */}
         {facts === null && (
           <Card>
-            <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
+            <span style={{ fontSize: '12px', color: '#7a776d', fontFamily: "'IBM Plex Mono', monospace" }}>
               Loading…
             </span>
           </Card>
@@ -176,11 +176,11 @@ export default function Facts() {
             gap: '12px',
             textAlign: 'center',
           }}>
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#5d6982" strokeWidth="1.5">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#7a776d" strokeWidth="1.5">
               <circle cx="12" cy="12" r="9"/>
               <path d="M12 8h.01M11 12h1v4h1"/>
             </svg>
-            <span style={{ fontSize: '14px', color: '#5d6982' }}>No facts yet</span>
+            <span style={{ fontSize: '14px', color: '#7a776d' }}>No facts yet</span>
           </Card>
         )}
 
@@ -192,8 +192,8 @@ export default function Facts() {
                 key={f.id}
                 style={{
                   background: 'rgba(255,255,255,0.022)',
-                  border: '1px solid rgba(120,160,220,0.08)',
-                  borderRadius: '11px',
+                  border: '1px solid rgba(180,178,170,0.08)',
+                  borderRadius: '6px',
                   padding: '12px 14px',
                   display: 'flex',
                   justifyContent: 'space-between',
@@ -203,21 +203,21 @@ export default function Facts() {
               >
                 {/* Left: fact content + meta */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '4px', overflowWrap: 'anywhere' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', marginBottom: '4px', overflowWrap: 'anywhere' }}>
                     {f.subject}{' '}
-                    <span style={{ color: '#5d6982', fontWeight: 400 }}>·</span>{' '}
+                    <span style={{ color: '#7a776d', fontWeight: 400 }}>·</span>{' '}
                     {f.predicate}{' '}
-                    <span style={{ color: '#5d6982', fontWeight: 400 }}>·</span>{' '}
+                    <span style={{ color: '#7a776d', fontWeight: 400 }}>·</span>{' '}
                     {f.value}
                   </div>
-                  <div style={{ fontSize: '11px', color: '#5d6982', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                  <div style={{ fontSize: '11px', color: '#7a776d', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
                     {f.source && (
                       <span style={{
                         background: 'rgba(255,255,255,0.04)',
-                        border: '1px solid rgba(120,160,220,0.12)',
-                        borderRadius: '5px',
+                        border: '1px solid rgba(180,178,170,0.12)',
+                        borderRadius: '4px',
                         padding: '1px 6px',
-                        fontFamily: "'JetBrains Mono', monospace",
+                        fontFamily: "'IBM Plex Mono', monospace",
                         fontSize: '10px',
                         textTransform: 'uppercase',
                         letterSpacing: '0.06em',
@@ -235,11 +235,11 @@ export default function Facts() {
                   <span style={{
                     fontSize: '11px',
                     fontWeight: 600,
-                    fontFamily: "'JetBrains Mono', monospace",
-                    color: f.above_floor ? '#2fd4ee' : '#fbbf24',
-                    background: f.above_floor ? 'rgba(47,212,238,0.08)' : 'rgba(251,191,36,0.08)',
-                    border: `1px solid ${f.above_floor ? 'rgba(47,212,238,0.20)' : 'rgba(251,191,36,0.20)'}`,
-                    borderRadius: '6px',
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    color: f.above_floor ? '#ff8a3d' : '#e8c468',
+                    background: f.above_floor ? 'rgba(255,138,61,0.08)' : 'rgba(232,196,104,0.08)',
+                    border: `1px solid ${f.above_floor ? 'rgba(255,138,61,0.20)' : 'rgba(232,196,104,0.20)'}`,
+                    borderRadius: '4px',
                     padding: '2px 7px',
                   }}>
                     {Math.round((f.effective_confidence ?? 0) * 100)}% eff
@@ -249,10 +249,10 @@ export default function Facts() {
                   {!f.above_floor && (
                     <span style={{
                       fontSize: '10px',
-                      fontFamily: "'JetBrains Mono', monospace",
-                      color: '#fbbf24',
-                      border: '1px solid rgba(251,191,36,0.30)',
-                      borderRadius: '5px',
+                      fontFamily: "'IBM Plex Mono', monospace",
+                      color: '#e8c468',
+                      border: '1px solid rgba(232,196,104,0.30)',
+                      borderRadius: '4px',
                       padding: '1px 6px',
                       letterSpacing: '0.05em',
                       textTransform: 'uppercase',
@@ -267,7 +267,7 @@ export default function Facts() {
                     disabled={dismissingId === f.id}
                     style={{
                       fontSize: '12px',
-                      color: dismissingId === f.id ? '#5d6982' : '#fb7185',
+                      color: dismissingId === f.id ? '#7a776d' : '#fb7185',
                       background: 'none',
                       border: 'none',
                       cursor: dismissingId === f.id ? 'not-allowed' : 'pointer',

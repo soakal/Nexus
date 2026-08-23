@@ -41,13 +41,13 @@ function AgendaLine({ line }) {
   if (match) {
     return (
       <div style={{ lineHeight: 1.7 }}>
-        <span style={{ color: 'var(--accent)', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", fontSize: '13px' }}>{match[2]}</span>
+        <span style={{ color: 'var(--accent)', fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace", fontSize: '13px' }}>{match[2]}</span>
         {' '}
-        <span style={{ color: '#dbe3f0', fontSize: '14px' }}>{match[3]}</span>
+        <span style={{ color: '#ece9e2', fontSize: '14px' }}>{match[3]}</span>
       </div>
     )
   }
-  return <div style={{ color: '#dbe3f0', fontSize: '14px', lineHeight: 1.7 }}>{line}</div>
+  return <div style={{ color: '#ece9e2', fontSize: '14px', lineHeight: 1.7 }}>{line}</div>
 }
 
 export default function Today() {
@@ -119,7 +119,7 @@ export default function Today() {
       <ScreenHeader section="Today" title="Today" />
 
       {!data ? (
-        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
+        <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>
       ) : (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--gap)' }}>
 
@@ -152,7 +152,7 @@ export default function Today() {
                         />
                         <span
                           style={{
-                            color: checked ? '#5d6982' : '#dbe3f0',
+                            color: checked ? '#7a776d' : '#ece9e2',
                             fontSize: '14px',
                             textDecoration: checked ? 'line-through' : 'none',
                           }}
@@ -164,7 +164,7 @@ export default function Today() {
                   })}
                 </div>
               ) : (
-                <div style={{ whiteSpace: 'pre-line', color: '#aab4c7', fontSize: '13px', lineHeight: 1.7 }}>
+                <div style={{ whiteSpace: 'pre-line', color: '#b3b0a6', fontSize: '13px', lineHeight: 1.7 }}>
                   {priority.note}
                 </div>
               )}
@@ -177,9 +177,9 @@ export default function Today() {
           {homeState?.available && (homeState.locks.length > 0 || homeState.doors.length > 0 || homeState.alert_count > 0) && (
             <Card flex="1 1 280px">
               <Eyebrow style={{ display: 'block', marginBottom: '16px' }}>Home State</Eyebrow>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: '#dbe3f0' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: '#ece9e2' }}>
                 {homeState.alert_count > 0 && (
-                  <div style={{ color: '#f4d27a' }}>{homeState.alert_count} HA alert{homeState.alert_count === 1 ? '' : 's'}</div>
+                  <div style={{ color: '#f0d896' }}>{homeState.alert_count} HA alert{homeState.alert_count === 1 ? '' : 's'}</div>
                 )}
                 {homeState.locks.map((l) => <div key={l}>{l}</div>)}
                 {homeState.doors.map((d) => <div key={d}>{d}</div>)}
@@ -197,7 +197,7 @@ export default function Today() {
                 ))}
               </div>
             ) : (
-              <div style={{ whiteSpace: 'pre-line', color: '#dbe3f0', fontSize: '14px', lineHeight: 1.7 }}>
+              <div style={{ whiteSpace: 'pre-line', color: '#ece9e2', fontSize: '14px', lineHeight: 1.7 }}>
                 {data?.calendar}
               </div>
             )}
@@ -208,7 +208,7 @@ export default function Today() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <Eyebrow>Inbox</Eyebrow>
             </div>
-            <div style={{ whiteSpace: 'pre-line', color: '#aab4c7', fontSize: '13px', lineHeight: 1.7 }}>
+            <div style={{ whiteSpace: 'pre-line', color: '#b3b0a6', fontSize: '13px', lineHeight: 1.7 }}>
               {data?.email}
             </div>
           </Card>

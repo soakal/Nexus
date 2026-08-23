@@ -159,8 +159,8 @@ export default function Mail() {
           value={body}
           onChange={e => setBody(e.target.value)}
           rows={8}
-          style={{ padding: '12px 14px', borderRadius: '11px', border: '1px solid rgba(120,160,220,0.16)',
-            background: 'rgba(255,255,255,0.03)', color: '#e9eef8', fontSize: '14px', outline: 'none',
+          style={{ padding: '12px 14px', borderRadius: '6px', border: '1px solid rgba(180,178,170,0.16)',
+            background: 'rgba(255,255,255,0.03)', color: '#f4f3f0', fontSize: '14px', outline: 'none',
             fontFamily: 'inherit', resize: 'vertical' }}
         />
         {to && !recipientsValid && (
@@ -188,13 +188,13 @@ export default function Mail() {
           <div key={e.email_id}>
             <div
               onClick={() => toggleExpand(e.email_id)}
-              style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer', flexWrap: 'wrap' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)', cursor: 'pointer', flexWrap: 'wrap' }}
             >
               <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <span style={{ fontSize: '13px', color: '#cdd6e6', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: '13px', color: '#d9d6cd', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {shortSender(e.sender)}
                 </span>
-                <span style={{ fontSize: '12px', color: '#8a96ad', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: '12px', color: '#98958c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {e.subject || '(no subject)'}
                 </span>
               </div>
@@ -211,19 +211,19 @@ export default function Mail() {
             )}
 
             {expandedId === e.email_id && (
-              <div style={{ margin: '6px 0 4px 12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(120,160,220,0.06)' }}>
+              <div style={{ margin: '6px 0 4px 12px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(180,178,170,0.06)' }}>
                 {detailLoadingId === e.email_id ? (
-                  <span style={{ fontSize: '12px', color: '#5d6982' }}>Loading…</span>
+                  <span style={{ fontSize: '12px', color: '#7a776d' }}>Loading…</span>
                 ) : detailErrors[e.email_id] ? (
                   <span style={{ fontSize: '12px', color: '#f87171' }}>{detailErrors[e.email_id]}</span>
                 ) : detailById[e.email_id] ? (
                   <>
-                    <div style={{ fontSize: '11px', color: '#5d6982', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '11px', color: '#7a776d', marginBottom: '8px' }}>
                       {detailById[e.email_id].date}
                     </div>
                     <pre style={{
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit',
-                      fontSize: '13px', color: '#dbe3f0', margin: 0,
+                      fontSize: '13px', color: '#ece9e2', margin: 0,
                       maxHeight: '360px', overflowY: 'auto',
                     }}>
                       {detailById[e.email_id].body || '(empty body)'}
@@ -235,7 +235,7 @@ export default function Mail() {
           </div>
         ))}
         {!inboxError && (inbox?.emails?.length || 0) === 0 && (
-          <div style={{ fontSize: '12px', color: '#5d6982' }}>No emails.</div>
+          <div style={{ fontSize: '12px', color: '#7a776d' }}>No emails.</div>
         )}
       </Card>
     </div>

@@ -96,7 +96,7 @@ export default function Media() {
       <ScreenHeader section="Media" title="Media Operations" />
 
       {!data && (
-        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
+        <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>
       )}
 
       {/* Top row: Now Recording + Upcoming */}
@@ -112,8 +112,8 @@ export default function Media() {
               </div>
             )
             : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#8a96ad' }}>
-                <StatusDot color="#7c8aa3" size={8} glow={false} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#98958c' }}>
+                <StatusDot color="#8b8880" size={8} glow={false} />
                 <span style={{ fontSize: '14px' }}>Nothing recording</span>
               </div>
             )
@@ -139,7 +139,7 @@ export default function Media() {
                   letterSpacing: '0.08em',
                   color: '#fb7185',
                   padding: '3px 9px',
-                  borderRadius: '6px',
+                  borderRadius: '4px',
                   border: '1px solid rgba(251,113,133,0.3)',
                   background: 'transparent',
                   cursor: 'pointer',
@@ -152,16 +152,16 @@ export default function Media() {
                   recLabel = 'SCHEDULED'
                   recStyle = {
                     ...recStyle,
-                    color: 'rgba(0,212,255,1)',
-                    border: '1px solid rgba(0,212,255,0.8)',
+                    color: 'rgba(255,138,61,1)',
+                    border: '1px solid rgba(255,138,61,0.8)',
                     cursor: 'not-allowed',
                   }
                 } else if (schedState === 'error') {
                   recLabel = 'ERROR'
                   recStyle = {
                     ...recStyle,
-                    color: 'rgba(255,120,0,0.9)',
-                    border: '1px solid rgba(255,120,0,0.6)',
+                    color: 'rgba(232,196,104,0.9)',
+                    border: '1px solid rgba(232,196,104,0.6)',
                     cursor: 'not-allowed',
                   }
                 }
@@ -176,9 +176,9 @@ export default function Media() {
                       gap: '12px',
                       flexWrap: 'wrap',
                       padding: '13px 14px',
-                      borderRadius: '11px',
+                      borderRadius: '6px',
                       background: 'rgba(255,255,255,0.022)',
-                      border: '1px solid rgba(120,160,220,0.08)',
+                      border: '1px solid rgba(180,178,170,0.08)',
                     }}
                   >
                     {/* Left: title + channel chip */}
@@ -186,7 +186,7 @@ export default function Media() {
                       <span style={{
                         fontSize: '14px',
                         fontWeight: 600,
-                        color: '#dbe3f0',
+                        color: '#ece9e2',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
@@ -195,12 +195,12 @@ export default function Media() {
                       </span>
                       {r.channel && (
                         <span style={{
-                          fontFamily: "'JetBrains Mono', monospace",
+                          fontFamily: "'IBM Plex Mono', monospace",
                           fontSize: '11px',
                           color: 'var(--accent)',
                           padding: '3px 8px',
                           border: '1px solid var(--ac-line)',
-                          borderRadius: '6px',
+                          borderRadius: '4px',
                           whiteSpace: 'nowrap',
                           flexShrink: 0,
                         }}>
@@ -212,7 +212,7 @@ export default function Media() {
                     {/* Right: start time + badge */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                       {startLabel && (
-                        <span style={{ fontSize: '12px', color: '#8a96ad', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: '12px', color: '#98958c', whiteSpace: 'nowrap' }}>
                           {startLabel}
                         </span>
                       )}
@@ -229,9 +229,9 @@ export default function Media() {
                             height: '6px',
                             borderRadius: '50%',
                             background: schedState === 'scheduled'
-                              ? 'rgba(0,212,255,1)'
+                              ? 'rgba(255,138,61,1)'
                               : schedState === 'error'
-                                ? 'rgba(255,120,0,0.9)'
+                                ? 'rgba(232,196,104,0.9)'
                                 : '#fb7185',
                             flexShrink: 0,
                           }} />
@@ -244,7 +244,7 @@ export default function Media() {
               })}
             </div>
           ) : (
-            <div style={{ color: '#5d6982', fontSize: '13px' }}>No upcoming recordings</div>
+            <div style={{ color: '#7a776d', fontSize: '13px' }}>No upcoming recordings</div>
           )}
         </Card>
       </div>
@@ -253,23 +253,23 @@ export default function Media() {
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
           <Eyebrow>Storage</Eyebrow>
-          <span style={{ fontSize: '13px', color: '#8a96ad' }}>
+          <span style={{ fontSize: '13px', color: '#98958c' }}>
             {(data?.storage_used_gb / 1000 || 0).toFixed(1)} GB of {(data?.storage_total_gb / 1000 || 0).toFixed(1)} GB
             {' · '}
-            <strong style={{ color: '#5b8cff' }}>{pct}%</strong>
+            <strong style={{ color: '#ff8a3d' }}>{pct}%</strong>
           </span>
         </div>
         <div style={{
           height: '10px',
-          borderRadius: '6px',
-          background: 'rgba(120,160,220,0.12)',
+          borderRadius: '4px',
+          background: 'rgba(180,178,170,0.12)',
           overflow: 'hidden',
         }}>
           <div style={{
             width: `${pct}%`,
             height: '100%',
-            background: 'linear-gradient(90deg,#5b8cff,#2fd4ee)',
-            borderRadius: '6px',
+            background: 'linear-gradient(90deg,#ff8a3d,#ff8a3d)',
+            borderRadius: '4px',
             transition: 'width 0.4s ease',
           }} />
         </div>

@@ -7,8 +7,8 @@ const TONE = {
   success: { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)', label: 'COMPLETE' },
   failed:  { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)', label: 'FAILED' },
   running: { c: 'var(--accent)', bg: 'var(--ac-dim)', bd: 'var(--ac-line)', label: 'RUNNING' },
-  pending: { c: '#9aa6bd', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)', label: 'PENDING' },
-  stopped: { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)', label: 'STOPPED' },
+  pending: { c: '#a6a399', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)', label: 'PENDING' },
+  stopped: { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)', label: 'STOPPED' },
 }
 
 function toneKey(status) {
@@ -97,9 +97,9 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
 
   return (
     <div style={{
-      background: 'linear-gradient(180deg,rgba(255,255,255,0.022),rgba(255,255,255,0)),#0c1320',
-      border: '1px solid rgba(120,160,220,0.10)',
-      borderRadius: '14px',
+      background: 'linear-gradient(180deg,rgba(255,255,255,0.022),rgba(255,255,255,0)),#1c1c1c',
+      border: '1px solid rgba(180,178,170,0.10)',
+      borderRadius: '6px',
       padding: '16px 18px',
     }}>
       {/* Top row */}
@@ -117,7 +117,7 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
           alignItems: 'center',
           gap: '7px',
           padding: '4px 10px',
-          borderRadius: '7px',
+          borderRadius: '4px',
           background: t.bg,
           border: `1px solid ${t.bd}`,
         }}>
@@ -132,7 +132,7 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
             letterSpacing: '0.1em',
             fontWeight: 700,
             color: t.c,
-            fontFamily: "'Space Grotesk', sans-serif",
+            fontFamily: "'Archivo', sans-serif",
           }}>
             {t.label}
           </span>
@@ -140,14 +140,14 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
 
         {/* Meta: time + steps */}
         {metaLine && (
-          <span style={{ fontSize: '11px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
+          <span style={{ fontSize: '11px', color: '#7a776d', fontFamily: "'IBM Plex Mono', monospace" }}>
             {metaLine}
           </span>
         )}
       </div>
 
       {/* Description */}
-      <p style={{ fontSize: '14px', color: '#cdd6e6', lineHeight: 1.6, margin: 0 }}>
+      <p style={{ fontSize: '14px', color: '#d9d6cd', lineHeight: 1.6, margin: 0 }}>
         {task.prompt}
       </p>
 
@@ -164,11 +164,11 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
         <div style={{ flex: 1, minWidth: 0 }}>
           {showPreview && (
             <span style={{
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: "'IBM Plex Mono', monospace",
               fontSize: '12px',
               color: t.c,
               padding: '6px 10px',
-              borderRadius: '7px',
+              borderRadius: '4px',
               background: t.bg,
               borderLeft: `2px solid ${t.c}`,
               display: 'block',
@@ -193,12 +193,12 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
                 background: 'transparent',
                 color: 'var(--accent)',
                 padding: '6px 13px',
-                borderRadius: '8px',
+                borderRadius: '4px',
                 fontSize: '12px',
                 fontWeight: 600,
                 cursor: busy ? 'not-allowed' : 'pointer',
                 opacity: busy ? 0.4 : 1,
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: "'Archivo', sans-serif",
               }}
             >
               Retry
@@ -215,14 +215,14 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
                   style={{
                     border: '1px solid #fb7185',
                     background: '#fb7185',
-                    color: '#070b13',
+                    color: '#131313',
                     padding: '6px 13px',
-                    borderRadius: '8px',
+                    borderRadius: '4px',
                     fontSize: '12px',
                     fontWeight: 700,
                     cursor: busy ? 'not-allowed' : 'pointer',
                     opacity: busy ? 0.4 : 1,
-                    fontFamily: "'Space Grotesk', sans-serif",
+                    fontFamily: "'Archivo', sans-serif",
                   }}
                 >
                   CONFIRM
@@ -231,16 +231,16 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
                   onClick={handleAbortDelete}
                   disabled={busy}
                   style={{
-                    border: '1px solid rgba(120,160,220,0.20)',
+                    border: '1px solid rgba(180,178,170,0.20)',
                     background: 'transparent',
-                    color: '#8a96ad',
+                    color: '#98958c',
                     padding: '6px 13px',
-                    borderRadius: '8px',
+                    borderRadius: '4px',
                     fontSize: '12px',
                     fontWeight: 600,
                     cursor: busy ? 'not-allowed' : 'pointer',
                     opacity: busy ? 0.4 : 1,
-                    fontFamily: "'Space Grotesk', sans-serif",
+                    fontFamily: "'Archivo', sans-serif",
                   }}
                 >
                   ABORT
@@ -255,12 +255,12 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
                   background: 'transparent',
                   color: '#fb7185',
                   padding: '6px 13px',
-                  borderRadius: '8px',
+                  borderRadius: '4px',
                   fontSize: '12px',
                   fontWeight: 600,
                   cursor: busy ? 'not-allowed' : 'pointer',
                   opacity: busy ? 0.4 : 1,
-                  fontFamily: "'Space Grotesk', sans-serif",
+                  fontFamily: "'Archivo', sans-serif",
                 }}
               >
                 Delete
@@ -274,16 +274,16 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
               onClick={handleCancel}
               disabled={busy}
               style={{
-                border: '1px solid rgba(120,160,220,0.20)',
+                border: '1px solid rgba(180,178,170,0.20)',
                 background: 'transparent',
-                color: '#8a96ad',
+                color: '#98958c',
                 padding: '6px 13px',
-                borderRadius: '8px',
+                borderRadius: '4px',
                 fontSize: '12px',
                 fontWeight: 600,
                 cursor: busy ? 'not-allowed' : 'pointer',
                 opacity: busy ? 0.4 : 1,
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: "'Archivo', sans-serif",
               }}
             >
               Cancel
@@ -295,15 +295,15 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
             <button
               onClick={() => setOpen(o => !o)}
               style={{
-                border: '1px solid rgba(47,212,238,0.20)',
+                border: '1px solid rgba(255,138,61,0.20)',
                 background: 'transparent',
                 color: 'var(--accent)',
                 padding: '6px 13px',
-                borderRadius: '8px',
+                borderRadius: '4px',
                 fontSize: '12px',
                 fontWeight: 600,
                 cursor: 'pointer',
-                fontFamily: "'JetBrains Mono', monospace",
+                fontFamily: "'IBM Plex Mono', monospace",
               }}
             >
               {open ? '▲ hide' : '▼ details'}
@@ -315,7 +315,7 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
       {/* Expanded detail block */}
       {open && (
         <div style={{
-          borderTop: '1px solid rgba(120,160,220,0.10)',
+          borderTop: '1px solid rgba(180,178,170,0.10)',
           marginTop: '12px',
           paddingTop: '12px',
           display: 'flex',
@@ -328,7 +328,7 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
                 fontSize: '10px',
                 letterSpacing: '0.12em',
                 fontWeight: 700,
-                color: '#5d6982',
+                color: '#7a776d',
                 textTransform: 'uppercase',
                 marginBottom: '8px',
               }}>
@@ -336,8 +336,8 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
               </div>
               <ol style={{ margin: 0, padding: '0 0 0 18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {plan.map(s => (
-                  <li key={s.index} style={{ fontSize: '12px', color: '#aab4c7', lineHeight: 1.5 }}>
-                    <span style={{ color: 'var(--accent)', fontFamily: "'JetBrains Mono', monospace" }}>{s.index}.</span>{' '}
+                  <li key={s.index} style={{ fontSize: '12px', color: '#b3b0a6', lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--accent)', fontFamily: "'IBM Plex Mono', monospace" }}>{s.index}.</span>{' '}
                     {s.description}
                   </li>
                 ))}
@@ -350,7 +350,7 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
                 fontSize: '10px',
                 letterSpacing: '0.12em',
                 fontWeight: 700,
-                color: '#5d6982',
+                color: '#7a776d',
                 textTransform: 'uppercase',
                 marginBottom: '8px',
               }}>
@@ -359,12 +359,12 @@ export default function TaskCard({ task, onCancel, onRetry, confirmPending, onAb
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {result.map((r, i) => (
                   <pre key={i} style={{
-                    background: '#070a11',
-                    borderRadius: '8px',
+                    background: '#161615',
+                    borderRadius: '4px',
                     padding: '10px 12px',
-                    fontFamily: "'JetBrains Mono', monospace",
+                    fontFamily: "'IBM Plex Mono', monospace",
                     fontSize: '11px',
-                    color: '#94a6c0',
+                    color: '#a6a399',
                     overflow: 'auto',
                     margin: 0,
                     whiteSpace: 'pre-wrap',

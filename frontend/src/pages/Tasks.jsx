@@ -93,7 +93,7 @@ export default function Tasks() {
         <PrimaryButton
           onClick={submit}
           disabled={loading || !prompt.trim()}
-          style={{ padding: '12px 22px', borderRadius: '11px' }}
+          style={{ padding: '12px 22px', borderRadius: '6px' }}
         >
           {loading ? '…' : 'Execute'}
         </PrimaryButton>

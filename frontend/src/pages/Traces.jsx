@@ -49,21 +49,21 @@ function fmtUsd(n) {
 }
 
 const toneStatus = (s) => {
-  if (!s) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (!s) return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
   const u = s.toLowerCase()
   if (u === 'ok' || u === 'completed' || u === 'success')
     return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
   if (u === 'running' || u === 'started')
-    return { c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.30)' }
+    return { c: '#ff8a3d', bg: 'rgba(255,138,61,0.08)', bd: 'rgba(255,138,61,0.30)' }
   if (u === 'error' || u === 'failed')
     return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
-  return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
 }
 
 const Badge = ({ label, t }) => (
   <span style={{
     display: 'inline-flex', alignItems: 'center', gap: '5px',
-    padding: '3px 8px', borderRadius: '6px',
+    padding: '3px 8px', borderRadius: '4px',
     background: t.bg, border: `1px solid ${t.bd}`,
     fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: t.c,
     textTransform: 'uppercase', whiteSpace: 'nowrap',
@@ -72,32 +72,32 @@ const Badge = ({ label, t }) => (
 
 const selectStyle = {
   background: 'rgba(255,255,255,0.03)',
-  color: '#e9eef8',
-  border: '1px solid rgba(120,160,220,0.16)',
-  borderRadius: '10px',
+  color: '#f4f3f0',
+  border: '1px solid rgba(180,178,170,0.16)',
+  borderRadius: '6px',
   padding: '7px 10px',
   fontSize: '12px',
   outline: 'none',
   cursor: 'pointer',
   appearance: 'none',
   WebkitAppearance: 'none',
-  fontFamily: "'Space Grotesk', sans-serif",
+  fontFamily: "'Archivo', sans-serif",
 }
 
 const rowStyle = {
   display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '6px',
-  padding: '11px 14px', borderRadius: '11px',
+  padding: '11px 14px', borderRadius: '6px',
   background: 'rgba(255,255,255,0.022)',
-  border: '1px solid rgba(120,160,220,0.08)',
+  border: '1px solid rgba(180,178,170,0.08)',
   marginBottom: '6px',
   cursor: 'pointer',
 }
 
 const spanRowStyle = {
   display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap',
-  padding: '9px 12px', borderRadius: '9px',
+  padding: '9px 12px', borderRadius: '4px',
   background: 'rgba(255,255,255,0.018)',
-  border: '1px solid rgba(120,160,220,0.06)',
+  border: '1px solid rgba(180,178,170,0.06)',
   marginBottom: '5px',
 }
 
@@ -185,9 +185,9 @@ export default function Traces() {
         {loadError ? (
           <span style={{ fontSize: '13px', color: '#fb7185' }}>{loadError}</span>
         ) : traces === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : traces.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>
             {debouncedQ ? `No traces match "${debouncedQ}".` : 'No traces yet.'}
           </span>
         ) : (
@@ -197,10 +197,10 @@ export default function Traces() {
                 <div style={rowStyle} onClick={() => toggleExpand(t.id)}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                     <Badge label={t.status || 'unknown'} t={toneStatus(t.status)} />
-                    <span style={{ fontSize: '12px', color: '#8a96ad' }}>{t.kind}</span>
+                    <span style={{ fontSize: '12px', color: '#98958c' }}>{t.kind}</span>
                     <span style={{ flex: 1 }} />
                     {t.span_count != null && (
-                      <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                      <span style={{ fontSize: '11px', color: '#7a776d' }}>
                         {t.span_count === 0 ? 'no spans' : `${t.span_count} span${t.span_count === 1 ? '' : 's'}`}
                       </span>
                     )}
@@ -209,15 +209,15 @@ export default function Traces() {
                         {fmtUsd(t.total_cost_usd)}
                       </span>
                     )}
-                    <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace", flex: 'none' }}>
+                    <span style={{ fontSize: '12px', color: '#7a776d', fontFamily: "'IBM Plex Mono', monospace", flex: 'none' }}>
                       {fmtMs(traceDurationMs(t.started_at, t.ended_at))}
                     </span>
-                    <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                    <span style={{ fontSize: '11px', color: '#7a776d', flex: 'none' }}>
                       {relativeTime(t.started_at)}
                     </span>
                   </div>
                   <span style={{
-                    fontSize: '13px', color: '#dbe3f0',
+                    fontSize: '13px', color: '#ece9e2',
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>
                     {t.label || `trace #${t.id}`}
@@ -233,11 +233,11 @@ export default function Traces() {
                 {expandedId === t.id && (
                   <div style={{ margin: '0 0 10px 14px' }}>
                     {spansLoadingId === t.id ? (
-                      <span style={{ fontSize: '12px', color: '#5d6982' }}>Loading spans...</span>
+                      <span style={{ fontSize: '12px', color: '#7a776d' }}>Loading spans...</span>
                     ) : spansErrors[t.id] ? (
                       <span style={{ fontSize: '12px', color: '#fb7185' }}>{spansErrors[t.id]}</span>
                     ) : (spansById[t.id] || []).length === 0 ? (
-                      <span style={{ fontSize: '12px', color: '#5d6982' }}>No spans recorded.</span>
+                      <span style={{ fontSize: '12px', color: '#7a776d' }}>No spans recorded.</span>
                     ) : (
                       <>
                         {(() => {
@@ -249,7 +249,7 @@ export default function Traces() {
                           const costStr = fmtUsd(cost)
                           return (
                             <div style={{
-                              fontSize: '11px', color: '#8a96ad', fontFamily: "'JetBrains Mono', monospace",
+                              fontSize: '11px', color: '#98958c', fontFamily: "'IBM Plex Mono', monospace",
                               marginBottom: '6px', display: 'flex', gap: '10px', flexWrap: 'wrap',
                             }}>
                               <span>{spans.length} span{spans.length === 1 ? '' : 's'}</span>
@@ -267,17 +267,17 @@ export default function Traces() {
                             style={{ ...spanRowStyle, cursor: hasDetail ? 'pointer' : 'default' }}
                             onClick={() => { if (hasDetail) setExpandedSpanId(isOpen ? null : s.id) }}
                           >
-                            <span style={{ fontSize: '11px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                            <span style={{ fontSize: '11px', color: '#98958c', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                               {s.span_type}
                             </span>
-                            <span style={{ fontSize: '12px', color: '#dbe3f0', fontFamily: "'JetBrains Mono', monospace" }}>
+                            <span style={{ fontSize: '12px', color: '#ece9e2', fontFamily: "'IBM Plex Mono', monospace" }}>
                               {s.name}
                             </span>
-                            <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                            <span style={{ fontSize: '11px', color: '#7a776d' }}>
                               {fmtMs(s.duration_ms)}
                             </span>
                             {(s.tokens_in != null || s.tokens_out != null) && (
-                              <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                              <span style={{ fontSize: '11px', color: '#7a776d' }}>
                                 {s.tokens_in ?? 0}in / {s.tokens_out ?? 0}out
                               </span>
                             )}
@@ -287,7 +287,7 @@ export default function Traces() {
                               </span>
                             )}
                             {hasDetail && (
-                              <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                              <span style={{ fontSize: '11px', color: '#7a776d', flex: 'none' }}>
                                 {isOpen ? '⌄' : '›'}
                               </span>
                             )}
@@ -298,8 +298,8 @@ export default function Traces() {
                             )}
                             {hasDetail && !isOpen && (
                               <span style={{
-                                flexBasis: '100%', fontSize: '11px', color: '#5d6982',
-                                fontFamily: "'JetBrains Mono', monospace",
+                                flexBasis: '100%', fontSize: '11px', color: '#7a776d',
+                                fontFamily: "'IBM Plex Mono', monospace",
                                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                               }}>
                                 {(s.input_summary || s.output_summary).replace(/\s+/g, ' ').slice(0, 160)}
@@ -309,14 +309,14 @@ export default function Traces() {
                               <div style={{ flexBasis: '100%', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
                                 {s.input_summary && (
                                   <div>
-                                    <div style={{ fontSize: '10px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '3px' }}>
+                                    <div style={{ fontSize: '10px', color: '#98958c', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '3px' }}>
                                       Input
                                     </div>
                                     <div style={{
-                                      fontSize: '11px', color: '#c3ccdb', fontFamily: "'JetBrains Mono', monospace",
+                                      fontSize: '11px', color: '#cdc9be', fontFamily: "'IBM Plex Mono', monospace",
                                       whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
-                                      background: 'rgba(0,0,0,0.15)', border: '1px solid rgba(120,160,220,0.08)',
-                                      borderRadius: '7px', padding: '8px 10px',
+                                      background: 'rgba(0,0,0,0.15)', border: '1px solid rgba(180,178,170,0.08)',
+                                      borderRadius: '4px', padding: '8px 10px',
                                     }}>
                                       {s.input_summary}
                                     </div>
@@ -324,14 +324,14 @@ export default function Traces() {
                                 )}
                                 {s.output_summary && (
                                   <div>
-                                    <div style={{ fontSize: '10px', color: '#8a96ad', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '3px' }}>
+                                    <div style={{ fontSize: '10px', color: '#98958c', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '3px' }}>
                                       Output
                                     </div>
                                     <div style={{
-                                      fontSize: '11px', color: '#c3ccdb', fontFamily: "'JetBrains Mono', monospace",
+                                      fontSize: '11px', color: '#cdc9be', fontFamily: "'IBM Plex Mono', monospace",
                                       whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
-                                      background: 'rgba(0,0,0,0.15)', border: '1px solid rgba(120,160,220,0.08)',
-                                      borderRadius: '7px', padding: '8px 10px',
+                                      background: 'rgba(0,0,0,0.15)', border: '1px solid rgba(180,178,170,0.08)',
+                                      borderRadius: '4px', padding: '8px 10px',
                                     }}>
                                       {s.output_summary}
                                     </div>

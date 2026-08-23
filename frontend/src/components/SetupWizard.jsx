@@ -57,11 +57,11 @@ function SecretInput({ field, value, onChange }) {
   const [visible, setVisible] = useState(false)
   return (
     <div style={{ marginBottom: '14px' }}>
-      <label style={{ display: 'block', fontSize: '11px', color: '#5d6982', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
+      <label style={{ display: 'block', fontSize: '11px', color: '#7a776d', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
         {field.label.toUpperCase()}
       </label>
       {field.hint && (
-        <div style={{ fontSize: '11px', color: '#465069', marginBottom: '5px' }}>{field.hint}</div>
+        <div style={{ fontSize: '11px', color: '#57554c', marginBottom: '5px' }}>{field.hint}</div>
       )}
       <div style={{ position: 'relative' }}>
         <TextInput
@@ -69,10 +69,10 @@ function SecretInput({ field, value, onChange }) {
           value={value}
           onChange={e => onChange(e.target.value)}
           placeholder={field.placeholder || 'Leave blank to skip'}
-          style={{ width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', boxSizing: 'border-box', paddingRight: isPassword ? '38px' : undefined }}
+          style={{ width: '100%', fontFamily: "'IBM Plex Mono', monospace", fontSize: '13px', boxSizing: 'border-box', paddingRight: isPassword ? '38px' : undefined }}
         />
         {isPassword && (
-          <button type="button" onClick={() => setVisible(v => !v)} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#8a96ad', display: 'flex', alignItems: 'center' }}>
+          <button type="button" onClick={() => setVisible(v => !v)} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#98958c', display: 'flex', alignItems: 'center' }}>
             {visible ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
         )}
@@ -140,17 +140,17 @@ export default function SetupWizard() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'radial-gradient(1100px 560px at 80% -10%,rgba(47,212,238,0.06),transparent 60%),#070b13',
+      background: 'radial-gradient(1100px 560px at 80% -10%,rgba(255,138,61,0.06),transparent 60%),#131313',
       padding: '24px',
     }}>
       <div style={{ width: '100%', maxWidth: '480px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
 
         {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ width: 40, height: 40, borderRadius: '11px', background: 'linear-gradient(135deg,#2fd4ee,#2477c9)', color: '#05121a', fontWeight: 700, fontSize: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 18px rgba(47,212,238,0.28)' }}>N</div>
+          <div style={{ width: 40, height: 40, borderRadius: '6px', background: 'linear-gradient(135deg,#ff8a3d,#c96a2e)', color: '#131313', fontWeight: 700, fontSize: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 18px rgba(255,138,61,0.28)' }}>N</div>
           <div>
             <div style={{ fontWeight: 700, fontSize: '16px', letterSpacing: '0.04em' }}>NEXUS</div>
-            <div style={{ fontSize: '10px', letterSpacing: '0.22em', color: '#5d6982', fontWeight: 600 }}>FIRST-RUN SETUP</div>
+            <div style={{ fontSize: '10px', letterSpacing: '0.22em', color: '#7a776d', fontWeight: 600 }}>FIRST-RUN SETUP</div>
           </div>
         </div>
 
@@ -158,41 +158,41 @@ export default function SetupWizard() {
           {done ? (
             <div style={{ padding: '12px 0' }}>
               <div style={{ color: '#34d399', fontSize: '15px', fontWeight: 600, marginBottom: '8px' }}>Setup complete</div>
-              <div style={{ color: '#8a96ad', fontSize: '13px', lineHeight: 1.6 }}>
+              <div style={{ color: '#98958c', fontSize: '13px', lineHeight: 1.6 }}>
                 Loading NEXUS... Background agents and scheduling will start after you run{' '}
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: '#aab4c7' }}>systemctl restart nexus-backend nexus-frontend</span>.
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#b3b0a6' }}>systemctl restart nexus-backend nexus-frontend</span>.
               </div>
             </div>
           ) : (
             <>
               {/* Step indicator */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '18px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#dbe3f0' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#ece9e2' }}>
                   {isAnthropicStep ? 'AI Models' : STEPS[step - 1].title}
                 </div>
-                <div style={{ fontSize: '11px', color: '#465069' }}>Step {currentStepIndex} of {totalSteps}</div>
+                <div style={{ fontSize: '11px', color: '#57554c' }}>Step {currentStepIndex} of {totalSteps}</div>
               </div>
 
               {/* Step 0: Anthropic (required) */}
               {isAnthropicStep && (
                 <>
-                  <p style={{ margin: '0 0 14px', fontSize: '13px', color: '#8a96ad', lineHeight: 1.6 }}>
+                  <p style={{ margin: '0 0 14px', fontSize: '13px', color: '#98958c', lineHeight: 1.6 }}>
                     Your Anthropic key is required. Everything else is optional — skip any step and add it later in Settings.
                   </p>
-                  <label style={{ display: 'block', fontSize: '11px', color: '#5d6982', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', color: '#7a776d', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
                     FIRST-RUN SETUP TOKEN <span style={{ color: '#fb7185' }}>*</span>
                   </label>
-                  <div style={{ fontSize: '11px', color: '#465069', marginBottom: '5px' }}>
-                    Printed in the startup banner via <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>journalctl -u nexus-backend</span>, and saved to <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>.nexus-setup-token</span> in the NEXUS folder. It changes every time the backend restarts.
+                  <div style={{ fontSize: '11px', color: '#57554c', marginBottom: '5px' }}>
+                    Printed in the startup banner via <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>journalctl -u nexus-backend</span>, and saved to <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>.nexus-setup-token</span> in the NEXUS folder. It changes every time the backend restarts.
                   </div>
                   <TextInput
                     type="password"
                     value={setupToken}
                     onChange={e => { setSetupToken(e.target.value); setError('') }}
                     placeholder="paste the setup token here"
-                    style={{ width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', boxSizing: 'border-box', marginBottom: '14px' }}
+                    style={{ width: '100%', fontFamily: "'IBM Plex Mono', monospace", fontSize: '13px', boxSizing: 'border-box', marginBottom: '14px' }}
                   />
-                  <label style={{ display: 'block', fontSize: '11px', color: '#5d6982', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
+                  <label style={{ display: 'block', fontSize: '11px', color: '#7a776d', fontWeight: 600, letterSpacing: '0.1em', marginBottom: '6px' }}>
                     ANTHROPIC API KEY <span style={{ color: '#fb7185' }}>*</span>
                   </label>
                   <TextInput
@@ -200,7 +200,7 @@ export default function SetupWizard() {
                     value={anthropicKey}
                     onChange={e => { setAnthropicKey(e.target.value); setError('') }}
                     placeholder="sk-ant-..."
-                    style={{ width: '100%', fontFamily: "'JetBrains Mono', monospace", fontSize: '13px', boxSizing: 'border-box', marginBottom: error ? '8px' : '14px' }}
+                    style={{ width: '100%', fontFamily: "'IBM Plex Mono', monospace", fontSize: '13px', boxSizing: 'border-box', marginBottom: error ? '8px' : '14px' }}
                     onKeyDown={e => e.key === 'Enter' && anthropicKey.trim() && setupToken.trim() && setStep(1)}
                   />
                 </>
@@ -255,7 +255,7 @@ export default function SetupWizard() {
               {/* Skip the rest shortcut (after step 0) */}
               {step > 0 && !isLastStep && (
                 <div style={{ textAlign: 'center', marginTop: '12px' }}>
-                  <button onClick={finish} disabled={loading} style={{ fontSize: '11px', color: '#465069', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+                  <button onClick={finish} disabled={loading} style={{ fontSize: '11px', color: '#57554c', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
                     Skip the rest &amp; finish now
                   </button>
                 </div>
@@ -264,7 +264,7 @@ export default function SetupWizard() {
           )}
         </Card>
 
-        <p style={{ fontSize: '11px', color: '#465069', textAlign: 'center', margin: 0 }}>
+        <p style={{ fontSize: '11px', color: '#57554c', textAlign: 'center', margin: 0 }}>
           A NEXUS API key is generated automatically. All secrets are encrypted on this machine only.
         </p>
       </div>

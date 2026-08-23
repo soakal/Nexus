@@ -36,30 +36,30 @@ function relativeTime(isoStr) {
 // ---------------------------------------------------------------------------
 
 const tone = (s) => {
-  if (!s) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (!s) return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
   const u = s.toLowerCase()
   if (u.includes('executed') || u.includes('allowed') || u.includes('success'))
     return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
   if (u.includes('confirm') || u.includes('warn') || u.includes('partial'))
-    return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+    return { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }
   return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
 }
 
 const toneRisk = (r) => {
-  if (!r) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (!r) return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
   const u = r.toLowerCase()
   if (u === 'low') return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
-  if (u === 'medium') return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+  if (u === 'medium') return { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }
   return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
 }
 
 const toneStatus = (s) => {
-  if (!s) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (!s) return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
   const u = s.toLowerCase()
   if (u === 'completed' || u === 'approved') return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
-  if (u === 'running' || u === 'proposed') return { c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.30)' }
+  if (u === 'running' || u === 'proposed') return { c: '#ff8a3d', bg: 'rgba(255,138,61,0.08)', bd: 'rgba(255,138,61,0.30)' }
   if (u === 'failed') return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
-  return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
 }
 
 // Days between now and an ISO timestamp. NEXUS stamps these as naive UTC
@@ -74,9 +74,9 @@ function daysSince(iso) {
 }
 
 const toneStaleness = (days) => {
-  if (days === null) return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (days === null) return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
   if (days < 90) return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
-  if (days <= 180) return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+  if (days <= 180) return { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }
   return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
 }
 
@@ -107,7 +107,7 @@ function buildSecretRows(keys, meta) {
 const Badge = ({ label, t }) => (
   <span style={{
     display: 'inline-flex', alignItems: 'center', gap: '5px',
-    padding: '3px 8px', borderRadius: '6px',
+    padding: '3px 8px', borderRadius: '4px',
     background: t.bg, border: `1px solid ${t.bd}`,
     fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: t.c,
     textTransform: 'uppercase', whiteSpace: 'nowrap',
@@ -120,13 +120,13 @@ const Badge = ({ label, t }) => (
 
 function SpendBar({ spend, budget }) {
   const pct = budget > 0 ? Math.min(100, (spend / budget) * 100) : 0
-  const barColor = pct >= 100 ? '#fb7185' : pct >= 80 ? '#fbbf24' : '#2fd4ee'
+  const barColor = pct >= 100 ? '#fb7185' : pct >= 80 ? '#e8c468' : '#ff8a3d'
   return (
     <div style={{ marginTop: '8px' }}>
       <div style={{
         position: 'relative', height: '6px', borderRadius: '999px',
         overflow: 'hidden', background: 'rgba(255,255,255,0.06)',
-        border: '1px solid rgba(120,160,220,0.12)',
+        border: '1px solid rgba(180,178,170,0.12)',
       }}>
         <div style={{
           height: '100%', borderRadius: '999px',
@@ -137,10 +137,10 @@ function SpendBar({ spend, budget }) {
         }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
-        <span style={{ fontSize: '12px', color: '#8a96ad', fontFamily: "'JetBrains Mono', monospace" }}>
+        <span style={{ fontSize: '12px', color: '#98958c', fontFamily: "'IBM Plex Mono', monospace" }}>
           {fmtUsd(spend)} / {fmtUsd(budget)}
         </span>
-        <span style={{ fontSize: '12px', fontFamily: "'JetBrains Mono', monospace", color: barColor }}>
+        <span style={{ fontSize: '12px', fontFamily: "'IBM Plex Mono', monospace", color: barColor }}>
           {fmtPct(pct)}
         </span>
       </div>
@@ -154,15 +154,15 @@ function SpendBar({ spend, budget }) {
 
 const inputStyle = {
   background: 'rgba(255,255,255,0.03)',
-  color: '#e9eef8',
-  border: '1px solid rgba(120,160,220,0.16)',
-  borderRadius: '10px',
+  color: '#f4f3f0',
+  border: '1px solid rgba(180,178,170,0.16)',
+  borderRadius: '6px',
   padding: '10px 12px',
   fontSize: '13px',
   outline: 'none',
   width: '100%',
   boxSizing: 'border-box',
-  fontFamily: "'Space Grotesk', sans-serif",
+  fontFamily: "'Archivo', sans-serif",
 }
 
 const selectStyle = {
@@ -176,7 +176,7 @@ const labelStyle = {
   fontSize: '10px',
   textTransform: 'uppercase',
   letterSpacing: '0.1em',
-  color: '#5d6982',
+  color: '#7a776d',
   fontWeight: 600,
   marginBottom: '4px',
   display: 'block',
@@ -475,9 +475,9 @@ export default function Safety() {
   // the target/reason become invisible. Rows must wrap, never clip.
   const rowStyle = {
     display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px',
-    padding: '11px 14px', borderRadius: '11px',
+    padding: '11px 14px', borderRadius: '6px',
     background: 'rgba(255,255,255,0.022)',
-    border: '1px solid rgba(120,160,220,0.08)',
+    border: '1px solid rgba(180,178,170,0.08)',
     marginBottom: '6px',
   }
 
@@ -524,11 +524,11 @@ export default function Safety() {
                   onClick={handleToggle}
                   disabled={toggling}
                   style={{
-                    border: '1px solid rgba(251,191,36,0.4)',
-                    background: 'rgba(251,191,36,0.08)',
-                    color: '#fbbf24',
+                    border: '1px solid rgba(232,196,104,0.4)',
+                    background: 'rgba(232,196,104,0.08)',
+                    color: '#e8c468',
                     padding: '9px 16px',
-                    borderRadius: '10px',
+                    borderRadius: '6px',
                     fontWeight: 700,
                     fontSize: '13px',
                     cursor: toggling ? 'not-allowed' : 'pointer',
@@ -548,7 +548,7 @@ export default function Safety() {
         </div>
 
         {status && (
-          <div style={{ marginTop: '10px', fontSize: '12px', color: '#5d6982' }}>
+          <div style={{ marginTop: '10px', fontSize: '12px', color: '#7a776d' }}>
             Scheduler {status.scheduler_running ? 'running' : 'stopped'}
           </div>
         )}
@@ -560,7 +560,7 @@ export default function Safety() {
       <Card accent="amber">
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Deliveries</Eyebrow>
         {status === null || !status.notify_channel ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No notify channel data</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>No notify channel data</span>
         ) : (() => {
           const nc = status.notify_channel
           const broken = nc.enabled && !nc.secret_present
@@ -586,21 +586,21 @@ export default function Safety() {
                 {/* Pending */}
                 <div>
                   <div style={labelStyle}>Pending</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: pendingCount > 0 ? '#fbbf24' : '#e9eef8' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: pendingCount > 0 ? '#e8c468' : '#f4f3f0' }}>
                     {pendingCount}
                   </div>
                 </div>
                 {/* Dead-lettered */}
                 <div>
                   <div style={labelStyle}>Dead-lettered</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: deadCount > 0 ? '#fb7185' : '#e9eef8' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: deadCount > 0 ? '#fb7185' : '#f4f3f0' }}>
                     {deadCount}
                   </div>
                 </div>
                 {/* Oldest */}
                 <div>
                   <div style={labelStyle}>Oldest (s)</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: (oldestSec != null && oldestSec > 10) ? '#fbbf24' : '#e9eef8' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: (oldestSec != null && oldestSec > 10) ? '#e8c468' : '#f4f3f0' }}>
                     {oldestSec ?? '—'}
                   </div>
                 </div>
@@ -610,13 +610,13 @@ export default function Safety() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <StatusDot
-                    color={broken ? '#fb7185' : healthy ? '#34d399' : '#fbbf24'}
+                    color={broken ? '#fb7185' : healthy ? '#34d399' : '#e8c468'}
                     size={7}
                     glow
                   />
                   <span style={{
                     fontSize: '12px', fontWeight: 600,
-                    color: broken ? '#fb7185' : healthy ? '#5fe0b4' : '#f4d27a',
+                    color: broken ? '#fb7185' : healthy ? '#5fe0b4' : '#f0d896',
                   }}>
                     {!nc.enabled ? 'Notifications disabled'
                       : broken ? 'Secret missing — alerts failing'
@@ -626,7 +626,7 @@ export default function Safety() {
                 </div>
                 {deadCount > 0 && (
                   <button onClick={clearDeadLetters} disabled={clearing} style={{
-                    fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '7px',
+                    fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '4px',
                     border: '1px solid rgba(251,113,133,0.35)', background: 'rgba(251,113,133,0.08)',
                     color: '#fb7185', cursor: clearing ? 'not-allowed' : 'pointer', opacity: clearing ? 0.6 : 1,
                   }}>
@@ -645,7 +645,7 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Secret Rotation</Eyebrow>
         {secretsMeta === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : (() => {
           const rows = buildSecretRows(secretsMeta.keys, secretsMeta.meta)
           const known = rows.filter(r => r.days !== null)
@@ -665,14 +665,14 @@ export default function Safety() {
                 </span>
               </div>
               {unknownCount > 0 && (
-                <div style={{ fontSize: '11px', color: '#5d6982', marginBottom: '6px' }}>
+                <div style={{ fontSize: '11px', color: '#7a776d', marginBottom: '6px' }}>
                   {unknownCount} secret{unknownCount === 1 ? '' : 's'} never stamped
                 </div>
               )}
               <button
                 onClick={() => setShowAllSecrets(v => !v)}
                 style={{
-                  fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none',
+                  fontSize: '11px', fontWeight: 600, color: '#7a776d', background: 'none',
                   border: 'none', cursor: 'pointer', padding: 0, marginTop: '4px',
                 }}
               >
@@ -682,7 +682,7 @@ export default function Safety() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' }}>
                   {rows.map(r => (
                     <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', flexWrap: 'wrap' }}>
-                      <span style={{ color: '#8a96ad' }}>{r.name}</span>
+                      <span style={{ color: '#98958c' }}>{r.name}</span>
                       <Badge label={r.days === null ? 'unknown' : `${r.days}d ago`} t={toneStaleness(r.days)} />
                     </div>
                   ))}
@@ -703,23 +703,23 @@ export default function Safety() {
             {pendingActions.map((a) => (
               <div key={a.id} style={{ ...rowStyle, flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px', marginBottom: '8px' }}>
                 <Badge label={a.risk || 'risk?'} t={toneRisk(a.risk)} />
-                <span style={{ fontSize: '12px', color: '#8a96ad' }}>
+                <span style={{ fontSize: '12px', color: '#98958c' }}>
                   {[a.actor, a.kind].filter(Boolean).join(' / ')}
                 </span>
                 {a.target && (
                   <span style={{
-                    flex: '1 1 160px', minWidth: 0, fontSize: '13px', color: '#dbe3f0',
-                    fontFamily: "'JetBrains Mono', monospace",
+                    flex: '1 1 160px', minWidth: 0, fontSize: '13px', color: '#ece9e2',
+                    fontFamily: "'IBM Plex Mono', monospace",
                     overflowWrap: 'anywhere',
                   }}>
                     {a.target}
                   </span>
                 )}
-                <span style={{ fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                <span style={{ fontSize: '11px', color: '#7a776d', flex: 'none' }}>
                   {relativeTime(a.created_at)}
                 </span>
                 {a.judge_reason && (
-                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
+                  <div style={{ width: '100%', fontSize: '13px', color: '#b3b0a6', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
                     Judge: {a.judge_reason}
                   </div>
                 )}
@@ -728,11 +728,11 @@ export default function Safety() {
                     onClick={() => handleConfirm(a.id)}
                     disabled={confirmingId === a.id}
                     style={{
-                      border: '1px solid rgba(251,191,36,0.3)',
-                      background: 'rgba(251,191,36,0.06)',
-                      color: '#fbbf24',
+                      border: '1px solid rgba(232,196,104,0.3)',
+                      background: 'rgba(232,196,104,0.06)',
+                      color: '#e8c468',
                       padding: '7px 14px',
-                      borderRadius: '8px',
+                      borderRadius: '4px',
                       fontWeight: 700,
                       fontSize: '12px',
                       cursor: confirmingId === a.id ? 'not-allowed' : 'pointer',
@@ -848,7 +848,7 @@ export default function Safety() {
           </div>
           <div>
             <label style={labelStyle}>
-              Success criteria <span style={{ color: '#5d6982', textTransform: 'none', letterSpacing: 0 }}>(optional, for recurring goals)</span>
+              Success criteria <span style={{ color: '#7a776d', textTransform: 'none', letterSpacing: 0 }}>(optional, for recurring goals)</span>
             </label>
             <input
               type="text"
@@ -869,7 +869,7 @@ export default function Safety() {
         </div>
 
         {/* Divider */}
-        <div style={{ height: '1px', background: 'rgba(120,160,220,0.10)', margin: '18px 0' }} />
+        <div style={{ height: '1px', background: 'rgba(180,178,170,0.10)', margin: '18px 0' }} />
 
         {/* Category filter */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
@@ -888,7 +888,7 @@ export default function Safety() {
 
         {/* Goals list */}
         {goals.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No goals yet.</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>No goals yet.</span>
         ) : (
           <div>
             {goals.filter(g => categoryFilter === 'all' || g.category === categoryFilter).map((g) => (
@@ -896,8 +896,8 @@ export default function Safety() {
                 key={g.id}
                 style={{
                   background: 'rgba(255,255,255,0.022)',
-                  border: '1px solid rgba(120,160,220,0.08)',
-                  borderRadius: '12px',
+                  border: '1px solid rgba(180,178,170,0.08)',
+                  borderRadius: '6px',
                   padding: '14px 16px',
                   marginBottom: '8px',
                 }}
@@ -907,19 +907,19 @@ export default function Safety() {
                   <Badge label={g.status} t={toneStatus(g.status)} />
                   <Badge label={g.risk || 'medium'} t={toneRisk(g.risk)} />
                   {g.category && (
-                    <Badge label={g.category} t={{ c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.30)' }} />
+                    <Badge label={g.category} t={{ c: '#ff8a3d', bg: 'rgba(255,138,61,0.08)', bd: 'rgba(255,138,61,0.30)' }} />
                   )}
                   {g.disabled && (
-                    <Badge label="Disabled" t={{ c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }} />
+                    <Badge label="Disabled" t={{ c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }} />
                   )}
-                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982' }}>
+                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#7a776d' }}>
                     {relativeTime(g.created_at)}
                   </span>
                 </div>
 
                 {/* Title */}
                 <div style={{
-                  fontSize: '14px', fontWeight: 600, color: '#dbe3f0',
+                  fontSize: '14px', fontWeight: 600, color: '#ece9e2',
                   marginTop: '6px',
                   textDecoration: g.disabled ? 'line-through' : 'none',
                   opacity: g.disabled ? 0.6 : 1,
@@ -929,7 +929,7 @@ export default function Safety() {
 
                 {/* Running: show task_id */}
                 {(g.status === 'running' || g.status === 'approved') && g.task_id && (
-                  <div style={{ fontSize: '12px', color: '#2fd4ee', marginTop: '4px', fontFamily: "'JetBrains Mono', monospace" }}>
+                  <div style={{ fontSize: '12px', color: '#ff8a3d', marginTop: '4px', fontFamily: "'IBM Plex Mono', monospace" }}>
                     task #{g.task_id}
                   </div>
                 )}
@@ -952,7 +952,7 @@ export default function Safety() {
                 {editingGoalId === g.id ? (
                   <div style={{
                     marginTop: '12px', padding: '14px',
-                    borderRadius: '10px', border: '1px solid rgba(120,160,220,0.20)',
+                    borderRadius: '6px', border: '1px solid rgba(180,178,170,0.20)',
                     display: 'flex', flexDirection: 'column', gap: '10px',
                   }}>
                     <div>
@@ -1006,11 +1006,11 @@ export default function Safety() {
                       <button
                         onClick={handleCancelEdit}
                         style={{
-                          border: '1px solid rgba(120,160,220,0.20)',
+                          border: '1px solid rgba(180,178,170,0.20)',
                           background: 'transparent',
-                          color: '#8a96ad',
+                          color: '#98958c',
                           padding: '7px 14px',
-                          borderRadius: '8px',
+                          borderRadius: '4px',
                           fontSize: '13px',
                           cursor: 'pointer',
                           fontFamily: 'inherit',
@@ -1034,11 +1034,11 @@ export default function Safety() {
                           onClick={() => handleGoalReject(g.id)}
                           disabled={goalActingId === g.id}
                           style={{
-                            border: '1px solid rgba(120,160,220,0.20)',
+                            border: '1px solid rgba(180,178,170,0.20)',
                             background: 'transparent',
-                            color: '#8a96ad',
+                            color: '#98958c',
                             padding: '7px 14px',
-                            borderRadius: '8px',
+                            borderRadius: '4px',
                             fontSize: '13px',
                             cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
                             opacity: goalActingId === g.id ? 0.5 : 1,
@@ -1057,7 +1057,7 @@ export default function Safety() {
                         background: 'transparent',
                         color: 'var(--accent)',
                         padding: '7px 12px',
-                        borderRadius: '8px',
+                        borderRadius: '4px',
                         fontSize: '13px',
                         cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
                         opacity: goalActingId === g.id ? 0.5 : 1,
@@ -1072,9 +1072,9 @@ export default function Safety() {
                       style={{
                         border: 'none',
                         background: 'transparent',
-                        color: '#8a96ad',
+                        color: '#98958c',
                         padding: '7px 12px',
-                        borderRadius: '8px',
+                        borderRadius: '4px',
                         fontSize: '13px',
                         cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
                         opacity: goalActingId === g.id ? 0.5 : 1,
@@ -1091,7 +1091,7 @@ export default function Safety() {
                         background: 'transparent',
                         color: '#fb7185',
                         padding: '7px 12px',
-                        borderRadius: '8px',
+                        borderRadius: '4px',
                         fontSize: '13px',
                         cursor: goalActingId === g.id ? 'not-allowed' : 'pointer',
                         opacity: goalActingId === g.id ? 0.5 : 1,
@@ -1117,9 +1117,9 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Recent Verdicts</Eyebrow>
         {outcomes === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : outcomes.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No verdicts yet.</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>No verdicts yet.</span>
         ) : (
           <div>
             {outcomes.map((o) => (
@@ -1127,36 +1127,36 @@ export default function Safety() {
                 key={o.id}
                 style={{
                   display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: '10px',
-                  padding: '12px 14px', borderRadius: '11px',
+                  padding: '12px 14px', borderRadius: '6px',
                   background: 'rgba(255,255,255,0.022)',
-                  border: '1px solid rgba(120,160,220,0.08)',
+                  border: '1px solid rgba(180,178,170,0.08)',
                   marginBottom: '6px',
                 }}
               >
                 {/* Row 1 */}
                 <Badge label={o.verdict || 'unknown'} t={tone(o.verdict)} />
-                <span style={{ fontSize: '13px', color: '#8a96ad' }}>
+                <span style={{ fontSize: '13px', color: '#98958c' }}>
                   {Math.round((o.confidence ?? 0) * 100)}%
                 </span>
                 {o.grounded && (
-                  <Badge label="Grounded" t={{ c: '#2fd4ee', bg: 'rgba(47,212,238,0.08)', bd: 'rgba(47,212,238,0.32)' }} />
+                  <Badge label="Grounded" t={{ c: '#ff8a3d', bg: 'rgba(255,138,61,0.08)', bd: 'rgba(255,138,61,0.32)' }} />
                 )}
-                <span style={{ fontSize: '12px', color: '#5d6982', fontFamily: "'JetBrains Mono', monospace" }}>
+                <span style={{ fontSize: '12px', color: '#7a776d', fontFamily: "'IBM Plex Mono', monospace" }}>
                   task #{o.task_id}
                 </span>
-                <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982' }}>
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#7a776d' }}>
                   {relativeTime(o.created_at)}
                 </span>
                 {/* Row 2 */}
                 {o.reason && (
-                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
+                  <div style={{ width: '100%', fontSize: '13px', color: '#b3b0a6', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
                     {o.reason}
                   </div>
                 )}
                 {o.evidence && (
                   <div style={{
-                    width: '100%', fontSize: '12px', color: '#5d6982', lineHeight: 1.5,
-                    fontFamily: "'JetBrains Mono', monospace", overflowWrap: 'anywhere',
+                    width: '100%', fontSize: '12px', color: '#7a776d', lineHeight: 1.5,
+                    fontFamily: "'IBM Plex Mono', monospace", overflowWrap: 'anywhere',
                   }}>
                     {o.evidence}
                   </div>
@@ -1173,19 +1173,19 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Metering Health</Eyebrow>
         {metering === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {/* Prices verified status */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <StatusDot
-                color={metering.prices_verified ? '#34d399' : '#fbbf24'}
+                color={metering.prices_verified ? '#34d399' : '#e8c468'}
                 size={7}
                 glow
               />
               <span style={{
                 fontSize: '13px', fontWeight: 600,
-                color: metering.prices_verified ? '#5fe0b4' : '#f4d27a',
+                color: metering.prices_verified ? '#5fe0b4' : '#f0d896',
               }}>
                 {metering.prices_verified ? 'Prices verified' : 'Prices unverified — cost caps may be inaccurate'}
               </span>
@@ -1201,7 +1201,7 @@ export default function Safety() {
               </div>
               <div>
                 <div style={labelStyle}>Rows today</div>
-                <div style={{ fontSize: '15px', fontWeight: 700, color: '#e9eef8' }}>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: '#f4f3f0' }}>
                   {metering.today_row_count ?? 0}
                 </div>
               </div>
@@ -1220,13 +1220,13 @@ export default function Safety() {
                   </div>
                   <div>
                     <div style={labelStyle}>Skipped (no usage)</div>
-                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#8a96ad' }}>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#98958c' }}>
                       {metering.counters.skipped_no_usage ?? 0}
                     </div>
                   </div>
                   <div>
                     <div style={labelStyle}>Skipped (unparseable)</div>
-                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#f4d27a' }}>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#f0d896' }}>
                       {metering.counters.skipped_unparseable ?? 0}
                     </div>
                   </div>
@@ -1249,7 +1249,7 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '10px' }}>Today's Spend</Eyebrow>
         {status === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : (
           <SpendBar spend={status.today_spend_usd ?? 0} budget={status.daily_budget_usd ?? 25} />
         )}
@@ -1261,7 +1261,7 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Budget Caps</Eyebrow>
         {status === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
@@ -1292,11 +1292,11 @@ export default function Safety() {
               <button
                 onClick={handleSaveBudget}
                 style={{
-                  border: '1px solid rgba(251,191,36,0.4)',
-                  background: 'rgba(251,191,36,0.08)',
-                  color: '#fbbf24',
+                  border: '1px solid rgba(232,196,104,0.4)',
+                  background: 'rgba(232,196,104,0.08)',
+                  color: '#e8c468',
                   padding: '9px 16px',
-                  borderRadius: '10px',
+                  borderRadius: '6px',
                   fontWeight: 700,
                   fontSize: '13px',
                   cursor: 'pointer',
@@ -1325,9 +1325,9 @@ export default function Safety() {
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '14px' }}>Recent Actions</Eyebrow>
         {actions === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : actions.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No actions logged yet.</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>No actions logged yet.</span>
         ) : (
           <div>
             {actions.map((a) => (
@@ -1341,23 +1341,23 @@ export default function Safety() {
                 {a.judge_verdict != null && (
                   <Badge label={`judge: ${a.judge_verdict}`} t={tone(a.judge_verdict)} />
                 )}
-                <span style={{ fontSize: '12px', color: '#8a96ad' }}>
+                <span style={{ fontSize: '12px', color: '#98958c' }}>
                   {[a.actor, a.kind].filter(Boolean).join(' / ')}
                 </span>
-                <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#7a776d', flex: 'none' }}>
                   {relativeTime(a.created_at)}
                 </span>
                 {a.target && (
                   <span style={{
-                    width: '100%', fontSize: '13px', color: '#dbe3f0',
-                    fontFamily: "'JetBrains Mono', monospace",
+                    width: '100%', fontSize: '13px', color: '#ece9e2',
+                    fontFamily: "'IBM Plex Mono', monospace",
                     overflowWrap: 'anywhere', lineHeight: 1.45,
                   }}>
                     {a.target}
                   </span>
                 )}
                 {a.judge_reason && (
-                  <div style={{ width: '100%', fontSize: '13px', color: '#aab4c7', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
+                  <div style={{ width: '100%', fontSize: '13px', color: '#b3b0a6', lineHeight: 1.55, overflowWrap: 'anywhere' }}>
                     Judge: {a.judge_reason}
                   </div>
                 )}

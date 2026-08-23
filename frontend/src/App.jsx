@@ -28,6 +28,14 @@ import Pulse from './pages/Pulse'
 import Vault from './pages/Vault'
 import { API_BASE } from './lib/api'
 
+const LogoMark = ({ size }) => (
+  <svg width={size} height={size} viewBox="0 0 48 48" style={{ display: 'block', flexShrink: 0 }}>
+    <polygon points="0,0 36,0 48,12 48,48 0,48" fill="#131313" stroke="#ff8a3d" strokeWidth="2.5" />
+    <polygon points="36,0 48,0 48,12" fill="#ff8a3d" />
+    <path d="M14,34 L14,14 L34,34 L34,14" fill="none" stroke="#ff8a3d" strokeWidth="6" strokeLinecap="square" strokeLinejoin="miter" />
+  </svg>
+)
+
 const NAV = [
   { to: '/',         icon: LayoutDashboard, label: 'Dashboard',      group: 'OVERVIEW' },
   { to: '/briefing', icon: FileText,         label: 'Briefing',       group: 'OVERVIEW' },
@@ -152,8 +160,8 @@ export default function App() {
     boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
-    background: 'linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0)),#080d16',
-    borderRight: '1px solid rgba(120,160,220,0.09)',
+    background: 'linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0)),#1c1c1c',
+    borderRight: '1px solid rgba(180,178,170,0.09)',
   }
   const navShellStyle = mobile
     ? {
@@ -176,14 +184,14 @@ export default function App() {
     <BrowserRouter>
       <div
         style={{
-          '--accent': '#2fd4ee',
-          '--ac-dim': 'rgba(47,212,238,0.12)',
-          '--ac-line': 'rgba(47,212,238,0.32)',
+          '--accent': '#ff8a3d',
+          '--ac-dim': 'rgba(255,138,61,0.12)',
+          '--ac-line': 'rgba(255,138,61,0.32)',
           '--gap': '18px',
           '--pad': '20px',
           display: 'flex',
           minHeight: '100vh',
-          background: 'radial-gradient(1100px 560px at 80% -10%,rgba(47,212,238,0.06),transparent 60%),#070b13',
+          background: 'radial-gradient(1100px 560px at 80% -10%,rgba(255,138,61,0.06),transparent 60%),#131313',
         }}
       >
         {/* Mobile backdrop */}
@@ -211,24 +219,7 @@ export default function App() {
               flex: 'none',
             }}
           >
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: '10px',
-                background: 'linear-gradient(135deg,var(--accent),#2477c9)',
-                color: '#05121a',
-                fontWeight: 700,
-                fontSize: '18px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 6px 18px rgba(47,212,238,0.28)',
-                flexShrink: 0,
-              }}
-            >
-              N
-            </div>
+            <LogoMark size={52} />
             <div style={{ lineHeight: 1 }}>
               <div style={{ fontWeight: 700, fontSize: '15px', letterSpacing: '0.04em' }}>
                 NEXUS
@@ -237,7 +228,7 @@ export default function App() {
                 style={{
                   fontSize: '10px',
                   letterSpacing: '0.22em',
-                  color: '#5d6982',
+                  color: '#7a776d',
                   fontWeight: 600,
                   marginTop: '3px',
                 }}
@@ -269,7 +260,7 @@ export default function App() {
                       style={{
                         fontSize: '10px',
                         letterSpacing: '0.16em',
-                        color: '#465069',
+                        color: '#57554c',
                         fontWeight: 700,
                         padding: '12px 12px 6px',
                       }}
@@ -286,7 +277,7 @@ export default function App() {
                       alignItems: 'center',
                       gap: '11px',
                       padding: '9px 12px',
-                      borderRadius: '9px',
+                      borderRadius: '4px',
                       fontSize: '13px',
                       cursor: 'pointer',
                       textDecoration: 'none',
@@ -298,7 +289,7 @@ export default function App() {
                             boxShadow: 'inset 2px 0 0 var(--accent)',
                             fontWeight: 600,
                           }
-                        : { color: '#8a96ad', fontWeight: 500 }),
+                        : { color: '#98958c', fontWeight: 500 }),
                     })}
                   >
                     <item.icon size={17} strokeWidth={1.7} />
@@ -313,7 +304,7 @@ export default function App() {
           <div
             style={{
               padding: '14px 18px',
-              borderTop: '1px solid rgba(120,160,220,0.09)',
+              borderTop: '1px solid rgba(180,178,170,0.09)',
               display: 'flex',
               flexDirection: 'row',
               alignItems: 'center',
@@ -322,7 +313,7 @@ export default function App() {
             }}
           >
             <StatusDot color={apiOk ? '#34d399' : '#fb7185'} size={8} pulse={apiOk} />
-            <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}>
+            <span style={{ fontSize: '12px', color: '#98958c', fontWeight: 500 }}>
               {apiOk ? 'NEXUS connected' : 'NEXUS unreachable'}
             </span>
           </div>
@@ -347,14 +338,14 @@ export default function App() {
               alignItems: 'center',
               gap: '12px',
               padding: '0 16px',
-              height: '56px',
+              height: '68px',
               flex: 'none',
               position: 'sticky',
               top: 0,
               zIndex: 40,
-              background: 'rgba(8,13,22,0.92)',
+              background: 'rgba(19,19,19,0.92)',
               backdropFilter: 'blur(10px)',
-              borderBottom: '1px solid rgba(120,160,220,0.09)',
+              borderBottom: '1px solid rgba(180,178,170,0.09)',
             }}
           >
             <button
@@ -362,36 +353,20 @@ export default function App() {
               style={{
                 width: 38,
                 height: 38,
-                borderRadius: '9px',
-                border: '1px solid rgba(120,160,220,0.16)',
+                borderRadius: '4px',
+                border: '1px solid rgba(180,178,170,0.16)',
                 background: 'rgba(255,255,255,0.03)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
-                color: '#aab4c7',
+                color: '#b3b0a6',
                 flexShrink: 0,
               }}
             >
               <Menu size={19} />
             </button>
-            <div
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: '8px',
-                background: 'linear-gradient(135deg,var(--accent),#2477c9)',
-                fontSize: '15px',
-                color: '#05121a',
-                fontWeight: 700,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              N
-            </div>
+            <LogoMark size={40} />
             <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.04em' }}>
               NEXUS
             </span>
@@ -403,8 +378,8 @@ export default function App() {
           {authError && (
             <div
               style={{
-                background: 'rgba(251,191,36,0.12)',
-                borderBottom: '1px solid rgba(251,191,36,0.4)',
+                background: 'rgba(232,196,104,0.12)',
+                borderBottom: '1px solid rgba(232,196,104,0.4)',
                 padding: '12px 20px',
                 display: 'flex',
                 flexWrap: 'wrap',
@@ -443,6 +418,11 @@ export default function App() {
             <Route path="/facts" element={<Facts />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
+
+          {/* Global footer credit */}
+          <div style={{ marginTop: 'auto', padding: '28px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '11px', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#57554c', fontWeight: 600 }}>
+            <span style={{ color: '#ff8a3d', fontWeight: 800 }}>&#9670;</span> Built by CWI AI
+          </div>
         </main>
       </div>
 
@@ -466,7 +446,7 @@ export default function App() {
           {moreOpen && (
             <div style={{
               position: 'fixed', bottom: '64px', left: 0, right: 0,
-              background: 'rgba(8,13,22,0.97)', borderTop: '1px solid rgba(120,160,220,0.12)',
+              background: 'rgba(19,19,19,0.97)', borderTop: '1px solid rgba(180,178,170,0.12)',
               zIndex: 71, padding: '12px',
               display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px',
             }}>
@@ -478,11 +458,11 @@ export default function App() {
                   onClick={() => setMoreOpen(false)}
                   style={({ isActive }) => ({
                     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px',
-                    padding: '10px 6px', borderRadius: '10px', textDecoration: 'none',
+                    padding: '10px 6px', borderRadius: '6px', textDecoration: 'none',
                     fontSize: '11px', fontWeight: 600,
                     background: isActive ? 'var(--ac-dim)' : 'rgba(255,255,255,0.03)',
-                    color: isActive ? 'var(--accent)' : '#8a96ad',
-                    border: isActive ? '1px solid var(--ac-line)' : '1px solid rgba(120,160,220,0.08)',
+                    color: isActive ? 'var(--accent)' : '#98958c',
+                    border: isActive ? '1px solid var(--ac-line)' : '1px solid rgba(180,178,170,0.08)',
                   })}
                 >
                   <item.icon size={18} strokeWidth={1.7} />
@@ -495,8 +475,8 @@ export default function App() {
           {/* Fixed bottom tab bar */}
           <nav style={{
             position: 'fixed', bottom: 0, left: 0, right: 0, height: '64px',
-            background: 'rgba(8,13,22,0.97)', backdropFilter: 'blur(12px)',
-            borderTop: '1px solid rgba(120,160,220,0.12)',
+            background: 'rgba(19,19,19,0.97)', backdropFilter: 'blur(12px)',
+            borderTop: '1px solid rgba(180,178,170,0.12)',
             display: 'flex', alignItems: 'stretch', zIndex: 72,
           }}>
             {BOTTOM_NAV.map((item) => (
@@ -508,7 +488,7 @@ export default function App() {
                   flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
                   justifyContent: 'center', gap: '3px', textDecoration: 'none',
                   fontSize: '10px', fontWeight: 600,
-                  color: isActive ? 'var(--accent)' : '#8a96ad',
+                  color: isActive ? 'var(--accent)' : '#98958c',
                 })}
               >
                 <item.icon size={20} strokeWidth={1.7} />
@@ -522,7 +502,7 @@ export default function App() {
                 flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
                 justifyContent: 'center', gap: '3px', background: 'none', border: 'none',
                 cursor: 'pointer', fontSize: '10px', fontWeight: 600,
-                color: moreOpen ? 'var(--accent)' : '#8a96ad',
+                color: moreOpen ? 'var(--accent)' : '#98958c',
               }}
             >
               <MoreHorizontal size={20} strokeWidth={1.7} />

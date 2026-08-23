@@ -1,6 +1,6 @@
-export default function AreaChart({ data = [], color = '#2fd4ee', height = 150, gridLines = [40, 75, 110] }) {
+export default function AreaChart({ data = [], color = '#ff8a3d', height = 150, gridLines = [40, 75, 110] }) {
   const vals = (data || []).map(d => (typeof d === 'number' ? d : d.value)).filter(v => v != null)
-  if (vals.length < 2) return <div style={{ height, display: 'flex', alignItems: 'center', color: '#5d6982', fontSize: '12px' }}>Collecting data...</div>
+  if (vals.length < 2) return <div style={{ height, display: 'flex', alignItems: 'center', color: '#7a776d', fontSize: '12px' }}>Collecting data...</div>
   const w = 680, h = 150, p = 10
   const min = Math.min(...vals), max = Math.max(...vals), span = (max - min) || 1
   const pts = vals.map((v, i) => [p + i * (w - 2 * p) / (vals.length - 1), h - p - (v - min) / span * (h - 2 * p)])
@@ -15,7 +15,7 @@ export default function AreaChart({ data = [], color = '#2fd4ee', height = 150, 
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      {gridLines.map(y => <line key={y} x1="10" y1={y} x2="670" y2={y} stroke="rgba(120,160,220,0.08)" strokeWidth="1" />)}
+      {gridLines.map(y => <line key={y} x1="10" y1={y} x2="670" y2={y} stroke="rgba(180,178,170,0.08)" strokeWidth="1" />)}
       <polygon points={area} fill={`url(#${gid})`} />
       <polyline points={line} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
     </svg>

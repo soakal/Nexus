@@ -50,7 +50,7 @@ function fmtAgo(epochSeconds) {
 // since amber here would mean "usage is high," not "data is old."
 function usageBarColor(pct) {
   if (pct >= 90) return '#fb7185'
-  if (pct >= 70) return '#fbbf24'
+  if (pct >= 70) return '#e8c468'
   return '#5fe0b4'
 }
 
@@ -248,8 +248,8 @@ export default function Dashboard() {
                 {briefingLoading ? 'Generating…' : 'Run briefing'}
               </PrimaryButton>
             </div>
-            <div style={{ fontSize: '11px', color: '#5d6982' }}>
-              Last briefing <span style={{ color: '#8a96ad' }}>{lastBriefingTime || '—'}</span>
+            <div style={{ fontSize: '11px', color: '#7a776d' }}>
+              Last briefing <span style={{ color: '#98958c' }}>{lastBriefingTime || '—'}</span>
             </div>
             {briefingError && (
               <div style={{ fontSize: '11px', color: '#fb7185' }}>Briefing failed — check connection</div>
@@ -259,7 +259,7 @@ export default function Dashboard() {
       />
 
       {staleCount > 0 && (
-        <div style={{ padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(251,191,36,0.25)', background: 'rgba(251,191,36,0.06)', color: '#f4d27a', fontSize: '12px' }}>
+        <div style={{ padding: '10px 14px', borderRadius: '6px', border: '1px solid rgba(232,196,104,0.25)', background: 'rgba(232,196,104,0.06)', color: '#f0d896', fontSize: '12px' }}>
           {staleCount} cached state item{staleCount === 1 ? '' : 's'} stale or unavailable. Last known values remain visible while background workers retry.
         </div>
       )}
@@ -270,10 +270,10 @@ export default function Dashboard() {
         {/* Weather */}
         {weather && (
           <Card style={{ flex: '2.2 1 300px', position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', top: '-30px', right: '-20px', width: '160px', height: '160px', borderRadius: '50%', background: 'radial-gradient(circle,rgba(251,191,36,0.16),transparent 70%)' }} />
+            <div style={{ position: 'absolute', top: '-30px', right: '-20px', width: '160px', height: '160px', borderRadius: '50%', background: 'radial-gradient(circle,rgba(232,196,104,0.16),transparent 70%)' }} />
             <Eyebrow>Environment</Eyebrow>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '16px' }}>
-              <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="1.6">
+              <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#e8c468" strokeWidth="1.6">
                 <circle cx="12" cy="12" r="4.2"/>
                 <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>
               </svg>
@@ -281,20 +281,20 @@ export default function Dashboard() {
                 <div style={{ fontSize: '38px', fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em' }}>
                   {weather.temp_f}°
                 </div>
-                <div style={{ fontSize: '13px', color: '#8a96ad', marginTop: '5px' }}>
+                <div style={{ fontSize: '13px', color: '#98958c', marginTop: '5px' }}>
                   {weather.summary || weather.condition}
                 </div>
               </div>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '26px', marginTop: '18px', paddingTop: '16px', borderTop: '1px solid rgba(120,160,220,0.10)' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '26px', marginTop: '18px', paddingTop: '16px', borderTop: '1px solid rgba(180,178,170,0.10)' }}>
               <div>
-                <div style={{ fontSize: '11px', color: '#5d6982', letterSpacing: '0.06em' }}>HIGH / LOW</div>
+                <div style={{ fontSize: '11px', color: '#7a776d', letterSpacing: '0.06em' }}>HIGH / LOW</div>
                 <div style={{ fontSize: '15px', fontWeight: 600, marginTop: '3px' }}>
                   {weather.high_f}° / {weather.low_f}°
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: '11px', color: '#5d6982', letterSpacing: '0.06em' }}>WIND</div>
+                <div style={{ fontSize: '11px', color: '#7a776d', letterSpacing: '0.06em' }}>WIND</div>
                 <div style={{ fontSize: '15px', fontWeight: 600, marginTop: '3px' }}>
                   {weather.wind_mph} mph
                 </div>
@@ -308,12 +308,12 @@ export default function Dashboard() {
           <Eyebrow>Blocked</Eyebrow>
           <div>
             <div style={{ fontSize: '30px', fontWeight: 700 }}>
-              {adguard?.blocked_pct || 0}<span style={{ fontSize: '17px', color: '#5d6982', fontWeight: 500 }}>%</span>
+              {adguard?.blocked_pct || 0}<span style={{ fontSize: '17px', color: '#7a776d', fontWeight: 500 }}>%</span>
             </div>
-            <div style={{ fontSize: '12px', color: '#8a96ad', marginTop: '4px' }}>
+            <div style={{ fontSize: '12px', color: '#98958c', marginTop: '4px' }}>
               {adguard?.blocked_today} today
             </div>
-            <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', marginTop: '8px', overflow: 'hidden' }}>
+            <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(180,178,170,0.12)', marginTop: '8px', overflow: 'hidden' }}>
               <div style={{ width: `${adguard?.blocked_pct || 0}%`, height: '100%', background: 'var(--accent)', borderRadius: '3px' }} />
             </div>
           </div>
@@ -324,13 +324,13 @@ export default function Dashboard() {
           <Eyebrow>DVR Storage</Eyebrow>
           <div>
             <div style={{ fontSize: '30px', fontWeight: 700 }}>
-              {pct}<span style={{ fontSize: '17px', color: '#5d6982', fontWeight: 500 }}>%</span>
+              {pct}<span style={{ fontSize: '17px', color: '#7a776d', fontWeight: 500 }}>%</span>
             </div>
-            <div style={{ fontSize: '12px', color: '#8a96ad', marginTop: '4px' }}>
+            <div style={{ fontSize: '12px', color: '#98958c', marginTop: '4px' }}>
               {(channels?.storage_used_gb / 1000 || 0).toFixed(2)} / {(channels?.storage_total_gb / 1000 || 0).toFixed(2)} TB
             </div>
-            <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', marginTop: '8px', overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', background: '#5b8cff', borderRadius: '3px' }} />
+            <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(180,178,170,0.12)', marginTop: '8px', overflow: 'hidden' }}>
+              <div style={{ width: `${pct}%`, height: '100%', background: '#ff8a3d', borderRadius: '3px' }} />
             </div>
           </div>
         </Card>
@@ -339,10 +339,10 @@ export default function Dashboard() {
         <Card style={{ flex: '1 1 150px', display: 'flex', flexDirection: 'column', gap: '14px', justifyContent: 'space-between' }}>
           <Eyebrow>Brain Queue</Eyebrow>
           <div>
-            <div style={{ fontSize: '30px', fontWeight: 700, color: '#fbbf24' }}>
+            <div style={{ fontSize: '30px', fontWeight: 700, color: '#e8c468' }}>
               {brain?.pending || 0}
             </div>
-            <div style={{ fontSize: '12px', color: '#8a96ad', marginTop: '4px' }}>items pending</div>
+            <div style={{ fontSize: '12px', color: '#98958c', marginTop: '4px' }}>items pending</div>
           </div>
         </Card>
 
@@ -374,7 +374,7 @@ export default function Dashboard() {
             )}
           </div>
           {!claudeUsage?.available ? (
-            <div style={{ fontSize: '12px', color: '#8a96ad' }}>No Claude Code session captured yet.</div>
+            <div style={{ fontSize: '12px', color: '#98958c' }}>No Claude Code session captured yet.</div>
           ) : (
             <>
               {[
@@ -383,23 +383,23 @@ export default function Dashboard() {
               ].map(({ label, w }) => (
                 <div key={label}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <span style={{ fontSize: '11px', color: '#5d6982' }}>{label}</span>
+                    <span style={{ fontSize: '11px', color: '#7a776d' }}>{label}</span>
                     <span style={{ fontSize: '13px', fontWeight: 600 }}>
                       {w?.used_percentage != null ? `${Math.round(w.used_percentage)}%` : '—'}
                     </span>
                   </div>
-                  <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', marginTop: '4px', overflow: 'hidden' }}>
+                  <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(180,178,170,0.12)', marginTop: '4px', overflow: 'hidden' }}>
                     <div style={{
                       width: `${w?.used_percentage ?? 0}%`, height: '100%', borderRadius: '3px',
                       background: usageBarColor(w?.used_percentage ?? 0),
                     }} />
                   </div>
-                  <div style={{ fontSize: '10px', color: '#5d6982', marginTop: '3px' }}>
+                  <div style={{ fontSize: '10px', color: '#7a776d', marginTop: '3px' }}>
                     {w?.resets_at != null ? fmtCountdown(w.resets_at) : 'no data'}
                   </div>
                 </div>
               ))}
-              <div style={{ fontSize: '10px', color: '#5d6982' }}>captured {fmtAgo(claudeUsage.captured_at)}</div>
+              <div style={{ fontSize: '10px', color: '#7a776d' }}>captured {fmtAgo(claudeUsage.captured_at)}</div>
             </>
           )}
         </Card>
@@ -416,7 +416,7 @@ export default function Dashboard() {
             {openrouter?.is_free_tier && <StatusPill tone="grey" label="Free tier" />}
           </div>
           {!openrouter?.available ? (
-            <div style={{ fontSize: '12px', color: '#8a96ad' }}>OpenRouter data unavailable.</div>
+            <div style={{ fontSize: '12px', color: '#98958c' }}>OpenRouter data unavailable.</div>
           ) : (
             <>
               {/* Real account balance (GET /api/v1/credits) leads the card --
@@ -428,9 +428,9 @@ export default function Dashboard() {
                 <>
                   <div style={{ fontSize: '20px', fontWeight: 700 }}>
                     ${openrouter.account_balance.toFixed(2)}
-                    <span style={{ fontSize: '12px', color: '#8a96ad', fontWeight: 500 }}> / ${openrouter.account_total_credits.toFixed(2)} balance</span>
+                    <span style={{ fontSize: '12px', color: '#98958c', fontWeight: 500 }}> / ${openrouter.account_total_credits.toFixed(2)} balance</span>
                   </div>
-                  <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(120,160,220,0.12)', overflow: 'hidden' }}>
+                  <div style={{ height: '4px', borderRadius: '3px', background: 'rgba(180,178,170,0.12)', overflow: 'hidden' }}>
                     {(() => {
                       // Guard the divisor: a never-topped-up account can
                       // legitimately have total_credits=0, which would
@@ -446,18 +446,18 @@ export default function Dashboard() {
                   </div>
                 </>
               ) : (
-                <div style={{ fontSize: '13px', color: '#8a96ad' }}>Balance unknown</div>
+                <div style={{ fontSize: '13px', color: '#98958c' }}>Balance unknown</div>
               )}
 
               {/* Per-key spending cap, secondary -- omitted entirely for an
                   unlimited key (nothing meaningful beyond usage, already
                   covered by the balance above). */}
               {openrouter.credit_limit != null && (
-                <div style={{ fontSize: '11px', color: '#8a96ad' }}>
+                <div style={{ fontSize: '11px', color: '#98958c' }}>
                   Key limit: {openrouter.credit_remaining != null ? `$${openrouter.credit_remaining.toFixed(2)}` : 'unknown'} / ${openrouter.credit_limit.toFixed(2)}
                 </div>
               )}
-              <div style={{ fontSize: '11px', color: '#8a96ad' }}>{openrouter.model_count} models available</div>
+              <div style={{ fontSize: '11px', color: '#98958c' }}>{openrouter.model_count} models available</div>
             </>
           )}
         </Card>
@@ -470,15 +470,15 @@ export default function Dashboard() {
             <Eyebrow>System Sources</Eyebrow>
             <span style={{ fontSize: '12px', color: '#5fe0b4', fontWeight: 500 }}>{online} connected</span>
           </div>
-          <span style={{ fontSize: '11px', color: '#5d6982' }}>Synced {syncedTime || '—'}</span>
+          <span style={{ fontSize: '11px', color: '#7a776d' }}>Synced {syncedTime || '—'}</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px' }}>
           {Object.entries(sources || {}).map(([name, data]) => (
-            <div key={name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '13px 14px', borderRadius: '11px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}>
-              <span style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+            <div key={name} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '13px 14px', borderRadius: '6px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)' }}>
+              <span style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 'none' }}>
-                <StatusDot color={data.freshness !== 'fresh' ? '#fbbf24' : data.healthy ? '#34d399' : '#fb7185'} size={7} glow={false} />
-                <span style={{ fontSize: '10px', letterSpacing: '0.08em', fontWeight: 600, color: data.freshness !== 'fresh' ? '#f4d27a' : data.healthy ? '#5fe0b4' : '#fb7185' }}>
+                <StatusDot color={data.freshness !== 'fresh' ? '#e8c468' : data.healthy ? '#34d399' : '#fb7185'} size={7} glow={false} />
+                <span style={{ fontSize: '10px', letterSpacing: '0.08em', fontWeight: 600, color: data.freshness !== 'fresh' ? '#f0d896' : data.healthy ? '#5fe0b4' : '#fb7185' }}>
                   {data.freshness !== 'fresh' ? String(data.freshness || 'UNKNOWN').toUpperCase() : data.healthy ? 'ONLINE' : 'OFFLINE'}
                 </span>
               </span>
@@ -507,24 +507,24 @@ export default function Dashboard() {
               {adguard?.blocked_pct}%
             </span>
           </div>
-          <div style={{ fontSize: '13px', color: '#8a96ad', marginTop: '7px' }}>
+          <div style={{ fontSize: '13px', color: '#98958c', marginTop: '7px' }}>
             queries blocked of {adguard?.queries_today} total today
           </div>
-          <div style={{ height: '8px', borderRadius: '5px', background: 'rgba(120,160,220,0.12)', marginTop: '18px', overflow: 'hidden' }}>
-            <div style={{ width: `${adguard?.blocked_pct || 0}%`, height: '100%', background: 'linear-gradient(90deg,var(--accent),#2477c9)' }} />
+          <div style={{ height: '8px', borderRadius: '4px', background: 'rgba(180,178,170,0.12)', marginTop: '18px', overflow: 'hidden' }}>
+            <div style={{ width: `${adguard?.blocked_pct || 0}%`, height: '100%', background: 'linear-gradient(90deg,var(--accent),#c96a2e)' }} />
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap', marginTop: '18px', paddingTop: '16px', borderTop: '1px solid rgba(120,160,220,0.10)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap', marginTop: '18px', paddingTop: '16px', borderTop: '1px solid rgba(180,178,170,0.10)' }}>
             <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
               <div>
-                <div style={{ fontSize: '11px', color: '#5d6982' }}>QUERIES</div>
+                <div style={{ fontSize: '11px', color: '#7a776d' }}>QUERIES</div>
                 <div style={{ fontSize: '16px', fontWeight: 600, marginTop: '3px' }}>{adguard?.queries_today}</div>
               </div>
               <div>
-                <div style={{ fontSize: '11px', color: '#5d6982' }}>BLOCKED</div>
+                <div style={{ fontSize: '11px', color: '#7a776d' }}>BLOCKED</div>
                 <div style={{ fontSize: '16px', fontWeight: 600, marginTop: '3px' }}>{adguard?.blocked_today}</div>
               </div>
               <div>
-                <div style={{ fontSize: '11px', color: '#5d6982' }}>ALLOWED</div>
+                <div style={{ fontSize: '11px', color: '#7a776d' }}>ALLOWED</div>
                 <div style={{ fontSize: '16px', fontWeight: 600, marginTop: '3px' }}>
                   {(adguard?.queries_today || 0) - (adguard?.blocked_today || 0)}
                 </div>
@@ -544,21 +544,21 @@ export default function Dashboard() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '20px', marginTop: '18px', flexWrap: 'wrap' }}>
             <svg width="92" height="92" viewBox="0 0 92 92">
-              <circle cx="46" cy="46" r="38" fill="none" stroke="rgba(120,160,220,0.14)" strokeWidth="9"/>
-              <circle cx="46" cy="46" r="38" fill="none" stroke="#5b8cff" strokeWidth="9" strokeLinecap="round"
+              <circle cx="46" cy="46" r="38" fill="none" stroke="rgba(180,178,170,0.14)" strokeWidth="9"/>
+              <circle cx="46" cy="46" r="38" fill="none" stroke="#ff8a3d" strokeWidth="9" strokeLinecap="round"
                 strokeDasharray="238.76" strokeDashoffset={238.76 * (1 - pct / 100)} transform="rotate(-90 46 46)"/>
-              <text x="46" y="50" textAnchor="middle" fill="#e9eef8" fontSize="20" fontWeight="700" fontFamily="Space Grotesk">{pct}%</text>
+              <text x="46" y="50" textAnchor="middle" fill="#f4f3f0" fontSize="20" fontWeight="700" fontFamily="Archivo">{pct}%</text>
             </svg>
             <div>
-              <div style={{ fontSize: '13px', color: '#8a96ad' }}>
+              <div style={{ fontSize: '13px', color: '#98958c' }}>
                 {channels?.recording_now?.length
                   ? `${channels.recording_now.length} recording${channels.recording_now.length !== 1 ? 's' : ''}`
                   : 'No active recordings'}
               </div>
               <div style={{ fontSize: '15px', fontWeight: 600, marginTop: '10px' }}>
-                {(channels?.storage_used_gb / 1000 || 0).toFixed(2)} TB <span style={{ color: '#5d6982', fontWeight: 500 }}>used</span>
+                {(channels?.storage_used_gb / 1000 || 0).toFixed(2)} TB <span style={{ color: '#7a776d', fontWeight: 500 }}>used</span>
               </div>
-              <div style={{ fontSize: '12px', color: '#5d6982', marginTop: '3px' }}>
+              <div style={{ fontSize: '12px', color: '#7a776d', marginTop: '3px' }}>
                 of {(channels?.storage_total_gb / 1000 || 0).toFixed(2)} TB capacity
               </div>
             </div>
@@ -591,31 +591,31 @@ export default function Dashboard() {
               <div style={{ fontSize: '40px', fontWeight: 700, marginTop: '10px' }}>
                 {unraid.docker_containers?.length || 0}
               </div>
-              <div style={{ fontSize: '13px', color: '#8a96ad' }}>containers running</div>
+              <div style={{ fontSize: '13px', color: '#98958c' }}>containers running</div>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {(unraid.docker_containers || []).slice(0, dockerOpen ? undefined : 2).map(c => (
                 <div
                   key={c.id}
                   onClick={() => restartDocker(c.name)}
-                  style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)', cursor: 'pointer' }}
+                  style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)', cursor: 'pointer' }}
                 >
                   <StatusDot color="#34d399" size={7} glow={false} />
-                  <span style={{ fontSize: '12px', color: '#cdd6e6', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: '12px', color: '#d9d6cd', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {c.name || 'Up'}
                   </span>
                 </div>
               ))}
               {(unraid.docker_containers?.length || 0) === 0 && (
-                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}>
-                  <span style={{ fontSize: '12px', color: '#5d6982', fontWeight: 500 }}>No containers running</span>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)' }}>
+                  <span style={{ fontSize: '12px', color: '#7a776d', fontWeight: 500 }}>No containers running</span>
                 </div>
               )}
             </div>
             {(unraid.docker_containers?.length || 0) > 2 && (
               <button
                 onClick={() => setDockerOpen(v => !v)}
-                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
+                style={{ fontSize: '11px', fontWeight: 600, color: '#7a776d', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
               >
                 {dockerOpen ? 'Show less' : `+${unraid.docker_containers.length - 2} more`}
               </button>
@@ -644,7 +644,7 @@ export default function Dashboard() {
               <div style={{ fontSize: '40px', fontWeight: 700, marginTop: '10px' }}>
                 {proxmox.vms?.length || 0}
               </div>
-              <div style={{ fontSize: '13px', color: '#8a96ad' }}>VMs / containers</div>
+              <div style={{ fontSize: '13px', color: '#98958c' }}>VMs / containers</div>
             </div>
             {proxmoxMaint && (proxmoxMaint.updates?.count > 0 || (proxmoxMaint.backup && proxmoxMaint.backup.status !== 'none')) && (
               <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
@@ -661,7 +661,7 @@ export default function Dashboard() {
                       label={proxmoxMaint.backup.status === 'ok' ? 'Backup OK' : proxmoxMaint.backup.status === 'failed' ? 'Backup FAILED' : 'Backup running'}
                     />
                     {proxmoxMaint.backup.endtime && (
-                      <span style={{ fontSize: '11px', color: '#5d6982' }}>
+                      <span style={{ fontSize: '11px', color: '#7a776d' }}>
                         {new Date(proxmoxMaint.backup.endtime * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                       </span>
                     )}
@@ -673,17 +673,17 @@ export default function Dashboard() {
               {(proxmox.vms || []).slice(0, proxmoxVmsOpen ? undefined : 4).map(v => (
                 <div
                   key={v.vmid}
-                  style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}
+                  style={{ flex: '1 1 45%', display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '6px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)' }}
                 >
-                  <StatusDot color={v.status === 'running' ? '#34d399' : '#8a96ad'} size={7} glow={false} />
-                  <span style={{ fontSize: '12px', color: '#cdd6e6', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                  <StatusDot color={v.status === 'running' ? '#34d399' : '#98958c'} size={7} glow={false} />
+                  <span style={{ fontSize: '12px', color: '#d9d6cd', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                     {v.name || v.vmid}
                   </span>
                   <select
                     value=""
                     disabled={vmActionBusy === v.vmid}
                     onChange={(e) => { const action = e.target.value; e.target.value = ''; if (action) runVmAction(v.vmid, v.name, action) }}
-                    style={{ fontSize: '12px', background: 'rgba(255,255,255,0.04)', color: '#8a96ad', border: '1px solid rgba(120,160,220,0.12)', borderRadius: '6px', padding: '7px 8px' }}
+                    style={{ fontSize: '12px', background: 'rgba(255,255,255,0.04)', color: '#98958c', border: '1px solid rgba(180,178,170,0.12)', borderRadius: '4px', padding: '7px 8px' }}
                   >
                     <option value="">&hellip;</option>
                     {v.status === 'running' ? (
@@ -701,7 +701,7 @@ export default function Dashboard() {
             {(proxmox.vms?.length || 0) > 4 && (
               <button
                 onClick={() => setProxmoxVmsOpen(v => !v)}
-                style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
+                style={{ fontSize: '11px', fontWeight: 600, color: '#7a776d', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
               >
                 {proxmoxVmsOpen ? 'Show less' : `+${proxmox.vms.length - 4} more`}
               </button>
@@ -725,31 +725,31 @@ export default function Dashboard() {
             </div>
             {!mailError && (
               <>
-                <div style={{ fontSize: '12px', color: '#8a96ad', margin: '8px 0' }}>
+                <div style={{ fontSize: '12px', color: '#98958c', margin: '8px 0' }}>
                   {mail.total} total in inbox
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {(mail.emails || []).slice(0, mailOpen ? undefined : 3).map(e => (
                     <div
                       key={e.email_id}
-                      style={{ display: 'flex', flexDirection: 'column', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)' }}
+                      style={{ display: 'flex', flexDirection: 'column', padding: '8px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)' }}
                     >
-                      <span style={{ fontSize: '12px', color: '#cdd6e6', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '12px', color: '#d9d6cd', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {(e.sender || '').replace(/^"?([^"<]+?)"?\s*<.*$/, '$1')}
                       </span>
-                      <span style={{ fontSize: '11px', color: '#8a96ad', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '11px', color: '#98958c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {e.subject || '(no subject)'}
                       </span>
                     </div>
                   ))}
                   {(mail.emails?.length || 0) === 0 && (
-                    <div style={{ fontSize: '12px', color: '#5d6982' }}>No emails.</div>
+                    <div style={{ fontSize: '12px', color: '#7a776d' }}>No emails.</div>
                   )}
                 </div>
                 {(mail.emails?.length || 0) > 3 && (
                   <button
                     onClick={() => setMailOpen(v => !v)}
-                    style={{ fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
+                    style={{ fontSize: '11px', fontWeight: 600, color: '#7a776d', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
                   >
                     {mailOpen ? 'Show less' : `+${mail.emails.length - 3} more`}
                   </button>

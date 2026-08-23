@@ -2,9 +2,9 @@ import StatusDot from './StatusDot'
 
 const TONES = {
   green:  { dot: '#34d399', text: '#5fe0b4', bg: 'rgba(52,211,153,0.10)',   bd: 'rgba(52,211,153,0.22)' },
-  amber:  { dot: '#fbbf24', text: '#f4d27a', bg: 'rgba(251,191,36,0.10)',   bd: 'rgba(251,191,36,0.25)' },
+  amber:  { dot: '#e8c468', text: '#f0d896', bg: 'rgba(232,196,104,0.10)',   bd: 'rgba(232,196,104,0.25)' },
   red:    { dot: '#fb7185', text: '#fb7185', bg: 'rgba(251,113,133,0.10)',  bd: 'rgba(251,113,133,0.30)' },
-  grey:   { dot: '#7c8aa3', text: '#9aa6bd', bg: 'rgba(120,160,220,0.08)',  bd: 'rgba(120,160,220,0.14)' },
+  grey:   { dot: '#8b8880', text: '#a6a399', bg: 'rgba(180,178,170,0.08)',  bd: 'rgba(180,178,170,0.14)' },
   accent: { dot: 'var(--accent)', text: 'var(--accent)', bg: 'var(--ac-dim)', bd: 'var(--ac-line)' },
 }
 

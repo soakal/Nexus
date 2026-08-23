@@ -52,7 +52,7 @@ export default function Uptime() {
 
       {/* Section 1 — Source Uptime */}
       {!summary ? (
-        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
+        <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>
       ) : (
         <div>
           <Eyebrow style={{ marginBottom: 12 }}>Source Uptime — Last 7 Days</Eyebrow>
@@ -64,10 +64,10 @@ export default function Uptime() {
             {(summary?.sources || []).map(s => {
               const isUp = liveStatus[s.source]?.healthy ?? s.current_ok
               return (
-                <Card key={s.source} style={{ borderRadius: 14, padding: 16 }}>
+                <Card key={s.source} style={{ borderRadius: 6, padding: 16 }}>
                   {/* Top row: name + status */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#dbe3f0' }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#ece9e2' }}>
                       {s.source}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
@@ -81,13 +81,13 @@ export default function Uptime() {
                   <div style={{
                     fontSize: 26,
                     fontWeight: 700,
-                    color: isUp ? 'var(--accent)' : '#fbbf24',
+                    color: isUp ? 'var(--accent)' : '#e8c468',
                     lineHeight: 1.1,
                   }}>
                     {s.uptime_pct}%
                   </div>
                   {/* Sub */}
-                  <div style={{ fontSize: 11, color: '#5d6982', marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: '#7a776d', marginTop: 4 }}>
                     {s.avg_latency_ms}ms avg · {s.samples} samples
                   </div>
                 </Card>
@@ -101,36 +101,36 @@ export default function Uptime() {
       <div>
         <Eyebrow style={{ marginBottom: 12 }}>Internet Speed</Eyebrow>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 14 }}>
+          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 6 }}>
             <Eyebrow style={{ marginBottom: 6 }}>Download</Eyebrow>
             <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent)', lineHeight: 1.1 }}>
               {speedtest?.latest?.download_mbps || '—'}
             </div>
-            <div style={{ fontSize: 13, color: '#5d6982', fontWeight: 500, marginTop: 2 }}>Mbps</div>
+            <div style={{ fontSize: 13, color: '#7a776d', fontWeight: 500, marginTop: 2 }}>Mbps</div>
           </Card>
-          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 14 }}>
+          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 6 }}>
             <Eyebrow style={{ marginBottom: 6 }}>Upload</Eyebrow>
             <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--accent)', lineHeight: 1.1 }}>
               {speedtest?.latest?.upload_mbps || '—'}
             </div>
-            <div style={{ fontSize: 13, color: '#5d6982', fontWeight: 500, marginTop: 2 }}>Mbps</div>
+            <div style={{ fontSize: 13, color: '#7a776d', fontWeight: 500, marginTop: 2 }}>Mbps</div>
           </Card>
-          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 14 }}>
+          <Card style={{ flex: '1 1 160px', padding: 16, borderRadius: 6 }}>
             <Eyebrow style={{ marginBottom: 6 }}>Ping</Eyebrow>
-            <div style={{ fontSize: 26, fontWeight: 700, color: '#fbbf24', lineHeight: 1.1 }}>
+            <div style={{ fontSize: 26, fontWeight: 700, color: '#e8c468', lineHeight: 1.1 }}>
               {speedtest?.latest?.ping_ms || '—'}
             </div>
-            <div style={{ fontSize: 13, color: '#5d6982', fontWeight: 500, marginTop: 2 }}>ms</div>
+            <div style={{ fontSize: 13, color: '#7a776d', fontWeight: 500, marginTop: 2 }}>ms</div>
           </Card>
         </div>
       </div>
 
       {/* Section 3 — Download Speed chart */}
-      <Card style={{ borderRadius: 14, padding: 16 }}>
+      <Card style={{ borderRadius: 6, padding: 16 }}>
         <Eyebrow style={{ marginBottom: 12 }}>Download Speed (Mbps)</Eyebrow>
         <AreaChart
           data={downloadChartData}
-          color="#2fd4ee"
+          color="#ff8a3d"
           height={160}
           gridLines={[45, 95]}
         />

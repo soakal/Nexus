@@ -45,7 +45,7 @@ function renderMessageContent(content) {
     } else if (h3Match) {
       flushList(idx)
       elements.push(
-        <p key={`h3-${idx}`} style={{ color: '#e9eef8', fontSize: '12px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: '8px', marginBottom: '2px' }}>{h3Match[1]}</p>
+        <p key={`h3-${idx}`} style={{ color: '#f4f3f0', fontSize: '12px', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: '8px', marginBottom: '2px' }}>{h3Match[1]}</p>
       )
     } else if (bulletMatch) {
       if (listType === 'ol') flushList(idx)
@@ -333,10 +333,10 @@ export default function Chat() {
                 onChange={e => loadConversation(e.target.value)}
                 disabled={loadingConv || sending}
                 style={{
-                  background: '#0c1320',
-                  color: '#e9eef8',
-                  border: '1px solid rgba(120,160,220,0.16)',
-                  borderRadius: '9px',
+                  background: '#1c1c1c',
+                  color: '#f4f3f0',
+                  border: '1px solid rgba(180,178,170,0.16)',
+                  borderRadius: '4px',
                   padding: '7px 10px',
                   fontSize: '12px',
                   fontFamily: 'inherit',
@@ -379,14 +379,14 @@ export default function Chat() {
             alignItems: 'center',
             justifyContent: 'center',
             gap: '16px',
-            color: '#5d6982',
+            color: '#7a776d',
             textAlign: 'center',
             padding: '40px 0',
           }}>
             <div style={{
               width: '64px',
               height: '64px',
-              borderRadius: '18px',
+              borderRadius: '6px',
               background: 'var(--ac-dim)',
               border: '1px solid var(--ac-line)',
               display: 'flex',
@@ -397,7 +397,7 @@ export default function Chat() {
                 <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-4.9A8.4 8.4 0 1 1 21 11.5z" />
               </svg>
             </div>
-            <div style={{ fontSize: '15px', color: '#8a96ad', maxWidth: '380px' }}>
+            <div style={{ fontSize: '15px', color: '#98958c', maxWidth: '380px' }}>
               Ask me anything about your homelab, or to run a task.
             </div>
           </div>
@@ -420,16 +420,16 @@ export default function Chat() {
                     ? {
                         background: 'var(--ac-dim)',
                         border: '1px solid var(--ac-line)',
-                        borderRadius: '12px',
+                        borderRadius: '6px',
                         padding: '11px 14px',
-                        color: '#e9eef8',
+                        color: '#f4f3f0',
                       }
                     : {
                         background: 'rgba(255,255,255,0.022)',
-                        border: '1px solid rgba(120,160,220,0.10)',
-                        borderRadius: '12px',
+                        border: '1px solid rgba(180,178,170,0.10)',
+                        borderRadius: '6px',
                         padding: '14px 16px',
-                        color: '#cdd6e6',
+                        color: '#d9d6cd',
                       }),
                 }}
               >
@@ -441,7 +441,7 @@ export default function Chat() {
                   </div>
                 )}
                 {msg.ts && (
-                  <p style={{ margin: '6px 0 0 0', textAlign: 'right', fontSize: '11px', color: '#5d6982' }}>
+                  <p style={{ margin: '6px 0 0 0', textAlign: 'right', fontSize: '11px', color: '#7a776d' }}>
                     {formatTime(msg.ts)}
                   </p>
                 )}
@@ -453,13 +453,13 @@ export default function Chat() {
             <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
               <div style={{
                 background: 'rgba(255,255,255,0.022)',
-                border: '1px solid rgba(120,160,220,0.10)',
-                borderRadius: '12px',
+                border: '1px solid rgba(180,178,170,0.10)',
+                borderRadius: '6px',
                 padding: '14px 16px',
               }}>
                 <span style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  color: '#5d6982',
+                  fontFamily: "'IBM Plex Mono', monospace",
+                  color: '#7a776d',
                   fontSize: '13px',
                   fontStyle: 'italic',
                   animation: 'nx-pulse 1.4s ease-in-out infinite',
@@ -478,8 +478,8 @@ export default function Chat() {
         alignItems: 'center',
         gap: '10px',
         padding: '8px',
-        borderRadius: '14px',
-        border: '1px solid rgba(120,160,220,0.14)',
+        borderRadius: '6px',
+        border: '1px solid rgba(180,178,170,0.14)',
         background: 'rgba(255,255,255,0.03)',
       }}>
         {hasMediaRecorder && (
@@ -536,7 +536,7 @@ export default function Chat() {
             background: 'transparent',
             border: 'none',
             outline: 'none',
-            color: '#e9eef8',
+            color: '#f4f3f0',
             fontSize: '14px',
             fontFamily: 'inherit',
           }}
@@ -544,7 +544,7 @@ export default function Chat() {
         <PrimaryButton
           onClick={() => send()}
           disabled={sending || !input.trim()}
-          style={{ padding: '11px 20px', borderRadius: '10px' }}
+          style={{ padding: '11px 20px', borderRadius: '6px' }}
         >
           {sending ? '...' : 'Send'}
         </PrimaryButton>

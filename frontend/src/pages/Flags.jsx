@@ -33,7 +33,7 @@ const toneSeverity = (s) => {
   const u = (s || '').toLowerCase()
   if (u === 'low') return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
   if (u === 'high') return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
-  return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' } // medium (default)
+  return { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' } // medium (default)
 }
 
 // Deliberately NOT Safety.jsx's toneStatus (that's keyed to Goal statuses —
@@ -42,12 +42,12 @@ const toneSeverity = (s) => {
 // needs_follow_up (backend/agents/outcomes.py).
 const toneFlagStatus = (s) => {
   const u = (s || '').toLowerCase()
-  if (u === 'open') return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+  if (u === 'open') return { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }
   if (u === 'needs_follow_up') return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
-  if (u === 'deferred') return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (u === 'deferred') return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
   if (u === 'resolved') return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
-  if (u === 'false_positive') return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
-  return { c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }
+  if (u === 'false_positive') return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
+  return { c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }
 }
 
 // The API's ?status= is exact-match on one literal value only — "open" as a
@@ -73,7 +73,7 @@ const SEVERITY_ORDER = ['high', 'medium', 'low']
 const Badge = ({ label, t }) => (
   <span style={{
     display: 'inline-flex', alignItems: 'center', gap: '5px',
-    padding: '3px 8px', borderRadius: '6px',
+    padding: '3px 8px', borderRadius: '4px',
     background: t.bg, border: `1px solid ${t.bd}`,
     fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', color: t.c,
     textTransform: 'uppercase', whiteSpace: 'nowrap',
@@ -88,15 +88,15 @@ const Badge = ({ label, t }) => (
 
 const inputStyle = {
   background: 'rgba(255,255,255,0.03)',
-  color: '#e9eef8',
-  border: '1px solid rgba(120,160,220,0.16)',
-  borderRadius: '10px',
+  color: '#f4f3f0',
+  border: '1px solid rgba(180,178,170,0.16)',
+  borderRadius: '6px',
   padding: '10px 12px',
   fontSize: '13px',
   outline: 'none',
   width: '100%',
   boxSizing: 'border-box',
-  fontFamily: "'Space Grotesk', sans-serif",
+  fontFamily: "'Archivo', sans-serif",
 }
 
 const selectStyle = {
@@ -110,7 +110,7 @@ const labelStyle = {
   fontSize: '10px',
   textTransform: 'uppercase',
   letterSpacing: '0.1em',
-  color: '#5d6982',
+  color: '#7a776d',
   fontWeight: 600,
   marginBottom: '4px',
   display: 'block',
@@ -121,9 +121,9 @@ const labelStyle = {
 // wrapping onto their own full-width row.
 const rowStyle = {
   display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px',
-  padding: '11px 14px', borderRadius: '11px',
+  padding: '11px 14px', borderRadius: '6px',
   background: 'rgba(255,255,255,0.022)',
-  border: '1px solid rgba(120,160,220,0.08)',
+  border: '1px solid rgba(180,178,170,0.08)',
   marginBottom: '6px',
 }
 
@@ -135,7 +135,7 @@ const destructiveButtonStyle = (disabled) => ({
   background: 'rgba(251,113,133,0.08)',
   color: '#fb7185',
   padding: '7px 14px',
-  borderRadius: '8px',
+  borderRadius: '4px',
   fontWeight: 700,
   fontSize: '12px',
   cursor: disabled ? 'not-allowed' : 'pointer',
@@ -157,45 +157,45 @@ function FlagRow({
       <Badge label={f.severity || 'medium'} t={toneSeverity(f.severity)} />
       <Badge label={f.status} t={toneFlagStatus(f.status)} />
       {f.suppressed && (
-        <Badge label="Suppressed" t={{ c: '#8a96ad', bg: 'rgba(120,160,220,0.08)', bd: 'rgba(120,160,220,0.14)' }} />
+        <Badge label="Suppressed" t={{ c: '#98958c', bg: 'rgba(180,178,170,0.08)', bd: 'rgba(180,178,170,0.14)' }} />
       )}
-      <span style={{ fontSize: '12px', color: '#8a96ad', fontFamily: "'JetBrains Mono', monospace" }}>
+      <span style={{ fontSize: '12px', color: '#98958c', fontFamily: "'IBM Plex Mono', monospace" }}>
         {f.source}:{f.check}
       </span>
       {f.surfaced_count > 1 && (
-        <span style={{ fontSize: '11px', color: '#5d6982' }}>seen {f.surfaced_count}x</span>
+        <span style={{ fontSize: '11px', color: '#7a776d' }}>seen {f.surfaced_count}x</span>
       )}
-      <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#5d6982', flex: 'none' }}>
+      <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#7a776d', flex: 'none' }}>
         {relativeTime(f.created_at)}
       </span>
 
       {/* Full-width lines — never ellipsis-truncated */}
       <span style={{
-        width: '100%', fontSize: '13px', color: '#dbe3f0',
+        width: '100%', fontSize: '13px', color: '#ece9e2',
         overflowWrap: 'anywhere', lineHeight: 1.45,
       }}>
         {f.summary}
       </span>
       {f.detail && (
         <div style={{
-          width: '100%', fontSize: '12px', color: '#8a96ad', lineHeight: 1.5,
-          fontFamily: "'JetBrains Mono', monospace", overflowWrap: 'anywhere',
+          width: '100%', fontSize: '12px', color: '#98958c', lineHeight: 1.5,
+          fontFamily: "'IBM Plex Mono', monospace", overflowWrap: 'anywhere',
         }}>
           {f.detail}
         </div>
       )}
       {f.status === 'deferred' && f.deferred_until && (
-        <div style={{ width: '100%', fontSize: '12px', color: '#8a96ad' }}>
+        <div style={{ width: '100%', fontSize: '12px', color: '#98958c' }}>
           Deferred until {fmtDateTime(f.deferred_until)}
         </div>
       )}
       {!showActions && f.resolved_at && (
-        <div style={{ width: '100%', fontSize: '12px', color: '#5d6982' }}>
+        <div style={{ width: '100%', fontSize: '12px', color: '#7a776d' }}>
           Closed {relativeTime(f.resolved_at)}{f.resolved_by ? ` by ${f.resolved_by}` : ''}
         </div>
       )}
       {!showActions && f.resolution_note && (
-        <div style={{ width: '100%', fontSize: '12px', color: '#8a96ad', overflowWrap: 'anywhere' }}>
+        <div style={{ width: '100%', fontSize: '12px', color: '#98958c', overflowWrap: 'anywhere' }}>
           Note: {f.resolution_note}
         </div>
       )}
@@ -388,9 +388,9 @@ export default function Flags() {
   })
 
   const toneFpRate = (rate) => {
-    if (rate === null) return { c: '#5d6982', bg: 'rgba(120,160,220,0.06)', bd: 'rgba(120,160,220,0.12)' }
+    if (rate === null) return { c: '#7a776d', bg: 'rgba(180,178,170,0.06)', bd: 'rgba(180,178,170,0.12)' }
     if (rate < 0.3) return { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
-    if (rate < 0.6) return { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+    if (rate < 0.6) return { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }
     return { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
   }
 
@@ -407,12 +407,12 @@ export default function Flags() {
       {/* ------------------------------------------------------------------ */}
       <Card accent="cyan">
         {flags === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : (() => {
           const t = highActive.length > 0
             ? { c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }
             : activeRows.length > 0
-              ? { c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }
+              ? { c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }
               : { c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }
           const headline = highActive.length > 0
             ? `${highActive.length} high-severity flag${highActive.length === 1 ? '' : 's'} need attention`
@@ -428,21 +428,21 @@ export default function Flags() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '14px' }}>
                 <div>
                   <div style={labelStyle}>Open</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#e9eef8' }}>{openCount}</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#f4f3f0' }}>{openCount}</div>
                 </div>
                 <div>
                   <div style={labelStyle}>Needs follow-up</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: needsFollowUpCount > 0 ? '#fb7185' : '#e9eef8' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: needsFollowUpCount > 0 ? '#fb7185' : '#f4f3f0' }}>
                     {needsFollowUpCount}
                   </div>
                 </div>
                 <div>
                   <div style={labelStyle}>Deferred</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#e9eef8' }}>{deferredCount}</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#f4f3f0' }}>{deferredCount}</div>
                 </div>
                 <div>
                   <div style={labelStyle}>Closed (7d)</div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#e9eef8' }}>{recentlyClosed.length}</div>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: '#f4f3f0' }}>{recentlyClosed.length}</div>
                 </div>
               </div>
             </>
@@ -475,9 +475,9 @@ export default function Flags() {
         </div>
 
         {flags === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : filteredRows.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No flags match this filter.</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>No flags match this filter.</span>
         ) : (
           <div>
             {severityGroups.map(([sev, rows]) => (
@@ -511,12 +511,12 @@ export default function Flags() {
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: showAllClosed ? '14px' : '0' }}>
           <Eyebrow>Recently closed</Eyebrow>
-          <span style={{ fontSize: '12px', color: '#5d6982' }}>({recentlyClosed.length} in the last 7 days)</span>
+          <span style={{ fontSize: '12px', color: '#7a776d' }}>({recentlyClosed.length} in the last 7 days)</span>
         </div>
         <button
           onClick={() => setShowAllClosed(v => !v)}
           style={{
-            fontSize: '11px', fontWeight: 600, color: '#5d6982', background: 'none',
+            fontSize: '11px', fontWeight: 600, color: '#7a776d', background: 'none',
             border: 'none', cursor: 'pointer', padding: 0, marginTop: '4px',
           }}
         >
@@ -525,7 +525,7 @@ export default function Flags() {
         {showAllClosed && (
           <div style={{ marginTop: '10px' }}>
             {recentlyClosed.length === 0 ? (
-              <span style={{ fontSize: '13px', color: '#5d6982' }}>Nothing closed in the last 7 days.</span>
+              <span style={{ fontSize: '13px', color: '#7a776d' }}>Nothing closed in the last 7 days.</span>
             ) : (
               recentlyClosed.map(f => (
                 <FlagRow key={f.id} f={f} showActions={false} />
@@ -540,23 +540,23 @@ export default function Flags() {
       {/* ------------------------------------------------------------------ */}
       <Card>
         <Eyebrow style={{ display: 'block', marginBottom: '6px' }}>Calibration</Eyebrow>
-        <div style={{ fontSize: '11px', color: '#5d6982', marginBottom: '14px' }}>
+        <div style={{ fontSize: '11px', color: '#7a776d', marginBottom: '14px' }}>
           False-alarm rate over the last 30 days. Denominator counts resolved + false alarm only.
         </div>
         {calib === null ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>Loading...</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>Loading...</span>
         ) : sortedCalibRows.length === 0 ? (
-          <span style={{ fontSize: '13px', color: '#5d6982' }}>No flags recorded in the last 30 days.</span>
+          <span style={{ fontSize: '13px', color: '#7a776d' }}>No flags recorded in the last 30 days.</span>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {sortedCalibRows.map(row => {
               const t = toneFpRate(row.fpRate)
               return (
                 <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', fontSize: '12px' }}>
-                  <span style={{ color: '#dbe3f0', fontFamily: "'JetBrains Mono', monospace" }}>{row.key}</span>
+                  <span style={{ color: '#ece9e2', fontFamily: "'IBM Plex Mono', monospace" }}>{row.key}</span>
                   <Badge label={`resolved ${row.resolved}`} t={{ c: '#5fe0b4', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' }} />
                   <Badge label={`false_positive ${row.falsePositive}`} t={{ c: '#fb7185', bg: 'rgba(251,113,133,0.08)', bd: 'rgba(251,113,133,0.30)' }} />
-                  <Badge label={`open ${row.openLike}`} t={{ c: '#f4d27a', bg: 'rgba(251,191,36,0.08)', bd: 'rgba(251,191,36,0.30)' }} />
+                  <Badge label={`open ${row.openLike}`} t={{ c: '#f0d896', bg: 'rgba(232,196,104,0.08)', bd: 'rgba(232,196,104,0.30)' }} />
                   <span style={{ marginLeft: 'auto', color: t.c, fontWeight: 700 }}>
                     {row.fpRate === null ? '—' : `FP ${(row.fpRate * 100).toFixed(0)}% (${row.falsePositive}/${row.denom})`}
                   </span>
@@ -595,7 +595,7 @@ export default function Flags() {
           </div>
           <div>
             <label style={labelStyle}>
-              Detail <span style={{ color: '#5d6982', textTransform: 'none', letterSpacing: 0 }}>(optional)</span>
+              Detail <span style={{ color: '#7a776d', textTransform: 'none', letterSpacing: 0 }}>(optional)</span>
             </label>
             <textarea
               value={detailInput}
@@ -619,7 +619,7 @@ export default function Flags() {
             {createStatus && (
               <span style={{
                 fontSize: '12px',
-                color: createStatus.kind === 'error' ? '#fb7185' : createStatus.kind === 'notice' ? '#f4d27a' : '#5fe0b4',
+                color: createStatus.kind === 'error' ? '#fb7185' : createStatus.kind === 'notice' ? '#f0d896' : '#5fe0b4',
               }}>
                 {createStatus.text}
               </span>

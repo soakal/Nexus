@@ -6,7 +6,7 @@ function renderBody(lines) {
   let listType = null // 'ul' | 'ol' | null
 
   const listStyle = {
-    color: '#aab4c7',
+    color: '#b3b0a6',
     fontSize: 13,
     lineHeight: 1.6,
     margin: 0,
@@ -55,7 +55,7 @@ function renderBody(lines) {
     } else {
       flushList(idx)
       elements.push(
-        <p key={`p-${idx}`} style={{ color: '#aab4c7', fontSize: 13, lineHeight: 1.6, margin: 0, overflowWrap: 'anywhere' }}>
+        <p key={`p-${idx}`} style={{ color: '#b3b0a6', fontSize: 13, lineHeight: 1.6, margin: 0, overflowWrap: 'anywhere' }}>
           {renderInline(line)}
         </p>
       )
@@ -86,9 +86,9 @@ function renderMarkdown(content) {
       <div
         key={i}
         style={{
-          background: 'linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0)),#0c1320',
-          border: '1px solid rgba(120,160,220,0.10)',
-          borderRadius: 16,
+          background: 'linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0)),#1c1c1c',
+          border: '1px solid rgba(180,178,170,0.10)',
+          borderRadius: 6,
           padding: 'var(--pad)',
         }}
       >
@@ -97,7 +97,7 @@ function renderMarkdown(content) {
             fontSize: 11,
             letterSpacing: '0.14em',
             textTransform: 'uppercase',
-            color: '#5d6982',
+            color: '#7a776d',
             fontWeight: 600,
             marginBottom: 14,
           }}>
@@ -116,7 +116,7 @@ export default function BriefingPanel({ content }) {
   if (!content) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '48px 0' }}>
-        <span style={{ color: '#5d6982', fontSize: 13 }}>No briefing available</span>
+        <span style={{ color: '#7a776d', fontSize: 13 }}>No briefing available</span>
       </div>
     )
   }

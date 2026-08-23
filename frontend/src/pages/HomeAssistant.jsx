@@ -44,7 +44,7 @@ function ProxmoxSection() {
 
   const btnStyle = (variant) => ({
     padding: '9px 14px',
-    borderRadius: '7px',
+    borderRadius: '4px',
     fontSize: '11px',
     fontWeight: 600,
     cursor: 'pointer',
@@ -52,13 +52,13 @@ function ProxmoxSection() {
       ? '1px solid rgba(52,211,153,0.3)'
       : variant === 'stop'
       ? '1px solid rgba(251,113,133,0.3)'
-      : '1px solid rgba(120,160,220,0.2)',
+      : '1px solid rgba(180,178,170,0.2)',
     background: variant === 'start'
       ? 'rgba(52,211,153,0.08)'
       : variant === 'stop'
       ? 'rgba(251,113,133,0.08)'
       : 'rgba(255,255,255,0.04)',
-    color: variant === 'start' ? '#34d399' : variant === 'stop' ? '#fb7185' : '#aab4c7',
+    color: variant === 'start' ? '#34d399' : variant === 'stop' ? '#fb7185' : '#b3b0a6',
   })
 
   return (
@@ -67,7 +67,7 @@ function ProxmoxSection() {
         <Eyebrow>Proxmox VMs / LXCs</Eyebrow>
         {toast && (
           <span style={{
-            fontSize: '11px', fontWeight: 600, padding: '3px 10px', borderRadius: '6px',
+            fontSize: '11px', fontWeight: 600, padding: '3px 10px', borderRadius: '4px',
             background: toast.ok ? 'rgba(52,211,153,0.1)' : 'rgba(251,113,133,0.1)',
             color: toast.ok ? '#34d399' : '#fb7185',
             border: toast.ok ? '1px solid rgba(52,211,153,0.25)' : '1px solid rgba(251,113,133,0.25)',
@@ -83,10 +83,10 @@ function ProxmoxSection() {
           return (
             <div key={vmid} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
-              padding: '10px 14px', borderRadius: '11px',
-              background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+              padding: '10px 14px', borderRadius: '6px',
+              background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
             }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0', minWidth: 0, overflowWrap: 'anywhere' }}>{name}</span>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#ece9e2', minWidth: 0, overflowWrap: 'anywhere' }}>{name}</span>
               <div style={{ display: 'flex', gap: '6px' }}>
                 {['start', 'stop', 'reboot'].map((action) => (
                   <button
@@ -164,7 +164,7 @@ function Toggle({ on, disabled, onClick }) {
       aria-pressed={on}
       style={{
         width: '46px', height: '26px', borderRadius: '13px', padding: '2px', flexShrink: 0,
-        border: on ? '1px solid rgba(52,211,153,0.5)' : '1px solid rgba(120,160,220,0.2)',
+        border: on ? '1px solid rgba(52,211,153,0.5)' : '1px solid rgba(180,178,170,0.2)',
         background: on ? 'rgba(52,211,153,0.35)' : 'rgba(255,255,255,0.06)',
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.4 : 1,
@@ -173,7 +173,7 @@ function Toggle({ on, disabled, onClick }) {
     >
       <div style={{
         width: '20px', height: '20px', borderRadius: '50%',
-        background: on ? '#34d399' : '#8a96ad',
+        background: on ? '#34d399' : '#98958c',
         transform: on ? 'translateX(20px)' : 'translateX(0)',
         transition: 'transform 0.15s',
       }} />
@@ -183,17 +183,17 @@ function Toggle({ on, disabled, onClick }) {
 
 const ROW = {
   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
-  padding: '12px 14px', borderRadius: '11px',
-  background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+  padding: '12px 14px', borderRadius: '6px',
+  background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
 }
 const NAME = {
-  fontSize: '14px', fontWeight: 600, color: '#dbe3f0',
+  fontSize: '14px', fontWeight: 600, color: '#ece9e2',
   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
 }
 const BIG_BTN = (disabled) => ({
-  padding: '8px 22px', borderRadius: '9px', fontSize: '13px', fontWeight: 700,
-  border: '1px solid rgba(120,160,220,0.22)', background: 'rgba(255,255,255,0.05)',
-  color: '#dbe3f0', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.4 : 1,
+  padding: '8px 22px', borderRadius: '4px', fontSize: '13px', fontWeight: 700,
+  border: '1px solid rgba(180,178,170,0.22)', background: 'rgba(255,255,255,0.05)',
+  color: '#ece9e2', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.4 : 1,
 })
 
 function EntityRow({ entity, onAction, busy }) {
@@ -211,7 +211,7 @@ function EntityRow({ entity, onAction, busy }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
           <span style={{
             fontSize: '12px', fontWeight: 600,
-            color: unavailable ? '#f4d27a' : on ? '#5fe0b4' : '#7c8aa3',
+            color: unavailable ? '#f0d896' : on ? '#5fe0b4' : '#8b8880',
           }}>
             {unavailable ? 'N/A' : on ? 'On' : 'Off'}
           </span>
@@ -229,7 +229,7 @@ function EntityRow({ entity, onAction, busy }) {
   if (domain === 'cover') {
     const moving = state === 'opening' || state === 'closing'
     const isOpen = state === 'open'
-    const statusColor = unavailable ? '#f4d27a' : moving ? '#fbbf24' : isOpen ? '#fb7185' : '#34d399'
+    const statusColor = unavailable ? '#f0d896' : moving ? '#e8c468' : isOpen ? '#fb7185' : '#34d399'
     const action = moving
       ? { label: 'Stop', svc: 'stop_cover', opt: null }
       : isOpen
@@ -257,7 +257,7 @@ function EntityRow({ entity, onAction, busy }) {
   // Back door lock: LOCKED/UNLOCKED status + one action button
   if (domain === 'lock') {
     const isLocked = state === 'locked'
-    const statusColor = unavailable ? '#f4d27a' : isLocked ? '#34d399' : '#fb7185'
+    const statusColor = unavailable ? '#f0d896' : isLocked ? '#34d399' : '#fb7185'
     return (
       <div style={ROW}>
         <div style={{ ...NAME, minWidth: 0, flex: 1 }}>{name}</div>
@@ -315,16 +315,16 @@ function EntityRow({ entity, onAction, busy }) {
 
     const roundBtn = (disabled) => ({
       width: '46px', height: '46px', borderRadius: '50%', fontSize: '20px', fontWeight: 700,
-      border: '1px solid rgba(120,160,220,0.25)', background: 'rgba(255,255,255,0.05)',
-      color: '#dbe3f0', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.35 : 1,
+      border: '1px solid rgba(180,178,170,0.25)', background: 'rgba(255,255,255,0.05)',
+      color: '#ece9e2', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.35 : 1,
       flexShrink: 0,
     })
 
     return (
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px',
-        padding: '22px 14px', borderRadius: '14px',
-        background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+        padding: '22px 14px', borderRadius: '6px',
+        background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '18px', flexWrap: 'wrap', justifyContent: 'center' }}>
           <button disabled={!canSetTemp} onClick={() => setTemp(target - 1)} style={roundBtn(!canSetTemp)}>−</button>
@@ -374,9 +374,9 @@ function EntityRow({ entity, onAction, busy }) {
           <button disabled={!canSetTemp} onClick={() => setTemp(target + 1)} style={roundBtn(!canSetTemp)}>+</button>
         </div>
 
-        <div style={{ fontSize: '13px', color: '#9aa6bd' }}>
-          Inside <strong style={{ color: '#dbe3f0' }}>{current ?? '--'}°</strong>
-          {humidity != null && <> · Humidity <strong style={{ color: '#dbe3f0' }}>{Math.round(humidity)}%</strong></>}
+        <div style={{ fontSize: '13px', color: '#a6a399' }}>
+          Inside <strong style={{ color: '#ece9e2' }}>{current ?? '--'}°</strong>
+          {humidity != null && <> · Humidity <strong style={{ color: '#ece9e2' }}>{Math.round(humidity)}%</strong></>}
           {hvacAction && <> · {hvacAction}</>}
         </div>
 
@@ -391,9 +391,9 @@ function EntityRow({ entity, onAction, busy }) {
                 onClick={() => onAction(entity, 'set_hvac_mode', { hvac_mode: m }, { state: m })}
                 style={{
                   padding: '7px 18px', borderRadius: '999px', fontSize: '13px', fontWeight: 700,
-                  border: active ? `1px solid ${col}` : '1px solid rgba(120,160,220,0.2)',
+                  border: active ? `1px solid ${col}` : '1px solid rgba(180,178,170,0.2)',
                   background: active ? `${col}22` : 'rgba(255,255,255,0.04)',
-                  color: active ? col : '#9aa6bd',
+                  color: active ? col : '#a6a399',
                   cursor: busy || unavailable || active ? 'default' : 'pointer',
                   opacity: busy || unavailable ? 0.4 : 1,
                 }}
@@ -412,7 +412,7 @@ function EntityRow({ entity, onAction, busy }) {
   return (
     <div style={ROW}>
       <div style={{ ...NAME, minWidth: 0, flex: 1 }}>{name}</div>
-      <div style={{ flexShrink: 0, fontSize: '12px', fontWeight: 600, color: '#9aa6bd' }}>
+      <div style={{ flexShrink: 0, fontSize: '12px', fontWeight: 600, color: '#a6a399' }}>
         {state}{unit ? ` ${unit}` : ''}
       </div>
     </div>
@@ -466,23 +466,23 @@ function UnavailableTriage() {
   return (
     <Card>
       <Eyebrow style={{ display: 'block', marginBottom: '4px' }}>Unavailable entities</Eyebrow>
-      <div style={{ fontSize: '12px', color: '#8a96ad', marginBottom: '12px' }}>
-        <strong style={{ color: '#f4d27a' }}>{report.persistent}</strong> unavailable &gt;7 days (persistently dead) ·{' '}
-        <strong style={{ color: '#8a96ad' }}>{report.recent}</strong> unavailable &lt;1h (likely transient)
+      <div style={{ fontSize: '12px', color: '#98958c', marginBottom: '12px' }}>
+        <strong style={{ color: '#f0d896' }}>{report.persistent}</strong> unavailable &gt;7 days (persistently dead) ·{' '}
+        <strong style={{ color: '#98958c' }}>{report.recent}</strong> unavailable &lt;1h (likely transient)
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {items.map((item) => (
           <div key={item.entity_id} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
-            padding: '10px 14px', borderRadius: '11px',
-            background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(120,160,220,0.08)',
+            padding: '10px 14px', borderRadius: '6px',
+            background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
             opacity: item.suppressed ? 0.5 : 1,
           }}>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', overflowWrap: 'anywhere' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', overflowWrap: 'anywhere' }}>
                 {item.entity_id}{item.resolved_name ? ` (${item.resolved_name})` : ''}
               </div>
-              <div style={{ fontSize: '11px', color: '#8a96ad', marginTop: '2px' }}>
+              <div style={{ fontSize: '11px', color: '#98958c', marginTop: '2px' }}>
                 unavailable {formatAge(item.age_seconds)}{item.suppressed ? ' · dismissed' : ''}
               </div>
             </div>
@@ -656,9 +656,9 @@ export default function HomeAssistant() {
         title="Home Systems"
         right={
           <div style={{ display: 'flex', flexDirection: 'row', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '13px', color: '#8a96ad' }}>
-              <strong style={{ color: '#e9eef8' }}>{entities?.length || 0}</strong>
-              {' '}entities · <strong style={{ color: '#fbbf24' }}>{alerts?.length || 0}</strong> unavailable
+            <span style={{ fontSize: '13px', color: '#98958c' }}>
+              <strong style={{ color: '#f4f3f0' }}>{entities?.length || 0}</strong>
+              {' '}entities · <strong style={{ color: '#e8c468' }}>{alerts?.length || 0}</strong> unavailable
             </span>
             <GhostButton onClick={reloadCloud} disabled={reloading}>
               {reloading ? 'Reloading…' : 'Reload cloud'}
@@ -697,7 +697,7 @@ export default function HomeAssistant() {
                   <button
                     onClick={() => removePin(id)}
                     title="Unpin"
-                    style={{ background: 'none', border: 'none', color: '#5d6982', cursor: 'pointer', fontSize: '14px', padding: '4px' }}
+                    style={{ background: 'none', border: 'none', color: '#7a776d', cursor: 'pointer', fontSize: '14px', padding: '4px' }}
                   >
                     ×
                   </button>
@@ -731,16 +731,16 @@ export default function HomeAssistant() {
       {cloudAlerts.length > 0 && (
         <Card accent="amber">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-            <StatusDot color="#fbbf24" size={8} glow={false} />
-            <Eyebrow style={{ color: '#f4d27a' }}>HA Cloud Alert</Eyebrow>
+            <StatusDot color="#e8c468" size={8} glow={false} />
+            <Eyebrow style={{ color: '#f0d896' }}>HA Cloud Alert</Eyebrow>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {cloudAlerts.map((ca) => (
               <div key={ca.entity} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: '12px' }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: '13px', color: '#dbe3f0' }}>{ca.message}</div>
-                  <div style={{ fontSize: '11px', fontFamily: "'JetBrains Mono', monospace", color: '#8a96ad', marginTop: '3px' }}>
-                    {ca.entity} · <span style={{ color: '#f4d27a' }}>{ca.state}</span>
+                  <div style={{ fontSize: '13px', color: '#ece9e2' }}>{ca.message}</div>
+                  <div style={{ fontSize: '11px', fontFamily: "'IBM Plex Mono', monospace", color: '#98958c', marginTop: '3px' }}>
+                    {ca.entity} · <span style={{ color: '#f0d896' }}>{ca.state}</span>
                   </div>
                 </div>
                 <GhostButton onClick={reloadCloud} disabled={reloading}>
@@ -754,7 +754,7 @@ export default function HomeAssistant() {
 
       {error && (
         <div style={{
-          borderRadius: '16px',
+          borderRadius: '6px',
           padding: 'var(--pad)',
           border: '1px solid rgba(251,113,133,0.3)',
           background: 'rgba(251,113,133,0.05)',
@@ -772,15 +772,15 @@ export default function HomeAssistant() {
       <ProxmoxSection />
 
       {loading ? (
-        <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>
+        <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>
       ) : domains.length === 0 ? (
-        <div style={{ color: '#8a96ad', fontSize: '13px' }}>No entities match.</div>
+        <div style={{ color: '#98958c', fontSize: '13px' }}>No entities match.</div>
       ) : (
         domains.map((domain) => (
           <Card key={domain}>
             <Eyebrow>
               {domain}{' '}
-              <span style={{ color: '#465069' }}>({grouped[domain].length})</span>
+              <span style={{ color: '#57554c' }}>({grouped[domain].length})</span>
             </Eyebrow>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
               {grouped[domain].map((e) => (

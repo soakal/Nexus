@@ -53,10 +53,10 @@ function fmtNextRun(iso) {
 
 function statusColor(status) {
   switch (status) {
-    case 'running': return '#2fd4ee'
+    case 'running': return '#ff8a3d'
     case 'ok': return '#5fe0b4'
     case 'error': return '#fb7185'
-    default: return '#5d6982'
+    default: return '#7a776d'
   }
 }
 
@@ -242,9 +242,9 @@ export default function Pulse() {
         right={
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <StatusDot color={connected ? '#5fe0b4' : '#fb7185'} pulse={connected} />
-            <span style={{ fontSize: '12px', color: '#8a96ad' }}>{connected ? 'live' : 'reconnecting…'}</span>
+            <span style={{ fontSize: '12px', color: '#98958c' }}>{connected ? 'live' : 'reconnecting…'}</span>
             {autonomy && (
-              <span style={{ fontSize: '12px', color: '#8a96ad' }}>
+              <span style={{ fontSize: '12px', color: '#98958c' }}>
                 · autonomy {autonomy.autonomy_enabled ? 'ON' : 'PAUSED'} · ${Number(autonomy.today_spend_usd || 0).toFixed(2)} today
               </span>
             )}
@@ -255,39 +255,39 @@ export default function Pulse() {
       <Card>
         <Eyebrow style={{ marginBottom: '10px' }}>Now Running</Eyebrow>
         {running.length === 0 ? (
-          <div style={{ fontSize: '13px', color: '#5d6982' }}>
+          <div style={{ fontSize: '13px', color: '#7a776d' }}>
             Nothing in flight — {grouped.worker?.length || 0} worker(s) idle.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {running.map(e => (
               <div key={e.actor_id} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <StatusDot color="#2fd4ee" pulse size={8} />
+                <StatusDot color="#ff8a3d" pulse size={8} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: '13px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {e.label || e.actor_id}
                   </div>
                   {e.actor_type === 'task' && e.detail?.total_steps > 0 ? (
                     <div style={{ marginTop: '4px' }}>
-                      <div style={{ fontSize: '11px', color: '#8a96ad', marginBottom: '3px' }}>
+                      <div style={{ fontSize: '11px', color: '#98958c', marginBottom: '3px' }}>
                         step {e.detail.step_index}/{e.detail.total_steps} — {e.detail.description}
                       </div>
-                      <div style={{ height: '4px', borderRadius: '2px', background: 'rgba(120,160,220,0.12)', overflow: 'hidden' }}>
+                      <div style={{ height: '4px', borderRadius: '2px', background: 'rgba(180,178,170,0.12)', overflow: 'hidden' }}>
                         <div style={{
                           height: '100%',
                           width: `${Math.min(100, (e.detail.step_index / e.detail.total_steps) * 100)}%`,
-                          background: '#2fd4ee',
+                          background: '#ff8a3d',
                         }} />
                       </div>
                     </div>
                   ) : null}
                   {e.actor_type === 'trace' && e.detail?.last_span ? (
-                    <div style={{ marginTop: '4px', fontSize: '11px', color: '#8a96ad', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ marginTop: '4px', fontSize: '11px', color: '#98958c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       last: {e.detail.last_span}{e.detail.duration_ms != null ? ` · ${fmtMs(e.detail.duration_ms)}` : ''}
                     </div>
                   ) : null}
                 </div>
-                <div style={{ fontSize: '12px', color: '#8a96ad', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>
+                <div style={{ fontSize: '12px', color: '#98958c', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>
                   {fmtElapsed(e.started_at, nowTick)}
                 </div>
               </div>
@@ -299,18 +299,18 @@ export default function Pulse() {
       <Card>
         <Eyebrow style={{ marginBottom: '10px' }}>Actors</Eyebrow>
         {groupKeys.length === 0 ? (
-          <div style={{ fontSize: '13px', color: '#5d6982' }}>No data yet — waiting for the first tick.</div>
+          <div style={{ fontSize: '13px', color: '#7a776d' }}>No data yet — waiting for the first tick.</div>
         ) : (
           groupKeys.map(type => (
             <div key={type} style={{ marginBottom: '18px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: '#5d6982', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#7a776d', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
                 {ACTOR_GROUP_LABELS[type] || type}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '10px' }}>
                 {grouped[type].map(e => (
                   <div key={e.actor_id} style={{
-                    padding: '10px 12px', borderRadius: '10px',
-                    background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(120,160,220,0.10)',
+                    padding: '10px 12px', borderRadius: '6px',
+                    background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(180,178,170,0.10)',
                     opacity: e.status === 'scheduled' ? 0.6 : 1,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
@@ -319,7 +319,7 @@ export default function Pulse() {
                         {e.actor_id.replace(/^(job|worker|loop|task):/, '')}
                       </span>
                     </div>
-                    <div style={{ fontSize: '11px', color: '#8a96ad' }}>
+                    <div style={{ fontSize: '11px', color: '#98958c' }}>
                       {e.status === 'scheduled'
                         ? `registered · next run ${fmtNextRun(e.next_run_time)}`
                         : e.status === 'running'
@@ -329,7 +329,7 @@ export default function Pulse() {
                             : 'no data yet'}
                     </div>
                     {e.label && e.label !== e.actor_id.replace(/^(job|worker|loop|task):/, '') ? (
-                      <div style={{ fontSize: '11px', color: '#8a96ad', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div style={{ fontSize: '11px', color: '#98958c', marginTop: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {e.label}
                       </div>
                     ) : null}
@@ -349,7 +349,7 @@ export default function Pulse() {
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <Eyebrow>Live Ticker</Eyebrow>
-          {paused && <span style={{ fontSize: '11px', color: '#8a96ad' }}>paused — hover to pin, move away to resume</span>}
+          {paused && <span style={{ fontSize: '11px', color: '#98958c' }}>paused — hover to pin, move away to resume</span>}
         </div>
         {/* Rows below need flexShrink:0 -- a column flex container with
             maxHeight + overflow:hidden children lets the browser shrink
@@ -366,13 +366,13 @@ export default function Pulse() {
           }}
         >
           {tickerRows.length === 0 ? (
-            <div style={{ color: '#5d6982' }}>No activity yet.</div>
+            <div style={{ color: '#7a776d' }}>No activity yet.</div>
           ) : (
             tickerRows.map((ev, i) => (
-              <div key={`${ev.ts}-${i}`} style={{ color: '#c8d0e0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0 }}>
-                <span style={{ color: '#5d6982' }}>{new Date(ev.ts.endsWith('Z') ? ev.ts : ev.ts + 'Z').toLocaleTimeString()}</span>
+              <div key={`${ev.ts}-${i}`} style={{ color: '#cdc9be', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0 }}>
+                <span style={{ color: '#7a776d' }}>{new Date(ev.ts.endsWith('Z') ? ev.ts : ev.ts + 'Z').toLocaleTimeString()}</span>
                 {' · '}
-                <span style={{ color: '#8a96ad' }}>{ev.event}</span>
+                <span style={{ color: '#98958c' }}>{ev.event}</span>
                 {' · '}
                 {ev.summary}
               </div>

@@ -51,17 +51,17 @@ export default function AlertStrip() {
     <div style={{
       display: 'flex', alignItems: 'center', gap: '10px',
       padding: '9px 16px',
-      background: 'rgba(251,191,36,0.08)',
-      borderBottom: '1px solid rgba(251,191,36,0.28)',
+      background: 'rgba(232,196,104,0.08)',
+      borderBottom: '1px solid rgba(232,196,104,0.28)',
       flexShrink: 0,
     }}>
       {/* Amber dot */}
       <div style={{
         width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-        background: '#fbbf24', boxShadow: '0 0 6px rgba(251,191,36,0.6)',
+        background: '#e8c468', boxShadow: '0 0 6px rgba(232,196,104,0.6)',
       }} />
 
-      <span style={{ flex: 1, fontSize: '13px', fontWeight: 600, color: '#f4d27a' }}>
+      <span style={{ flex: 1, fontSize: '13px', fontWeight: 600, color: '#f0d896' }}>
         {alert.message}
       </span>
 
@@ -70,7 +70,7 @@ export default function AlertStrip() {
         title="Dismiss"
         style={{
           background: 'none', border: 'none', cursor: 'pointer',
-          color: '#8a96ad', fontSize: '16px', lineHeight: 1,
+          color: '#98958c', fontSize: '16px', lineHeight: 1,
           padding: '0 2px', flexShrink: 0,
         }}
       >

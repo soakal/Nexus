@@ -46,14 +46,14 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
       gap: '12px',
       flexWrap: 'wrap',
       padding: '13px 0',
-      borderBottom: '1px solid rgba(120,160,220,0.07)',
+      borderBottom: '1px solid rgba(180,178,170,0.07)',
     }}>
       {/* Left: label + last set */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0' }}>{label}</div>
+        <div style={{ fontSize: '14px', fontWeight: 600, color: '#ece9e2' }}>{label}</div>
         {lastSetDisplay
-          ? <div style={{ fontSize: '11px', color: '#5d6982', marginTop: '2px' }}>{lastSetDisplay}</div>
-          : <div style={{ fontSize: '11px', color: '#f4d27a', marginTop: '2px' }}>Not set</div>
+          ? <div style={{ fontSize: '11px', color: '#7a776d', marginTop: '2px' }}>{lastSetDisplay}</div>
+          : <div style={{ fontSize: '11px', color: '#f0d896', marginTop: '2px' }}>Not set</div>
         }
       </div>
 
@@ -66,14 +66,14 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
               value={inputVal}
               onChange={e => setInputVal(e.target.value)}
               placeholder="New value..."
-              style={{ width: '200px', paddingRight: '36px', fontSize: '13px', fontFamily: "'JetBrains Mono', monospace" }}
+              style={{ width: '200px', paddingRight: '36px', fontSize: '13px', fontFamily: "'IBM Plex Mono', monospace" }}
             />
             <button
               type="button"
               onClick={() => setVisible(v => !v)}
               style={{
                 position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
-                background: 'none', border: 'none', cursor: 'pointer', color: '#8a96ad',
+                background: 'none', border: 'none', cursor: 'pointer', color: '#98958c',
                 display: 'flex', alignItems: 'center',
               }}
               title={visible ? 'Hide' : 'Show'}
@@ -96,12 +96,12 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
             <span style={{
               fontSize: '10px', fontWeight: 700, color: '#fb7185',
               background: 'rgba(251,113,133,0.1)', border: '1px solid rgba(251,113,133,0.3)',
-              padding: '2px 7px', borderRadius: '5px',
+              padding: '2px 7px', borderRadius: '4px',
             }}>MISSING</span>
           ) : (
             <span style={{
-              fontFamily: "'JetBrains Mono', monospace",
-              color: '#465069',
+              fontFamily: "'IBM Plex Mono', monospace",
+              color: '#57554c',
               letterSpacing: '2px',
               fontSize: '13px',
             }}>••••••••</span>
@@ -117,7 +117,7 @@ export default function SecretField({ secretKey, label, lastSet, missing = false
           <button
             onClick={test}
             disabled={loading}
-            style={{ fontSize: '12px', color: '#8a96ad', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 10px' }}
+            style={{ fontSize: '12px', color: '#98958c', background: 'none', border: 'none', cursor: 'pointer', padding: '8px 10px' }}
           >
             {loading ? '...' : 'Test'}
           </button>

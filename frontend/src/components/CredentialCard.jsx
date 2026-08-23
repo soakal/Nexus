@@ -10,7 +10,7 @@ function Field({ label, value, onChange, type = 'text' }) {
   const isPassword = type === 'password'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 160px' }}>
-      <label style={{ fontSize: '11px', color: '#5d6982', fontWeight: 600 }}>{label}</label>
+      <label style={{ fontSize: '11px', color: '#7a776d', fontWeight: 600 }}>{label}</label>
       <div style={{ position: 'relative' }}>
         <TextInput
           type={isPassword && !visible ? 'password' : 'text'}
@@ -23,7 +23,7 @@ function Field({ label, value, onChange, type = 'text' }) {
           <button
             type="button"
             onClick={() => setVisible(v => !v)}
-            style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#8a96ad', display: 'flex', alignItems: 'center' }}
+            style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: '#98958c', display: 'flex', alignItems: 'center' }}
           >
             {visible ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
@@ -71,11 +71,11 @@ export default function CredentialCard({ service, data, onRefresh }) {
   return (
     <div style={{
       padding: '13px 0',
-      borderBottom: '1px solid rgba(120,160,220,0.07)',
+      borderBottom: '1px solid rgba(180,178,170,0.07)',
     }}>
       {editing ? (
         <div>
-          <div style={{ fontSize: '13px', fontWeight: 600, color: '#dbe3f0', marginBottom: '10px', textTransform: 'capitalize' }}>{service}</div>
+          <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', marginBottom: '10px', textTransform: 'capitalize' }}>{service}</div>
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
             <Field label="Host / IP" value={form.host} onChange={v => setForm(f => ({ ...f, host: v }))} />
             <Field label="Username" value={form.user} onChange={v => setForm(f => ({ ...f, user: v }))} />
@@ -92,8 +92,8 @@ export default function CredentialCard({ service, data, onRefresh }) {
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
           <div>
-            <div style={{ fontSize: '14px', fontWeight: 600, color: '#dbe3f0', textTransform: 'capitalize' }}>{service}</div>
-            <div style={{ fontSize: '11px', color: '#5d6982', marginTop: '2px' }}>
+            <div style={{ fontSize: '14px', fontWeight: 600, color: '#ece9e2', textTransform: 'capitalize' }}>{service}</div>
+            <div style={{ fontSize: '11px', color: '#7a776d', marginTop: '2px' }}>
               {data?.host && <span>{data.host}</span>}
               {data?.user && <span style={{ marginLeft: '8px' }}>user: {data.user}</span>}
               {data?.port && <span style={{ marginLeft: '8px' }}>:{data.port}</span>}

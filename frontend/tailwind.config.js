@@ -3,22 +3,22 @@ export default {
   theme: {
     extend: {
       colors: {
-        'bg-primary': '#04080f',
-        'bg-secondary': '#060c16',
-        'bg-card': '#080f1e',
-        'accent-cyan': '#00d4ff',
-        'accent-orange': '#ff9500',
+        'bg-primary': '#131313',
+        'bg-secondary': '#1c1c1c',
+        'bg-card': '#1c1c1c',
+        'accent-cyan': '#ff8a3d',
+        'accent-orange': '#ff8a3d',
         'accent-green': '#00ff9d',
         'accent-red': '#ff2d2d',
         'accent-gold': '#ffd700',
         'accent-blue': '#0a2a4a',
-        'text-primary': '#cce5f0',
-        'text-secondary': '#4d7c96',
-        'border-dark': '#0c2035',
+        'text-primary': '#f4f3f0',
+        'text-secondary': '#98958c',
+        'border-dark': '#2c2c2a',
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'monospace'],
-        sans: ['Space Grotesk', 'system-ui', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'monospace'],
+        sans: ['Archivo', 'system-ui', 'sans-serif'],
         orbitron: ['Orbitron', 'sans-serif'],
       },
       animation: {

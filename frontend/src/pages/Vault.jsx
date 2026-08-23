@@ -25,7 +25,7 @@ function WikiText({ text, onOpen, resolve }) {
         <a key={i} onClick={() => onOpen(`wiki/${file}`)}
            style={{ color: 'var(--accent)', cursor: 'pointer' }}>{alias || target}</a>
       ) : (
-        <span key={i} style={{ color: '#8a96ad' }}>{alias || target}</span>
+        <span key={i} style={{ color: '#98958c' }}>{alias || target}</span>
       )
     }
     return part ? <span key={i}>{renderInline(part)}</span> : null
@@ -40,7 +40,7 @@ function NoteBody({ content, onOpen, resolve }) {
     if (line.trimStart().startsWith('```')) {
       if (inFence) {
         blocks.push(
-          <pre key={`f${i}`} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: '9px',
+          <pre key={`f${i}`} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: '4px',
             padding: '12px', overflowX: 'auto', fontSize: '12.5px' }}>{fence.join('\n')}</pre>
         )
         fence = []
@@ -52,7 +52,7 @@ function NoteBody({ content, onOpen, resolve }) {
     const h = line.match(/^(#{1,4})\s+(.*)/)
     if (h) {
       blocks.push(
-        <div key={i} style={{ fontWeight: 700, color: '#e9eef8', marginTop: '14px',
+        <div key={i} style={{ fontWeight: 700, color: '#f4f3f0', marginTop: '14px',
           fontSize: `${19 - h[1].length * 1.5}px` }}>
           <WikiText text={h[2]} onOpen={onOpen} resolve={resolve} />
         </div>
@@ -63,7 +63,7 @@ function NoteBody({ content, onOpen, resolve }) {
     if (b) {
       blocks.push(
         <div key={i} style={{ paddingLeft: '18px' }}>
-          <span style={{ color: '#5d6982' }}>&bull;&nbsp;</span>
+          <span style={{ color: '#7a776d' }}>&bull;&nbsp;</span>
           <WikiText text={b[1]} onOpen={onOpen} resolve={resolve} />
         </div>
       )
@@ -72,7 +72,7 @@ function NoteBody({ content, onOpen, resolve }) {
     if (line.trim() === '') { blocks.push(<div key={i} style={{ height: '8px' }} />); return }
     blocks.push(<div key={i}><WikiText text={line} onOpen={onOpen} resolve={resolve} /></div>)
   })
-  return <div style={{ fontSize: '14px', lineHeight: 1.65, color: '#cdd6e6' }}>{blocks}</div>
+  return <div style={{ fontSize: '14px', lineHeight: 1.65, color: '#d9d6cd' }}>{blocks}</div>
 }
 
 // vault_search returns "**relpath**\ncontext" blocks joined by \n\n
@@ -224,7 +224,7 @@ export default function Vault() {
       const fg = ForceGraph()(el)
         .width(el.clientWidth)
         .height(el.clientHeight)
-        .linkColor(() => 'rgba(120,160,220,0.25)')
+        .linkColor(() => 'rgba(180,178,170,0.25)')
         .backgroundColor('rgba(0,0,0,0)')
         // Custom paint so a name can render on-canvas (at zoom, on hover, or
         // on selection) instead of only in a hover tooltip -- overriding
@@ -236,7 +236,7 @@ export default function Vault() {
           const isFocused = n.id === hoveredIdRef.current || n.id === selectedIdRef.current
           ctx.beginPath()
           ctx.arc(n.x, n.y, r, 0, 2 * Math.PI, false)
-          ctx.fillStyle = isFocused ? '#ffffff' : '#2fd4ee'
+          ctx.fillStyle = isFocused ? '#ffffff' : '#ff8a3d'
           ctx.fill()
 
           if (globalScale >= LABEL_ZOOM_THRESHOLD || isFocused) {
@@ -244,7 +244,7 @@ export default function Vault() {
             ctx.font = `${isFocused ? '600 ' : ''}${fontSize}px sans-serif`
             ctx.textAlign = 'center'
             ctx.textBaseline = 'top'
-            ctx.fillStyle = isFocused ? '#ffffff' : '#cdd6e6'
+            ctx.fillStyle = isFocused ? '#ffffff' : '#d9d6cd'
             ctx.fillText(n.title, n.x, n.y + r + 2)
           }
         })
@@ -330,7 +330,7 @@ export default function Vault() {
           <NoteBody content={note.content} onOpen={openNote} resolve={resolve} />
         </>
       ) : (
-        <div style={{ color: '#5d6982', fontSize: '13px' }}>Select a note to view it here.</div>
+        <div style={{ color: '#7a776d', fontSize: '13px' }}>Select a note to view it here.</div>
       )}
     </Card>
   )
@@ -347,7 +347,7 @@ export default function Vault() {
         {tabBtn('graph', 'Graph')}
       </div>
 
-      {error && <Card accent="amber"><div style={{ fontSize: '13px', color: '#fbbf24' }}>{error}</div></Card>}
+      {error && <Card accent="amber"><div style={{ fontSize: '13px', color: '#e8c468' }}>{error}</div></Card>}
 
       {tab === 'graph' ? (
         <Card style={{ padding: '8px' }}>
@@ -357,7 +357,7 @@ export default function Vault() {
               <input type="range" min={0} max={maxDegree} value={minDegree}
                 onChange={(e) => setMinDegree(Number(e.target.value))}
                 style={{ width: '180px' }} />
-              <span style={{ fontSize: '12.5px', color: '#8a96ad' }}>
+              <span style={{ fontSize: '12.5px', color: '#98958c' }}>
                 {minDegree === 0 ? 'All nodes' : `${minDegree}+`} &middot; showing{' '}
                 {filteredGraph ? filteredGraph.nodes.length : 0} of {graphData.nodes.length} pages
               </span>
@@ -376,13 +376,13 @@ export default function Vault() {
                 <TextInput placeholder="Filter pages…" value={filter}
                   onChange={(e) => setFilter(e.target.value)} style={{ width: '100%', marginBottom: '12px' }} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '65vh', overflowY: 'auto' }}>
-                  {catalog === null && <div style={{ color: '#5d6982', fontSize: '13px' }}>Loading…</div>}
+                  {catalog === null && <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>}
                   {shown.map((p) => (
                     <div key={p.filename} onClick={() => openNote(`wiki/${p.filename}`)}
-                      style={{ padding: '8px 10px', borderRadius: '9px', cursor: 'pointer',
+                      style={{ padding: '8px 10px', borderRadius: '4px', cursor: 'pointer',
                         background: note?.path === `wiki/${p.filename}` ? 'var(--ac-dim)' : 'transparent' }}>
-                      <div style={{ fontSize: '13.5px', color: '#e9eef8', fontWeight: 600 }}>{p.title}</div>
-                      {p.summary && <div style={{ fontSize: '12px', color: '#8a96ad',
+                      <div style={{ fontSize: '13.5px', color: '#f4f3f0', fontWeight: 600 }}>{p.title}</div>
+                      {p.summary && <div style={{ fontSize: '12px', color: '#98958c',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.summary}</div>}
                     </div>
                   ))}
@@ -398,14 +398,14 @@ export default function Vault() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '65vh', overflowY: 'auto' }}>
                   {results !== null && results.length === 0 && (
-                    <div style={{ color: '#5d6982', fontSize: '13px' }}>{rawResult || 'No results.'}</div>
+                    <div style={{ color: '#7a776d', fontSize: '13px' }}>{rawResult || 'No results.'}</div>
                   )}
                   {(results || []).map((r, i) => (
                     <div key={i} onClick={() => openNote(r.relpath.replace(/^Brain\//, ''))}
-                      style={{ padding: '10px', borderRadius: '9px', cursor: 'pointer',
-                        border: '1px solid rgba(120,160,220,0.10)' }}>
+                      style={{ padding: '10px', borderRadius: '4px', cursor: 'pointer',
+                        border: '1px solid rgba(180,178,170,0.10)' }}>
                       <div style={{ fontSize: '13px', color: 'var(--accent)', fontWeight: 600 }}>{r.relpath}</div>
-                      {r.context && <div style={{ fontSize: '12.5px', color: '#8a96ad', marginTop: '4px' }}>{r.context}</div>}
+                      {r.context && <div style={{ fontSize: '12.5px', color: '#98958c', marginTop: '4px' }}>{r.context}</div>}
                     </div>
                   ))}
                 </div>
