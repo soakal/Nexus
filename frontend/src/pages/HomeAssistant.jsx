@@ -437,6 +437,7 @@ function UnavailableTriage() {
   const [error, setError] = useState(null)
   const [busyIds, setBusyIds] = useState({})
   const [open, setOpen] = useState(false)
+  const [dismissedOpen, setDismissedOpen] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -464,48 +465,75 @@ function UnavailableTriage() {
 
   if (error || !report || !report.items || report.items.length === 0) return null
 
-  const items = [...report.items].sort((a, b) => b.age_seconds - a.age_seconds)
+  const sorted = [...report.items].sort((a, b) => b.age_seconds - a.age_seconds)
+  // Dismissing declares "known-dead, stop caring" -- keeping it visible (even
+  // dimmed) in the main list defeats the point, so dismissed rows move to
+  // their own collapsed-by-default section instead of staying inline.
+  const activeItems = sorted.filter((item) => !item.suppressed)
+  const dismissedItems = sorted.filter((item) => item.suppressed)
+
+  const row = (item) => (
+    <div key={item.entity_id} style={{
+      display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
+      padding: '10px 14px', borderRadius: '6px',
+      background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
+    }}>
+      <div style={{ minWidth: 0, flex: '1 1 200px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', overflowWrap: 'anywhere' }}>
+          {item.entity_id}{item.resolved_name ? ` (${item.resolved_name})` : ''}
+        </div>
+        <div style={{ fontSize: '11px', color: '#98958c', marginTop: '2px' }}>
+          unavailable {formatAge(item.age_seconds)}
+        </div>
+      </div>
+      <GhostButton
+        onClick={() => toggleSuppress(item.entity_id, item.suppressed)}
+        disabled={!!busyIds[item.entity_id]}
+        style={{ flexShrink: 0 }}
+      >
+        {item.suppressed ? 'Restore' : 'Known-dead, dismiss'}
+      </GhostButton>
+    </div>
+  )
 
   return (
     <Card>
       <Eyebrow style={{ display: 'block', marginBottom: '4px' }}>Unavailable entities</Eyebrow>
-      <div style={{ fontSize: '12px', color: '#98958c', marginBottom: '12px' }}>
-        <strong style={{ color: '#f0d896' }}>{report.persistent}</strong> unavailable &gt;7 days (persistently dead) ·{' '}
-        <strong style={{ color: '#98958c' }}>{report.recent}</strong> unavailable &lt;1h (likely transient)
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {items.slice(0, open ? undefined : UNAVAILABLE_COLLAPSED_COUNT).map((item) => (
-          <div key={item.entity_id} style={{
-            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
-            padding: '10px 14px', borderRadius: '6px',
-            background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
-            opacity: item.suppressed ? 0.5 : 1,
-          }}>
-            <div style={{ minWidth: 0, flex: '1 1 200px' }}>
-              <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', overflowWrap: 'anywhere' }}>
-                {item.entity_id}{item.resolved_name ? ` (${item.resolved_name})` : ''}
-              </div>
-              <div style={{ fontSize: '11px', color: '#98958c', marginTop: '2px' }}>
-                unavailable {formatAge(item.age_seconds)}{item.suppressed ? ' · dismissed' : ''}
-              </div>
-            </div>
-            <GhostButton
-              onClick={() => toggleSuppress(item.entity_id, item.suppressed)}
-              disabled={!!busyIds[item.entity_id]}
-              style={{ flexShrink: 0 }}
-            >
-              {item.suppressed ? 'Restore' : 'Known-dead, dismiss'}
-            </GhostButton>
+      {activeItems.length === 0 ? (
+        <div style={{ fontSize: '13px', color: '#98958c', marginTop: '12px' }}>All caught up — nothing active.</div>
+      ) : (
+        <>
+          <div style={{ fontSize: '12px', color: '#98958c', marginBottom: '12px' }}>
+            <strong style={{ color: '#f0d896' }}>{report.persistent}</strong> unavailable &gt;7 days (persistently dead) ·{' '}
+            <strong style={{ color: '#98958c' }}>{report.recent}</strong> unavailable &lt;1h (likely transient)
           </div>
-        ))}
-      </div>
-      {items.length > UNAVAILABLE_COLLAPSED_COUNT && (
-        <button
-          onClick={() => setOpen((v) => !v)}
-          style={{ fontSize: '11px', fontWeight: 600, color: '#98958c', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
-        >
-          {open ? 'Show less' : `+${items.length - UNAVAILABLE_COLLAPSED_COUNT} more`}
-        </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {activeItems.slice(0, open ? undefined : UNAVAILABLE_COLLAPSED_COUNT).map(row)}
+          </div>
+          {activeItems.length > UNAVAILABLE_COLLAPSED_COUNT && (
+            <button
+              onClick={() => setOpen((v) => !v)}
+              style={{ fontSize: '11px', fontWeight: 600, color: '#98958c', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
+            >
+              {open ? 'Show less' : `+${activeItems.length - UNAVAILABLE_COLLAPSED_COUNT} more`}
+            </button>
+          )}
+        </>
+      )}
+      {dismissedItems.length > 0 && (
+        <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(180,178,170,0.08)' }}>
+          <button
+            onClick={() => setDismissedOpen((v) => !v)}
+            style={{ fontSize: '11px', fontWeight: 600, color: '#98958c', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
+          >
+            {dismissedOpen ? 'Hide dismissed' : `${dismissedItems.length} dismissed — show`}
+          </button>
+          {dismissedOpen && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+              {dismissedItems.map(row)}
+            </div>
+          )}
+        </div>
       )}
     </Card>
   )
