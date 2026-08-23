@@ -430,10 +430,13 @@ function formatAge(seconds) {
 // ("known-dead, stop counting") action. See backend/api/homeassistant.py's
 // GET /ha/unavailable for the report shape and the resolved_name bonus
 // (UniFi KnownDevice cross-reference for device_tracker.* raw-MAC entries).
+const UNAVAILABLE_COLLAPSED_COUNT = 5
+
 function UnavailableTriage() {
   const [report, setReport] = useState(null)
   const [error, setError] = useState(null)
   const [busyIds, setBusyIds] = useState({})
+  const [open, setOpen] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -471,14 +474,14 @@ function UnavailableTriage() {
         <strong style={{ color: '#98958c' }}>{report.recent}</strong> unavailable &lt;1h (likely transient)
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {items.map((item) => (
+        {items.slice(0, open ? undefined : UNAVAILABLE_COLLAPSED_COUNT).map((item) => (
           <div key={item.entity_id} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap',
             padding: '10px 14px', borderRadius: '6px',
             background: 'rgba(255,255,255,0.022)', border: '1px solid rgba(180,178,170,0.08)',
             opacity: item.suppressed ? 0.5 : 1,
           }}>
-            <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ minWidth: 0, flex: '1 1 200px' }}>
               <div style={{ fontSize: '13px', fontWeight: 600, color: '#ece9e2', overflowWrap: 'anywhere' }}>
                 {item.entity_id}{item.resolved_name ? ` (${item.resolved_name})` : ''}
               </div>
@@ -489,12 +492,21 @@ function UnavailableTriage() {
             <GhostButton
               onClick={() => toggleSuppress(item.entity_id, item.suppressed)}
               disabled={!!busyIds[item.entity_id]}
+              style={{ flexShrink: 0 }}
             >
               {item.suppressed ? 'Restore' : 'Known-dead, dismiss'}
             </GhostButton>
           </div>
         ))}
       </div>
+      {items.length > UNAVAILABLE_COLLAPSED_COUNT && (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          style={{ fontSize: '11px', fontWeight: 600, color: '#98958c', background: 'none', border: 'none', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}
+        >
+          {open ? 'Show less' : `+${items.length - UNAVAILABLE_COLLAPSED_COUNT} more`}
+        </button>
+      )}
     </Card>
   )
 }
