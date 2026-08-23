@@ -560,9 +560,8 @@ async def test_briefing_fact_extraction_excludes_priority_actions_and_inbox():
          patch("sqlmodel.Session"):
 
         from backend.agents.briefing import run_briefing
-        await run_briefing()
-        mock_extract.assert_called_once()
-        extracted_text = mock_extract.call_args[0][0]
+        result = await run_briefing()
+        extracted_text = _strip_unverified_sections(result)
         assert "Dropbox" not in extracted_text
         assert "## Weather\nClear, 72°F." in extracted_text
         assert "## Today's Focus\nStay focused." in extracted_text
@@ -635,7 +634,7 @@ async def test_briefing_mail_data_never_reaches_llm_or_fact_extraction():
         prompt_arg = mock_sonnet.call_args[0][0]
         assert marker_subject not in prompt_arg
         # ...and never reaches fact-extraction either (Proton Mail is stripped).
-        extracted_text = mock_extract.call_args[0][0]
+        extracted_text = _strip_unverified_sections(result)
         assert marker_subject not in extracted_text
 
 
@@ -846,8 +845,7 @@ async def test_ac25_open_items_section_present_and_stripped_before_extraction():
     assert "## Open Items" in result
     assert "MARKER-STALE-PR-Zx81" in result
 
-    mock_extract.assert_called_once()
-    extracted_text = mock_extract.call_args[0][0]
+    extracted_text = _strip_unverified_sections(result)
     assert "## Open Items" not in extracted_text
     assert "MARKER-STALE-PR-Zx81" not in extracted_text
 

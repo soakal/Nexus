@@ -226,8 +226,9 @@ def _db_actionable_facts(limit: int = 12) -> list[dict]:
 
         result = []
         for r in rows:
-            age_days = (now - r.updated_at).total_seconds() / 86400
-            if effective_confidence(r.confidence, age_days, source=r.source) < EFFECTIVE_FLOOR:
+            ts = r.last_seen_at or r.created_at
+            age_days = (now - ts).total_seconds() / 86400
+            if effective_confidence(r.confidence, age_days, source=r.source, pinned=r.pinned) < EFFECTIVE_FLOOR:
                 continue
             result.append({"subject": r.subject, "predicate": r.predicate, "value": r.value})
             if len(result) >= limit:

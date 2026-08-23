@@ -194,6 +194,10 @@ class Fact(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     last_seen_at: datetime = Field(default_factory=datetime.utcnow)
     dismissed_at: datetime | None = None    # set by soft-dismiss; excluded from recall/audit
+    # Owner-asserted durable truth ("allergic to penicillin") as opposed to an
+    # inferred transient ("traveling this week"). A pinned fact skips confidence
+    # decay entirely and is never superseded by an inferred extraction.
+    pinned: bool = False
 
 
 # Immutable audit log of every side-effecting action that passed through the
@@ -584,6 +588,7 @@ def _ensure_fact_columns():
     column) and on test :memory: engines.
     """
     _safe_add_column("fact", "dismissed_at", "TIMESTAMP")
+    _safe_add_column("fact", "pinned", "BOOLEAN DEFAULT 0")
 
 
 def _ensure_system_state_columns():

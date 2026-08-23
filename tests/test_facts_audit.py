@@ -45,7 +45,7 @@ def _seed_fact(engine, *, subject, predicate, value,
         source=source,
         created_at=created_at or now,
         updated_at=now,
-        last_seen_at=now,
+        last_seen_at=created_at or now,
         dismissed_at=dismissed_at,
     )
     with Session(engine) as s:
@@ -397,3 +397,70 @@ def test_api_facts_row_preserved_after_dismiss(facts_client):
     assert row is not None
     assert row.value == "10.0.0.1"
     assert row.dismissed_at is not None
+
+
+def test_api_facts_pin_sets_flag_and_reflects_in_list(facts_client):
+    client, eng = facts_client
+    fid = _seed_fact(eng, subject="brian", predicate="allergic to", value="penicillin", confidence=1.0)
+
+    resp = client.post(f"/api/facts/{fid}/pin", json={"pinned": True}, headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json() == {"id": fid, "pinned": True}
+
+    resp2 = client.get("/api/facts/", headers=AUTH)
+    row = next(f for f in resp2.json() if f["id"] == fid)
+    assert row["pinned"] is True
+
+    # Unpin
+    resp3 = client.post(f"/api/facts/{fid}/pin", json={"pinned": False}, headers=AUTH)
+    assert resp3.status_code == 200
+    assert resp3.json() == {"id": fid, "pinned": False}
+
+
+def test_api_facts_pin_unknown_id_returns_404(facts_client):
+    client, _ = facts_client
+    resp = client.post("/api/facts/99999/pin", json={"pinned": True}, headers=AUTH)
+    assert resp.status_code == 404
+
+
+def test_api_facts_pin_requires_auth(facts_client):
+    client, eng = facts_client
+    fid = _seed_fact(eng, subject="x", predicate="y", value="z")
+    resp = client.post(f"/api/facts/{fid}/pin", json={"pinned": True})
+    assert resp.status_code == 401
+
+
+def test_api_facts_create_adds_manual_fact(facts_client):
+    client, _ = facts_client
+    resp = client.post(
+        "/api/facts/",
+        json={"subject": "brian", "predicate": "allergic to", "value": "penicillin"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "subject": "brian", "predicate": "allergic to", "value": "penicillin", "source": "manual",
+    }
+
+    resp2 = client.get("/api/facts/", headers=AUTH)
+    rows = resp2.json()
+    assert any(f["subject"] == "brian" and f["value"] == "penicillin" for f in rows)
+
+
+def test_api_facts_create_rejects_blank_fields(facts_client):
+    client, _ = facts_client
+    resp = client.post(
+        "/api/facts/",
+        json={"subject": "   ", "predicate": "allergic to", "value": "penicillin"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 400
+
+
+def test_api_facts_create_requires_auth(facts_client):
+    client, _ = facts_client
+    resp = client.post(
+        "/api/facts/",
+        json={"subject": "brian", "predicate": "allergic to", "value": "penicillin"},
+    )
+    assert resp.status_code == 401

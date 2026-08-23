@@ -91,6 +91,20 @@ def test_effective_confidence_briefing_source_hard_capped():
     assert effective_confidence(0.95, 0, source="chat") >= EFFECTIVE_FLOOR
 
 
+def test_effective_confidence_pinned_skips_decay():
+    """A pinned fact returns its raw confidence regardless of age."""
+    from backend.agents.facts import effective_confidence
+    assert effective_confidence(0.5, 200, pinned=True) == pytest.approx(0.5, rel=1e-6)
+    assert effective_confidence(0.5, 0, pinned=True) == pytest.approx(0.5, rel=1e-6)
+
+
+def test_effective_confidence_pinned_overrides_briefing_cap():
+    """A pin is an explicit human override of 'unverified' -- it outranks the
+    briefing hard-cap, not just decay."""
+    from backend.agents.facts import effective_confidence
+    assert effective_confidence(0.95, 0, source="briefing", pinned=True) == pytest.approx(0.95, rel=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # 2. _db_upsert_fact INSERT — empty table → one active fact
 # ---------------------------------------------------------------------------
@@ -183,6 +197,31 @@ def test_db_upsert_fact_supersede(monkeypatch):
     assert superseded[0].superseded_by == active[0].id
     # Old value is preserved in the superseded row
     assert superseded[0].value == "Tower"
+
+
+def test_db_upsert_fact_pinned_is_never_superseded(monkeypatch):
+    """A pinned fact must survive an inferred extraction with a different value --
+    otherwise 'pinned' wouldn't actually mean durable."""
+    from backend.agents.facts import _db_upsert_fact, _db_set_pinned
+    from backend.database import Fact
+    from sqlmodel import Session, select
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    _db_upsert_fact("brian", "allergic to", "penicillin", 1.0, "manual", None)
+    with Session(eng) as s:
+        row = s.exec(select(Fact)).first()
+        fact_id = row.id
+    _db_set_pinned(fact_id, True)
+
+    # Inferred extraction tries to overwrite it with a different value.
+    _db_upsert_fact("brian", "allergic to", "nothing", 0.6, "chat", None)
+
+    all_rows = _all_facts(eng)
+    assert len(all_rows) == 1, "A pinned fact must not be superseded -- no new row inserted"
+    assert all_rows[0].value == "penicillin"
+    assert all_rows[0].superseded_by is None
 
 
 def test_db_upsert_fact_supersede_case_insensitive_match(monkeypatch):
@@ -281,6 +320,7 @@ async def test_facts_recall_excludes_stale_facts(monkeypatch):
         from sqlmodel import select
         row = s.exec(select(Fact)).first()
         row.created_at = datetime.utcnow() - timedelta(days=90)
+        row.last_seen_at = row.created_at
         s.add(row)
         s.commit()
 
@@ -322,11 +362,38 @@ async def test_facts_recall_returns_empty_when_all_stale(monkeypatch):
         from sqlmodel import select
         row = s.exec(select(Fact)).first()
         row.created_at = datetime.utcnow() - timedelta(days=200)
+        row.last_seen_at = row.created_at
         s.add(row)
         s.commit()
 
     result = await facts_recall("anything")
     assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_reinforcement_resets_decay_clock(monkeypatch):
+    """Regression test for the decay-clock bug: a fact created long ago but
+    reinforced (re-observed) recently must decay from last_seen_at, not
+    created_at -- otherwise reinforcement can never actually keep a fact
+    trusted, no matter how often it's mentioned."""
+    from backend.agents.facts import _db_upsert_fact, facts_recall
+    from backend.database import Fact
+
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    _db_upsert_fact("garage", "located_at", "north side", 0.7, "chat", None)
+    # Back-date created_at 90 days (would be well below the floor on its own),
+    # but leave last_seen_at recent -- simulating a fact reinforced today.
+    with Session(eng) as s:
+        from sqlmodel import select
+        row = s.exec(select(Fact)).first()
+        row.created_at = datetime.utcnow() - timedelta(days=90)
+        s.add(row)
+        s.commit()
+
+    result = await facts_recall("garage location")
+    assert "north side" in result, f"Expected the reinforced fact to still recall, got: {result!r}"
 
 
 @pytest.mark.asyncio

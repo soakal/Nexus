@@ -187,6 +187,8 @@ export const api = {
     list: () => req('GET', '/facts/'),
     recall: (q) => req('GET', `/facts/recall?query=${encodeURIComponent(q)}`),
     dismiss: (id) => req('POST', `/facts/${id}/dismiss`),
+    pin: (id, pinned) => req('POST', `/facts/${id}/pin`, { pinned }),
+    create: (payload) => req('POST', '/facts/', payload),
   },
   traces: {
     list: (limit, kind, q) => req('GET', `/traces?limit=${limit || 50}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`),

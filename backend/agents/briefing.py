@@ -890,10 +890,13 @@ async def run_briefing() -> str:
         # Usage above -- see _build_openrouter_section's own docstring.
         briefing_text = briefing_text + "\n\n" + _build_openrouter_section(openrouter_result)
 
-        # Extract durable facts from briefing content (best-effort, never raises).
-        # Priority Actions/Inbox are excluded -- see _strip_unverified_sections.
-        from backend.agents.facts import extract_and_store as _extract_facts
-        await _extract_facts(_strip_unverified_sections(briefing_text), None, source="briefing")
+        # Fact extraction from briefing content was removed 2026-08-23: briefing
+        # facts are unverified and BRIEFING_CONFIDENCE_CAP (0.15) sits below
+        # EFFECTIVE_FLOOR (0.2), so they could never be displayed or recalled --
+        # a daily Haiku call for rows that were structurally unreachable. See
+        # facts.py's effective_confidence docstring. _strip_unverified_sections
+        # is retained below for its own tests and as the guard if extraction is
+        # ever reinstated (which would need a redesign of the cap, not a toggle).
 
         # Store in DB
         with Session(engine) as session:

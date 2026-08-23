@@ -30,6 +30,9 @@ export default function Facts() {
   const [recallResult, setRecallResult] = useState(null)
   const [recalling, setRecalling]     = useState(false)
   const [dismissingId, setDismissingId] = useState(null)
+  const [pinningId, setPinningId] = useState(null)
+  const [newFact, setNewFact] = useState({ subject: '', predicate: '', value: '' })
+  const [adding, setAdding] = useState(false)
 
   // ---------------------------------------------------------------------------
   // REST load + 10s poll
@@ -79,6 +82,40 @@ export default function Facts() {
     } finally {
       setDismissingId(null)
     }
+  }
+
+  async function handleTogglePin(f) {
+    if (pinningId === f.id) return
+    setPinningId(f.id)
+    try {
+      await api.facts.pin(f.id, !f.pinned)
+      load()
+    } catch {
+      // swallow — load() will resync state
+    } finally {
+      setPinningId(null)
+    }
+  }
+
+  async function handleAdd() {
+    const subject = newFact.subject.trim()
+    const predicate = newFact.predicate.trim()
+    const value = newFact.value.trim()
+    if (!subject || !predicate || !value || adding) return
+    setAdding(true)
+    try {
+      await api.facts.create({ subject, predicate, value })
+      setNewFact({ subject: '', predicate: '', value: '' })
+      load()
+    } catch {
+      // swallow — load() will resync state
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  function handleAddKey(e) {
+    if (e.key === 'Enter') handleAdd()
   }
 
   function handleRecallKey(e) {
@@ -144,6 +181,46 @@ export default function Facts() {
             }
           </div>
         )}
+      </Card>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Add a Fact                                                           */}
+      {/* ------------------------------------------------------------------ */}
+      <Card>
+        <Eyebrow style={{ display: 'block', marginBottom: '8px' }}>Add a Fact</Eyebrow>
+        <p style={{ fontSize: '12px', color: '#98958c', margin: '0 0 12px 0' }}>
+          Record something directly. Pin it afterwards to exempt it from confidence decay.
+        </p>
+
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <TextInput
+            style={{ flex: '1 1 160px' }}
+            placeholder="Subject — e.g. Brian"
+            value={newFact.subject}
+            onChange={e => setNewFact({ ...newFact, subject: e.target.value })}
+            onKeyDown={handleAddKey}
+          />
+          <TextInput
+            style={{ flex: '1 1 160px' }}
+            placeholder="Predicate — e.g. allergic to"
+            value={newFact.predicate}
+            onChange={e => setNewFact({ ...newFact, predicate: e.target.value })}
+            onKeyDown={handleAddKey}
+          />
+          <TextInput
+            style={{ flex: '1 1 160px' }}
+            placeholder="Value — e.g. penicillin"
+            value={newFact.value}
+            onChange={e => setNewFact({ ...newFact, value: e.target.value })}
+            onKeyDown={handleAddKey}
+          />
+          <PrimaryButton
+            onClick={handleAdd}
+            disabled={adding || !newFact.subject.trim() || !newFact.predicate.trim() || !newFact.value.trim()}
+          >
+            {adding ? 'Adding…' : 'Add fact'}
+          </PrimaryButton>
+        </div>
       </Card>
 
       {/* ------------------------------------------------------------------ */}
@@ -260,6 +337,40 @@ export default function Facts() {
                       Below floor
                     </span>
                   )}
+
+                  {/* Pinned badge */}
+                  {f.pinned && (
+                    <span style={{
+                      fontSize: '10px',
+                      fontFamily: "'IBM Plex Mono', monospace",
+                      color: '#ff8a3d',
+                      border: '1px solid rgba(255,138,61,0.30)',
+                      borderRadius: '4px',
+                      padding: '1px 6px',
+                      letterSpacing: '0.05em',
+                      textTransform: 'uppercase',
+                    }}>
+                      Pinned
+                    </span>
+                  )}
+
+                  {/* Pin toggle */}
+                  <button
+                    onClick={() => handleTogglePin(f)}
+                    disabled={pinningId === f.id}
+                    style={{
+                      fontSize: '12px',
+                      color: f.pinned ? '#ff8a3d' : '#7a776d',
+                      background: 'none',
+                      border: 'none',
+                      cursor: pinningId === f.id ? 'not-allowed' : 'pointer',
+                      padding: '8px 10px',
+                      opacity: pinningId === f.id ? 0.5 : 1,
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {pinningId === f.id ? 'Saving…' : f.pinned ? 'Unpin' : 'Pin'}
+                  </button>
 
                   {/* Dismiss button */}
                   <button

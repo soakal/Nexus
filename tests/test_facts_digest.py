@@ -169,11 +169,14 @@ async def test_build_facts_digest_excludes_below_floor_facts(monkeypatch):
     monkeypatch.setattr("backend.database.engine", eng)
 
     _db_upsert_fact("garage", "located_at", "north side", 0.6, "chat", None)
-    # Back-date created_at (not last_seen_at) well past the decay floor --
-    # isolates that the exclusion is confidence-decay, not the watermark.
+    # Back-date both created_at and last_seen_at well past the decay floor --
+    # isolates that the exclusion is confidence-decay, not the watermark
+    # (`since` is None with no digest having run yet, so the watermark filter
+    # is skipped regardless -- see facts_digest.py's own `since` handling).
     with Session(eng) as s:
         row = s.exec(select(Fact)).first()
         row.created_at = datetime.utcnow() - timedelta(days=90)
+        row.last_seen_at = row.created_at
         s.add(row)
         s.commit()
 

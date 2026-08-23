@@ -36,13 +36,18 @@ MAX_SUBJECTS_IN_PROMPT: int = 100  # defensive cap as the fact table grows
 # Pure helpers (no I/O)
 # ---------------------------------------------------------------------------
 
-def effective_confidence(confidence: float, age_days: float, source: str | None = None) -> float:
+def effective_confidence(confidence: float, age_days: float, source: str | None = None,
+                         pinned: bool = False) -> float:
     """Exponential decay: conf * 0.5^(age_days / HALF_LIFE_DAYS).
 
     age_days is clamped to >= 0 so future-dated rows don't gain confidence.
     source=="briefing" facts are unverified and hard-capped at
     BRIEFING_CONFIDENCE_CAP (below EFFECTIVE_FLOOR) regardless of decay.
+    pinned facts are owner-asserted: no decay, and no briefing cap -- a pin is
+    an explicit human override of "unverified", so it outranks the cap.
     """
+    if pinned:
+        return confidence
     eff = confidence * (0.5 ** (max(0.0, age_days) / HALF_LIFE_DAYS))
     if source == "briefing":
         eff = min(eff, BRIEFING_CONFIDENCE_CAP)
@@ -103,6 +108,8 @@ def _db_active_facts() -> list[dict]:
                     "value": r.value,
                     "confidence": r.confidence,
                     "created_at": r.created_at.isoformat(),
+                    "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                    "pinned": bool(r.pinned),
                     "source": r.source,
                 }
                 for r in rows
@@ -133,8 +140,8 @@ def _db_list_facts_for_audit() -> list[dict]:
     now = datetime.utcnow()
     result = []
     for r in rows:
-        age = _age_days(r.created_at, now)
-        eff = effective_confidence(r.confidence, age, source=r.source)
+        age = _age_days(r.last_seen_at or r.created_at, now)
+        eff = effective_confidence(r.confidence, age, source=r.source, pinned=r.pinned)
         result.append({
             "id": r.id,
             "subject": r.subject,
@@ -144,6 +151,7 @@ def _db_list_facts_for_audit() -> list[dict]:
             "source": r.source,
             "created_at": r.created_at.isoformat(),
             "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+            "pinned": bool(r.pinned),
             "effective_confidence": round(eff, 4),
             "above_floor": eff >= EFFECTIVE_FLOOR,
         })
@@ -262,6 +270,13 @@ def _db_upsert_fact(
                 existing.updated_at = now
                 session.add(existing)
                 session.commit()
+            elif existing.pinned:
+                # ponytail: owner-pinned rows are never overwritten by an inferred
+                # extraction. Ceiling -- this also blocks a manual correction via
+                # add_fact(); unpin, then re-add. Add an explicit override param
+                # if correcting pinned facts in place becomes routine.
+                logger.debug(f"_db_upsert_fact: refusing to supersede pinned fact {existing.id}")
+                return
             else:
                 # SUPERSEDE — new value for same predicate
                 new_fact = Fact(
@@ -319,9 +334,9 @@ async def facts_recall(query: str, limit: int = RECALL_LIMIT) -> str:
 
         scored: list[tuple[int, float, dict]] = []
         for f in active:
-            created_at = datetime.fromisoformat(f["created_at"])
-            age = _age_days(created_at, now)
-            eff = effective_confidence(f["confidence"], age, source=f["source"])
+            seen_at = datetime.fromisoformat(f["last_seen_at"] or f["created_at"])
+            age = _age_days(seen_at, now)
+            eff = effective_confidence(f["confidence"], age, source=f["source"], pinned=f["pinned"])
             if eff < EFFECTIVE_FLOOR:
                 continue
             if query_tokens:
@@ -371,6 +386,47 @@ async def dismiss_fact(fact_id: int) -> bool:
     but swallows unexpected non-DB errors gracefully.
     """
     return await asyncio.to_thread(_db_dismiss_fact, fact_id)
+
+
+def _db_set_pinned(fact_id: int, pinned: bool) -> bool:
+    """Set or clear a fact's pinned flag.
+
+    Returns True if a row was updated, False if not found. A pinned fact skips
+    confidence decay entirely (see effective_confidence) and is never superseded
+    by an inferred extraction (see _db_upsert_fact).
+    Opens its own Session; raises on DB errors (caller wraps in to_thread).
+    """
+    from sqlmodel import Session
+    from backend.database import Fact, engine
+
+    with Session(engine) as session:
+        fact = session.get(Fact, fact_id)
+        if fact is None:
+            return False
+        fact.pinned = pinned
+        fact.updated_at = datetime.utcnow()
+        session.add(fact)
+        session.commit()
+        return True
+
+
+async def set_pinned(fact_id: int, pinned: bool) -> bool:
+    """Async wrapper for _db_set_pinned. True if updated, False if not found."""
+    return await asyncio.to_thread(_db_set_pinned, fact_id, pinned)
+
+
+async def add_fact(subject: str, predicate: str, value: str,
+                   confidence: float = 1.0, source: str = "manual") -> None:
+    """Owner-asserted fact added directly (not Haiku-extracted).
+
+    Routes through _db_upsert_fact so a manual add REINFORCES or SUPERSEDES an
+    existing (subject, predicate) instead of duplicating it. Unlike the other
+    public async helpers here this one does NOT swallow — the API layer needs
+    the error to return a 500 rather than silently accepting a lost write.
+    """
+    await asyncio.to_thread(
+        _db_upsert_fact, subject, predicate, value, confidence, source, None
+    )
 
 
 async def extract_and_store(user_message: str, conversation_id: int | None, source: str = "chat") -> None:
