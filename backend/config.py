@@ -142,10 +142,13 @@ class Settings(BaseSettings):
     # vs quality without code changes. Defaults are the "balanced/cheaper" profile:
     # Sonnet plans + executes (good results, ~half Opus cost), Haiku verifies (a
     # criteria yes/no check it handles well at ~1/5 the Opus rate). To restore max
-    # quality set the planner/verifier back to "claude-opus-4-8" in .env. Any valid
-    # Anthropic model id works (billed to ANTHROPIC_API_KEY).
-    orchestrator_planner_model: str = "claude-sonnet-4-6"
-    orchestrator_executor_model: str = "claude-sonnet-4-6"
+    # quality set the planner/verifier back to "claude-opus-5" (or "claude-opus-4-8")
+    # in .env. Any valid Anthropic model id works (billed to ANTHROPIC_API_KEY).
+    # Migrated 2026-08-28: claude-sonnet-4-6 -> claude-sonnet-5, matching
+    # backend/agents/router.py::SONNET_MODEL — see that file's _PRICE_PER_MTOK
+    # comment for why (Anthropic made the $2/$10 intro rate permanent 2026-08-10).
+    orchestrator_planner_model: str = "claude-sonnet-5"
+    orchestrator_executor_model: str = "claude-sonnet-5"
     orchestrator_verifier_model: str = "claude-haiku-4-5-20251001"
 
     # Deep-link base URL appended to every phone alert so Brian can tap straight

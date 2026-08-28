@@ -188,7 +188,7 @@ class TaskAborted(Exception):
         super().__init__(f"task aborted: {reason}")
 
 OPUS_MODEL = "claude-opus-4-8"
-SONNET_MODEL = "claude-sonnet-4-6"
+SONNET_MODEL = "claude-sonnet-5"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 # Process-lifetime metering outcome counters (reset on restart — that's fine;
@@ -210,18 +210,20 @@ def metering_counters() -> dict:
 # Price per 1,000,000 tokens (USD), keyed on the model constants above.
 # Verified 2026-06-16 against Anthropic's official pricing page
 # (platform.claude.com/docs/.../about-claude/pricing): Opus 4.8 $5/$25,
-# Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 per MTok. The cache multipliers in
-# _compute_cost (5m write 1.25x input, read 0.1x input) also match the official
-# rates.
-# "claude-sonnet-5" is NOT the SONNET_MODEL constant above (NEXUS still runs
-# 4.6) — added only so orchestrator_planner/executor/verifier_model can be
-# .env-overridden to it without meter-as-$0. Promo rate ($2/$10, added
-# 2026-07-18) runs through 2026-08-31 — revert to non-promo pricing after.
+# Haiku 4.5 $1/$5 per MTok. The cache multipliers in _compute_cost (5m write
+# 1.25x input, read 0.1x input) also match the official rates.
+# SONNET_MODEL migrated 2026-08-28 from claude-sonnet-4-6 ($3/$15) to
+# claude-sonnet-5: launched 2026-06-30 at an intro rate of $2/$10, and on
+# 2026-08-10 Anthropic made that rate PERMANENT (the scheduled 2026-09-01
+# reversion to $3/$15 was cancelled) — so this is no longer a time-boxed promo
+# entry, it's the real standing price. The claude-sonnet-4-6 entry is kept
+# (not deleted) since historical SpendLog rows, TraceSpan rows, and the
+# brain-organizer subprocess's own separate config still reference it.
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
-    SONNET_MODEL: {"input": 3.0, "output": 15.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     HAIKU_MODEL: {"input": 1.0, "output": 5.0},
-    "claude-sonnet-5": {"input": 2.0, "output": 10.0},
+    SONNET_MODEL: {"input": 2.0, "output": 10.0},  # claude-sonnet-5
     # OpenRouter model-swap trial (Trial A/B) -- verified live against
     # GET https://openrouter.ai/api/v1/models 2026-08-16.
     "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
@@ -234,6 +236,15 @@ _PRICE_PER_MTOK = {
     "anthropic/claude-opus-4.8": {"input": 5.0, "output": 25.0},
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
+    # NOT live-verified (this session's egress to openrouter.ai was blocked,
+    # unlike the 2026-08-16/2026-08-21 entries above) -- best-guess id
+    # following the same "anthropic/claude-<tier>-<version>" pattern as the
+    # three rows above. Harmless if wrong: _maybe_openrouter_fallback's own
+    # try/except degrades an unknown/404 model id to "no fallback", the same
+    # outcome as having no entry at all. Re-verify against
+    # GET https://openrouter.ai/api/v1/models before trusting this in a real
+    # incident, then delete this comment.
+    "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0},
 }
 
 # Anthropic model id -> roughly-equivalent OpenRouter model id, used only when
@@ -251,7 +262,9 @@ _PRICE_PER_MTOK = {
 # gets no fallback -- see _maybe_openrouter_fallback's early return.
 _OPENROUTER_FALLBACK_MODEL = {
     OPUS_MODEL: "anthropic/claude-opus-4.8",
-    SONNET_MODEL: "anthropic/claude-sonnet-4.6",
+    # SONNET_MODEL is claude-sonnet-5 as of 2026-08-28 -- see the
+    # "NOT live-verified" note on this id's _PRICE_PER_MTOK entry above.
+    SONNET_MODEL: "anthropic/claude-sonnet-5",
     HAIKU_MODEL: "anthropic/claude-haiku-4.5",
 }
 

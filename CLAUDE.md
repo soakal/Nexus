@@ -17,6 +17,48 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**Sonnet 5 migration — SONNET_MODEL and the orchestrator plan/execute tiers (2026-08-28)** —
+prompted by a Fable feature-scan (`backend/agents/router.py`'s workhorse model was still on
+Sonnet 4.6 at $3/$15/MTok while Claude Sonnet 5 exists at $2/$10). `router.SONNET_MODEL` is now
+`"claude-sonnet-5"` (was `"claude-sonnet-4-6"`); `backend/config.py`'s
+`orchestrator_planner_model`/`orchestrator_executor_model` defaults moved the same way (the
+verifier stays Haiku, untouched). This isn't a time-boxed promo swap: Sonnet 5's $2/$10 intro
+rate was made Anthropic's **permanent** standard price on 2026-08-10 (the scheduled 2026-09-01
+reversion to $3/$15 was cancelled) — the old `_PRICE_PER_MTOK` comment calling this a promo
+entry was wrong as of that date and is now corrected.
+- **Scope, deliberately narrow:** only the main NEXUS process's chat/orchestrator pipeline moved.
+  The brain-organizer subprocess (`modules/brain-organizer/`) has its **own** separate
+  `sonnet_model` config default (`consolidate_wiki.py`, still `"claude-sonnet-4-6"`) and its own
+  trial-comparison mechanism (`modules/brain-organizer/trial/`) — left untouched on purpose,
+  since that's a different config surface with its own verification path, not a one-line
+  constant shared with `router.py`. Revisit it separately if/when that module's own trial
+  tooling is used to confirm Sonnet 5 there too.
+- **`_PRICE_PER_MTOK` keeps the old `"claude-sonnet-4-6"` entry** (not deleted, just no longer
+  bound to the `SONNET_MODEL` constant) — historical `SpendLog`/`TraceSpan` rows, and the
+  brain-organizer subprocess above, still reference that model id, and `_compute_cost` needs a
+  price entry for whatever id it's actually given, not just the current default.
+- **No `temperature`/`top_p`/`top_k`/`budget_tokens`/`thinking` params exist anywhere in
+  `backend/`** (checked before migrating) — so none of Sonnet 5's stricter-sampling-param
+  changes apply here; nothing else in `router.py`'s call sites needed touching.
+- **`_OPENROUTER_FALLBACK_MODEL[SONNET_MODEL]`** now points at `"anthropic/claude-sonnet-5"`
+  (added to `_PRICE_PER_MTOK` alongside it) — this id is **NOT live-verified**, unlike the
+  existing opus/haiku rows in that map (this session's egress to `openrouter.ai` was blocked, so
+  the usual `GET /api/v1/models` check couldn't run). Harmless if wrong:
+  `_maybe_openrouter_fallback`'s own try/except degrades an unknown id to "no fallback", same as
+  having no entry at all — but re-verify against a live `GET /api/v1/models` before trusting it
+  in a real Anthropic-outage incident, and drop the flagging comments in `router.py` once
+  confirmed.
+- **Not yet done, tracked as follow-up:** re-baselining actual token counts against the new
+  tokenizer (Sonnet 5's tokenizer is reported to produce more tokens per request than 4.6's,
+  meaning the realized dollar savings will land somewhat less than the raw 33% per-token rate
+  cut) — the `nexus-trial-status` skill's comparison tooling is the intended way to confirm this
+  once a few days of live Sonnet-5 spend data exist. Also not run: the project's full pytest
+  suite (this session had no access to the nexus-lxc venv or devbox SSH path the
+  `nexus-test-without-venv` skill assumes) — both edited files were syntax-checked
+  (`py_compile`) and every test referencing `router.SONNET_MODEL`/`_compute_cost` does so
+  dynamically (no test hardcodes the old `"claude-sonnet-4-6"` string against the constant), but
+  a real `pytest` run against this branch is still owed before/при the next deploy.
+
 **nexus-lxc can push to GitHub on its own (2026-08-22)** — the deployed checkout at
 `/opt/nexus` on nexus-lxc now has its own SSH deploy key with **write** access to
 `github.com/soakal/Nexus`, so a commit authored on nexus-lxc reaches `origin/main` with a plain
