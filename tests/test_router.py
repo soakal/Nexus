@@ -829,6 +829,45 @@ async def test_openrouter_fallback_used_on_usage_limit_exceeded(spend_eng):
 
 
 @pytest.mark.asyncio
+async def test_openrouter_fallback_covers_orchestrator_executor_promo_model(spend_eng):
+    """claude-sonnet-5 (the live ORCHESTRATOR_EXECUTOR_MODEL .env-override
+    target in production) must also get an OpenRouter fallback, not just the
+    three original opus/sonnet/haiku _run entry points -- added 2026-08-28
+    after a live gap was found: it was reachable only via run_model() with no
+    _OPENROUTER_FALLBACK_MODEL entry, so an Anthropic exhaustion mid-orchestrator-
+    run had no fallback at all."""
+    from backend.agents import router, watchdog
+
+    watchdog.reset()
+    err = _credit_exhausted_error()
+
+    with patch("anthropic.Anthropic") as mock_anthropic, \
+         patch("backend.events.notify_phone", new_callable=AsyncMock), \
+         patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock,
+               return_value={"id": 1, "surface": True, "reason": None}), \
+         patch("httpx.AsyncClient") as mock_httpx_cls:
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = err
+        mock_anthropic.return_value = mock_client
+
+        mock_httpx = AsyncMock()
+        mock_httpx.post.return_value = _openrouter_success_response(text="sonnet-5 fallback")
+        mock_httpx_cls.return_value.__aenter__.return_value = mock_httpx
+
+        result = await router.run_model("claude-sonnet-5", "prompt", label="orchestrator_execute")
+
+    assert result == "sonnet-5 fallback"
+    call_kwargs = mock_httpx.post.call_args[1]
+    assert call_kwargs["json"]["model"] == "anthropic/claude-sonnet-5"
+
+    from sqlmodel import Session, select
+    from backend.database import SpendLog
+    with Session(spend_eng) as s:
+        rows = s.exec(select(SpendLog).where(SpendLog.model == "anthropic/claude-sonnet-5")).all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_openrouter_fallback_failure_reraises_original_error(spend_eng):
     """A fallback that ALSO fails (e.g. OpenRouter is rate-limited too) must
     never swallow or replace the real Anthropic error -- same 'poisoned X

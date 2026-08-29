@@ -234,6 +234,10 @@ _PRICE_PER_MTOK = {
     "anthropic/claude-opus-4.8": {"input": 5.0, "output": 25.0},
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
+    # Same promo-rate caveat as the "claude-sonnet-5" entry above (revert to
+    # $3/$15 after 2026-08-31) -- this is the OpenRouter-proxied id for the
+    # same model, added 2026-08-28 alongside the fallback map entry below.
+    "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0},
 }
 
 # Anthropic model id -> roughly-equivalent OpenRouter model id, used only when
@@ -244,15 +248,19 @@ _PRICE_PER_MTOK = {
 # is exactly why they work as a fallback for an account-level exhaustion
 # (zero credit or a monthly usage cap) on that key specifically. Still
 # "approximate" in the sense that OpenRouter is a different backend/account --
-# no guarantee of identical latency/availability, and this map only covers
-# the three _run entry points (opus/sonnet/haiku) that hit the real 2026-08-21
-# incident (three goal_proposer Haiku calls). A model reached only via
-# run_model() (e.g. an orchestrator .env override) with no entry here simply
-# gets no fallback -- see _maybe_openrouter_fallback's early return.
+# no guarantee of identical latency/availability. Originally only covered the
+# three _run entry points (opus/sonnet/haiku) that hit the real 2026-08-21
+# incident (three goal_proposer Haiku calls); "claude-sonnet-5" added
+# 2026-08-28 to also cover ORCHESTRATOR_EXECUTOR_MODEL's live .env override
+# (see the pricing comment above) -- verified live against
+# GET https://openrouter.ai/api/v1/models that "anthropic/claude-sonnet-5"
+# exists there. A model reached only via run_model() with no entry here still
+# simply gets no fallback -- see _maybe_openrouter_fallback's early return.
 _OPENROUTER_FALLBACK_MODEL = {
     OPUS_MODEL: "anthropic/claude-opus-4.8",
     SONNET_MODEL: "anthropic/claude-sonnet-4.6",
     HAIKU_MODEL: "anthropic/claude-haiku-4.5",
+    "claude-sonnet-5": "anthropic/claude-sonnet-5",
 }
 
 # Hosted web-search server tool: $10 per 1,000 searches (Anthropic pricing,
