@@ -12,6 +12,27 @@ _BRIEFING_FOLLOWUP_KEYWORDS = frozenset([
     "the briefing", "in the briefing", "from the briefing",
 ])
 
+# Structured-output schema (2026-08-28) for the Haiku intent classifier below —
+# passed as `response_schema` to router.haiku so the response is
+# grammar-constrained to this shape (router._output_config), instead of purely
+# hoping the model emits valid JSON for the existing find("{")/json.loads
+# extraction to parse. That extraction (and its except-block fallback to
+# intent="CHAT") stays in place unchanged as a defensive fallback -- this
+# schema just makes hitting that fallback far less likely, not impossible
+# (e.g. a future .env override to a non-structured-output-capable model).
+_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": ["HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR", "VAULT"],
+        },
+        "reason": {"type": "string"},
+    },
+    "required": ["intent", "reason"],
+    "additionalProperties": False,
+}
+
 
 def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
     """Return the most recent Briefing row if it's within max_age_hours. Sync — call via to_thread."""
@@ -457,7 +478,7 @@ VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain")
             if _is_status_cmd:
                 raw_intent = '{"intent": "STATUS", "reason": "slash command"}'
             else:
-                raw_intent = await haiku(classify_prompt, label="chat_classify")
+                raw_intent = await haiku(classify_prompt, label="chat_classify", response_schema=_INTENT_SCHEMA)
             intent = "CHAT"
             try:
                 start = raw_intent.find("{")

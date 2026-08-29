@@ -16,6 +16,47 @@ MAX_RETRIES = 3
 # incremented by _mark_step_running and PRESERVED across _patch_step_durably.
 MAX_STEP_ATTEMPTS = 5
 
+# Structured-output schemas (2026-08-28) for _opus_plan/_opus_debug's JSON
+# contracts -- passed as `response_schema` to router.run_model, which sets
+# `output_config.format` so the response is grammar-constrained to this shape
+# instead of relying on the model to emit valid JSON inside a text block. This
+# removes the `json.loads(raw[start:end])` extraction's failure mode for these
+# two call sites specifically (kept below anyway, defensively, in case a
+# .env-overridden orchestrator_planner_model doesn't support structured
+# outputs — see router._output_config's docstring for the supported-model list).
+_PLAN_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "index": {"type": "integer"},
+        "description": {"type": "string"},
+        "prompt": {"type": "string"},
+    },
+    "required": ["index", "prompt"],
+    "additionalProperties": False,
+}
+_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {"steps": {"type": "array", "items": _PLAN_STEP_SCHEMA}},
+    "required": ["steps"],
+    "additionalProperties": False,
+}
+_DEBUG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["RETRY_STEP", "REPLAN", "ABORT"]},
+        "reason": {"type": "string"},
+        "new_prompt": {"type": "string"},
+        "new_plan": {
+            "type": "object",
+            "properties": {"steps": {"type": "array", "items": _PLAN_STEP_SCHEMA}},
+            "required": ["steps"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["action", "reason"],
+    "additionalProperties": False,
+}
+
 
 def _idem_key(task_id: int, step_index: int, prompt: str) -> str:
     return hashlib.sha256(f"{task_id}:{step_index}:{prompt}".encode()).hexdigest()[:16]
@@ -132,8 +173,13 @@ Return JSON only:
 
 Each step must be atomic and runnable on its own. Maximum 10 steps."""
 
-    raw = await run_model(get_settings().orchestrator_planner_model, plan_prompt, label="orchestrator_plan")
-    # Extract JSON from response
+    raw = await run_model(
+        get_settings().orchestrator_planner_model, plan_prompt, label="orchestrator_plan",
+        response_schema=_PLAN_SCHEMA,
+    )
+    # Extract JSON from response. Kept even with response_schema constraining
+    # the shape above -- defensive belt-and-suspenders (see _PLAN_SCHEMA's
+    # comment), not load-bearing on a model that actually honors the schema.
     start = raw.find("{")
     end = raw.rfind("}") + 1
     data = json.loads(raw[start:end])
@@ -234,7 +280,11 @@ Return JSON only:
   "new_prompt": "revised prompt if RETRY_STEP",
   "new_plan": {{"steps": [...]}} // if REPLAN
 }}"""
-    raw = await run_model(get_settings().orchestrator_planner_model, debug_prompt, label="orchestrator_debug")
+    raw = await run_model(
+        get_settings().orchestrator_planner_model, debug_prompt, label="orchestrator_debug",
+        response_schema=_DEBUG_SCHEMA,
+    )
+    # Extraction kept defensively, same reasoning as _opus_plan above.
     start = raw.find("{")
     end = raw.rfind("}") + 1
     return json.loads(raw[start:end])

@@ -853,7 +853,13 @@ async def run_briefing() -> str:
             "pending_drafts": len(_drafts) if _drafts is not None else 0,
         }
 
-        briefing_text = await sonnet(prompt, label="briefing")
+        # effort="low" (2026-08-28): a routine, non-interactive, once-a-day
+        # narration job -- nobody is waiting on this turn synchronously, and
+        # low effort mainly trims token spend on tool-call/preamble style
+        # rather than gutting factual content (see router._output_config /
+        # platform.claude.com/docs/en/build-with-claude/effort). Revert to
+        # the default (omit effort) if briefing quality ever visibly regresses.
+        briefing_text = await sonnet(prompt, label="briefing", effort="low")
         briefing_text = briefing_text + "\n\n" + proton_section
         logger.info("Briefing generated")
 

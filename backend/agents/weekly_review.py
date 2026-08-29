@@ -172,7 +172,9 @@ async def run_weekly_review() -> dict:
         try:
             from backend.agents import router
             prompt = f"DATA:\n{json.dumps(data, default=str)}"
-            memo = await router.sonnet(prompt, system=_SYSTEM, label="weekly_review")
+            # effort="low" (2026-08-28): routine weekly digest, no interactive
+            # user waiting on this turn.
+            memo = await router.sonnet(prompt, system=_SYSTEM, label="weekly_review", effort="low")
         except Exception as e:
             logger.warning(f"weekly_review: LLM call failed, using fallback memo: {e}")
             memo = _fallback_memo(data)

@@ -224,6 +224,12 @@ _PRICE_PER_MTOK = {
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     HAIKU_MODEL: {"input": 1.0, "output": 5.0},
     SONNET_MODEL: {"input": 2.0, "output": 10.0},  # claude-sonnet-5
+    # claude-opus-5 (launched 2026-07-24) is NOT the OPUS_MODEL constant above
+    # (NEXUS still defaults to Opus 4.8) -- same price, same MTok rate, added
+    # only so orchestrator_planner/executor/verifier_model can be
+    # .env-overridden to it without meter-as-$0 (see config.py's "restore max
+    # quality" comment, which already names this id).
+    "claude-opus-5": {"input": 5.0, "output": 25.0},
     # OpenRouter model-swap trial (Trial A/B) -- verified live against
     # GET https://openrouter.ai/api/v1/models 2026-08-16.
     "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
@@ -511,7 +517,23 @@ def get_client() -> anthropic.Anthropic:
 # Anthropic's hosted web search tool — the same live search Claude.ai uses. When
 # enabled, Claude decides when to search, runs it server-side, and returns the
 # final answer (with citations) in one call. max_uses caps searches per turn.
-_WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+# Bumped 2026-08-28 from web_search_20250305 to web_search_20260318 (adds
+# dynamic filtering -- Claude runs search from inside Anthropic's own hosted
+# code execution, filtering results before they reach context -- plus
+# response_inclusion, which drops the raw/nested result blocks a completed
+# dynamic-filtering call already consumed). `response_inclusion: "excluded"`
+# only affects results consumed by a completed code-execution call in the same
+# turn; a direct call (allowed_callers unset defaults to
+# ["code_execution_20260120"] on this tool version, so most calls now go
+# through dynamic filtering) still returns results in full when needed for the
+# next turn -- see platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool.
+# No extra charge beyond standard token costs per Anthropic's own docs.
+_WEB_SEARCH_TOOL = {
+    "type": "web_search_20260318",
+    "name": "web_search",
+    "max_uses": 5,
+    "response_inclusion": "excluded",
+}
 
 
 def _extract_text(resp) -> str:
@@ -549,13 +571,45 @@ def _with_tools_cache(tools: list) -> list:
     return out
 
 
-def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None, trace_id=None, parent_span_id=None) -> str:
+def _output_config(effort: str | None, response_schema: dict | None) -> dict:
+    """Build the `output_config` request field from the two independent knobs
+    below, or {} if neither is set (in which case the caller must omit the key
+    entirely -- Anthropic rejects an empty `output_config: {}` the same as an
+    unset one would behave, but omitting it outright is the documented default
+    path and avoids relying on that).
+
+    `effort` (2026-08-28): `output_config.effort` in {"low","medium","high",
+    "xhigh","max"} trades response thoroughness for token spend -- GA, no beta
+    header, but NOT supported on Haiku (see the per-model list on
+    platform.claude.com/docs/en/build-with-claude/effort) -- callers must never
+    pass this for HAIKU_MODEL. Omitting it (None) reproduces the pre-existing
+    behavior exactly (Anthropic's own default is "high").
+
+    `response_schema` (2026-08-28): `output_config.format` constrains the
+    response to a JSON Schema via the same grammar-constrained-sampling
+    pipeline as strict tool use -- eliminates the `json.loads` parse-failure
+    class for callers that today extract JSON out of free-form text (see
+    orchestrator._opus_plan/_opus_debug, chat.py's intent classifier). Uses
+    Anthropic's flat subset (object/string/integer/boolean/enum/array,
+    `additionalProperties: false`, no `format`/`pattern`/`oneOf`) -- the same
+    subset already proven safe for tools.py's strict tool schemas.
+    """
+    out: dict = {}
+    if effort:
+        out["effort"] = effort
+    if response_schema:
+        out["format"] = {"type": "json_schema", "schema": response_schema}
+    return out
+
+
+def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None, trace_id=None, parent_span_id=None, effort: str | None = None, response_schema: dict | None = None) -> str:
     """Blocking Anthropic call. Must be run in an executor, never on the loop.
 
     `task_id` is captured on the event loop by `_run` and passed in here (the
     contextvar does not cross the executor hop) so the spend row is attributed.
     `trace_id`/`parent_span_id` are captured the same way (see `_record_trace_span`)
     so the best-effort llm_call span is attached to the right trace/parent.
+    `effort`/`response_schema` — see `_output_config`.
     """
     client = get_client()
     kwargs = {
@@ -567,6 +621,9 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
         kwargs["system"] = _as_cached_system(system)
     if web_search:
         kwargs["tools"] = [_WEB_SEARCH_TOOL]
+    output_config = _output_config(effort, response_schema)
+    if output_config:
+        kwargs["output_config"] = output_config
     span_started_at = datetime.utcnow()
     resp = client.messages.create(**kwargs)
     text = _extract_text(resp)
@@ -1009,12 +1066,16 @@ async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: s
         logger.warning(f"shadow call failed (non-fatal, label={label!r}): {e}")
 
 
-async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
+async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", effort: str | None = None, response_schema: dict | None = None) -> str:
     """Run the blocking SDK call in the default thread-pool executor.
 
     The sync `anthropic.Anthropic` client wrapped in `run_in_executor` is more
     reliable here than `AsyncAnthropic`, which has been observed blocking the
     event loop during briefings.
+
+    `effort`/`response_schema` — see `_output_config`. Neither is forwarded to
+    the OpenRouter exhaustion-fallback below (that path builds its own request
+    body and is already a best-effort approximation, not a byte-identical retry).
     """
     await _budget_brake()
 
@@ -1027,7 +1088,7 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
     parent_span_id = span_stack[-1] if span_stack else None
 
     loop = asyncio.get_event_loop()
-    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id)
+    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id, effort, response_schema)
     try:
         result = await _run_billed(loop, func)
     except Exception as e:
@@ -1282,27 +1343,33 @@ async def stream_sonnet(prompt: str, system: str = "", web_search: bool = False)
     await fut
 
 
-async def opus(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:
-    return await _run(OPUS_MODEL, 8192, prompt, system, web_search, label)
+async def opus(prompt: str, system: str = "", web_search: bool = False, label: str = "", effort: str | None = None, response_schema: dict | None = None) -> str:
+    return await _run(OPUS_MODEL, 8192, prompt, system, web_search, label, effort=effort, response_schema=response_schema)
 
 
-async def sonnet(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:
-    return await _run(SONNET_MODEL, 8192, prompt, system, web_search, label)
+async def sonnet(prompt: str, system: str = "", web_search: bool = False, label: str = "", effort: str | None = None, response_schema: dict | None = None) -> str:
+    return await _run(SONNET_MODEL, 8192, prompt, system, web_search, label, effort=effort, response_schema=response_schema)
 
 
-async def haiku(prompt: str, system: str = "", label: str = "") -> str:
-    return await _run(HAIKU_MODEL, 4096, prompt, system, label=label)
+async def haiku(prompt: str, system: str = "", label: str = "", response_schema: dict | None = None) -> str:
+    # No `effort` param on purpose -- Haiku 4.5 is not in Anthropic's documented
+    # list of effort-supporting models (see _output_config); a caller that needs
+    # it would get a 400, so the knob is simply not offered here.
+    return await _run(HAIKU_MODEL, 4096, prompt, system, label=label, response_schema=response_schema)
 
 
 async def run_model(
     model: str, prompt: str, system: str = "", web_search: bool = False,
-    label: str = "", max_tokens: int = 8192,
+    label: str = "", max_tokens: int = 8192, effort: str | None = None,
+    response_schema: dict | None = None,
 ) -> str:
     """Run an arbitrary model id through the metered _run path.
 
     Lets callers (e.g. the orchestrator's configurable planner/debug roles) pick
     the model at runtime from config instead of being hard-wired to opus/sonnet.
     Pricing/metering works for any model in _PRICE_PER_MTOK; unknown models meter
-    as no-cost (no SpendLog row) but still run.
+    as no-cost (no SpendLog row) but still run. `effort`/`response_schema` — see
+    _output_config; callers configuring a Haiku model via .env must not pass
+    `effort` (same caveat as the dedicated `haiku()` wrapper).
     """
-    return await _run(model, max_tokens, prompt, system, web_search, label)
+    return await _run(model, max_tokens, prompt, system, web_search, label, effort=effort, response_schema=response_schema)

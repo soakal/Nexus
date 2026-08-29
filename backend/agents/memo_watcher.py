@@ -10,6 +10,20 @@ logger = logging.getLogger(__name__)
 _observer = None
 _loop = None
 
+# Structured-output schema (2026-08-28) for _process_memo's cleanup call below
+# -- see router._output_config / chat.py's _INTENT_SCHEMA for the same pattern.
+_MEMO_CLEANUP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "cleaned": {"type": "string"},
+        "action_items": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "cleaned", "action_items", "tags"],
+    "additionalProperties": False,
+}
+
 
 async def _process_memo(file_path: str) -> None:
     try:
@@ -36,7 +50,9 @@ Return JSON only:
   "tags": ["tag1"]
 }}"""
 
-        raw = await sonnet(cleanup_prompt, label="memo_cleanup")
+        # effort="low" (2026-08-28): routine background formatting, no
+        # interactive user waiting on quality/latency here.
+        raw = await sonnet(cleanup_prompt, label="memo_cleanup", effort="low", response_schema=_MEMO_CLEANUP_SCHEMA)
         start = raw.find("{")
         end = raw.rfind("}") + 1
         data = json.loads(raw[start:end])

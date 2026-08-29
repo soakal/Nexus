@@ -67,19 +67,31 @@ class ReadTool:
 
         NOTE: no "type" key — that field is only for hosted/server tools (e.g.
         web_search_20250305). Local custom tools omit it.
+
+        `strict: True` (added 2026-08-28) turns on grammar-constrained sampling
+        for tool input -- Claude's `tool_use.input` is guaranteed to match
+        `input_schema` exactly (right types, no missing required fields), which
+        matters most for _PROTONMAIL_READ_EMAIL_SCHEMA's `page` int and
+        _PROTONMAIL_INBOX_SCHEMA's `limit`/`unread_only` (an int passed as
+        `"2"` or a bool as `"true"` would otherwise reach the dispatcher as a
+        string). Every schema below already meets strict mode's requirements
+        (flat object, `additionalProperties: false`, no `format`/`pattern`/
+        `oneOf`) -- see platform.claude.com/docs/en/agents-and-tools/tool-use/strict-tool-use.
         """
         return {
             "name": self.name,
             "description": self.description,
             "input_schema": self.input_schema,
+            "strict": True,
         }
 
 
-_NO_ARGS_SCHEMA = {"type": "object", "properties": {}}
+_NO_ARGS_SCHEMA = {"type": "object", "properties": {}, "additionalProperties": False}
 _QUERY_SCHEMA = {
     "type": "object",
     "properties": {"query": {"type": "string", "description": "search query"}},
     "required": ["query"],
+    "additionalProperties": False,
 }
 _PROTONMAIL_INBOX_SCHEMA = {
     "type": "object",
@@ -89,6 +101,8 @@ _PROTONMAIL_INBOX_SCHEMA = {
         "unread_only": {"type": "boolean", "description": "only unread messages"},
         "limit": {"type": "integer", "description": "max messages to return (default 10)"},
     },
+    "required": [],
+    "additionalProperties": False,
 }
 _PROTONMAIL_READ_EMAIL_SCHEMA = {
     "type": "object",
@@ -97,6 +111,7 @@ _PROTONMAIL_READ_EMAIL_SCHEMA = {
         "page": {"type": "integer", "description": "body page number for long emails (default 1)"},
     },
     "required": ["email_id"],
+    "additionalProperties": False,
 }
 
 
@@ -352,6 +367,7 @@ _VAULT_READ_NOTE_SCHEMA = {
         },
     },
     "required": ["note"],
+    "additionalProperties": False,
 }
 
 

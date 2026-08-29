@@ -59,6 +59,77 @@ entry was wrong as of that date and is now corrected.
   dynamically (no test hardcodes the old `"claude-sonnet-4-6"` string against the constant), but
   a real `pytest` run against this branch is still owed before/при the next deploy.
 
+**Fable feature-scan follow-through — effort, web search v2, structured outputs, strict tool use
+(2026-08-29)** — the remaining items from the same Fable feature-scan that produced the Sonnet 5
+migration above (Fable had ranked Sonnet 5 first, then recommended folding the web-search
+version bump and `effort` param into the same branch, with strict tool use as a follow-up
+batch). All verified against live Anthropic docs (`platform.claude.com`) before writing any
+code, since none of these are as simple as a model-id string swap.
+- **`output_config.effort`** — new `router._output_config()` helper builds the request's
+  `output_config` dict from two independent optional knobs (`effort`, `response_schema`), added
+  as trailing keyword params on `_create_sync`/`_run`/`opus()`/`sonnet()`/`run_model()`. Every
+  existing call site is unaffected (both default to `None`, and `_output_config` returns `{}` —
+  meaning the `output_config` key is omitted entirely, byte-identical to before — unless a
+  caller explicitly opts in). **`haiku()` deliberately has NO `effort` parameter at all** — Haiku
+  4.5 is not on Anthropic's documented list of effort-supporting models
+  (`claude-fable-5`/`mythos-5`/`opus-5`/`opus-4-8`/`opus-4-7`/`opus-4-6`/`sonnet-5`/`sonnet-4-6`),
+  so the knob isn't offered rather than risk a 400 from a future caller. Applied `effort="low"`
+  at three routine, non-interactive, no-one-waiting-synchronously call sites — exactly Fable's
+  own examples plus the closest analogous ones already in the codebase:
+  `briefing.py`'s nightly narration (`label="briefing"`), `memo_watcher.py`'s voice-memo cleanup
+  (`label="memo_cleanup"`), and `weekly_review.py`'s digest memo (`label="weekly_review"`).
+  Deliberately NOT touched: `chat.py`'s `chat_reply`/`chat_reply_websearch` (interactive,
+  quality-critical) and `mail_drafts.py`'s `mail_reply_draft` (goes into a real email Brian
+  reviews) — effort is a "trade quality for tokens" knob and those are exactly the calls where
+  that trade isn't worth it. Also not touched: `run_with_tools`'s tool-use loop (orchestrator
+  plan/execute/verify) — Sonnet 5's own default is already `high`, matching what Fable's
+  recommendation for "orchestrator planning" already was, so there's nothing to change there
+  without deliberately choosing a DIFFERENT level than today's behavior, which wasn't asked for.
+- **Web search tool bumped `web_search_20250305` → `web_search_20260318`** (`router._WEB_SEARCH_TOOL`)
+  — adds `response_inclusion: "excluded"`, which drops already-consumed nested search-result
+  blocks once a completed dynamic-filtering (hosted code-execution) call has used them, per
+  Anthropic's own docs. This version's `allowed_callers` defaults to
+  `["code_execution_20260120"]` (left as the default rather than pinned to `["direct"]`) — Claude
+  now runs web search through Anthropic's own hosted code-execution sandbox by default, which is
+  what actually makes `response_inclusion` do anything (a direct call always returns results in
+  full regardless of that setting). No additional charge beyond token costs per Anthropic's docs.
+  Applies everywhere `_WEB_SEARCH_TOOL` is shared (`_create_sync`, `_create_streaming_sync`,
+  `run_with_tools`) — one constant, no per-caller changes needed.
+- **Structured outputs (`output_config.format`, JSON Schema)** applied at the three JSON-shaped
+  call sites this repo's own CLAUDE.md history had already flagged as a real gap (the B7 legibility
+  batch's debug-decision tracing, and B5's chat-intent-routing tracing, both document the
+  underlying parse-failure risk without fixing it): `orchestrator.py::_opus_plan`/`_opus_debug`
+  (`_PLAN_SCHEMA`/`_DEBUG_SCHEMA`), `chat.py`'s Haiku intent classifier (`_INTENT_SCHEMA`), and
+  `memo_watcher.py`'s voice-memo cleanup (`_MEMO_CLEANUP_SCHEMA`). Every one of these keeps its
+  existing `raw.find("{")`/`json.loads` extraction completely unchanged as a defensive fallback —
+  the schema makes hitting that fallback far less likely, not structurally impossible (a future
+  `.env`-overridden `orchestrator_planner_model` might not support structured outputs), so no
+  caller became newly reliant on the schema actually holding. Deliberately NOT touched: the many
+  other `json.loads` call sites in `chat.py` (lane-pick, note-extract, calendar/mail query,
+  mail-send parsing) and `orchestrator.py::_opus_verify` (which runs through `run_with_tools`'s
+  tool-use loop, not the plain `run_model()` path structured outputs was verified against here) —
+  broader than what was asked, and mixing structured outputs with a multi-round tool loop wasn't
+  verified against Anthropic's docs in this pass.
+- **Strict tool use (`strict: true`)** added to every schema in `tools.py`'s read-only registry
+  (`ReadTool.anthropic_spec()`) — all of them already met strict mode's requirements
+  (`additionalProperties: false` added to each, flat object shape, no `format`/`pattern`/`oneOf`)
+  without needing a schema redesign. Guards against the concrete failure mode Anthropic's own
+  strict-tool-use docs name (an int arriving as `"2"`, a bool as `"true"`) for the two schemas
+  most exposed to it (`_PROTONMAIL_INBOX_SCHEMA`'s `limit`/`unread_only`,
+  `_PROTONMAIL_READ_EMAIL_SCHEMA`'s `page`). Deliberately NOT touched: `write_tools.py`'s
+  broker-gated write-tool registry (its schemas weren't reviewed in this pass, and a strict-mode
+  rejection on a write tool has different failure-mode stakes than a read tool silently
+  miscoercing a page number) and the hosted `web_search` tool spec (strict mode is a custom-tool
+  concept only, per Anthropic's docs — never applies to server tools).
+- **Not run: the project's full pytest suite** — same limitation as the Sonnet 5 migration above
+  (this session has no venv/SSH path to nexus-lxc or devbox). Checked instead: every edited
+  file's `py_compile`, and a targeted grep of `tests/` for any assertion that would break from
+  these specific changes (exact-dict-equality on a tool spec, exact positional/keyword call
+  assertions on `haiku()`/`sonnet()`/`run_model()`, a hardcoded web-search tool-version string) —
+  none found; every mocked call site in the existing suite uses `AsyncMock`/`assert_awaited*`
+  (arg-count-agnostic) rather than `assert_called_once_with` on the touched functions. A real
+  `pytest` run is still owed before/at the next deploy, same as the Sonnet 5 migration.
+
 **nexus-lxc can push to GitHub on its own (2026-08-22)** — the deployed checkout at
 `/opt/nexus` on nexus-lxc now has its own SSH deploy key with **write** access to
 `github.com/soakal/Nexus`, so a commit authored on nexus-lxc reaches `origin/main` with a plain
