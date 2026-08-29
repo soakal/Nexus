@@ -209,7 +209,8 @@ async def test_empty_proposal_creates_no_goals(eng, monkeypatch):
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
-    with patch("backend.agents.router.haiku", new=AsyncMock(return_value="[]")):
+    mock_haiku = AsyncMock(return_value="[]")
+    with patch("backend.agents.router.haiku", new=mock_haiku):
         with patch("backend.config.get_settings") as mock_settings:
             s = MagicMock()
             s.proposer_max_per_tick = 3
@@ -223,6 +224,9 @@ async def test_empty_proposal_creates_no_goals(eng, monkeypatch):
     assert result["status"] == "ok"
     assert result["count_proposed"] == 0
     assert _all_goals(eng) == []
+
+    from backend.agents.proposer import _GOAL_PROPOSAL_SCHEMA
+    assert mock_haiku.call_args.kwargs["response_schema"] == _GOAL_PROPOSAL_SCHEMA
 
 
 # ---------------------------------------------------------------------------

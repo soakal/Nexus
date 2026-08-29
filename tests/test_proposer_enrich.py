@@ -331,7 +331,7 @@ async def test_proposer_injects_enrichment_context(eng, monkeypatch):
     # Capture the prompt passed to Opus
     captured_prompts: list[str] = []
 
-    async def _mock_opus(prompt, *, label=""):
+    async def _mock_opus(prompt, *, label="", response_schema=None):
         captured_prompts.append(prompt)
         return "[]"
 
@@ -369,7 +369,7 @@ async def test_proposer_empty_enrichment_shows_none(eng, monkeypatch):
 
     captured_prompts: list[str] = []
 
-    async def _mock_opus(prompt, *, label=""):
+    async def _mock_opus(prompt, *, label="", response_schema=None):
         captured_prompts.append(prompt)
         return "[]"
 
@@ -434,7 +434,7 @@ async def test_proposer_injects_completed_history(eng, monkeypatch):
 
     captured: list[str] = []
 
-    async def _mock_llm(prompt, *, label=""):
+    async def _mock_llm(prompt, *, label="", response_schema=None):
         captured.append(prompt)
         return "[]"
 

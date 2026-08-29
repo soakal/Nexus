@@ -142,6 +142,87 @@ async def test_sonnet_max_tokens():
 
 
 @pytest.mark.asyncio
+async def test_sonnet_response_schema_attaches_output_config():
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text="ok")]
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"], "additionalProperties": False}
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_resp
+        mock_anthropic.return_value = mock_client
+
+        from backend.agents import router
+        await router.sonnet("prompt", response_schema=schema)
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs["output_config"] == {"format": {"type": "json_schema", "schema": schema}}
+
+
+@pytest.mark.asyncio
+async def test_sonnet_effort_attaches_output_config():
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text="ok")]
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_resp
+        mock_anthropic.return_value = mock_client
+
+        from backend.agents import router
+        await router.sonnet("prompt", effort="medium")
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs["output_config"] == {"effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_haiku_response_schema_attaches_output_config():
+    """Haiku 4.5 supports structured outputs, unlike effort."""
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text="ok")]
+    schema = {"type": "object", "properties": {"intent": {"type": "string"}}, "required": ["intent"], "additionalProperties": False}
+
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = mock_resp
+        mock_anthropic.return_value = mock_client
+
+        from backend.agents import router
+        await router.haiku("prompt", response_schema=schema)
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert call_kwargs["output_config"] == {"format": {"type": "json_schema", "schema": schema}}
+
+
+def test_haiku_has_no_effort_parameter():
+    """Haiku 4.5 400s on output_config.effort -- the function signature itself
+    must not offer it, so no caller can accidentally pass it."""
+    import inspect
+    from backend.agents import router
+    assert "effort" not in inspect.signature(router.haiku).parameters
+
+
+def test_build_output_config_degrades_silently_for_unsupported_model():
+    """A model outside _STRUCTURED_OUTPUT_MODELS (e.g. a manual .env rollback
+    to claude-sonnet-4-6) must get NO output_config at all, not a partial one
+    that would 400 -- this is exactly the gating the closed PR #36 got wrong."""
+    from backend.agents import router
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    assert router._build_output_config("claude-sonnet-4-6", schema, "medium") is None
+
+
+def test_build_output_config_drops_effort_for_haiku_even_when_supported_model():
+    from backend.agents import router
+    cfg = router._build_output_config(router.HAIKU_MODEL, None, "low")
+    assert cfg is None  # effort alone, no schema, on a non-effort model -> nothing to attach
+
+
+def test_build_output_config_keeps_schema_but_drops_effort_for_haiku():
+    from backend.agents import router
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    cfg = router._build_output_config(router.HAIKU_MODEL, schema, "low")
+    assert cfg == {"format": {"type": "json_schema", "schema": schema}}  # no "effort" key
+
+
+@pytest.mark.asyncio
 async def test_router_messages_structure():
     """All callers must send a single user-role message."""
     mock_resp = MagicMock()

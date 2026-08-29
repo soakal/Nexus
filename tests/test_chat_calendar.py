@@ -46,11 +46,14 @@ async def test_calendar_match_returns_event(monkeypatch):
             '{"intent":"CALENDAR"}',
             '{"days_ahead":90,"keyword":"dentist"}',
         ]
-        from backend.agents.chat import chat
+        from backend.agents.chat import chat, _INTENT_SCHEMA
         result = await chat(1, "when is my dr appointment?")
 
     assert "Dentist" in result["reply"]
     mock_upcoming.assert_awaited_once_with(90)
+    # 2026-08-28: the classify call (first of the two haiku calls) is
+    # structured-outputs constrained.
+    assert mock_haiku.call_args_list[0].kwargs["response_schema"] == _INTENT_SCHEMA
 
 
 @pytest.mark.asyncio

@@ -637,6 +637,9 @@ async def test_briefing_mail_data_never_reaches_llm_or_fact_extraction():
         extracted_text = _strip_unverified_sections(result)
         assert marker_subject not in extracted_text
 
+        # 2026-08-28: non-interactive narration job runs at reduced effort.
+        assert mock_sonnet.call_args.kwargs["effort"] == "medium"
+
 
 # ---------------------------------------------------------------------------
 # _record_briefing_flags -- outcome-tracker write path (spec §2.2-C, AC22/AC23)

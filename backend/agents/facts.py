@@ -19,6 +19,29 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Structured-outputs schema for extract_and_store's Haiku call, added
+# 2026-08-28. NEXUS's own 2026-08-22 OpenRouter trial documented real parse
+# failures on this exact call (facts_extract under a non-Anthropic model).
+# No min/max on "confidence" -- numeric range constraints aren't enforced by
+# structured outputs and are stripped, per Anthropic's own docs; the value
+# still needs the same range-tolerant handling downstream as before. Silently
+# dropped by router.haiku() on an unsupported model; the parse below stays
+# the real fallback path in that case.
+_FACTS_EXTRACT_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string"},
+            "predicate": {"type": "string"},
+            "value": {"type": "string"},
+            "confidence": {"type": "number"},
+        },
+        "required": ["subject", "predicate", "value", "confidence"],
+        "additionalProperties": False,
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Module constants
 # ---------------------------------------------------------------------------
@@ -468,7 +491,7 @@ async def extract_and_store(user_message: str, conversation_id: int | None, sour
             f"User message: \"{user_message}\""
         )
 
-        raw = await haiku(extract_prompt, label="facts_extract")
+        raw = await haiku(extract_prompt, response_schema=_FACTS_EXTRACT_SCHEMA, label="facts_extract")
 
         # Defensive JSON parse: find first '[' / last ']'
         start = raw.find("[")

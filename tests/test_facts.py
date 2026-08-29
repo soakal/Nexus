@@ -427,6 +427,9 @@ async def test_extract_and_store_creates_fact(monkeypatch):
         mock_haiku.return_value = haiku_response
         await extract_and_store("My name is Brian", conversation_id=1)
 
+    from backend.agents.facts import _FACTS_EXTRACT_SCHEMA
+    assert mock_haiku.call_args.kwargs["response_schema"] == _FACTS_EXTRACT_SCHEMA
+
     facts = _all_facts(eng)
     assert len(facts) == 1
     f = facts[0]

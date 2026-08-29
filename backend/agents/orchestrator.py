@@ -10,6 +10,53 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 
+# Structured-outputs schemas for _opus_plan/_opus_debug below, added
+# 2026-08-28. Only attached by router._build_output_config when the
+# configured orchestrator_planner_model actually supports it (Sonnet 5 /
+# Haiku 4.5 / Opus -- NOT Sonnet 4.6, which was the DEFAULT when the closed
+# PR #36 attached these same schemas unconditionally and broke); a .env
+# rollback to claude-sonnet-4-6 silently loses the schema and falls back to
+# the existing find("{")/json.loads parse below, unchanged either way.
+# Nested-nullable-object shape (new_plan) live-verified against the real API
+# before wiring this in.
+_PLAN_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "steps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"},
+                    "description": {"type": "string"},
+                    "prompt": {"type": "string"},
+                },
+                "required": ["index", "description", "prompt"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["steps"],
+    "additionalProperties": False,
+}
+
+_DEBUG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["RETRY_STEP", "REPLAN", "ABORT"]},
+        "reason": {"type": "string"},
+        "new_prompt": {"type": ["string", "null"]},
+        "new_plan": {
+            "type": ["object", "null"],
+            "properties": {"steps": _PLAN_STEP_SCHEMA["properties"]["steps"]},
+            "required": ["steps"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["action", "reason", "new_prompt", "new_plan"],
+    "additionalProperties": False,
+}
+
 # A single step that has been attempted this many times (across retry + replan)
 # without succeeding is declared exhausted — the task finalizes 'failed' with
 # step_exhausted rather than looping forever on a poison step. attempts is
@@ -132,7 +179,7 @@ Return JSON only:
 
 Each step must be atomic and runnable on its own. Maximum 10 steps."""
 
-    raw = await run_model(get_settings().orchestrator_planner_model, plan_prompt, label="orchestrator_plan")
+    raw = await run_model(get_settings().orchestrator_planner_model, plan_prompt, response_schema=_PLAN_STEP_SCHEMA, label="orchestrator_plan")
     # Extract JSON from response
     start = raw.find("{")
     end = raw.rfind("}") + 1
@@ -239,7 +286,7 @@ Return JSON only:
   "new_prompt": "revised prompt if RETRY_STEP",
   "new_plan": {{"steps": [...]}} // if REPLAN
 }}"""
-    raw = await run_model(get_settings().orchestrator_planner_model, debug_prompt, label="orchestrator_debug")
+    raw = await run_model(get_settings().orchestrator_planner_model, debug_prompt, response_schema=_DEBUG_SCHEMA, label="orchestrator_debug")
     start = raw.find("{")
     end = raw.rfind("}") + 1
     return json.loads(raw[start:end])

@@ -60,3 +60,21 @@ def test_bare_client_construction_has_no_unexpected_required_args():
     """Mirrors router.get_client() / secrets._test_anthropic() -- just api_key."""
     inspect.signature(anthropic.Anthropic).bind(api_key="sk-test")
     inspect.signature(anthropic.AsyncAnthropic).bind(api_key="sk-test")
+
+
+def test_create_sync_kwargs_with_output_config_bind_to_installed_sdk():
+    """Mirrors _create_sync's kwargs when response_schema/effort are set --
+    output_config is exactly the parameter that didn't exist on the
+    anthropic==0.40.0 pin PR #36 shipped against; this is the regression
+    guard for the SDK-upgrade half of that bug specifically."""
+    kwargs = {
+        "model": "claude-sonnet-5",
+        "max_tokens": 16000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "system": "be terse",
+        "output_config": {
+            "format": {"type": "json_schema", "schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+            "effort": "medium",
+        },
+    }
+    _bind(anthropic.resources.messages.Messages.create, kwargs)

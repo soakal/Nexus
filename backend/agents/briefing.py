@@ -853,7 +853,12 @@ async def run_briefing() -> str:
             "pending_drafts": len(_drafts) if _drafts is not None else 0,
         }
 
-        briefing_text = await sonnet(prompt, label="briefing")
+        # effort="medium" (added 2026-08-28): a scheduled, non-interactive
+        # narration job -- nobody is waiting on it live. Sonnet 5 @ medium is
+        # roughly Sonnet 4.6 @ high (its old effective default), so this is a
+        # thinking-spend reduction, not a quality cut. Silently ignored by
+        # router._build_output_config on an unsupported .env-overridden model.
+        briefing_text = await sonnet(prompt, label="briefing", effort="medium")
         briefing_text = briefing_text + "\n\n" + proton_section
         logger.info("Briefing generated")
 

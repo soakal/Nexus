@@ -520,6 +520,34 @@ def get_client() -> anthropic.Anthropic:
 # live pricing page 2026-08-28).
 _WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
 
+# Structured outputs (output_config.format) and effort (output_config.effort)
+# are only accepted by SOME models -- verified against Anthropic's current API
+# reference 2026-08-28. Gated here, not left to the caller, because
+# orchestrator_planner_model/orchestrator_executor_model are .env-overridable
+# at runtime: a rollback to claude-sonnet-4-6 (still supported, see
+# _PRICE_PER_MTOK/_OPENROUTER_FALLBACK_MODEL) must silently lose structured
+# outputs, not 400 -- this exact gating is what the closed PR #36 got wrong
+# (it attached output_config.format unconditionally, including to
+# _opus_plan/_opus_debug's then-default claude-sonnet-4-6, which doesn't
+# support it at all).
+_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL}
+# Narrower than the set above: Haiku 4.5 supports structured outputs but
+# rejects `effort` outright (400) -- never offer effort on haiku().
+_EFFORT_MODELS = {OPUS_MODEL, SONNET_MODEL}
+
+
+def _build_output_config(model: str, response_schema: dict | None, effort: str | None) -> dict | None:
+    """Returns an output_config dict for _create_sync/_create_sync_raw, or
+    None if there's nothing to attach or the model doesn't support it."""
+    if model not in _STRUCTURED_OUTPUT_MODELS:
+        return None
+    cfg: dict = {}
+    if response_schema is not None:
+        cfg["format"] = {"type": "json_schema", "schema": response_schema}
+    if effort is not None and model in _EFFORT_MODELS:
+        cfg["effort"] = effort
+    return cfg or None
+
 
 def _extract_text(resp) -> str:
     """Join all text blocks from a Messages API response.
@@ -556,7 +584,7 @@ def _with_tools_cache(tools: list) -> list:
     return out
 
 
-def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None, trace_id=None, parent_span_id=None) -> str:
+def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", task_id=None, trace_id=None, parent_span_id=None, response_schema: dict | None = None, effort: str | None = None) -> str:
     """Blocking Anthropic call. Must be run in an executor, never on the loop.
 
     `task_id` is captured on the event loop by `_run` and passed in here (the
@@ -574,6 +602,9 @@ def _create_sync(model: str, max_tokens: int, prompt: str, system: str, web_sear
         kwargs["system"] = _as_cached_system(system)
     if web_search:
         kwargs["tools"] = [_WEB_SEARCH_TOOL]
+    output_config = _build_output_config(model, response_schema, effort)
+    if output_config is not None:
+        kwargs["output_config"] = output_config
     span_started_at = datetime.utcnow()
     resp = client.messages.create(**kwargs)
     text = _extract_text(resp)
@@ -1016,12 +1047,15 @@ async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: s
         logger.warning(f"shadow call failed (non-fatal, label={label!r}): {e}")
 
 
-async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "") -> str:
+async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", *, response_schema: dict | None = None, effort: str | None = None) -> str:
     """Run the blocking SDK call in the default thread-pool executor.
 
     The sync `anthropic.Anthropic` client wrapped in `run_in_executor` is more
     reliable here than `AsyncAnthropic`, which has been observed blocking the
     event loop during briefings.
+
+    `response_schema`/`effort` are silently dropped for a model that doesn't
+    support them (see _build_output_config) -- never a 400.
     """
     await _budget_brake()
 
@@ -1034,7 +1068,7 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
     parent_span_id = span_stack[-1] if span_stack else None
 
     loop = asyncio.get_event_loop()
-    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id)
+    func = functools.partial(_create_sync, model, max_tokens, prompt, system, web_search, label, task_id, trace_id, parent_span_id, response_schema, effort)
     try:
         result = await _run_billed(loop, func)
     except Exception as e:
@@ -1293,21 +1327,25 @@ async def opus(prompt: str, system: str = "", web_search: bool = False, label: s
     return await _run(OPUS_MODEL, 8192, prompt, system, web_search, label)
 
 
-async def sonnet(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:
+async def sonnet(prompt: str, system: str = "", web_search: bool = False, label: str = "", *, response_schema: dict | None = None, effort: str | None = None) -> str:
     # 16000, not 8192: Sonnet 5 runs adaptive thinking by default (unlike the
     # retired Sonnet 4.6, which ran thinking-off) and max_tokens is a hard cap
     # on thinking + text combined -- 8192 risked truncating the visible
     # answer on a call that also thought a lot.
-    return await _run(SONNET_MODEL, 16000, prompt, system, web_search, label)
+    return await _run(SONNET_MODEL, 16000, prompt, system, web_search, label, response_schema=response_schema, effort=effort)
 
 
-async def haiku(prompt: str, system: str = "", label: str = "") -> str:
-    return await _run(HAIKU_MODEL, 4096, prompt, system, label=label)
+async def haiku(prompt: str, system: str = "", label: str = "", *, response_schema: dict | None = None) -> str:
+    # No effort= param here on purpose -- Haiku 4.5 rejects output_config.effort
+    # outright (400). Structured outputs ARE supported on Haiku, hence
+    # response_schema.
+    return await _run(HAIKU_MODEL, 4096, prompt, system, label=label, response_schema=response_schema)
 
 
 async def run_model(
     model: str, prompt: str, system: str = "", web_search: bool = False,
-    label: str = "", max_tokens: int = 8192,
+    label: str = "", max_tokens: int = 8192, *,
+    response_schema: dict | None = None, effort: str | None = None,
 ) -> str:
     """Run an arbitrary model id through the metered _run path.
 
@@ -1315,5 +1353,9 @@ async def run_model(
     the model at runtime from config instead of being hard-wired to opus/sonnet.
     Pricing/metering works for any model in _PRICE_PER_MTOK; unknown models meter
     as no-cost (no SpendLog row) but still run.
+
+    `response_schema`/`effort` degrade to a no-op (see _build_output_config)
+    for a configured model that doesn't support them -- e.g. a .env rollback
+    of orchestrator_planner/executor_model to claude-sonnet-4-6.
     """
-    return await _run(model, max_tokens, prompt, system, web_search, label)
+    return await _run(model, max_tokens, prompt, system, web_search, label, response_schema=response_schema, effort=effort)

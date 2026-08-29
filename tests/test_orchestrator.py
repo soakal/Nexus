@@ -44,9 +44,12 @@ async def test_failure_triggers_debug():
         mock_opus.side_effect = [plan_json, debug_json]
         mock_exec.return_value = "I cannot complete this task"
 
-        from backend.agents.orchestrator import run_task
+        from backend.agents.orchestrator import run_task, _PLAN_STEP_SCHEMA, _DEBUG_SCHEMA
         result = await run_task("Failing task")
         assert result.success is False
+
+    assert mock_opus.call_args_list[0].kwargs["response_schema"] == _PLAN_STEP_SCHEMA
+    assert mock_opus.call_args_list[1].kwargs["response_schema"] == _DEBUG_SCHEMA
 
 
 @pytest.mark.asyncio

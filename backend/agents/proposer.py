@@ -43,6 +43,31 @@ def _esc(s: str, limit: int | None = None) -> str:
 # ponytail: module constant; make PROPOSER_MIN_OUTAGE_SAMPLES a config setting if Brian wants runtime tuning.
 _MIN_OUTAGE_SAMPLES = 5
 
+# Structured-outputs schema for the proposal call below, added 2026-08-28.
+# NEXUS's own 2026-08-22 OpenRouter trial documented real schema drift on
+# this exact call (goal_proposer: only 38% same-shape output under a
+# non-Anthropic model) -- a top-level JSON array schema is a supported shape
+# (live-verified against the real API before wiring this in). Silently
+# dropped by router.haiku() on an unsupported model; the parse below stays
+# the real fallback path in that case.
+_GOAL_PROPOSAL_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "success_criteria": {"type": "string"},
+            "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+            "reversibility": {"type": "string", "enum": ["reversible", "reversible_by_inverse", "irreversible", "unknown"]},
+            "confidence": {"type": "number"},
+            "category": {"type": "string", "enum": ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]},
+        },
+        "required": ["title", "description", "success_criteria", "risk", "reversibility", "confidence", "category"],
+        "additionalProperties": False,
+    },
+}
+
 # Structural capability gaps — things NEXUS's read-only executor cannot do no
 # matter how a goal is worded. Fed into the prompt so the proposer stops
 # re-learning this goal-by-goal via repeated RECENTLY FAILED entries (each
@@ -512,7 +537,7 @@ async def propose_goals_tick() -> dict:
         )
 
         try:
-            raw = await router.haiku(prompt, label="goal_proposer")
+            raw = await router.haiku(prompt, response_schema=_GOAL_PROPOSAL_SCHEMA, label="goal_proposer")
         except BudgetExceeded:
             return {"status": "skipped", "reason": "budget"}
 
