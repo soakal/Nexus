@@ -188,7 +188,14 @@ class TaskAborted(Exception):
         super().__init__(f"task aborted: {reason}")
 
 OPUS_MODEL = "claude-opus-4-8"
-SONNET_MODEL = "claude-sonnet-4-6"
+# Migrated 2026-08-28: claude-sonnet-4-6 -> claude-sonnet-5. Confirmed live
+# against Anthropic's pricing page that Sonnet 5's $2/$10-per-MTok rate is
+# the permanent standard price (see _PRICE_PER_MTOK below), not a promo, and
+# that structured outputs / effort (used in later call sites) are supported
+# on Sonnet 5 but NOT Sonnet 4.6. Sonnet 5 runs adaptive thinking by default
+# (4.6 ran thinking-off) -- see the max_tokens bumps at stream_sonnet(),
+# sonnet(), and orchestrator._sonnet_execute for why that matters.
+SONNET_MODEL = "claude-sonnet-5"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 # Process-lifetime metering outcome counters (reset on restart — that's fine;
@@ -210,20 +217,19 @@ def metering_counters() -> dict:
 # Price per 1,000,000 tokens (USD), keyed on the model constants above.
 # Verified 2026-06-16 against Anthropic's official pricing page
 # (platform.claude.com/docs/.../about-claude/pricing): Opus 4.8 $5/$25,
-# Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5 per MTok. The cache multipliers in
-# _compute_cost (5m write 1.25x input, read 0.1x input) also match the official
-# rates.
-# "claude-sonnet-5" is NOT the SONNET_MODEL constant above (NEXUS still runs
-# 4.6) — added only so orchestrator_planner/executor/verifier_model can be
-# .env-overridden to it without meter-as-$0. $2/$10 (added 2026-07-18 as an
-# introductory rate) was confirmed 2026-08-28, live against Anthropic's
-# pricing page, as the PERMANENT standard price for Sonnet 5 -- the scheduled
-# 2026-08-31 reversion to $3/$15 was cancelled and will not occur.
+# Haiku 4.5 $1/$5 per MTok. The cache multipliers in _compute_cost (5m write
+# 1.25x input, read 0.1x input) also match the official rates.
+# Sonnet 5's $2/$10 (introduced 2026-07-18) was confirmed 2026-08-28, live
+# against Anthropic's pricing page, as the PERMANENT standard price -- the
+# scheduled 2026-08-31 reversion to $3/$15 was cancelled and will not occur.
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
-    SONNET_MODEL: {"input": 3.0, "output": 15.0},
+    SONNET_MODEL: {"input": 2.0, "output": 10.0},
     HAIKU_MODEL: {"input": 1.0, "output": 5.0},
-    "claude-sonnet-5": {"input": 2.0, "output": 10.0},
+    # claude-sonnet-4-6: retired as SONNET_MODEL 2026-08-28 (migrated to
+    # Sonnet 5 above) -- kept for historical SpendLog rows and for the
+    # separate brain-organizer subprocess, which still runs its own pin.
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     # OpenRouter model-swap trial (Trial A/B) -- verified live against
     # GET https://openrouter.ai/api/v1/models 2026-08-16.
     "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
@@ -234,12 +240,10 @@ _PRICE_PER_MTOK = {
     # identically to the direct-API entries above ($/MTok, same numbers),
     # since OpenRouter passes Anthropic's own list price through unchanged.
     "anthropic/claude-opus-4.8": {"input": 5.0, "output": 25.0},
+    # Kept for a manual .env rollback of orchestrator_executor_model to
+    # claude-sonnet-4-6 -- not the live SONNET_MODEL fallback target anymore.
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
-    # Same permanent-price note as the "claude-sonnet-5" entry above ($2/$10
-    # confirmed standard, not a promo) -- this is the OpenRouter-proxied id
-    # for the same model, added 2026-08-28 alongside the fallback map entry
-    # below.
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0},
 }
 
@@ -251,19 +255,17 @@ _PRICE_PER_MTOK = {
 # is exactly why they work as a fallback for an account-level exhaustion
 # (zero credit or a monthly usage cap) on that key specifically. Still
 # "approximate" in the sense that OpenRouter is a different backend/account --
-# no guarantee of identical latency/availability. Originally only covered the
-# three _run entry points (opus/sonnet/haiku) that hit the real 2026-08-21
-# incident (three goal_proposer Haiku calls); "claude-sonnet-5" added
-# 2026-08-28 to also cover ORCHESTRATOR_EXECUTOR_MODEL's live .env override
-# (see the pricing comment above) -- verified live against
-# GET https://openrouter.ai/api/v1/models that "anthropic/claude-sonnet-5"
-# exists there. A model reached only via run_model() with no entry here still
-# simply gets no fallback -- see _maybe_openrouter_fallback's early return.
+# no guarantee of identical latency/availability. A model reached only via
+# run_model() with no entry here simply gets no fallback -- see
+# _maybe_openrouter_fallback's early return.
 _OPENROUTER_FALLBACK_MODEL = {
     OPUS_MODEL: "anthropic/claude-opus-4.8",
-    SONNET_MODEL: "anthropic/claude-sonnet-4.6",
+    SONNET_MODEL: "anthropic/claude-sonnet-5",
     HAIKU_MODEL: "anthropic/claude-haiku-4.5",
-    "claude-sonnet-5": "anthropic/claude-sonnet-5",
+    # Kept only for a manual .env rollback of orchestrator_executor_model to
+    # claude-sonnet-4-6 -- not reachable via SONNET_MODEL anymore (that's
+    # claude-sonnet-5 as of 2026-08-28).
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
 }
 
 # Hosted web-search server tool: $10 per 1,000 searches (Anthropic pricing,
@@ -1271,7 +1273,7 @@ async def stream_sonnet(prompt: str, system: str = "", web_search: bool = False)
     task_id = _current_task_id.get()
     fut = loop.run_in_executor(
         None,
-        functools.partial(_create_streaming_sync, SONNET_MODEL, 8192, prompt, system, web_search, loop, q),
+        functools.partial(_create_streaming_sync, SONNET_MODEL, 16000, prompt, system, web_search, loop, q),
     )
     while True:
         kind, data = await q.get()
@@ -1292,7 +1294,11 @@ async def opus(prompt: str, system: str = "", web_search: bool = False, label: s
 
 
 async def sonnet(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:
-    return await _run(SONNET_MODEL, 8192, prompt, system, web_search, label)
+    # 16000, not 8192: Sonnet 5 runs adaptive thinking by default (unlike the
+    # retired Sonnet 4.6, which ran thinking-off) and max_tokens is a hard cap
+    # on thinking + text combined -- 8192 risked truncating the visible
+    # answer on a call that also thought a lot.
+    return await _run(SONNET_MODEL, 16000, prompt, system, web_search, label)
 
 
 async def haiku(prompt: str, system: str = "", label: str = "") -> str:

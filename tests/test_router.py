@@ -135,7 +135,10 @@ async def test_sonnet_max_tokens():
         from backend.agents import router
         await router.sonnet("prompt")
         call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs["max_tokens"] == 8192
+        # 16000, not 8192 -- Sonnet 5 runs adaptive thinking by default and
+        # max_tokens caps thinking + text combined (see router.sonnet's own
+        # comment).
+        assert call_kwargs["max_tokens"] == 16000
 
 
 @pytest.mark.asyncio
@@ -787,13 +790,18 @@ async def test_openrouter_fallback_used_on_credit_exhaustion(spend_eng):
         result = await router.sonnet("prompt")
 
     assert result == "fallback answer"
+    # Asserted against the fallback map itself, not a hardcoded string --
+    # SONNET_MODEL's fallback target changed once already (4.6 -> 5,
+    # 2026-08-28) and a hardcoded literal here is exactly what stranded this
+    # test that time.
+    expected_fallback_model = router._OPENROUTER_FALLBACK_MODEL[router.SONNET_MODEL]
     call_kwargs = mock_httpx.post.call_args[1]
-    assert call_kwargs["json"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert call_kwargs["json"]["model"] == expected_fallback_model
 
     from sqlmodel import Session, select
     from backend.database import SpendLog
     with Session(spend_eng) as s:
-        rows = s.exec(select(SpendLog).where(SpendLog.model == "anthropic/claude-sonnet-4.6")).all()
+        rows = s.exec(select(SpendLog).where(SpendLog.model == expected_fallback_model)).all()
     assert len(rows) == 1
     assert rows[0].input_tokens == 5
     assert rows[0].output_tokens == 3

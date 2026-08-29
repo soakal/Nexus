@@ -194,7 +194,12 @@ tool. Always produce a useful, substantive answer."""
     try:
         return await router.run_with_tools(
             model=get_settings().orchestrator_executor_model,
-            max_tokens=8192,
+            # 16000, not 8192: the default executor model (claude-sonnet-5,
+            # since 2026-08-28) runs adaptive thinking by default and
+            # max_tokens caps thinking + text combined -- headroom here
+            # avoids truncating a real step mid-thought. Harmless for other
+            # .env-overridden executor models too.
+            max_tokens=16000,
             prompt=full_prompt,
             system=executor_system,
             tool_specs=specs,

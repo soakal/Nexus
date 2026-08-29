@@ -143,9 +143,14 @@ class Settings(BaseSettings):
     # Sonnet plans + executes (good results, ~half Opus cost), Haiku verifies (a
     # criteria yes/no check it handles well at ~1/5 the Opus rate). To restore max
     # quality set the planner/verifier back to "claude-opus-4-8" in .env. Any valid
-    # Anthropic model id works (billed to ANTHROPIC_API_KEY).
-    orchestrator_planner_model: str = "claude-sonnet-4-6"
-    orchestrator_executor_model: str = "claude-sonnet-4-6"
+    # Anthropic model id works (billed to ANTHROPIC_API_KEY). Planner/executor
+    # migrated to claude-sonnet-5 2026-08-28 (see router.SONNET_MODEL) —
+    # overriding either back to claude-sonnet-4-6 works (still priced/fallback-
+    # covered, see router._PRICE_PER_MTOK/_OPENROUTER_FALLBACK_MODEL) but loses
+    # structured-output support at the plan/debug call sites, which require
+    # Sonnet 5 or Haiku 4.5 and are NOT supported on Sonnet 4.6.
+    orchestrator_planner_model: str = "claude-sonnet-5"
+    orchestrator_executor_model: str = "claude-sonnet-5"
     orchestrator_verifier_model: str = "claude-haiku-4-5-20251001"
 
     # Deep-link base URL appended to every phone alert so Brian can tap straight
