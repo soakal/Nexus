@@ -47,6 +47,16 @@ _paged_alerts: set[str] = set()
 # Garage-open timer (time.monotonic() of when it was first observed open).
 _garage_open_since: float | None = None
 
+# Autonomous-restart verify timers (2026-08-28): container name -> the
+# time.monotonic() deadline by which it must be observed RUNNING again, set
+# only when an auto-dispatched restart's initial result claimed success (see
+# _maybe_auto_restart_docker). The recovery branch in check_docker pops an
+# entry the moment the container is actually seen RUNNING; a still-pending
+# entry past its deadline means the restart LIED or didn't stick, and gets
+# exactly one homelab_docker_restart_failed page. Same in-memory,
+# restart-loses-it tradeoff as every other dict in this module.
+_pending_restart_verifies: dict[str, float] = {}
+
 # Event-driven proposing (2026-08-17): a fired alert triggers one proposer tick
 # instead of waiting up to 6h for the next scheduled one. In-memory, same
 # accepted-tradeoff pattern as _active_alerts above.
@@ -62,6 +72,7 @@ def reset() -> None:
     _docker_states.clear()
     _active_alerts.clear()
     _paged_alerts.clear()
+    _pending_restart_verifies.clear()
     _garage_open_since = None
     _last_event_propose_at = None
     _event_propose_task = None
@@ -186,9 +197,78 @@ async def check_proxmox_vms() -> list[str]:
     return fired
 
 
+def _docker_restart_button(name: str) -> list[dict] | None:
+    from backend.integrations import unraid
+    if unraid._SAFE_CONTAINER_ID.match(name) and len(f"docker:restart:{name}".encode()) <= 64:
+        return [{"text": "↺ Restart", "callback_data": f"docker:restart:{name}"}]
+    return None
+
+
+async def _maybe_auto_restart_docker(name: str) -> bool:
+    """If "unraid_docker" has been promoted to auto-allow (POST
+    /api/safety/policy/auto-allow/unraid_docker), dispatch a restart for
+    `name` autonomously instead of waiting for a human tap on the Restart
+    button. Returns True if this function fully handled paging for the
+    stopped-container event (both the success and the immediate-failure
+    case page here) — the caller's normal "stopped, tap to restart" page
+    is skipped either way once this returns True, since re-sending it on
+    top of the auto-restart's own message would be a duplicate/confusing
+    page for the same event.
+
+    Never raises: mirrors record_flag_ex/notify_phone's own best-effort
+    contract, since this is a side path off a scheduler tick, not a
+    request handler.
+    """
+    try:
+        from backend.safety import governor
+        overrides = await asyncio.to_thread(governor.get_policy_overrides)
+        if "unraid_docker" not in overrides["auto_allow"]:
+            return False
+
+        from backend.safety.broker import Decision, execute_action
+        res = await execute_action(
+            actor="autonomous", kind="unraid_docker", target=name,
+            payload={"container_id": name},
+        )
+        # _dispatch_unraid_docker does NOT raise on a failed restart -- success
+        # must be read off res.result, not res.decision (see telegram_poller.py's
+        # identical docker:restart handling for the same 3-state contract).
+        result = res.result or {} if res.decision == Decision.EXECUTED else {}
+        from backend import events
+        escaped = html.escape(name)
+        if result.get("success"):
+            from backend.config import get_settings
+            minutes = get_settings().homelab_auto_restart_verify_minutes
+            _pending_restart_verifies[name] = time.monotonic() + minutes * 60
+            await events.notify_phone(
+                f"NEXUS: Docker container '{escaped}' stopped — auto-restart dispatched, "
+                f"will verify within {minutes} min.",
+                kind="homelab_docker_stopped",
+            )
+        else:
+            detail = result.get("error") or res.error or "restart not executed"
+            stopped_note = " (container confirmed STOPPED)" if result.get("stopped") else ""
+            await events.notify_phone(
+                f"NEXUS: Docker container '{escaped}' stopped — auto-restart FAILED{stopped_note}: {detail}",
+                kind="homelab_docker_restart_failed",
+                buttons=_docker_restart_button(name),
+            )
+        _paged_alerts.add(f"docker:{name}")
+        return True
+    except Exception as e:
+        logger.warning(f"_maybe_auto_restart_docker failed for {name!r} (ignored): {e}")
+        return False
+
+
 async def check_docker() -> list[str]:
     """Docker container RUNNING -> not-RUNNING, same discovery-safe transition
-    rule as check_proxmox_vms."""
+    rule as check_proxmox_vms. When "unraid_docker" is promoted to auto-allow
+    (see _maybe_auto_restart_docker), a stopped container is restarted
+    autonomously instead of only paging a Restart button; this function also
+    verifies any pending auto-restart within homelab_auto_restart_verify_minutes
+    and re-pages (homelab_docker_restart_failed) if it never came back --
+    NEXUS never declares the fix successful on the dispatch alone, only on an
+    OBSERVED RUNNING state on a later tick."""
     fired: list[str] = []
     try:
         from backend.integrations import unraid
@@ -207,19 +287,17 @@ async def check_docker() -> list[str]:
                 f"Docker container '{html.escape(name)}' stopped.",
                 severity="medium",
             )
-            if d["surface"]:
-                buttons = None
-                if unraid._SAFE_CONTAINER_ID.match(name) and len(f"docker:restart:{name}".encode()) <= 64:
-                    buttons = [{"text": "↺ Restart", "callback_data": f"docker:restart:{name}"}]
+            if d["surface"] and not await _maybe_auto_restart_docker(name):
                 from backend import events
                 await events.notify_phone(
                     f"NEXUS: Docker container '{html.escape(name)}' stopped.",
                     kind="homelab_docker_stopped",
-                    buttons=buttons,
+                    buttons=_docker_restart_button(name),
                 )
                 _paged_alerts.add(f"docker:{name}")
             fired.append(f"docker:{name}")
         elif prev != "RUNNING" and state == "RUNNING":
+            _pending_restart_verifies.pop(name, None)
             await _clear_flag_safe(f"docker:{name}")
             await _maybe_notify_recovery(
                 f"docker:{name}",
@@ -227,6 +305,23 @@ async def check_docker() -> list[str]:
             )
     _docker_states.clear()
     _docker_states.update(current)
+
+    # Verify-after-N-minutes: a pending auto-restart whose deadline has
+    # passed with the container STILL not RUNNING (the recovery branch above
+    # already popped it if it came back) gets exactly one failure page.
+    now = time.monotonic()
+    for name in [n for n, deadline in _pending_restart_verifies.items() if now >= deadline]:
+        _pending_restart_verifies.pop(name, None)
+        from backend import events
+        from backend.config import get_settings
+        minutes = get_settings().homelab_auto_restart_verify_minutes
+        await events.notify_phone(
+            f"NEXUS: auto-restart of Docker container '{html.escape(name)}' did not "
+            f"recover it — still not running after {minutes} min.",
+            kind="homelab_docker_restart_failed",
+            buttons=_docker_restart_button(name),
+        )
+        _paged_alerts.add(f"docker:{name}")
     return fired
 
 

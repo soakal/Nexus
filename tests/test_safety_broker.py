@@ -552,6 +552,39 @@ def test_policy_endpoints_get_and_delete(safety_client, auth_headers):
     assert resp.json() == {"auto_allow": [], "forbid": []}
 
 
+def test_policy_promote_endpoint_grants_and_rejects_never_promotable(safety_client, auth_headers):
+    """POST /policy/auto-allow/{kind} promotes via the real broker (actor=user
+    -> always ALLOWED -> dispatched -> ActionLog row written), and refuses a
+    _NEVER_PROMOTABLE kind the same way the dispatcher itself would."""
+    from backend.database import ActionLog
+    from sqlmodel import Session, select
+
+    resp = safety_client.post("/api/safety/policy/auto-allow/unraid_docker", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["auto_allow"] == ["unraid_docker"]
+
+    resp = safety_client.get("/api/safety/policy", headers=auth_headers)
+    assert resp.json()["auto_allow"] == ["unraid_docker"]
+
+    eng = safety_client._engine
+    with Session(eng) as s:
+        rows = s.exec(select(ActionLog).where(ActionLog.kind == "policy_promote")).all()
+    assert len(rows) == 1
+    assert rows[0].target == "unraid_docker"
+    assert rows[0].decision == "executed"
+
+    # No auth -> 401
+    resp = safety_client.post("/api/safety/policy/auto-allow/unraid_docker")
+    assert resp.status_code == 401
+
+    # _NEVER_PROMOTABLE kind -> the dispatcher's own ValueError surfaces as a 502
+    resp = safety_client.post("/api/safety/policy/auto-allow/policy_promote", headers=auth_headers)
+    assert resp.status_code == 502
+
+    resp = safety_client.get("/api/safety/policy", headers=auth_headers)
+    assert "policy_promote" not in resp.json()["auto_allow"]
+
+
 def test_safety_confirm_404_and_409(safety_client, auth_headers):
     eng = safety_client._engine
     # missing -> 404

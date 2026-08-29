@@ -426,6 +426,13 @@ class Settings(BaseSettings):
     # this is a new, previously-nonexistent notification; Brian opts in
     # explicitly rather than getting a second page per incident unasked.
     homelab_recovery_notify_enabled: bool = False
+    # Autonomous-restart verify window (2026-08-28): once a docker container
+    # restart is auto-dispatched (only happens if "unraid_docker" is promoted
+    # via POST /api/safety/policy/auto-allow/unraid_docker — see check_docker),
+    # check_docker re-checks the container's state after this many minutes and
+    # pages homelab_docker_restart_failed if it's still not RUNNING. Same
+    # "check back later" shape as homelab_garage_open_minutes above.
+    homelab_auto_restart_verify_minutes: int = 3
 
     # Incident diagnostician (backend/agents/incident_diag.py, 2026-08-17):
     # a fired vm/docker/array/backup alert spawns one read-only investigation

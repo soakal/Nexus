@@ -33,6 +33,7 @@ def _settings(**overrides):
     s.homelab_garage_entity_id = "cover.garage_door_garage_door"
     s.homelab_garage_open_minutes = 30
     s.homelab_recovery_notify_enabled = False
+    s.homelab_auto_restart_verify_minutes = 3
     # Default OFF: existing fired-alert tests exercise the six homelab checks,
     # not the proposer -- without this, _maybe_propose_on_alert would spawn a
     # REAL (unmocked) propose_goals_tick background task on every test whose
@@ -279,6 +280,137 @@ async def test_docker_name_html_escaped_in_alert_text():
     content = mock_notify.await_args.args[0]
     assert "<b>" not in content or "plex&lt;b&gt;" in content
     assert "&lt;b&gt;" in content
+
+
+# ---------------------------------------------------------------------------
+# Docker auto-restart (2026-08-28) — promoted "unraid_docker" auto-allow kind
+# ---------------------------------------------------------------------------
+
+def _policy_overrides(auto_allow=()):
+    return {"auto_allow": set(auto_allow), "forbid": set()}
+
+
+@pytest.mark.asyncio
+async def test_docker_stopped_unpromoted_kind_is_byte_identical_to_today():
+    """No "unraid_docker" in auto_allow -> _maybe_auto_restart_docker must not
+    even attempt a dispatch; behavior matches pre-2026-08-28 exactly."""
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    with patch("backend.safety.governor.get_policy_overrides", return_value=_policy_overrides()), \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_execute, \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[running, stopped]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()
+
+    mock_execute.assert_not_awaited()
+    assert mock_notify.await_args.kwargs["kind"] == "homelab_docker_stopped"
+    assert mock_notify.await_args.kwargs["buttons"] == [{"text": "↺ Restart", "callback_data": "docker:restart:plex"}]
+
+
+@pytest.mark.asyncio
+async def test_docker_stopped_promoted_kind_dispatches_autonomous_restart():
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    from backend.safety.broker import ActionResult, Decision, Reversibility, Risk
+    exec_result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                                reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                                log_id=1, result={"success": True})
+    with patch("backend.safety.governor.get_policy_overrides",
+               return_value=_policy_overrides(["unraid_docker"])), \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock,
+               return_value=exec_result) as mock_execute, \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[running, stopped]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()
+
+    mock_execute.assert_awaited_once_with(
+        actor="autonomous", kind="unraid_docker", target="plex",
+        payload={"container_id": "plex"},
+    )
+    assert mock_notify.await_args.kwargs["kind"] == "homelab_docker_stopped"
+    assert "auto-restart dispatched" in mock_notify.await_args.args[0]
+    assert "plex" in homelab_watch._pending_restart_verifies
+
+
+@pytest.mark.asyncio
+async def test_docker_auto_restart_verify_recovers_no_failure_page():
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    from backend.safety.broker import ActionResult, Decision, Reversibility, Risk
+    exec_result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                                reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                                log_id=1, result={"success": True})
+    with patch("backend.safety.governor.get_policy_overrides",
+               return_value=_policy_overrides(["unraid_docker"])), \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=exec_result), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[running, stopped, running]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()  # stopped -> dispatch
+        await homelab_watch.check_docker()  # recovered before the verify deadline
+
+    assert "plex" not in homelab_watch._pending_restart_verifies
+    kinds = [c.kwargs["kind"] for c in mock_notify.await_args_list]
+    assert "homelab_docker_restart_failed" not in kinds
+
+
+@pytest.mark.asyncio
+async def test_docker_auto_restart_verify_timeout_pages_once_flag_stays_open(monkeypatch):
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    from backend.safety.broker import ActionResult, Decision, Reversibility, Risk
+    exec_result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                                reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                                log_id=1, result={"success": True})
+    with patch("backend.safety.governor.get_policy_overrides",
+               return_value=_policy_overrides(["unraid_docker"])), \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=exec_result), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[running, stopped, stopped]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()  # stopped -> dispatch, verify armed
+        # Force the verify deadline to have already passed, matching how a
+        # real multi-minute gap between 60s ticks would look.
+        homelab_watch._pending_restart_verifies["plex"] = 0.0
+        await homelab_watch.check_docker()  # still not RUNNING -> timeout page
+
+    assert "plex" not in homelab_watch._pending_restart_verifies
+    failure_calls = [c for c in mock_notify.await_args_list if c.kwargs["kind"] == "homelab_docker_restart_failed"]
+    assert len(failure_calls) == 1
+    assert failure_calls[0].kwargs["buttons"] == [{"text": "↺ Restart", "callback_data": "docker:restart:plex"}]
+
+
+@pytest.mark.asyncio
+async def test_docker_auto_restart_stopped_result_pages_failure_immediately_no_wait():
+    """The 3-state contract's 'stop succeeded, start failed' case (result has
+    stopped=True, success is falsy) must page failure right away, not arm a
+    3-minute wait for a container already confirmed down."""
+    running = _unraid_data(docker_containers=[{"name": "plex", "state": "RUNNING"}])
+    stopped = _unraid_data(docker_containers=[{"name": "plex", "state": "EXITED"}])
+    from backend.safety.broker import ActionResult, Decision, Reversibility, Risk
+    exec_result = ActionResult(decision=Decision.EXECUTED, risk=Risk.HIGH,
+                                reversibility=Reversibility.REVERSIBLE_BY_INVERSE,
+                                log_id=1, result={"success": False, "stopped": True, "error": "start failed"})
+    with patch("backend.safety.governor.get_policy_overrides",
+               return_value=_policy_overrides(["unraid_docker"])), \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock, return_value=exec_result), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=[running, stopped]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_docker()
+        await homelab_watch.check_docker()
+
+    assert "plex" not in homelab_watch._pending_restart_verifies
+    assert mock_notify.await_args.kwargs["kind"] == "homelab_docker_restart_failed"
+    assert "confirmed STOPPED" in mock_notify.await_args.args[0]
+    assert mock_notify.await_args.kwargs["buttons"] == [{"text": "↺ Restart", "callback_data": "docker:restart:plex"}]
+
+
+def test_reset_clears_pending_restart_verifies():
+    homelab_watch._pending_restart_verifies["plex"] = 123.0
+    homelab_watch.reset()
+    assert homelab_watch._pending_restart_verifies == {}
 
 
 # ---------------------------------------------------------------------------

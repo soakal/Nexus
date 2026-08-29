@@ -661,11 +661,38 @@ async def set_budget(
 # ---------------------------------------------------------------------------
 # Confirm-policy overrides (Feature 3 — Confirm-Policy Learner, Phase 1)
 # ---------------------------------------------------------------------------
-# Reading and revoking are plain GET/DELETE — granting a promotion is
-# deliberately NOT here: that only ever happens via the broker's
-# policy_promote kind + the existing safety:confirm Telegram buttons, so a
-# promotion always goes through a real human confirm. Revoking a promotion
-# (the DELETE below) needs no such gate — it only removes capability.
+# Reading and revoking are plain GET/DELETE. Granting a promotion (POST below,
+# added 2026-08-28) goes through the broker's policy_promote kind with
+# actor="user" — the authenticated POST call itself IS the human confirm
+# (same precedent as every other actor="user" route in this file/repo), so
+# no separate Telegram confirm step is needed for this manually-triggered
+# path. Revoking a promotion (the DELETE below) needs no such gate at all —
+# it only removes capability.
+
+@router.post("/policy/auto-allow/{kind}")
+async def promote_auto_allow_kind(kind: str, _=Depends(require_api_key)):
+    """Promote `kind` to auto-allow for agent/autonomous actors — an
+    unconfirmed autonomous action of this kind will now execute instead of
+    needing a human tap. Refused for an IRREVERSIBLE/UNCLASSIFIABLE kind or
+    one in _NEVER_PROMOTABLE (see broker.decide/_dispatch_policy_promote —
+    that floor is enforced there, not re-implemented here)."""
+    from backend.safety.broker import Decision, execute_action
+
+    res = await execute_action(
+        actor="user",
+        kind="policy_promote",
+        target=kind,
+        payload={"kind": kind},
+    )
+    if res.decision == Decision.EXECUTED:
+        from backend.safety import governor
+        overrides = await asyncio.to_thread(governor.get_policy_overrides)
+        return {"ok": True, "auto_allow": sorted(overrides["auto_allow"])}
+    raise HTTPException(
+        status_code=502,
+        detail=f"Promotion failed: {res.error or res.decision.value}",
+    )
+
 
 @router.get("/policy")
 async def get_policy(_=Depends(require_api_key)):
