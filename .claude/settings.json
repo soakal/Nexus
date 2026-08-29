@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(.env)",
+      "Write(.env)",
+      "Edit(.vault.key)",
+      "Write(.vault.key)",
+      "Read(.vault.key)",
+      "Edit(nexus.vault)",
+      "Write(nexus.vault)",
+      "Edit(nexus.db*)",
+      "Write(nexus.db*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint_edit.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -70,6 +70,11 @@ Thumbs.db
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+!.claude/settings.json
+!.claude/agents/
+!.claude/agents/**
+!.claude/hooks/
+!.claude/hooks/**
 
 # Local-only relay bookkeeping (not synced across machines)
 digests/claude-features/.relay_state.json
