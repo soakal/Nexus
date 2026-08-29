@@ -215,8 +215,10 @@ def metering_counters() -> dict:
 # rates.
 # "claude-sonnet-5" is NOT the SONNET_MODEL constant above (NEXUS still runs
 # 4.6) — added only so orchestrator_planner/executor/verifier_model can be
-# .env-overridden to it without meter-as-$0. Promo rate ($2/$10, added
-# 2026-07-18) runs through 2026-08-31 — revert to non-promo pricing after.
+# .env-overridden to it without meter-as-$0. $2/$10 (added 2026-07-18 as an
+# introductory rate) was confirmed 2026-08-28, live against Anthropic's
+# pricing page, as the PERMANENT standard price for Sonnet 5 -- the scheduled
+# 2026-08-31 reversion to $3/$15 was cancelled and will not occur.
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 3.0, "output": 15.0},
@@ -234,9 +236,10 @@ _PRICE_PER_MTOK = {
     "anthropic/claude-opus-4.8": {"input": 5.0, "output": 25.0},
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
-    # Same promo-rate caveat as the "claude-sonnet-5" entry above (revert to
-    # $3/$15 after 2026-08-31) -- this is the OpenRouter-proxied id for the
-    # same model, added 2026-08-28 alongside the fallback map entry below.
+    # Same permanent-price note as the "claude-sonnet-5" entry above ($2/$10
+    # confirmed standard, not a promo) -- this is the OpenRouter-proxied id
+    # for the same model, added 2026-08-28 alongside the fallback map entry
+    # below.
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0},
 }
 
@@ -506,7 +509,14 @@ def get_client() -> anthropic.Anthropic:
 # Anthropic's hosted web search tool — the same live search Claude.ai uses. When
 # enabled, Claude decides when to search, runs it server-side, and returns the
 # final answer (with citations) in one call. max_uses caps searches per turn.
-_WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+# _20260209 is the dynamic-filtering variant (built-in, nothing to configure) --
+# requires Opus 4.6+/Sonnet 4.6+, both of which NEXUS's model tiers and
+# orchestrator .env overrides are already on as of 2026-08-28; a future
+# override to an older model would need the basic _20250305 variant instead.
+# Billing unchanged ($10/1k searches, _WEB_SEARCH_USD_PER_SEARCH below); the
+# tool's own server-side code execution is free (verified against Anthropic's
+# live pricing page 2026-08-28).
+_WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
 
 
 def _extract_text(resp) -> str:

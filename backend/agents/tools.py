@@ -66,7 +66,7 @@ class ReadTool:
         """Custom-tool spec for the Anthropic Messages API.
 
         NOTE: no "type" key — that field is only for hosted/server tools (e.g.
-        web_search_20250305). Local custom tools omit it.
+        web_search_20260209). Local custom tools omit it.
         """
         return {
             "name": self.name,
