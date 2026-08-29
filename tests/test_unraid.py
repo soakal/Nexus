@@ -400,6 +400,28 @@ async def test_unraid_restart_docker_stop_fails_start_never_issued():
 
 
 @pytest.mark.asyncio
+async def test_unraid_restart_docker_already_stopped_still_starts():
+    """2026-08-28 fix: a container that's already crashed/exited 304s on the
+    stop mutation ("(HTTP code 304) container already stopped") -- this must
+    NOT abort the restart, since it's the common case when homelab_watch
+    auto-restarts a container it just observed transition out of RUNNING.
+    start must still be attempted and the result reported as a clean success."""
+    from backend.integrations import unraid
+    data = _containers_data([{"id": "hash1:hash2", "name": "plex", "status": "Exited", "state": "EXITED"}])
+    with patch("backend.integrations.unraid.resolve_container_id", new_callable=AsyncMock, return_value="hash1:hash2"), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data) as mock_fetch, \
+         patch("backend.integrations.unraid._docker_mutation", new_callable=AsyncMock,
+               side_effect=[(False, "[{'message': '(HTTP code 304) container already stopped -  '}]"), (True, "")]) as mock_mut, \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+        mock_fetch.invalidate = MagicMock()
+        result = await unraid.restart_docker("plex")
+
+    assert result == {"success": True}
+    assert mock_mut.await_args_list[0].args == ("stop", "hash1:hash2")
+    assert mock_mut.await_args_list[1].args == ("start", "hash1:hash2")
+
+
+@pytest.mark.asyncio
 async def test_unraid_restart_docker_start_fails_after_stop_succeeds():
     """The critical case: stop succeeds, start fails -- container is DOWN.
     Must be distinguishable ('stopped': True) from a routine failure."""

@@ -241,7 +241,19 @@ async def restart_docker(name_or_id: str) -> dict:
         return {"success": False, "error": str(e)}
 
     ok, err = await _docker_mutation("stop", container_id)
-    if not ok:
+    # A container that has already crashed/exited (as opposed to being bounced
+    # while still healthy) is already stopped, so this mutation 304s --
+    # "(HTTP code 304) container already stopped" -- confirmed live 2026-08-28
+    # via homelab_watch's own auto-restart path, which restarts a container
+    # exactly when it's JUST been observed as no longer RUNNING, i.e. this is
+    # the common case for that caller, not an edge case. Treating it as fatal
+    # meant restart_docker could never actually recover a crashed container --
+    # this affected the existing manual Telegram Restart button too, it just
+    # never surfaced because every prior drill bounced a running container.
+    # Any OTHER stop failure (permissions, network, a real API error) still
+    # aborts here, untouched.
+    already_stopped = not ok and "already stopped" in err.lower()
+    if not ok and not already_stopped:
         return {"success": False, "error": f"stop failed: {err}"}
 
     # Poll for the container to actually report stopped -- starting it again
