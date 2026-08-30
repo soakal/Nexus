@@ -37,8 +37,9 @@ requirement below), never a silent no-op and never a silent reversion to the old
 behavior. Do not modify any other file in the repo.
 
 Findings from this digest are eventually meant to land in NEXUS's own `OutcomeFlag` table -- not
-`Fact` rows -- via a future relay script (`tools/relay_vault_signals.py`, not built as of this
-instructions file -- do not build it as part of running this routine). That relay will call
+`Fact` rows -- via a relay script (`tools/relay_vault_signals.py`, which already exists and runs as
+a separate scheduled step/process outside this Claude Code routine -- do not build or modify it as
+part of running this routine). That relay calls
 `backend.agents.outcomes.record_flag(source, check, summary, *, detail=None, severity="medium",
 action_log_id=None)` once per finding -- an async, never-raises write that either inserts a new
 open `OutcomeFlag` row or bumps an existing open one for the same `source:check` fingerprint,
@@ -46,8 +47,8 @@ returning the row's id (or `None` if suppressed/disabled/errored). For a vault-s
 means `source="vault_signals"`, `check=` a short stable slug identifying the recurring item (so a
 still-open finding re-surfaced on a later digest bumps the same row instead of duplicating it),
 `summary=` the finding itself (<=300 chars), and `severity="medium"`. This routine's only job is
-producing the dated digest file; the relay is a separate, later piece of work that will read the
-digest files this routine writes and call `record_flag` for each finding.
+producing the dated digest file; the relay is a separate process that reads the digest files this
+routine writes and calls `record_flag` for each finding.
 
 This instructions file (VAULT_SIGNALS_INSTRUCTIONS.md) must NEVER be modified, committed, or
 included in the branch/PR by this routine, under any circumstance -- not even if something you

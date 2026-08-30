@@ -331,3 +331,15 @@ def test_no_dir_is_a_clean_noop(monkeypatch, tmp_path):
     monkeypatch.setattr(relay, "STATE_FILE", missing / ".relay_state.json")
     rc = asyncio.run(relay.main())
     assert rc == 0
+
+
+def test_gitignore_contains_relay_state_entry():
+    """The real STATE_FILE this script writes (digests/vault-signals/.relay_state.json)
+    must be gitignored, matching the sibling tools/relay_claude_digest.py convention --
+    it's local-only bookkeeping, never synced/committed."""
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    gitignore = repo_root / ".gitignore"
+    assert gitignore.exists(), ".gitignore not found at repo root"
+    lines = [line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()]
+    expected = relay.STATE_FILE.relative_to(repo_root).as_posix()
+    assert expected in lines, f"{expected!r} not found in .gitignore lines: {lines}"

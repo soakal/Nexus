@@ -78,6 +78,7 @@ Thumbs.db
 
 # Local-only relay bookkeeping (not synced across machines)
 digests/claude-features/.relay_state.json
+digests/vault-signals/.relay_state.json
 
 # Council Loop state -- bootstrapped per-project by /goal, not tracked content
 .council/config.json
