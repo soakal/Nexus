@@ -17,19 +17,24 @@ read: a note with no `category/work` tag and no relation to those three files is
 as one that has both.
 
 Relevance filter: this digest is for Brian's PERSONAL/BUSINESS/WORK life, not for NEXUS's own
-software quality. Exclude any finding whose subject is NEXUS's own codebase/architecture, or
-homelab infrastructure health (Proxmox, Unraid, Home Assistant, UniFi, AdGuard, Brain Organizer
-internals) -- that ground is already covered by NEXUS's own watchdog, contract canary, and
-homelab_watch checks, and re-surfacing it here would just duplicate an existing signal with a
-worse source. Before including anything, apply this test verbatim: "would addressing this make
-Brian's actual day/week/life better, vs. just NEXUS's own software quality" -- if the answer is
-the latter, skip it, full stop, even if the finding is real and valid.
+software quality. Exclude any finding whose subject is NEXUS's own codebase/architecture -- that
+ground is already covered elsewhere and re-surfacing it here would just duplicate an existing
+signal with a worse source. Homelab infrastructure health (Proxmox, Unraid, Home Assistant, UniFi,
+AdGuard, Brain Organizer internals) is NOT excluded -- keep it, but tag it `[homelab]` instead of
+`[personal]`/`[business]`/`[work]` (see Tagging below), since NEXUS's own watchdog, contract
+canary, and homelab_watch checks already cover that ground from a different source and a
+downstream reader may want to treat it differently. Before excluding a NEXUS-codebase finding,
+apply this test verbatim: "would addressing this make Brian's actual day/week/life better, vs.
+just NEXUS's own software quality" -- if the answer is the latter, skip it, full stop, even if the
+finding is real and valid.
 
 Tagging: every surfaced bullet must start with exactly one literal tag -- `[personal]`,
-`[business]`, or `[work]` -- immediately before the bold title, so a downstream relay step can
-parse which category a finding belongs to. For example:
-- `[work]` **GM contract renewal date approaching** -- `General-Motors.md` mentions a renewal
+`[business]`, `[work]`, or `[homelab]` -- immediately before the bold title, so a downstream relay
+step can parse which category a finding belongs to. For example:
+- [work] **GM contract renewal date approaching** -- `General-Motors.md` mentions a renewal
   window that hasn't been revisited since June; no resolution found.
+- [homelab] **Unraid parity check overdue** -- `MOC-Homelab.md` notes the monthly parity check
+  hasn't run in six weeks; no resolution found.
 Restating the point above: it is entirely normal, and correct, for a run to find nothing that
 passes both the relevance filter and the tagging requirement -- an empty digest is the correct
 outcome on a quiet day, not a failure to try harder.
@@ -57,8 +62,8 @@ Findings from this digest are eventually meant to land in NEXUS's own `OutcomeFl
 a separate scheduled step/process outside this Claude Code routine -- do not build or modify it as
 part of running this routine). That relay POSTs each finding to NEXUS's live backend REST endpoint,
 `POST /api/safety/flags` (Bearer-authenticated via `NEXUS_API_KEY`), with body
-`{"source": "vault_signals", "check": <slug>, "summary": <text>, "severity": "medium"}` -- `check=`
-a short stable slug identifying the recurring item (so a still-open finding re-surfaced on a later
+`{"source": "vault_signals", "check": "<category>:<slug>", "summary": <text>, "severity": "medium"}` --
+`check=` a short stable slug identifying the recurring item (so a still-open finding re-surfaced on a later
 digest bumps the same `OutcomeFlag` row instead of duplicating it) and `summary=` the finding
 itself (<=300 chars). Unlike a direct in-process call, this is a real HTTP request and can fail
 (network error, non-2xx response); the relay only marks a digest file as relayed once every one of

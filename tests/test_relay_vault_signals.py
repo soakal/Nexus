@@ -90,7 +90,9 @@ def test_one_post_flag_call_per_finding(monkeypatch, tmp_path):
     _write_digest(
         tmp_path,
         "2026-01-01.md",
-        "## First finding\nBody text one.\n\n## Second finding\nBody text two.\n\n## Third finding\nBody text three.\n",
+        "## First finding\n[personal] Body text one.\n\n"
+        "## Second finding\n[business] Body text two.\n\n"
+        "## Third finding\n[work] Body text three.\n",
     )
 
     rc = relay.main()
@@ -117,7 +119,7 @@ def test_relay_file_passes_env_base_url_to_post_flag(monkeypatch, tmp_path):
 
     _patch_post_flag(monkeypatch, fake_post_flag)
 
-    _write_digest(tmp_path, "2026-01-01.md", "- a finding\n")
+    _write_digest(tmp_path, "2026-01-01.md", "- [personal] a finding\n")
 
     rc = relay.main()
 
@@ -136,7 +138,7 @@ def test_slug_is_stable_across_digests(monkeypatch, tmp_path):
 
     _patch_post_flag(monkeypatch, fake_post_flag)
 
-    same_bullet = "- The garage sensor note has an unresolved TODO\n"
+    same_bullet = "- [personal] The garage sensor note has an unresolved TODO\n"
     _write_digest(tmp_path, "2026-01-01.md", same_bullet)
     _write_digest(tmp_path, "2026-01-02.md", same_bullet)
 
@@ -163,10 +165,10 @@ def test_bullets_under_a_section_are_separate_findings(monkeypatch, tmp_path):
 
     digest = (
         "## Work\n"
-        "- Stale open item in General-Motors.md: the remote-access request...\n"
-        "- Something else entirely\n"
+        "- [work] Stale open item in General-Motors.md: the remote-access request...\n"
+        "- [personal] Something else entirely\n"
         "## Business\n"
-        "- Unresolved follow-up in Business.md: confirm with Jon whether Shantry Bills...\n"
+        "- [business] Unresolved follow-up in Business.md: confirm with Jon whether Shantry Bills...\n"
     )
     _write_digest(tmp_path, "2026-01-01.md", digest)
     _write_digest(tmp_path, "2026-01-02.md", digest)
@@ -198,10 +200,10 @@ def test_numbered_list_items_are_separate_findings(monkeypatch, tmp_path):
 
     digest_day1 = (
         "## Work\n"
-        "1. General-Motors.md — remote-access request still unresolved (stale).\n"
-        "2. MOC-VRSI.md — new pricing section (new).\n"
+        "1. [work] General-Motors.md — remote-access request still unresolved (stale).\n"
+        "2. [work] MOC-VRSI.md — new pricing section (new).\n"
     )
-    digest_day2 = digest_day1 + "3. Another-Doc.md — a third item added later.\n"
+    digest_day2 = digest_day1 + "3. [work] Another-Doc.md — a third item added later.\n"
 
     _write_digest(tmp_path, "2026-01-01.md", digest_day1)
     _write_digest(tmp_path, "2026-01-02.md", digest_day2)
@@ -217,6 +219,159 @@ def test_numbered_list_items_are_separate_findings(monkeypatch, tmp_path):
     assert day1_checks == day2_checks[:2]
 
 
+def test_all_four_tag_categories_prefix_the_check_slug_and_are_stripped_from_summary(
+    monkeypatch, tmp_path
+):
+    """Each of the four required tags -- [personal]/[business]/[work]/
+    [homelab] -- must (a) prefix the POSTed `check` slug as `<category>:`
+    and (b) be stripped out of the POSTed `summary` text entirely."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append({"check": check, "summary": summary})
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    digest = (
+        "- [personal] Dentist appointment still unscheduled\n"
+        "- [business] GM contract renewal date approaching\n"
+        "- [work] Quarterly review notes need follow-up\n"
+        "- [homelab] Unraid parity check overdue\n"
+    )
+    _write_digest(tmp_path, "2026-01-01.md", digest)
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert len(calls) == 4
+    by_category = {c["check"].split(":", 1)[0]: c for c in calls}
+    assert set(by_category) == {"personal", "business", "work", "homelab"}
+    for category, call in by_category.items():
+        assert call["check"].startswith(f"{category}:")
+        assert f"[{category}]" not in call["summary"]
+    assert "Dentist appointment still unscheduled" in by_category["personal"]["summary"]
+    assert "GM contract renewal date approaching" in by_category["business"]["summary"]
+    assert "Quarterly review notes need follow-up" in by_category["work"]["summary"]
+    assert "Unraid parity check overdue" in by_category["homelab"]["summary"]
+
+
+def test_backticked_tag_bullet_parses_end_to_end(monkeypatch, tmp_path):
+    """VAULT_SIGNALS_INSTRUCTIONS.md's worked bullet examples are plain (no
+    backticks), but its prose elsewhere wraps tag names in markdown code
+    spans (e.g. "`[work]`"), and the digest is LLM-generated -- a model could
+    plausibly emit a bullet like `` `[work]` **Title** -- body ``. That shape
+    must still parse as a `work` finding -- not fall through as untagged --
+    with the backticks (and tag) gone from `summary`."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append({"check": check, "summary": summary})
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    digest = "- `[work]` **GM contract renewal date approaching** -- body text here\n"
+    _write_digest(tmp_path, "2026-01-01.md", digest)
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["check"].startswith("work:")
+    assert "`" not in calls[0]["summary"]
+    assert "[work]" not in calls[0]["summary"]
+
+
+def test_untagged_bullet_is_skipped_but_file_still_marked_relayed(monkeypatch, tmp_path, capsys):
+    """A bullet with no recognized [category] tag must be skipped (never
+    posted) and logged -- but must NOT stop the file's other, tagged
+    findings from posting, and must NOT leave the file unmarked in
+    .relay_state.json (an untagged bullet is not a POST failure)."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append(check)
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    digest = "- [personal] a properly tagged finding\n- an untagged finding, no bracket tag\n"
+    _write_digest(tmp_path, "2026-01-01.md", digest)
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert len(calls) == 1  # only the tagged bullet was posted
+    assert calls[0].startswith("personal:")
+    state = json.loads((tmp_path / ".relay_state.json").read_text(encoding="utf-8"))
+    assert "2026-01-01.md" in state  # untagged bullet didn't block marking the file relayed
+    out = capsys.readouterr().out
+    assert "skipping untagged finding" in out
+
+
+def test_tag_prefix_and_strip_also_apply_to_bulletless_section_prose(monkeypatch, tmp_path):
+    """`_extract_findings`' flush() branch (a `## ` section with no bullets
+    at all -- its own prose body is the finding) parses/strips the tag via
+    a separate code path from the bullet branches above. The other
+    tag-category/strip tests only exercise bulleted findings; this pins the
+    same contract -- `check` prefixed `<category>:`, tag gone from
+    `summary`, section title still present -- for the bulletless shape too,
+    since nothing else in this file asserts on content for that branch."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append({"check": check, "summary": summary})
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    digest = "## Homelab\n[homelab] Unraid parity check overdue.\n"
+    _write_digest(tmp_path, "2026-01-01.md", digest)
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["check"].startswith("homelab:")
+    assert "[homelab]" not in calls[0]["summary"]
+    assert "Unraid parity check overdue" in calls[0]["summary"]
+
+
+def test_tag_anchored_to_bullet_content_not_loose_search_of_section_title(monkeypatch, tmp_path):
+    """A section title that itself contains bracketed text resembling a tag
+    (e.g. "[work] related codebase notes") must NEVER be mistaken for the
+    finding's own tag -- the tag must be parsed from the bullet's own
+    content only, anchored to its start, not found via a loose search of
+    the section-title-prefixed display string."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append({"check": check, "summary": summary})
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    digest = "## [work] related codebase notes\n- [personal] Some personal note here\n"
+    _write_digest(tmp_path, "2026-01-01.md", digest)
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["check"].startswith("personal:")
+
+
 def test_summary_truncated_to_300_chars(monkeypatch, tmp_path):
     _patch_dirs(monkeypatch, tmp_path)
     _patch_key(monkeypatch)
@@ -229,7 +384,7 @@ def test_summary_truncated_to_300_chars(monkeypatch, tmp_path):
     _patch_post_flag(monkeypatch, fake_post_flag)
 
     long_text = "x" * 500
-    _write_digest(tmp_path, "2026-01-01.md", f"- {long_text}\n")
+    _write_digest(tmp_path, "2026-01-01.md", f"- [personal] {long_text}\n")
 
     relay.main()
 
@@ -248,7 +403,7 @@ def test_per_file_finding_cap_holds(monkeypatch, tmp_path):
 
     _patch_post_flag(monkeypatch, fake_post_flag)
 
-    bullets = "\n".join(f"- distinct finding number {i}" for i in range(30))
+    bullets = "\n".join(f"- [personal] distinct finding number {i}" for i in range(30))
     _write_digest(tmp_path, "2026-01-01.md", bullets + "\n")
 
     relay.main()
@@ -289,7 +444,7 @@ def test_post_flag_raising_does_not_propagate_but_leaves_file_unrelayed(monkeypa
 
     _patch_post_flag(monkeypatch, raising_post_flag)
 
-    _write_digest(tmp_path, "2026-01-01.md", "- a finding whose relay call will explode\n")
+    _write_digest(tmp_path, "2026-01-01.md", "- [personal] a finding whose relay call will explode\n")
 
     rc = relay.main()  # must not raise
     assert rc == 1
@@ -317,7 +472,9 @@ def test_partial_failure_within_a_file_still_attempts_every_finding_and_stays_un
     _write_digest(
         tmp_path,
         "2026-01-01.md",
-        "## First finding\nfirst body.\n\n## Second finding\nsecond body.\n\n## Third finding\nthird body.\n",
+        "## First finding\n[personal] first body.\n\n"
+        "## Second finding\n[business] second body.\n\n"
+        "## Third finding\n[work] third body.\n",
     )
 
     rc = relay.main()
@@ -338,7 +495,7 @@ def test_post_flag_returning_false_leaves_file_unrelayed(monkeypatch, tmp_path):
 
     _patch_post_flag(monkeypatch, failing_post_flag)
 
-    _write_digest(tmp_path, "2026-01-01.md", "- a finding whose POST fails\n")
+    _write_digest(tmp_path, "2026-01-01.md", "- [personal] a finding whose POST fails\n")
 
     rc = relay.main()
     assert rc == 1
@@ -383,7 +540,7 @@ def test_corrupted_relay_state_does_not_crash_main(monkeypatch, tmp_path):
 
     _patch_post_flag(monkeypatch, fake_post_flag)
 
-    _write_digest(tmp_path, "2026-01-01.md", "- a finding behind a corrupt state file\n")
+    _write_digest(tmp_path, "2026-01-01.md", "- [personal] a finding behind a corrupt state file\n")
     (tmp_path / ".relay_state.json").write_text("{not valid json", encoding="utf-8")
 
     rc = relay.main()  # must not raise
@@ -411,7 +568,7 @@ def test_slugify_hash_suffix_prevents_prefix_collision(monkeypatch, tmp_path):
     _patch_post_flag(monkeypatch, fake_post_flag)
 
     shared_prefix = "x" * 80
-    digest = f"- {shared_prefix} AAAA\n- {shared_prefix} BBBB\n"
+    digest = f"- [personal] {shared_prefix} AAAA\n- [personal] {shared_prefix} BBBB\n"
     _write_digest(tmp_path, "2026-01-01.md", digest)
 
     rc = relay.main()
@@ -443,7 +600,7 @@ def test_main_returns_1_when_a_file_fails_to_relay(monkeypatch, tmp_path):
     # Invalid UTF-8 bytes make path.read_text(encoding="utf-8") raise inside
     # _relay_file -- a real, not simulated, whole-file failure.
     (tmp_path / "2026-01-01.md").write_bytes(b"\xff\xfe not valid utf-8")
-    _write_digest(tmp_path, "2026-01-02.md", "- a finding in a good file\n")
+    _write_digest(tmp_path, "2026-01-02.md", "- [personal] a finding in a good file\n")
 
     rc = relay.main()
 

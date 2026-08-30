@@ -25,11 +25,24 @@ section is its own finding, prefixed with the section title, regardless of
 indentation -- a nested sub-bullet is NOT folded into its parent, it becomes
 its own finding too; a bulletless section's own prose is one finding) and
 flat `-`/`*`/numbered bullet lines outside any section (one finding per
-bullet line). Whichever a given digest run actually used, findings come out
-the same shape: a block of prose text.
+bullet line).
+
+Per VAULT_SIGNALS_INSTRUCTIONS.md's Tagging section, every real finding's
+own bullet/content text starts with exactly one literal `[personal]`,
+`[business]`, `[work]`, or `[homelab]` tag. `_extract_findings` parses that
+tag off each finding's OWN content -- before any section-title prefix is
+applied, never via a loose search of the fully-assembled display string, so
+a section title that happens to contain bracketed text can never be
+mistaken for the finding's own tag -- and returns `(category, text)` pairs
+with the tag stripped out of `text`. A finding with no recognized tag at
+its own start comes back as `(None, text)`; `_relay_file` skips those
+(logging a warning) rather than posting them, but still counts the file as
+fully relayed as long as every *tagged* finding posted successfully -- an
+untagged bullet must never block the whole digest file from being marked
+relayed.
 
 Each finding is POSTed as:
-    {"source": "vault_signals", "check": <slug>, "summary": <text>, "severity": "medium"}
+    {"source": "vault_signals", "check": "<category>:<slug>", "summary": <text>, "severity": "medium"}
 to {NEXUS_BASE_URL or http://192.168.1.62:8000}/api/safety/flags, Bearer-
 authed via NEXUS_API_KEY (env) then ~/.config/nexus/api_key (file), mirroring
 Council-loop/scripts/postmortem_payload.py's own `_api_key()` contract
@@ -338,7 +351,36 @@ def _open_and_merge_pending_digest_prs() -> list[str]:
     return merged
 
 
-def _extract_findings(content: str) -> list[str]:
+# The leading backtick pair is optional. VAULT_SIGNALS_INSTRUCTIONS.md's own
+# worked bullet examples are plain (`- [work] **Title** -- ...`), but its prose
+# elsewhere refers to tag names inside markdown code spans (e.g. "`[work]`"),
+# and the digest itself is LLM-generated markdown -- a model could plausibly
+# still emit a bullet like `` `[work]` **Title** -- body ``. The consumer must
+# tolerate that shape too, rather than assuming every finding matches the
+# doc's worked examples exactly.
+_TAG = re.compile(r"^`?\[(personal|business|work|homelab)\]`?\s*")
+
+
+def _parse_tag(text: str) -> tuple[str | None, str]:
+    """Match/strip exactly one leading `[personal]`/`[business]`/`[work]`/
+    `[homelab]` tag off `text`, anchored to the very START of `text` only.
+    Callers must pass the finding's own actual bullet/content text here --
+    never a section-title-prefixed display string -- since a loose search
+    anywhere in a longer string risks matching a false positive inside a
+    section title instead of the finding's own tag (see VAULT_SIGNALS_
+    INSTRUCTIONS.md's Tagging section and this module's docstring).
+
+    Returns (category, text) with the tag and any following whitespace
+    stripped, or (None, text) verbatim if no recognized tag is present at
+    the start.
+    """
+    m = _TAG.match(text)
+    if not m:
+        return None, text
+    return m.group(1), text[m.end():].strip()
+
+
+def _extract_findings(content: str) -> list[tuple[str | None, str]]:
     """Pull candidate findings out of a digest's markdown body.
 
     Two shapes tolerated (the digest format is unpinned, see module
@@ -352,17 +394,25 @@ def _extract_findings(content: str) -> list[str]:
     directly under a section (no bullets at all) is its own single finding.
     A bullet line encountered OUTSIDE any active `## ` section is its own
     finding, same as before.
+
+    Each finding is returned as `(category, text)` -- the leading
+    `[category]` tag is parsed off the finding's OWN content (bullet text,
+    or section-prose body) BEFORE any section-title prefix is applied, per
+    `_parse_tag`, and stripped out of `text`. `category` is `None` when no
+    recognized tag was present.
     """
-    findings: list[str] = []
+    findings: list[tuple[str | None, str]] = []
     section_title: str | None = None
     section_body: list[str] = []
     section_had_bullet = False
 
     def flush() -> None:
         if section_title is not None and not section_had_bullet:
-            text = " ".join([section_title, *section_body]).strip()
+            body_text = " ".join(section_body).strip()
+            category, body_text = _parse_tag(body_text)
+            text = " ".join([section_title, body_text]).strip() if body_text else section_title.strip()
             if text:
-                findings.append(text)
+                findings.append((category, text))
 
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -376,11 +426,14 @@ def _extract_findings(content: str) -> list[str]:
             if bullet_match:
                 section_had_bullet = True
                 bullet_text = _BULLET.sub("", line).strip()
-                findings.append(f"{section_title} — {bullet_text}")
+                category, bullet_text = _parse_tag(bullet_text)
+                findings.append((category, f"{section_title} — {bullet_text}"))
             elif line:
                 section_body.append(line)
         elif _BULLET.match(line):
-            findings.append(_BULLET.sub("", line).strip())
+            bullet_text = _BULLET.sub("", line).strip()
+            category, bullet_text = _parse_tag(bullet_text)
+            findings.append((category, bullet_text))
     flush()
     return findings
 
@@ -457,20 +510,33 @@ def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
 
 
 def _relay_file(path: Path, base_url: str, key: str) -> bool:
-    """Relay every finding in one digest file. Returns True only if EVERY
-    finding's POST succeeded -- callers must only mark this file relayed in
-    .relay_state.json when this returns True, since (unlike the old
-    never-raising record_flag call this replaced) an HTTP POST can genuinely
-    fail, and marking a file relayed despite a failed POST would lose that
-    finding forever. A misbehaving _post_flag call is caught per-finding and
-    must not stop the rest of the batch -- but a read failure (e.g.
-    path.read_text()) can still raise; callers must still guard the read."""
+    """Relay every TAGGED finding in one digest file. Returns True as long as
+    EVERY tagged finding's POST succeeded -- callers must only mark this
+    file relayed in .relay_state.json when this returns True, since (unlike
+    the old never-raising record_flag call this replaced) an HTTP POST can
+    genuinely fail, and marking a file relayed despite a failed POST would
+    lose that finding forever. A misbehaving _post_flag call is caught
+    per-finding and must not stop the rest of the batch -- but a read
+    failure (e.g. path.read_text()) can still raise; callers must still
+    guard the read.
+
+    A finding with no recognized `[personal]`/`[business]`/`[work]`/
+    `[homelab]` tag at its own start (see _parse_tag) is SKIPPED -- logged
+    as a warning, never posted -- but does NOT count against the return
+    value: an untagged bullet must never leave the whole digest file
+    permanently unmarked/retried forever just because one bullet in it
+    didn't follow the tagging convention."""
     content = path.read_text(encoding="utf-8")
     findings = _extract_findings(content)[:MAX_FINDINGS_PER_FILE]
     all_ok = True
     posted = 0
-    for finding in findings:
-        slug = _slugify(finding)
+    skipped = 0
+    for category, finding in findings:
+        if category is None:
+            print(f"{path.name}: skipping untagged finding (no [personal]/[business]/[work]/[homelab] tag): {finding[:80]!r}")
+            skipped += 1
+            continue
+        slug = f"{category}:{_slugify(finding)}"
         summary = finding[:300]
         try:
             ok = _post_flag(base_url, key, slug, summary)
@@ -481,7 +547,7 @@ def _relay_file(path: Path, base_url: str, key: str) -> bool:
             posted += 1
         else:
             all_ok = False
-    print(f"{path.name}: {posted}/{len(findings)} finding(s) posted")
+    print(f"{path.name}: {posted}/{len(findings)} finding(s) posted ({skipped} skipped, untagged)")
     return all_ok
 
 
