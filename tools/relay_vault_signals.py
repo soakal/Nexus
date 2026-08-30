@@ -14,9 +14,9 @@ the branch touches nothing but its own dated digest file), then merges it --
 and any branch that already had an open PR -- through the same checks
 `relay_claude_digest.py::_merge_pending_digest_prs` applies: single-file
 diff, same-repo/owner only, base must be `main`. See
-VAULT_SIGNALS_INSTRUCTIONS.md for the routine-facing side of this (it pushes
-the branch and, when it can, opens the PR itself; this relay is the backstop
-for when it can't, and the sole thing that ever merges).
+VAULT_SIGNALS_INSTRUCTIONS.md for the routine-facing side of this (the
+routine only ever commits and pushes the branch, never attempts to open a PR
+itself; this relay is the sole thing that ever opens or merges one).
 
 The digest format is unpinned (no dated digest file has ever gone through
 this relay yet), so `_extract_findings` deliberately tolerates two shapes:

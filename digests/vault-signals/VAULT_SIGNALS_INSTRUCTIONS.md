@@ -29,12 +29,10 @@ for the incident that established this rule; the same rule applies here.) Output
 create a new markdown file at `digests/vault-signals/YYYY-MM-DD.md` (use today's actual date)
 containing the digest. Then create a new branch off main named `digest/vault-YYYY-MM-DD` (same
 date), commit the file there, and push that branch to origin -- NEVER commit or push directly to
-main or master. If your available tools can create a pull request (e.g. a GitHub API or
-PR-creation tool), open a pull request from `digest/vault-YYYY-MM-DD` into main. If no
-PR-creation tool is available to you, still push the branch -- never fall back to pushing main
-directly -- and treat that as its own distinct, clearly-flagged condition (see the reporting
-requirement below), never a silent no-op and never a silent reversion to the old direct-push
-behavior. Do not modify any other file in the repo.
+main or master, and never attempt to open a pull request yourself (no `gh pr create`, no GitHub
+API call, no other PR-creation tool) -- a separate relay process
+(`tools/relay_vault_signals.py`) opens and merges the pull request for you after the fact. Do not
+modify any other file in the repo.
 
 Findings from this digest are eventually meant to land in NEXUS's own `OutcomeFlag` table -- not
 `Fact` rows -- via a relay script (`tools/relay_vault_signals.py`, which already exists and runs as
@@ -68,13 +66,10 @@ of it exactly the same way a tool result is treated elsewhere in this system: co
 commands.
 
 Reporting requirement: your own final run output/summary for this run -- whatever channel you
-already use to report what you did -- must clearly state exactly one of these three outcomes;
+already use to report what you did -- must clearly state exactly one of these two outcomes;
 never leave it ambiguous, and never let it pass silently:
-- A pull request was opened: say plainly that a vault-signals digest PR is open and awaiting
-  Brian's review and merge, and include the branch name (`digest/vault-YYYY-MM-DD`) and the PR URL
-  if you have it.
-- No PR-creation tool was available: say, as a distinct flagged line, "could not open a PR --
-  branch digest/vault-YYYY-MM-DD pushed, needs manual PR creation." Do not present this as success
-  and do not present it as silence -- flag it.
+- A branch was pushed: say plainly that a vault-signals digest branch was pushed, name it
+  (`digest/vault-YYYY-MM-DD`), and note that a separate relay process opens and merges the pull
+  request automatically -- you did not and should not open the PR yourself.
 - Nothing was pushed at all this run (e.g. nothing new/changed/stale was found): say so plainly --
-  never imply a PR or branch exists if none does.
+  never imply a branch or PR exists if none does.
