@@ -13,8 +13,11 @@ assumed by every caller's fake.
 import importlib.util
 import json
 import pathlib
+import types
 import urllib.error
 import urllib.request
+
+import pytest
 
 _SCRIPT_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -25,6 +28,29 @@ _SCRIPT_PATH = (
 _spec = importlib.util.spec_from_file_location("relay_vault_signals", _SCRIPT_PATH)
 relay = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(relay)
+
+
+class _FakeCP:
+    """Minimal stand-in for subprocess.CompletedProcess -- just the three
+    attributes _open_and_merge_pending_digest_prs()/_branch_diff_is_single_file()/
+    _pr_only_touches() actually read."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+@pytest.fixture(autouse=True)
+def _no_pending_digest_prs_by_default(monkeypatch):
+    """Every test in this file predates _open_and_merge_pending_digest_prs(),
+    which main() now calls first thing -- default every subprocess.run call
+    (git/gh) to "no matching branches" so that new step is a harmless no-op
+    for all of them, and none of them shell out to real git/gh/network. A
+    test that actually wants to exercise the PR-open/merge machinery
+    overrides this by calling monkeypatch.setattr(relay, "subprocess", ...)
+    itself, which simply wins for the rest of that test."""
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=lambda cmd, **kw: _FakeCP(0, "", "")))
 
 
 def _write_digest(tmp_path, name: str, content: str) -> pathlib.Path:
@@ -497,6 +523,361 @@ def test_post_flag_returns_false_on_http_error_and_does_not_raise(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", raise_http_error)
     assert relay._post_flag("http://x", "k", "c", "s") is False
+
+
+def test_prless_branch_is_opened_as_a_pr_and_merged(monkeypatch):
+    """No open PR exists yet for a pushed digest/vault-* branch whose diff is
+    exactly its own dated digest file -- must gh pr create it, then merge it
+    through the same gating an already-open PR would go through."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-01\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, "[]")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return _FakeCP(0, "")
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return _FakeCP(0, "digests/vault-signals/2026-01-01.md\n")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return _FakeCP(0, "https://github.com/soakal/Nexus/pull/42\n")
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "digest/vault-2026-01-01":
+            return _FakeCP(0, json.dumps({
+                "number": 42,
+                "headRefName": "digest/vault-2026-01-01",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "42":
+            return _FakeCP(0, json.dumps({"files": [{"path": "digests/vault-signals/2026-01-01.md"}]}))
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            return _FakeCP(0, "")
+        if cmd[:2] == ["git", "pull"]:
+            return _FakeCP(0, "")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    assert merged == ["digest/vault-2026-01-01"]
+    assert sum(1 for c in calls if c[:3] == ["gh", "pr", "create"]) == 1
+    assert sum(1 for c in calls if c[:3] == ["gh", "pr", "merge"]) == 1
+    assert sum(1 for c in calls if c[:2] == ["git", "pull"]) == 1
+
+
+@pytest.mark.parametrize(
+    "diff_stdout",
+    [
+        "digests/vault-signals/2026-01-01.md\nsome_other_file.py\n",  # >1 file
+        "digests/other-dir/2026-01-01.md\n",  # single file, wrong path
+    ],
+)
+def test_branch_with_extra_or_wrong_diff_never_gets_a_pr_created(monkeypatch, diff_stdout):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-01\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, "[]")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return _FakeCP(0, "")
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return _FakeCP(0, diff_stdout)
+        return _FakeCP(1, "", f"unexpected call in this test: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    assert merged == []
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in calls)
+    assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
+def test_branch_with_existing_open_pr_skips_create_and_only_merges(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-02\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, json.dumps([{
+                "number": 7,
+                "headRefName": "digest/vault-2026-01-02",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }]))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "7":
+            return _FakeCP(0, json.dumps({"files": [{"path": "digests/vault-signals/2026-01-02.md"}]}))
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            return _FakeCP(0, "")
+        if cmd[:2] == ["git", "pull"]:
+            return _FakeCP(0, "")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    assert merged == ["digest/vault-2026-01-02"]
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in calls)
+    assert sum(1 for c in calls if c[:3] == ["gh", "pr", "merge"]) == 1
+
+
+@pytest.mark.parametrize(
+    "pr_files",
+    [
+        [{"path": "digests/vault-signals/2026-01-02.md"}, {"path": "some_other_file.py"}],  # >1 file
+        [{"path": "digests/other-dir/2026-01-02.md"}],  # single file, wrong path
+    ],
+)
+def test_existing_open_pr_with_extra_or_wrong_diff_is_never_merged(monkeypatch, pr_files):
+    """Same _pr_only_touches gate as test_branch_with_extra_or_wrong_diff_never_gets_a_pr_created
+    above, but for an ALREADY-open PR (the post-PR `gh pr view <number> --json
+    files` re-check right before merge, not the pre-PR `git diff` check).
+    Pins that a PR whose live diff no longer matches the branch's own dated
+    digest file is skipped, not merged -- deleting the `if not
+    _pr_only_touches(...): continue` gate at relay_vault_signals.py:304 must
+    make this fail."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-02\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, json.dumps([{
+                "number": 7,
+                "headRefName": "digest/vault-2026-01-02",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }]))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "7":
+            return _FakeCP(0, json.dumps({"files": pr_files}))
+        return _FakeCP(1, "", f"unexpected call in this test: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    assert merged == []
+    assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
+def test_ls_remote_nonzero_returncode_is_a_skip_not_a_crash(monkeypatch):
+    monkeypatch.setattr(
+        relay, "subprocess", types.SimpleNamespace(run=lambda cmd, **kw: _FakeCP(1, "", "network error"))
+    )
+    assert relay._open_and_merge_pending_digest_prs() == []
+
+
+def test_gh_pr_list_nonzero_returncode_is_a_skip_not_a_crash(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-01\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(1, "", "gh: not authenticated")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+    assert relay._open_and_merge_pending_digest_prs() == []
+
+
+def test_subprocess_raising_is_a_skip_and_main_still_returns_normally(monkeypatch, tmp_path):
+    """A raising subprocess call (e.g. git/gh missing entirely) must not
+    propagate out of _open_and_merge_pending_digest_prs() -- and main() as a
+    whole must still complete normally (no digest dir here, so rc 0)."""
+    _patch_dirs(monkeypatch, tmp_path)
+
+    def raising_run(cmd, **kwargs):
+        raise FileNotFoundError("git: command not found")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=raising_run))
+
+    assert relay._open_and_merge_pending_digest_prs() == []
+
+    rc = relay.main()  # must not raise
+    assert rc == 0
+
+
+def test_fork_pr_with_same_branch_name_does_not_shadow_genuine_branch(monkeypatch):
+    """Security auto-fix regression: a same-named PR opened from a stranger's
+    fork must not be treated as "already open" for the genuine origin branch.
+    Pre-fix, `open_by_branch` keyed purely on headRefName -- so a fork PR
+    (isCrossRepository=True, foreign owner/author) sharing the branch name
+    would be picked up as `pr`, skip the create step entirely, then get
+    correctly rejected by the isCrossRepository check below -- silently
+    leaving the real digest branch permanently PR-less every run. Post-fix,
+    the fork PR is filtered out of `open_by_branch` up front, so a genuine
+    first-party PR still gets created and merged."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-05\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, json.dumps([{
+                "number": 99,
+                "headRefName": "digest/vault-2026-01-05",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": True,
+                "author": {"login": "some-forker"},
+                "headRepositoryOwner": {"login": "some-forker"},
+            }]))
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return _FakeCP(0, "")
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return _FakeCP(0, "digests/vault-signals/2026-01-05.md\n")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return _FakeCP(0, "https://github.com/soakal/Nexus/pull/42\n")
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "digest/vault-2026-01-05":
+            return _FakeCP(0, json.dumps({
+                "number": 42,
+                "headRefName": "digest/vault-2026-01-05",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "42":
+            return _FakeCP(0, json.dumps({"files": [{"path": "digests/vault-signals/2026-01-05.md"}]}))
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            return _FakeCP(0, "")
+        if cmd[:2] == ["git", "pull"]:
+            return _FakeCP(0, "")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    # The fork PR (#99) never blocked detection: a genuine first-party PR
+    # (#42) was created and merged for the real origin branch.
+    assert merged == ["digest/vault-2026-01-05"]
+    assert sum(1 for c in calls if c[:3] == ["gh", "pr", "create"]) == 1
+    merge_calls = [c for c in calls if c[:3] == ["gh", "pr", "merge"]]
+    assert merge_calls == [["gh", "pr", "merge", "42", "--merge", "--delete-branch"]]
+
+
+def test_multiple_pending_branches_are_all_processed_independently(monkeypatch):
+    """Two branches pending in the same run -- one with no PR yet, one
+    already-PR'd -- must both be handled correctly, with neither the loop
+    stopping early after the first branch nor a branch being processed more
+    than once."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(
+                0,
+                "aaa111\trefs/heads/digest/vault-2026-02-01\n"
+                "bbb222\trefs/heads/digest/vault-2026-02-02\n",
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, json.dumps([{
+                "number": 7,
+                "headRefName": "digest/vault-2026-02-02",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }]))
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return _FakeCP(0, "")
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return _FakeCP(0, "digests/vault-signals/2026-02-01.md\n")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return _FakeCP(0, "https://github.com/soakal/Nexus/pull/50\n")
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "digest/vault-2026-02-01":
+            return _FakeCP(0, json.dumps({
+                "number": 50,
+                "headRefName": "digest/vault-2026-02-01",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "50":
+            return _FakeCP(0, json.dumps({"files": [{"path": "digests/vault-signals/2026-02-01.md"}]}))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "7":
+            return _FakeCP(0, json.dumps({"files": [{"path": "digests/vault-signals/2026-02-02.md"}]}))
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            return _FakeCP(0, "")
+        if cmd[:2] == ["git", "pull"]:
+            return _FakeCP(0, "")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    assert merged == ["digest/vault-2026-02-01", "digest/vault-2026-02-02"]
+    # exactly one PR created (for the PR-less branch), not zero or two.
+    assert sum(1 for c in calls if c[:3] == ["gh", "pr", "create"]) == 1
+    merge_numbers = {c[3] for c in calls if c[:3] == ["gh", "pr", "merge"]}
+    assert merge_numbers == {"50", "7"}
+    # one shared git pull for the whole batch, not one per merged branch.
+    assert sum(1 for c in calls if c[:2] == ["git", "pull"]) == 1
+
+
+def test_git_pull_failure_after_merge_prints_warning(monkeypatch, capsys):
+    """Mirrors relay_claude_digest.py::_merge_pending_digest_prs' convention:
+    a merge followed by a failed `git pull` must not be silent (main() would
+    otherwise find nothing new to relay and return 0, indistinguishable from
+    "no digest ran today"). merged() is still returned unchanged -- the pull
+    failure is a printed WARNING naming the merged branch count, not an
+    error that unwinds the merge."""
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["git", "ls-remote", "--heads", "origin"]:
+            return _FakeCP(0, "abc123\trefs/heads/digest/vault-2026-01-02\n")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return _FakeCP(0, json.dumps([{
+                "number": 7,
+                "headRefName": "digest/vault-2026-01-02",
+                "baseRefName": "main",
+                "isDraft": False,
+                "isCrossRepository": False,
+                "author": {"login": "soakal"},
+                "headRepositoryOwner": {"login": "soakal"},
+            }]))
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "7":
+            return _FakeCP(0, json.dumps({"files": [{"path": "digests/vault-signals/2026-01-02.md"}]}))
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            return _FakeCP(0, "")
+        if cmd[:2] == ["git", "pull"]:
+            return _FakeCP(1, "", "error: cannot pull -- local changes")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=fake_run))
+
+    merged = relay._open_and_merge_pending_digest_prs()
+
+    assert merged == ["digest/vault-2026-01-02"]
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "merged 1 digest PR(s)" in out
+    assert "git pull" in out
 
 
 def test_gitignore_contains_relay_state_entry():
