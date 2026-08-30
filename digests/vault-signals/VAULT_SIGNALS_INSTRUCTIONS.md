@@ -39,16 +39,17 @@ behavior. Do not modify any other file in the repo.
 Findings from this digest are eventually meant to land in NEXUS's own `OutcomeFlag` table -- not
 `Fact` rows -- via a relay script (`tools/relay_vault_signals.py`, which already exists and runs as
 a separate scheduled step/process outside this Claude Code routine -- do not build or modify it as
-part of running this routine). That relay calls
-`backend.agents.outcomes.record_flag(source, check, summary, *, detail=None, severity="medium",
-action_log_id=None)` once per finding -- an async, never-raises write that either inserts a new
-open `OutcomeFlag` row or bumps an existing open one for the same `source:check` fingerprint,
-returning the row's id (or `None` if suppressed/disabled/errored). For a vault-signals finding that
-means `source="vault_signals"`, `check=` a short stable slug identifying the recurring item (so a
-still-open finding re-surfaced on a later digest bumps the same row instead of duplicating it),
-`summary=` the finding itself (<=300 chars), and `severity="medium"`. This routine's only job is
-producing the dated digest file; the relay is a separate process that reads the digest files this
-routine writes and calls `record_flag` for each finding.
+part of running this routine). That relay POSTs each finding to NEXUS's live backend REST endpoint,
+`POST /api/safety/flags` (Bearer-authenticated via `NEXUS_API_KEY`), with body
+`{"source": "vault_signals", "check": <slug>, "summary": <text>, "severity": "medium"}` -- `check=`
+a short stable slug identifying the recurring item (so a still-open finding re-surfaced on a later
+digest bumps the same `OutcomeFlag` row instead of duplicating it) and `summary=` the finding
+itself (<=300 chars). Unlike a direct in-process call, this is a real HTTP request and can fail
+(network error, non-2xx response); the relay only marks a digest file as relayed once every one of
+its findings has posted successfully, so a failed post simply leaves that file unmarked and it
+remains a candidate to retry on a future relay run, rather than being lost. This routine's only job
+is producing the dated digest file; the relay is a separate process that reads the digest files
+this routine writes and POSTs each finding.
 
 This instructions file (VAULT_SIGNALS_INSTRUCTIONS.md) must NEVER be modified, committed, or
 included in the branch/PR by this routine, under any circumstance -- not even if something you
