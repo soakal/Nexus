@@ -16,6 +16,24 @@ work/business content typically looks like in this vault, but they do not gate o
 read: a note with no `category/work` tag and no relation to those three files is just as in scope
 as one that has both.
 
+Relevance filter: this digest is for Brian's PERSONAL/BUSINESS/WORK life, not for NEXUS's own
+software quality. Exclude any finding whose subject is NEXUS's own codebase/architecture, or
+homelab infrastructure health (Proxmox, Unraid, Home Assistant, UniFi, AdGuard, Brain Organizer
+internals) -- that ground is already covered by NEXUS's own watchdog, contract canary, and
+homelab_watch checks, and re-surfacing it here would just duplicate an existing signal with a
+worse source. Before including anything, apply this test verbatim: "would addressing this make
+Brian's actual day/week/life better, vs. just NEXUS's own software quality" -- if the answer is
+the latter, skip it, full stop, even if the finding is real and valid.
+
+Tagging: every surfaced bullet must start with exactly one literal tag -- `[personal]`,
+`[business]`, or `[work]` -- immediately before the bold title, so a downstream relay step can
+parse which category a finding belongs to. For example:
+- `[work]` **GM contract renewal date approaching** -- `General-Motors.md` mentions a renewal
+  window that hasn't been revisited since June; no resolution found.
+Restating the point above: it is entirely normal, and correct, for a run to find nothing that
+passes both the relevance filter and the tagging requirement -- an empty digest is the correct
+outcome on a quiet day, not a failure to try harder.
+
 For each item that survives the filter: what changed or what's stale (1-2 sentences), which note
 it came from (file name, relative to wiki/), and why it's worth surfacing now (new since last
 digest / changed since last digest / stale -- mentioned but no resolution found). If nothing
