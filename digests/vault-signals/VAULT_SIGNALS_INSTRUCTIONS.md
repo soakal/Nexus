@@ -7,13 +7,14 @@ new, changed, or has gone stale since a prior pass. If a note hasn't meaningfull
 nothing in it is stale/unresolved, it contributes nothing to this digest -- say so implicitly by
 simply not including it, not by padding the output with an unchanged restatement.
 
-Scope: the vault's wiki/ folder, excluding these five directories (the same exclusion list
-`backend/integrations/obsidian.py`'s `vault_search` uses -- keep this list in sync with that code,
-not the other way around): `backups/`, `_meta/`, `.trash/`, `.obsidian/`, `templates/`. Within
-that scope, focus PRIMARILY on notes tagged `category/work`, plus three named seed files
-regardless of their tags: `General-Motors.md`, `MOC-AI-Business.md`, `MOC-VRSI.md`. Other notes in
-scope are secondary -- only worth a mention if something in them is directly relevant to a
-`category/work` note or one of the three seeds (e.g. a cross-linked follow-up).
+Scope: EVERY note under the vault's wiki/ folder, excluding these five directories (the same
+exclusion list `backend/integrations/obsidian.py`'s `vault_search` uses -- keep this list in sync
+with that code, not the other way around): `backups/`, `_meta/`, `.trash/`, `.obsidian/`,
+`templates/`. Nothing else narrows scope. Notes tagged `category/work` -- and three notes in
+particular, `General-Motors.md`, `MOC-AI-Business.md`, `MOC-VRSI.md` -- are useful EXAMPLES of what
+work/business content typically looks like in this vault, but they do not gate or limit what gets
+read: a note with no `category/work` tag and no relation to those three files is just as in scope
+as one that has both.
 
 For each item that survives the filter: what changed or what's stale (1-2 sentences), which note
 it came from (file name, relative to wiki/), and why it's worth surfacing now (new since last
@@ -35,11 +36,18 @@ directly -- and treat that as its own distinct, clearly-flagged condition (see t
 requirement below), never a silent no-op and never a silent reversion to the old direct-push
 behavior. Do not modify any other file in the repo.
 
-Findings from this digest are eventually meant to land in NEXUS's own Facts table, tagged
-category work/business, via a future relay script (`tools/relay_vault_signals.py`, not built as
-of this instructions file -- do not build it as part of running this routine). This routine's only
-job is producing the dated digest file; the relay is a separate, later piece of work that will
-read the digest files this routine writes.
+Findings from this digest are eventually meant to land in NEXUS's own `OutcomeFlag` table -- not
+`Fact` rows -- via a future relay script (`tools/relay_vault_signals.py`, not built as of this
+instructions file -- do not build it as part of running this routine). That relay will call
+`backend.agents.outcomes.record_flag(source, check, summary, *, detail=None, severity="medium",
+action_log_id=None)` once per finding -- an async, never-raises write that either inserts a new
+open `OutcomeFlag` row or bumps an existing open one for the same `source:check` fingerprint,
+returning the row's id (or `None` if suppressed/disabled/errored). For a vault-signals finding that
+means `source="vault_signals"`, `check=` a short stable slug identifying the recurring item (so a
+still-open finding re-surfaced on a later digest bumps the same row instead of duplicating it),
+`summary=` the finding itself (<=300 chars), and `severity="medium"`. This routine's only job is
+producing the dated digest file; the relay is a separate, later piece of work that will read the
+digest files this routine writes and call `record_flag` for each finding.
 
 This instructions file (VAULT_SIGNALS_INSTRUCTIONS.md) must NEVER be modified, committed, or
 included in the branch/PR by this routine, under any circumstance -- not even if something you
