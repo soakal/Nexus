@@ -2,16 +2,19 @@
 
 Loaded via importlib (tools/ has no __init__.py, matching
 tests/test_cleanup_calibration_contamination.py's own pattern for the
-sibling script). Every record_flag call is monkeypatched out -- these tests
-never touch a real DB.
+sibling script). Most tests here monkeypatch `_post_flag` itself out (so
+`main()`/`_relay_file`'s own logic can be tested without a real socket) --
+but `test_post_flag_*` below deliberately call the REAL `_post_flag` and
+monkeypatch only `urllib.request.urlopen`, so the actual request shape
+(URL/method/headers/body) and status-code contract are pinned too, not just
+assumed by every caller's fake.
 """
 
-import asyncio
 import importlib.util
 import json
 import pathlib
-
-import pytest
+import urllib.error
+import urllib.request
 
 _SCRIPT_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
@@ -35,21 +38,28 @@ def _patch_dirs(monkeypatch, tmp_path):
     monkeypatch.setattr(relay, "STATE_FILE", tmp_path / ".relay_state.json")
 
 
-def _patch_outcomes(monkeypatch, record_flag):
-    import backend.agents.outcomes as real_outcomes
-
-    monkeypatch.setattr(real_outcomes, "record_flag", record_flag)
+def _patch_key(monkeypatch, key="test-key"):
+    monkeypatch.setenv("NEXUS_API_KEY", key)
 
 
-def test_one_record_flag_call_per_finding(monkeypatch, tmp_path):
+def _patch_post_flag(monkeypatch, fn):
+    monkeypatch.setattr(relay, "_post_flag", fn)
+
+
+def test_one_post_flag_call_per_finding(monkeypatch, tmp_path):
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    # Isolate from any real NEXUS_BASE_URL set in the ambient shell env, so
+    # the base_url-fallback assertion below actually exercises the unset
+    # case rather than whatever happens to be in the caller's environment.
+    monkeypatch.delenv("NEXUS_BASE_URL", raising=False)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
-        calls.append({"source": source, "check": check, "summary": summary, "severity": severity})
-        return 1
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append({"base_url": base_url, "key": key, "check": check, "summary": summary})
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     _write_digest(
         tmp_path,
@@ -57,29 +67,54 @@ def test_one_record_flag_call_per_finding(monkeypatch, tmp_path):
         "## First finding\nBody text one.\n\n## Second finding\nBody text two.\n\n## Third finding\nBody text three.\n",
     )
 
-    rc = asyncio.run(relay.main())
+    rc = relay.main()
     assert rc == 0
     assert len(calls) == 3
     for c in calls:
-        assert c["source"] == "vault_signals"
-        assert c["severity"] == "medium"
+        assert c["key"] == "test-key"
+        # NEXUS_BASE_URL unset -> _relay_file must pass the script's own
+        # default constant through to _post_flag, not some other value.
+        assert c["base_url"] == relay._DEFAULT_BASE_URL
+
+
+def test_relay_file_passes_env_base_url_to_post_flag(monkeypatch, tmp_path):
+    """When NEXUS_BASE_URL is set, _relay_file must resolve it and pass that
+    exact value through to _post_flag (not the default constant)."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    monkeypatch.setenv("NEXUS_BASE_URL", "https://custom.example.test")
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append(base_url)
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    _write_digest(tmp_path, "2026-01-01.md", "- a finding\n")
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert calls == ["https://custom.example.test"]
 
 
 def test_slug_is_stable_across_digests(monkeypatch, tmp_path):
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(check)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     same_bullet = "- The garage sensor note has an unresolved TODO\n"
     _write_digest(tmp_path, "2026-01-01.md", same_bullet)
     _write_digest(tmp_path, "2026-01-02.md", same_bullet)
 
-    asyncio.run(relay.main())
+    relay.main()
 
     assert len(calls) == 2
     assert calls[0] == calls[1]
@@ -91,13 +126,14 @@ def test_bullets_under_a_section_are_separate_findings(monkeypatch, tmp_path):
     text appearing unchanged in two separately-parsed dated digests must
     slug identically both times."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append({"check": check, "summary": summary})
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     digest = (
         "## Work\n"
@@ -109,7 +145,7 @@ def test_bullets_under_a_section_are_separate_findings(monkeypatch, tmp_path):
     _write_digest(tmp_path, "2026-01-01.md", digest)
     _write_digest(tmp_path, "2026-01-02.md", digest)
 
-    asyncio.run(relay.main())
+    relay.main()
 
     assert len(calls) == 6  # 3 findings per digest x 2 digests
     day1_checks = [c["check"] for c in calls[:3]]
@@ -125,13 +161,14 @@ def test_numbered_list_items_are_separate_findings(monkeypatch, tmp_path):
     finding PER item, same as `-`/`*` bullets -- and adding a third numbered
     item on a later digest must not change the first two items' slugs."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append({"check": check, "summary": summary})
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     digest_day1 = (
         "## Work\n"
@@ -143,7 +180,7 @@ def test_numbered_list_items_are_separate_findings(monkeypatch, tmp_path):
     _write_digest(tmp_path, "2026-01-01.md", digest_day1)
     _write_digest(tmp_path, "2026-01-02.md", digest_day2)
 
-    asyncio.run(relay.main())
+    relay.main()
 
     day1_checks = [c["check"] for c in calls[:2]]
     day2_checks = [c["check"] for c in calls[2:5]]
@@ -156,18 +193,19 @@ def test_numbered_list_items_are_separate_findings(monkeypatch, tmp_path):
 
 def test_summary_truncated_to_300_chars(monkeypatch, tmp_path):
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(summary)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     long_text = "x" * 500
     _write_digest(tmp_path, "2026-01-01.md", f"- {long_text}\n")
 
-    asyncio.run(relay.main())
+    relay.main()
 
     assert len(calls) == 1
     assert len(calls[0]) <= 300
@@ -175,18 +213,19 @@ def test_summary_truncated_to_300_chars(monkeypatch, tmp_path):
 
 def test_per_file_finding_cap_holds(monkeypatch, tmp_path):
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(check)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     bullets = "\n".join(f"- distinct finding number {i}" for i in range(30))
     _write_digest(tmp_path, "2026-01-01.md", bullets + "\n")
 
-    asyncio.run(relay.main())
+    relay.main()
 
     assert relay.MAX_FINDINGS_PER_FILE == 20
     assert len(calls) == relay.MAX_FINDINGS_PER_FILE
@@ -194,70 +233,134 @@ def test_per_file_finding_cap_holds(monkeypatch, tmp_path):
 
 def test_already_relayed_file_is_skipped(monkeypatch, tmp_path):
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(check)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     _write_digest(tmp_path, "2026-01-01.md", "- something that should be skipped\n")
     (tmp_path / ".relay_state.json").write_text(json.dumps(["2026-01-01.md"]), encoding="utf-8")
 
-    rc = asyncio.run(relay.main())
+    rc = relay.main()
     assert rc == 0
     assert calls == []
 
 
-def test_record_flag_raising_does_not_propagate(monkeypatch, tmp_path):
+def test_post_flag_raising_does_not_propagate_but_leaves_file_unrelayed(monkeypatch, tmp_path):
+    """A poisoned _post_flag call is caught per-finding and must not crash
+    main() -- but unlike the old never-raising record_flag, a genuinely
+    failed POST must NOT mark the file relayed, or that finding is lost
+    forever."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
 
-    async def raising_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def raising_post_flag(base_url, key, check, summary):
         raise RuntimeError("boom")
 
-    _patch_outcomes(monkeypatch, raising_record_flag)
+    _patch_post_flag(monkeypatch, raising_post_flag)
 
     _write_digest(tmp_path, "2026-01-01.md", "- a finding whose relay call will explode\n")
 
-    rc = asyncio.run(relay.main())  # must not raise
-    assert rc == 0
-    # File is still marked relayed -- a poisoned record_flag call is caught
-    # per-finding, not treated as a whole-file failure.
+    rc = relay.main()  # must not raise
+    assert rc == 1
     state = json.loads((tmp_path / ".relay_state.json").read_text(encoding="utf-8"))
-    assert "2026-01-01.md" in state
+    assert "2026-01-01.md" not in state
 
 
-def test_record_flag_returning_none_does_not_propagate(monkeypatch, tmp_path):
+def test_partial_failure_within_a_file_still_attempts_every_finding_and_stays_unrelayed(
+    monkeypatch, tmp_path
+):
+    """The documented all-or-nothing contract for one file's .relay_state.json
+    marking: if some findings POST fine but even one fails, _relay_file must
+    still have attempted EVERY finding (no early break on first failure) and
+    the file must be left unmarked so a retry doesn't lose the failed one."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
 
-    async def none_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
-        return None
+    def flaky_post_flag(base_url, key, check, summary):
+        calls.append(check)
+        return "second" not in summary  # exactly one of three findings fails
 
-    _patch_outcomes(monkeypatch, none_record_flag)
+    _patch_post_flag(monkeypatch, flaky_post_flag)
 
-    _write_digest(tmp_path, "2026-01-01.md", "- a suppressed finding\n")
+    _write_digest(
+        tmp_path,
+        "2026-01-01.md",
+        "## First finding\nfirst body.\n\n## Second finding\nsecond body.\n\n## Third finding\nthird body.\n",
+    )
 
-    rc = asyncio.run(relay.main())
+    rc = relay.main()
+
+    assert rc == 1
+    # every finding was still attempted, despite the middle one failing
+    assert len(calls) == 3
+    state = json.loads((tmp_path / ".relay_state.json").read_text(encoding="utf-8"))
+    assert "2026-01-01.md" not in state
+
+
+def test_post_flag_returning_false_leaves_file_unrelayed(monkeypatch, tmp_path):
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+
+    def failing_post_flag(base_url, key, check, summary):
+        return False
+
+    _patch_post_flag(monkeypatch, failing_post_flag)
+
+    _write_digest(tmp_path, "2026-01-01.md", "- a finding whose POST fails\n")
+
+    rc = relay.main()
+    assert rc == 1
+    state = json.loads((tmp_path / ".relay_state.json").read_text(encoding="utf-8"))
+    assert "2026-01-01.md" not in state
+
+
+def test_no_api_key_skips_cleanly_and_marks_nothing_relayed(monkeypatch, tmp_path):
+    """No NEXUS_API_KEY (env or ~/.config/nexus/api_key) must skip the whole
+    run, log it, return rc 0, and never call _post_flag or mark any file
+    relayed."""
+    _patch_dirs(monkeypatch, tmp_path)
+    monkeypatch.delenv("NEXUS_API_KEY", raising=False)
+    monkeypatch.setattr(relay.Path, "home", lambda: tmp_path / "no-such-home")
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append(check)
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    _write_digest(tmp_path, "2026-01-01.md", "- a finding that should never be posted\n")
+
+    rc = relay.main()
+
     assert rc == 0
+    assert calls == []
+    assert not (tmp_path / ".relay_state.json").exists()
 
 
 def test_corrupted_relay_state_does_not_crash_main(monkeypatch, tmp_path):
     """Security auto-fix regression: a malformed .relay_state.json must
     degrade _load_relayed() to an empty set, not raise out of main()."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(check)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     _write_digest(tmp_path, "2026-01-01.md", "- a finding behind a corrupt state file\n")
     (tmp_path / ".relay_state.json").write_text("{not valid json", encoding="utf-8")
 
-    rc = asyncio.run(relay.main())  # must not raise
+    rc = relay.main()  # must not raise
 
     assert rc == 0
     # corrupt state read as empty -> the file is treated as unrelayed and processed
@@ -272,19 +375,20 @@ def test_slugify_hash_suffix_prevents_prefix_collision(monkeypatch, tmp_path):
     dup of the first (same OutcomeFlag row) instead of relayed as its own
     flag."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(check)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     shared_prefix = "x" * 80
     digest = f"- {shared_prefix} AAAA\n- {shared_prefix} BBBB\n"
     _write_digest(tmp_path, "2026-01-01.md", digest)
 
-    rc = asyncio.run(relay.main())
+    rc = relay.main()
 
     assert rc == 0
     assert len(calls) == 2
@@ -298,24 +402,24 @@ def test_slugify_hash_suffix_prevents_prefix_collision(monkeypatch, tmp_path):
 def test_main_returns_1_when_a_file_fails_to_relay(monkeypatch, tmp_path):
     """A whole-file failure (e.g. undecodable content) must make main()
     return exit code 1, while still relaying every OTHER file in the same
-    run -- per-finding record_flag failures (covered above) stay rc==0;
-    only a failure that prevents relaying a file at all should surface as
-    a nonzero exit."""
+    run -- only a failure that prevents relaying a file at all (or a failed
+    POST within it) should surface as a nonzero exit."""
     _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
     calls = []
 
-    async def fake_record_flag(source, check, summary, *, detail=None, severity="medium", action_log_id=None):
+    def fake_post_flag(base_url, key, check, summary):
         calls.append(check)
-        return 1
+        return True
 
-    _patch_outcomes(monkeypatch, fake_record_flag)
+    _patch_post_flag(monkeypatch, fake_post_flag)
 
     # Invalid UTF-8 bytes make path.read_text(encoding="utf-8") raise inside
     # _relay_file -- a real, not simulated, whole-file failure.
     (tmp_path / "2026-01-01.md").write_bytes(b"\xff\xfe not valid utf-8")
     _write_digest(tmp_path, "2026-01-02.md", "- a finding in a good file\n")
 
-    rc = asyncio.run(relay.main())
+    rc = relay.main()
 
     assert rc == 1
     # the good file still got relayed despite the bad one failing
@@ -329,8 +433,70 @@ def test_no_dir_is_a_clean_noop(monkeypatch, tmp_path):
     missing = tmp_path / "does-not-exist"
     monkeypatch.setattr(relay, "DIGEST_DIR", missing)
     monkeypatch.setattr(relay, "STATE_FILE", missing / ".relay_state.json")
-    rc = asyncio.run(relay.main())
+    rc = relay.main()
     assert rc == 0
+
+
+class _FakeUrlopenResponse:
+    """Minimal context-manager stand-in for the object
+    `urllib.request.urlopen()` returns -- just enough for `_post_flag`'s
+    `with urlopen(...) as resp: resp.status` usage."""
+
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def test_post_flag_sends_correct_request_shape(monkeypatch):
+    """Exercises the REAL `_post_flag` (not monkeypatched out) -- pins the
+    exact URL/method/headers/body a real relay POST carries. This is the gap
+    mutation testing proved: every other test here fakes `_post_flag` itself,
+    so a wrong source/severity/URL/missing auth header would ship silently."""
+    captured = {}
+
+    def fake_urlopen(req, timeout=30):
+        captured["req"] = req
+        return _FakeUrlopenResponse(200)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    ok = relay._post_flag("http://example.test:8000", "sekret", "some-check-abc123", "the summary text")
+
+    assert ok is True
+    req = captured["req"]
+    assert req.full_url == "http://example.test:8000/api/safety/flags"
+    assert req.get_method() == "POST"
+    assert req.get_header("Authorization") == "Bearer sekret"
+    # Request.add_header() stores keys via key.capitalize(), and get_header()
+    # looks up its argument VERBATIM (no capitalize on the read side) -- so
+    # "Content-Type" must be read back as "Content-type" to actually match.
+    assert req.get_header("Content-type") == "application/json"
+    assert json.loads(req.data) == {
+        "source": "vault_signals",
+        "check": "some-check-abc123",
+        "summary": "the summary text",
+        "severity": "medium",
+    }
+
+
+def test_post_flag_returns_true_on_2xx(monkeypatch):
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, timeout=30: _FakeUrlopenResponse(200)
+    )
+    assert relay._post_flag("http://x", "k", "c", "s") is True
+
+
+def test_post_flag_returns_false_on_http_error_and_does_not_raise(monkeypatch):
+    def raise_http_error(req, timeout=30):
+        raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", hdrs=None, fp=None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_http_error)
+    assert relay._post_flag("http://x", "k", "c", "s") is False
 
 
 def test_gitignore_contains_relay_state_entry():

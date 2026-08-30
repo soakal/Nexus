@@ -1,6 +1,8 @@
 """Relay the vault-signals digest (written by a cloud routine into
 digests/vault-signals/*.md, see VAULT_SIGNALS_INSTRUCTIONS.md) into NEXUS's
-own OutcomeFlag table via backend.agents.outcomes.record_flag.
+own OutcomeFlag table via a POST to POST /api/safety/flags (backend/api/
+safety.py::create_flag, which delegates server-side to
+backend.agents.outcomes.record_flag).
 
 Modeled structurally on the sibling tools/relay_claude_digest.py (dated-file
 scan, .relay_state.json tracking already-processed filenames, best-effort/
@@ -18,21 +20,25 @@ flat `-`/`*`/numbered bullet lines outside any section (one finding per
 bullet line). Whichever a given digest run actually used, findings come out
 the same shape: a block of prose text.
 
-Each finding is relayed via:
-    outcomes.record_flag(source="vault_signals", check=<slug>, summary=<text>,
-                          severity="medium")
-`record_flag` is async and never raises on its own (see backend/agents/
-outcomes.py's own contract) -- this script still wraps every call in
-try/except, since a caller should never trust an invariant it didn't write.
+Each finding is POSTed as:
+    {"source": "vault_signals", "check": <slug>, "summary": <text>, "severity": "medium"}
+to {NEXUS_BASE_URL or http://192.168.1.62:8000}/api/safety/flags, Bearer-
+authed via NEXUS_API_KEY (env) then ~/.config/nexus/api_key (file), mirroring
+Council-loop/scripts/postmortem_payload.py's own `_api_key()` contract
+exactly. Unlike the old never-raising `record_flag` call this replaced, an
+HTTP POST can genuinely fail -- so a file is only ever marked relayed in
+.relay_state.json when EVERY one of its findings' POSTs actually succeeded;
+a missing key or a failed POST leaves the file unmarked so the finding isn't
+lost, rather than silently dropped (see `_relay_file`'s docstring).
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
+import os
 import re
-import sys
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,7 +57,7 @@ _BULLET = re.compile(r"^(?:[-*]|\d+[.)])\s+")
 # more.
 MAX_FINDINGS_PER_FILE = 20
 
-sys.path.insert(0, str(REPO_ROOT))
+_DEFAULT_BASE_URL = "http://192.168.1.62:8000"
 
 
 def _extract_findings(content: str) -> list[str]:
@@ -132,33 +138,83 @@ def _save_relayed(names: set[str]) -> None:
     STATE_FILE.write_text(json.dumps(sorted(names), indent=2), encoding="utf-8")
 
 
-async def _relay_file(path: Path) -> int:
-    """Relay every finding in one digest file. Returns the count of findings
-    for which record_flag was actually called. A misbehaving record_flag
-    call is caught per-finding and must not stop the rest of the batch --
-    but a read failure (e.g. path.read_text()) can still raise; callers must
-    still guard the read."""
-    from backend.agents import outcomes
+def _api_key() -> str | None:
+    """NEXUS_API_KEY env var, then ~/.config/nexus/api_key -- mirrors
+    Council-loop/scripts/postmortem_payload.py's own `_api_key()` exactly,
+    plus a read guard (security audit fix) so a malformed/unreadable key
+    file (bad permissions, non-UTF8 bytes) degrades to "no key" the same as
+    a missing file, rather than crashing main() with an unguarded read."""
+    key = os.environ.get("NEXUS_API_KEY")
+    if key:
+        return key
+    path = Path.home() / ".config" / "nexus" / "api_key"
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip() or None
+    except Exception as e:
+        print(f"could not read {path}: {e}")
+    return None
 
+
+def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
+    """POST one finding to NEXUS's POST /api/safety/flags. Returns True on a
+    2xx response, False on any failure (bad status, network error, timeout,
+    malformed response) -- never raises. Exposed as its own module-level
+    function so tests can patch it without opening a real socket."""
+    body = json.dumps(
+        {"source": "vault_signals", "check": check, "summary": summary, "severity": "medium"}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/safety/flags",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        print(f"POST /api/safety/flags failed for {check}: {e}")
+        return False
+
+
+def _relay_file(path: Path, base_url: str, key: str) -> bool:
+    """Relay every finding in one digest file. Returns True only if EVERY
+    finding's POST succeeded -- callers must only mark this file relayed in
+    .relay_state.json when this returns True, since (unlike the old
+    never-raising record_flag call this replaced) an HTTP POST can genuinely
+    fail, and marking a file relayed despite a failed POST would lose that
+    finding forever. A misbehaving _post_flag call is caught per-finding and
+    must not stop the rest of the batch -- but a read failure (e.g.
+    path.read_text()) can still raise; callers must still guard the read."""
     content = path.read_text(encoding="utf-8")
     findings = _extract_findings(content)[:MAX_FINDINGS_PER_FILE]
-    count = 0
+    all_ok = True
+    posted = 0
     for finding in findings:
         slug = _slugify(finding)
         summary = finding[:300]
         try:
-            await outcomes.record_flag(
-                source="vault_signals", check=slug, summary=summary, severity="medium",
-            )
+            ok = _post_flag(base_url, key, slug, summary)
         except Exception as e:
-            print(f"record_flag failed for {path.name} ({slug}): {e}")
-        count += 1
-    return count
+            print(f"POST failed for {path.name} ({slug}): {e}")
+            ok = False
+        if ok:
+            posted += 1
+        else:
+            all_ok = False
+    print(f"{path.name}: {posted}/{len(findings)} finding(s) posted")
+    return all_ok
 
 
-async def main() -> int:
+def main() -> int:
     if not DIGEST_DIR.exists():
         print("no digests/vault-signals/ dir yet — nothing to relay")
+        return 0
+
+    key = _api_key()
+    if not key:
+        print("vault-signals relay skipped: no NEXUS_API_KEY (env or ~/.config/nexus/api_key)")
         return 0
 
     relayed = _load_relayed()
@@ -170,20 +226,24 @@ async def main() -> int:
         print("nothing new to relay")
         return 0
 
+    base_url = os.environ.get("NEXUS_BASE_URL", _DEFAULT_BASE_URL)
+
     any_failed = False
     for f in files:
         try:
-            n = await _relay_file(f)
-            print(f"relayed {f.name} ({n} finding(s))")
+            ok = _relay_file(f, base_url, key)
         except Exception as e:
             print(f"FAILED to relay {f.name}: {e}")
             any_failed = True
             continue
-        relayed.add(f.name)
+        if ok:
+            relayed.add(f.name)
+        else:
+            any_failed = True
 
     _save_relayed(relayed)
     return 1 if any_failed else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(main())
