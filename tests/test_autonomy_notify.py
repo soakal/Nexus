@@ -644,6 +644,57 @@ async def test_build_autonomy_digest_text(eng):
 
 
 @pytest.mark.asyncio
+async def test_build_autonomy_digest_proposed_goal_shows_category(eng):
+    """The 'proposed:' block renders '{title} [{category}]' per goal, category
+    HTML-escaped (parse_mode='HTML'). Covers the new work/business categories,
+    a None category falling back to 'other', and category-field escaping."""
+    from backend.database import Goal, SystemState
+
+    with Session(eng) as s:
+        row = s.get(SystemState, 1)
+        if row is None:
+            row = SystemState(id=1)
+            s.add(row)
+        row.autonomy_enabled = True
+        row.daily_budget_usd = 25.0
+
+        s.add(Goal(
+            title="Draft Q3 invoice",
+            description="x", actor="autonomous", status="proposed",
+            risk="low", reversibility="reversible", category="business",
+        ))
+        s.add(Goal(
+            title="Prep standup notes",
+            description="x", actor="autonomous", status="proposed",
+            risk="low", reversibility="reversible", category="work",
+        ))
+        s.add(Goal(
+            title="Uncategorized goal",
+            description="x", actor="autonomous", status="proposed",
+            risk="low", reversibility="reversible", category=None,
+        ))
+        # category is a free-text DB column (not enum-enforced at write time) --
+        # a value containing HTML must still come out escaped.
+        s.add(Goal(
+            title="Weird category goal",
+            description="x", actor="autonomous", status="proposed",
+            risk="low", reversibility="reversible", category="<b>work</b>",
+        ))
+        s.commit()
+
+    from backend.agents.digest import build_autonomy_digest
+    text = await build_autonomy_digest()
+
+    assert "Draft Q3 invoice [business]" in text, text
+    assert "Prep standup notes [work]" in text, text
+    # None category falls back to "other".
+    assert "Uncategorized goal [other]" in text, text
+    # A category value containing HTML is escaped, not rendered raw.
+    assert "Weird category goal [&lt;b&gt;work&lt;/b&gt;]" in text, text
+    assert "[<b>work</b>]" not in text
+
+
+@pytest.mark.asyncio
 async def test_build_autonomy_digest_proposer_stats(eng):
     """B9.5: a persisted proposer tick renders a 'Proposer (24h)' block with
     filtered reasons and titles, HTML-escaped since notify_phone sends

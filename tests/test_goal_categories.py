@@ -365,14 +365,14 @@ def goals_client(tmp_path, monkeypatch):
 
 
 def test_api_get_categories(goals_client, auth_headers):
-    """GET /api/goals/categories returns the 7-item vocabulary list."""
+    """GET /api/goals/categories returns the full vocabulary list."""
     from backend.agents.goals import GOAL_CATEGORIES
     resp = goals_client.get("/api/goals/categories", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert "categories" in data
     cats = data["categories"]
-    assert len(cats) == 7
+    assert len(cats) == len(GOAL_CATEGORIES)
     assert cats == GOAL_CATEGORIES
     assert "other" in cats
 

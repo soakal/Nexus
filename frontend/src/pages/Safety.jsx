@@ -233,7 +233,7 @@ export default function Safety() {
   const [proposeErr, setProposeErr]           = useState('')
 
   // Goal category vocabulary + filter
-  const FALLBACK_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]
+  const FALLBACK_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "work", "business", "other"]
   const [categories, setCategories]       = useState(FALLBACK_CATEGORIES)
   const [categoryFilter, setCategoryFilter] = useState('all')
 

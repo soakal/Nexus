@@ -117,7 +117,7 @@ def _db_proposed_goals() -> list[dict]:
                 .order_by(Goal.created_at.desc())
                 .limit(10)
             ).all()
-            return [{"title": r.title, "risk": r.risk} for r in rows]
+            return [{"title": r.title, "risk": r.risk, "category": r.category} for r in rows]
     except Exception as e:
         logger.debug(f"digest._db_proposed_goals failed: {e}")
         return []
@@ -211,7 +211,7 @@ async def build_autonomy_digest() -> str:
         # Format proposed goals block.
         if proposed_goals:
             proposed_titles = "\n    - " + "\n    - ".join(
-                g["title"] for g in proposed_goals[:5]
+                f"{g['title']} [{html.escape(g['category'] or 'other')}]" for g in proposed_goals[:5]
             )
         else:
             proposed_titles = "\n    (none)"

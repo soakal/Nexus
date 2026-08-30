@@ -61,7 +61,7 @@ _GOAL_PROPOSAL_SCHEMA = {
             "risk": {"type": "string", "enum": ["low", "medium", "high"]},
             "reversibility": {"type": "string", "enum": ["reversible", "reversible_by_inverse", "irreversible", "unknown"]},
             "confidence": {"type": "number"},
-            "category": {"type": "string", "enum": ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]},
+            "category": {"type": "string", "enum": ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "work", "business", "other"]},
         },
         "required": ["title", "description", "success_criteria", "risk", "reversibility", "confidence", "category"],
         "additionalProperties": False,
@@ -516,7 +516,7 @@ async def propose_goals_tick() -> dict:
             '"risk": "low|medium|high", '
             '"reversibility": "reversible|reversible_by_inverse|irreversible|unknown", '
             '"confidence": 0.0-1.0, '
-            '"category": "one of: maintenance|storage|network|media|monitoring|knowledge|other"}]\n'
+            '"category": "one of: maintenance|storage|network|media|monitoring|knowledge|work|business|other"}]\n'
             "Every goal MUST include a non-empty success_criteria.\n"
             "success_criteria MUST be checkable by the executor's own remote read-only\n"
             "tools (HA/UniFi/Unraid/etc. reads) — never require physical/on-site\n"

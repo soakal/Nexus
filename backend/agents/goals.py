@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Category vocabulary + normalizer
 # ---------------------------------------------------------------------------
 
-GOAL_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "other"]
+GOAL_CATEGORIES = ["maintenance", "storage", "network", "media", "monitoring", "knowledge", "work", "business", "other"]
 _CATEGORY_SET = {c for c in GOAL_CATEGORIES}
 
 # "monitoring" goals (e.g. recurring temperature/uptime checks) reproposal cooldown --
