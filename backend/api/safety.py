@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -9,6 +10,19 @@ from backend.auth import require_api_key
 from backend.database import ActionLog, OutcomeFlag, TaskOutcome, get_session
 
 router = APIRouter()
+
+# Source values used by internal detectors, each with resolve-time or
+# calibration semantics that trust the `source` field (outcomes.py:
+# should_page's "manual" bypass, resolve_flag's homelab_watch/obligation
+# side-effect hooks, and calibration_summary's per-source:check false-
+# positive rate learning). A caller-supplied `source` on the manual-create
+# endpoint below must not be able to impersonate one of these — it would
+# either trigger an internal-only side effect (fake-confirming an
+# obligation, silently overwriting an ExpectedResource baseline) or poison
+# a real detector's calibration fingerprint. "manual" itself is exempt —
+# it's this endpoint's own legitimate default/explicit value.
+_RESERVED_FLAG_SOURCES = {"homelab_watch", "briefing", "watchdog", "contracts", "router", "obligation"}
+_SAFE_SOURCE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,40}$")
 
 
 def _scheduler_running() -> bool:
@@ -230,9 +244,10 @@ async def create_flag(
     body: dict = Body(...),
     _=Depends(require_api_key),
 ):
-    """Manual create (source="manual"), for Claude Code sessions logging their
-    own observations. Delegates to outcomes.record_flag, which NEVER raises —
-    a suppressed/deduped/disabled call returns id: null, not an error."""
+    """Manual create, for Claude Code sessions (and other trusted callers)
+    logging their own observations. `source` defaults to "manual" if omitted.
+    Delegates to outcomes.record_flag, which NEVER raises — a
+    suppressed/deduped/disabled call returns id: null, not an error."""
     from backend.agents import outcomes
 
     check = body.get("check")
@@ -240,8 +255,12 @@ async def create_flag(
     if not check or not summary:
         raise HTTPException(status_code=400, detail="check and summary are required")
 
+    source = str(body.get("source") or "manual").strip()
+    if not _SAFE_SOURCE_RE.match(source) or source in _RESERVED_FLAG_SOURCES:
+        raise HTTPException(status_code=400, detail="invalid source")
+
     flag_id = await outcomes.record_flag(
-        "manual",
+        source,
         check,
         summary,
         detail=body.get("detail"),

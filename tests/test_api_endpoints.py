@@ -538,6 +538,58 @@ def test_flags_full_lifecycle(app_client, auth_headers):
     assert row2["check"] == "AC17_lifecycle_2"
     assert row2["status"] == "open"
 
+    # source is optional and defaults to "manual"; an explicit value is honored.
+    create3 = app_client.post(
+        "/api/safety/flags",
+        json={"check": "AC17_lifecycle_3", "summary": "third observation", "source": "vault_signals"},
+        headers=auth_headers,
+    )
+    assert create3.status_code == 200
+    id3 = create3.json()["id"]
+    assert id3 is not None
+    row3 = app_client.get(
+        f"/api/safety/flags?status=open", headers=auth_headers,
+    ).json()
+    row3 = next(r for r in row3 if r["id"] == id3)
+    assert row3["source"] == "vault_signals"
+
+    # security: a caller can't impersonate an internal detector's reserved
+    # source (would hijack resolve_flag's homelab_watch/obligation side
+    # effects, or poison a real detector's calibration fingerprint).
+    reserved = app_client.post(
+        "/api/safety/flags",
+        json={"check": "x", "summary": "y", "source": "homelab_watch"},
+        headers=auth_headers,
+    )
+    assert reserved.status_code == 400
+
+    # security: source is restricted to a safe identifier charset (no HTML
+    # metacharacters that could break the digest's Telegram parse_mode=HTML
+    # send, no unbounded length into a DB column read back into that digest).
+    unsafe = app_client.post(
+        "/api/safety/flags",
+        json={"check": "x", "summary": "y", "source": "<b>evil</b>"},
+        headers=auth_headers,
+    )
+    assert unsafe.status_code == 400
+
+    # security: source length boundary -- exactly 40 chars is accepted,
+    # 41 is rejected (the _SAFE_SOURCE_RE cap on the newly caller-suppliable field).
+    ok40 = app_client.post(
+        "/api/safety/flags",
+        json={"check": "x", "summary": "y", "source": "a" * 40},
+        headers=auth_headers,
+    )
+    assert ok40.status_code == 200
+    assert ok40.json()["id"] is not None
+
+    too_long = app_client.post(
+        "/api/safety/flags",
+        json={"check": "x", "summary": "y", "source": "a" * 41},
+        headers=auth_headers,
+    )
+    assert too_long.status_code == 400
+
     # ?status= filter narrows to open rows (both still open at this point).
     filtered = app_client.get("/api/safety/flags?status=open", headers=auth_headers)
     assert filtered.status_code == 200
