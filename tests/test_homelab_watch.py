@@ -480,6 +480,174 @@ def test_homelab_recovery_notify_defaults_to_false():
 
 
 @pytest.mark.asyncio
+async def test_array_escalates_at_1h_then_every_2h():
+    """A still-open, already-paged alert re-pages at +1h after the first
+    page, then every 2h -- with no re-page in between."""
+    bad = _unraid_data(array_status="stopped")
+    clock = {"t": 1000.0}
+    with patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify, \
+         patch("time.monotonic", side_effect=lambda: clock["t"]):
+        await homelab_watch.check_unraid_array()  # first page
+        assert mock_notify.await_count == 1
+
+        clock["t"] += 1800  # +30min -- before the +1h threshold
+        assert await homelab_watch.check_unraid_array() == []
+        assert mock_notify.await_count == 1
+
+        clock["t"] += 1800  # total +1h -- escalation due
+        fired = await homelab_watch.check_unraid_array()
+        # Escalation re-pages (notify fires) but must NOT be reported as a
+        # rising edge -- fired feeds incident_diag's diagnosis trigger and
+        # _maybe_propose_on_alert, neither of which should re-run on a
+        # routine re-page of an already-open incident.
+        assert fired == []
+        assert mock_notify.await_count == 2
+        msg = mock_notify.await_args_list[1].args[0]
+        assert "alert #2" in msg and "still open since" in msg
+
+        clock["t"] += 7200  # +2h more -- next escalation
+        await homelab_watch.check_unraid_array()
+        assert mock_notify.await_count == 3
+        assert "alert #3" in mock_notify.await_args_list[2].args[0]
+
+        clock["t"] += 3600  # only +1h -- not yet the next 2h step
+        await homelab_watch.check_unraid_array()
+        assert mock_notify.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_escalation_tick_does_not_retrigger_incident_diagnosis():
+    """A rising edge should trigger exactly one incident_diag.diagnose call.
+    A later escalation re-page of the SAME still-open alert must NOT trigger
+    a second one -- regression guard for _edge_alert's escalation branch
+    returning False instead of re-reporting a rising edge (see
+    test_array_escalates_at_1h_then_every_2h). incident_diag's own
+    `_last_diag_at` cooldown (1800s, keyed off datetime.utcnow(), NOT the
+    time.monotonic() patched below) is explicitly cleared between the two
+    ticks so it can't independently suppress the second diagnose call --
+    the only thing this assertion should be isolating is whether _edge_alert
+    reports the escalation re-page as a rising edge (via the `fired` list)."""
+    from backend.agents import incident_diag
+    incident_diag.reset()
+
+    bad = _unraid_data(array_status="stopped")
+    clock = {"t": 1000.0}
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=_proxmox_data([])), \
+         patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data([])), \
+         patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value={"node": "pve", "status": "none"}), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True), \
+         patch("backend.agents.incident_diag.diagnose", new_callable=AsyncMock) as mock_diagnose, \
+         patch("time.monotonic", side_effect=lambda: clock["t"]):
+        await homelab_watch.run_homelab_watch()  # rising edge -- diagnosis fires once
+        if incident_diag._diag_task is not None:
+            await incident_diag._diag_task
+
+        clock["t"] += 3600  # +1h -- escalation due (re-pages)
+        incident_diag._last_diag_at.clear()  # neutralize incident_diag's own wall-clock cooldown
+        await homelab_watch.run_homelab_watch()
+        if incident_diag._diag_task is not None:
+            await incident_diag._diag_task
+
+    assert mock_diagnose.await_count == 1
+    incident_diag.reset()
+
+
+@pytest.mark.asyncio
+async def test_suppressed_alert_never_escalates(eng):
+    """A calibration-suppressed alert never entered _paged_alerts, so it must
+    never start escalating on its own even while it stays latched open."""
+    from backend.database import CalibrationHint
+
+    with Session(eng) as s:
+        s.add(CalibrationHint(
+            fingerprint="homelab_watch:unraid_array",
+            status="active", verdict_count=20, false_positive_count=20, fp_rate=1.0,
+        ))
+        s.commit()
+
+    bad = _unraid_data(array_status="stopped")
+    settings = _settings(
+        calibration_enabled=True, calibration_suppression_enabled=True,
+        calibration_suppress_high_severity=True,
+    )
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify, \
+         patch("time.monotonic", return_value=1000.0):
+        await homelab_watch.check_unraid_array()  # latches, suppressed -- no page
+    mock_notify.assert_not_called()
+    assert "unraid_array" not in homelab_watch._alert_escalation
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify2, \
+         patch("time.monotonic", return_value=1000.0 + 4 * 3600):
+        await homelab_watch.check_unraid_array()  # still open, +4h later -- still no page
+    mock_notify2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_recovered_then_resuppressed_incident_does_not_inherit_stale_escalation(eng):
+    """A key that paged, escalated, then recovered (clearing _alert_escalation
+    on the falling edge) must NOT let a later, calibration-suppressed
+    re-occurrence of the SAME key inherit the first incident's stale
+    next_due -- that would re-page a suppressed alert, defeating "only
+    escalate keys that actually paged". Regression guard for the
+    `_alert_escalation.pop(key, None)` call on the falling edge in
+    _edge_alert: removing it would still pass test_suppressed_alert_never_
+    escalates (a suppressed key with no prior history), but would fail here."""
+    bad = _unraid_data(array_status="stopped")
+    good = _unraid_data(array_status="started")
+    settings = _settings(
+        calibration_enabled=True, calibration_suppression_enabled=True,
+        calibration_suppress_high_severity=True,
+    )
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify, \
+         patch("time.monotonic", return_value=1000.0):
+        await homelab_watch.check_unraid_array()  # first incident pages, escalation armed for t=1000+3600
+    assert mock_notify.await_count == 1
+    assert "unraid_array" in homelab_watch._alert_escalation
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=good), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True), \
+         patch("time.monotonic", return_value=1100.0):
+        await homelab_watch.check_unraid_array()  # recovers -- falling edge clears escalation
+    assert "unraid_array" not in homelab_watch._alert_escalation
+
+    from backend.database import CalibrationHint
+    with Session(eng) as s:
+        s.add(CalibrationHint(
+            fingerprint="homelab_watch:unraid_array",
+            status="active", verdict_count=20, false_positive_count=20, fp_rate=1.0,
+        ))
+        s.commit()
+
+    # Second incident, now calibration-suppressed, well past the FIRST
+    # incident's next_due (1000+3600=4600) -- with the pop() working, this
+    # never creates an escalation entry at all, so there is nothing to fire.
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify2, \
+         patch("time.monotonic", return_value=5000.0):
+        await homelab_watch.check_unraid_array()  # latches, suppressed -- no page
+    mock_notify2.assert_not_called()
+
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify3, \
+         patch("time.monotonic", return_value=5100.0):
+        await homelab_watch.check_unraid_array()  # still open, still suppressed -- still no page
+    mock_notify3.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_array_recovery_notice_not_sent_when_original_alert_was_suppressed():
     """A recovery notice must only follow an alert that actually paged -- if
     outcomes.record_flag_ex suppressed the original page (dedup/cooldown),

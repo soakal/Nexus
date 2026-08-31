@@ -47,6 +47,18 @@ _paged_alerts: set[str] = set()
 # Garage-open timer (time.monotonic() of when it was first observed open).
 _garage_open_since: float | None = None
 
+# Re-alert escalation (per-key): keys that ACTUALLY paged (see _paged_alerts)
+# and are still open get re-paged on a fixed cadence -- +1h after the first
+# page, then every 2h -- so a long-running incident doesn't go silent after
+# the initial page. {key: {"first_wall": datetime, "count": int, "next_due":
+# monotonic}}. Lives in _edge_alert itself so every check that routes through
+# it (array/disk/garage/backup/expected-mismatch) inherits escalation for
+# free; check_proxmox_vms/check_docker have their own separate
+# transition-triggered paging and are NOT covered by this.
+_ESCALATION_FIRST_S = 3600  # +1h after the first page
+_ESCALATION_REPEAT_S = 7200  # then every 2h while still open
+_alert_escalation: dict[str, dict] = {}
+
 # Autonomous-restart verify timers (2026-08-28): container name -> the
 # time.monotonic() deadline by which it must be observed RUNNING again, set
 # only when an auto-dispatched restart's initial result claimed success (see
@@ -73,6 +85,7 @@ def reset() -> None:
     _active_alerts.clear()
     _paged_alerts.clear()
     _pending_restart_verifies.clear()
+    _alert_escalation.clear()
     _garage_open_since = None
     _last_event_propose_at = None
     _event_propose_task = None
@@ -94,6 +107,22 @@ async def _maybe_notify_recovery(key: str, message: str) -> None:
         await events.notify_phone(message, kind="homelab_recovered")
     except Exception as e:
         logger.warning(f"_maybe_notify_recovery failed for {key!r} (ignored): {e}")
+
+
+async def _maybe_escalate(key: str, message: str, kind: str) -> bool:
+    """Re-page an already-paged, still-open alert once escalation cadence
+    elapses (+1h after the first page, then every 2h). A key that never
+    actually paged (calibration-suppressed) has no _alert_escalation entry
+    and never escalates on its own. Returns whether a re-page fired."""
+    esc = _alert_escalation.get(key)
+    if esc is None or time.monotonic() < esc["next_due"]:
+        return False
+    esc["count"] += 1
+    esc["next_due"] = time.monotonic() + _ESCALATION_REPEAT_S
+    since = esc["first_wall"].strftime("%H:%M")
+    from backend import events
+    await events.notify_phone(f"{message} — still open since {since}, alert #{esc['count']}.", kind=kind)
+    return True
 
 
 async def _clear_flag_safe(key: str) -> None:
@@ -128,13 +157,26 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str, detail
     used by check_expected_resources to carry the {kind, identifier,
     observed_state} JSON that outcomes.resolve_flag reads back to sync the
     ExpectedResource baseline when a human resolves the flag.
+
+    A still-active key (already in _active_alerts) is handed to
+    _maybe_escalate as a side effect (may re-page), but this function still
+    returns False for it -- escalation is a re-page, not a new rising edge,
+    and must not re-trigger anything downstream that keys off `fired`
+    (incident_diag's diagnosis trigger, _maybe_propose_on_alert). See
+    _maybe_escalate's own docstring for the re-alert cadence.
     """
     if not active:
         await _clear_flag_safe(key)
         _active_alerts.discard(key)
+        _alert_escalation.pop(key, None)
         await _maybe_notify_recovery(key, f"NEXUS: recovered — {key} is back to normal.")
         return False
     if key in _active_alerts:
+        # Escalation is a re-page side effect only -- it must NOT be reported
+        # as a rising edge: the caller's `fired` list feeds incident_diag's
+        # diagnosis trigger and _maybe_propose_on_alert, neither of which
+        # should re-run just because an already-open incident got re-paged.
+        await _maybe_escalate(key, message, kind)
         return False
     _active_alerts.add(key)
     from backend.agents import outcomes
@@ -150,6 +192,10 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str, detail
         from backend import events
         await events.notify_phone(message, kind=kind, buttons=buttons)
         _paged_alerts.add(key)
+        _alert_escalation[key] = {
+            "first_wall": datetime.now(), "count": 1,
+            "next_due": time.monotonic() + _ESCALATION_FIRST_S,
+        }
     return True
 
 
