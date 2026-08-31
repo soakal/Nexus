@@ -64,6 +64,23 @@ def test_scan_raw_folder_finds_new_files(tmp_vault: Path, tmp_config: dict[str, 
     assert "memo.txt" in names
 
 
+def test_scan_raw_folder_caps_at_max_files_per_run(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
+    write_raw(tmp_vault, "a.md", "A")
+    write_raw(tmp_vault, "b.md", "B")
+    write_raw(tmp_vault, "c.md", "C")
+    capped_config = {**tmp_config, "max_files_per_run": 2}
+    results = bo.scan_raw_folder(capped_config, {})
+    assert len(results) == 2
+
+
+def test_scan_raw_folder_under_cap_returns_all(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
+    write_raw(tmp_vault, "a.md", "A")
+    write_raw(tmp_vault, "b.md", "B")
+    capped_config = {**tmp_config, "max_files_per_run": 25}
+    results = bo.scan_raw_folder(capped_config, {})
+    assert len(results) == 2
+
+
 def test_scan_raw_folder_skips_already_processed(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
     f = write_raw(tmp_vault, "done.md", "Already processed")
     sha = bo.compute_sha256(f)

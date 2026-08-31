@@ -100,6 +100,10 @@ _CONFIG_DEFAULTS: dict[str, Any] = {
     "max_parallel_files": 4,
     "api_provider": "anthropic",
     "max_file_attempts": 2,
+    # ponytail: hard cap on files processed per nightly run, so an unexpected
+    # large batch landing in raw/ can't turn into one runaway-cost LLM pass —
+    # leftovers are picked up by the next run, nothing is skipped forever.
+    "max_files_per_run": 25,
     "backup_retention_days": 30,
     # Spec #3 SS5 -- frontmatter tags. tags_enabled is the single rollback
     # lever (false => output byte-identical to pre-tags behavior); the rest
@@ -345,6 +349,14 @@ def scan_raw_folder(
                 # successfully-processed raw file is unlinked, so it can't still be here).
                 results.append((f, sha))
             # else: success record with matching (or legacy, unrecorded) filename — skip
+    max_files: int = config["max_files_per_run"]
+    if len(results) > max_files:
+        logger.warning(
+            "scan_raw_folder found %d file(s) to process, capping this run to %d — "
+            "the remaining %d will be picked up on the next run.",
+            len(results), max_files, len(results) - max_files,
+        )
+        results = results[:max_files]
     return results
 
 
