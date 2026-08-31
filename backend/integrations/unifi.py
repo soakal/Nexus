@@ -12,6 +12,15 @@ from backend.integrations.unifi_tls_pinning import build_transport
 
 _MAC_HEX_RE = re.compile(r"^[0-9a-fA-F]{12}$")
 
+# Confirmed-noise MAC, live-verified 2026-08-30: hostname None + a
+# placeholder-OUI artifact, not a real device. Excluded at the single
+# upstream source (fetch()) so it never inflates client_count, never
+# triggers a KnownDevice/new_devices entry, and never shows up in any
+# downstream UniFi report. Only this one MAC — see the goal doc's own
+# evidence-bar note: the other similarly-patterned MACs it lists have no
+# in-repo evidence confirming them, so they're deliberately not added here.
+_IGNORED_MACS = frozenset({"00:00:ff:ff:ff:ff"})
+
 
 @dataclass
 class UniFiData:
@@ -134,7 +143,10 @@ async def fetch() -> UniFiData:
         sites_resp = await client.get(f"{settings.unifi_host}/proxy/network/api/s/default/stat/sta", headers=headers)
         if sites_resp.status_code != 200:
             raise Exception(f"UniFi clients fetch failed: {sites_resp.status_code}")
-        clients = sites_resp.json().get("data", [])
+        clients = [
+            c for c in sites_resp.json().get("data", [])
+            if (c.get("mac") or "").lower() not in _IGNORED_MACS
+        ]
 
         # Uplink — same lesson: a failed health call must not silently read as "ok".
         uplink_resp = await client.get(f"{settings.unifi_host}/proxy/network/api/s/default/stat/health", headers=headers)

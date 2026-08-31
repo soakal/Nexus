@@ -122,6 +122,89 @@ async def test_unifi_fetch_detects_new_devices():
 
 
 @pytest.mark.asyncio
+async def test_unifi_fetch_ignores_confirmed_noise_mac():
+    """The confirmed-noise placeholder MAC (00:00:ff:ff:ff:ff) is filtered out
+    before client_count/new_devices/KnownDevice -- an unlisted MAC alongside
+    it must still appear normally (the filter doesn't over-exclude)."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {
+        "data": [
+            {"mac": "00:00:ff:ff:ff:ff", "hostname": None},
+            {"mac": "aa:bb:cc:dd:ee:01", "hostname": "laptop"},
+            {"mac": None, "hostname": "weird"},
+        ]
+    }
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {"data": []}
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp])
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session.exec.return_value.first.return_value = None
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    # client_count reflects the real device plus the null-mac row (only the
+    # confirmed-noise placeholder MAC is filtered from the count); the
+    # null-mac row is skipped by the new_devices/KnownDevice truthiness guard
+    # rather than crashing fetch().
+    assert data.client_count == 2
+    assert data.new_devices == [{"mac": "aa:bb:cc:dd:ee:01", "hostname": "laptop"}]
+    added_macs = [call.args[0].mac for call in mock_session.add.call_args_list]
+    assert "00:00:ff:ff:ff:ff" not in added_macs
+    assert added_macs == ["aa:bb:cc:dd:ee:01"]
+
+
+@pytest.mark.asyncio
+async def test_unifi_fetch_ignores_confirmed_noise_mac_case_insensitive():
+    """The filter compares case-insensitively -- an uppercase variant of the
+    ignored MAC must be excluded too."""
+    login_resp = MagicMock(status_code=200)
+    clients_resp = MagicMock(status_code=200)
+    clients_resp.json.return_value = {
+        "data": [{"mac": "00:00:FF:FF:FF:FF", "hostname": None}]
+    }
+    health_resp = MagicMock(status_code=200)
+    health_resp.json.return_value = {"data": []}
+
+    with patch("httpx.AsyncClient") as mock_cls, \
+         patch("backend.integrations.unifi.Session") as mock_session_cls, \
+         patch("backend.database.engine"):
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
+        mock_client.__aenter__.return_value.get = AsyncMock(side_effect=[clients_resp, health_resp])
+        mock_cls.return_value = mock_client
+
+        mock_session = MagicMock()
+        mock_session.__enter__ = MagicMock(return_value=mock_session)
+        mock_session.__exit__ = MagicMock(return_value=False)
+        mock_session.exec.return_value.all.return_value = []
+        mock_session.exec.return_value.first.return_value = None
+        mock_session_cls.return_value = mock_session
+
+        from backend.integrations.unifi import fetch
+        data = await fetch()
+
+    assert data.client_count == 0
+    assert data.new_devices == []
+    mock_session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_unifi_fetch_login_failure_raises():
     """A non-200/201 login response should raise an exception."""
     login_resp = MagicMock(status_code=401)
