@@ -1,11 +1,17 @@
 # Vault Signals Digest — Instructions
 
-You are producing a digest of NEW, CHANGED, or STALE items worth surfacing from Brian's Obsidian
-Brain vault's wiki/ notes -- open items, unresolved follow-ups, or things mentioned but never
-closed out. This is NOT a re-summary: do not restate everything in scope each run, only what's
-new, changed, or has gone stale since a prior pass. If a note hasn't meaningfully changed and
-nothing in it is stale/unresolved, it contributes nothing to this digest -- say so implicitly by
+You are producing a digest of NEW, CHANGED, STALE, or CONTRADICTED items worth surfacing from
+Brian's Obsidian Brain vault's wiki/ notes -- open items, unresolved follow-ups, things mentioned
+but never closed out, or notes whose claims no longer match reality. This is NOT a re-summary: do
+not restate everything in scope each run, only what's new, changed, gone stale, or now
+contradicted since a prior pass. If a note hasn't meaningfully changed and nothing in it is
+stale/unresolved/contradicted, it contributes nothing to this digest -- say so implicitly by
 simply not including it, not by padding the output with an unchanged restatement.
+
+Flag contradictions, not just staleness: if a note asserts something (a bug is "still open," a
+setting is "unconfigured," a task is "pending") and you can verify against the current codebase or
+vault that this is no longer true, that is a finding -- a wrong claim actively misleads a reader in
+a way a merely-stale claim doesn't. Say plainly what the note claims and what you actually found.
 
 Scope: EVERY note under the vault's wiki/ folder, excluding these five directories (the same
 exclusion list `backend/integrations/obsidian.py`'s `vault_search` uses -- keep this list in sync
