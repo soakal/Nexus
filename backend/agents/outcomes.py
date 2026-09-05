@@ -477,11 +477,24 @@ async def record_flag_ex(
                 deferred_until = datetime.fromisoformat(latest["deferred_until"])
                 if now < deferred_until:
                     return {"id": None, "surface": False, "reason": "deferred"}
-            # Branch 3 — false_positive within the cooldown.
+            # Branch 3 — false_positive within the cooldown. This is otherwise
+            # completely silent: no row, no page, nothing anywhere but this
+            # log line -- if the false_positive resolution that started the
+            # cooldown was wrong (a real condition waved away with no check),
+            # the real problem goes dark for the full cooldown with no other
+            # trace. Visibility only, deliberately not a fix: re-verifying
+            # the resolver's own judgment against live state is a much bigger
+            # feature this system's scale doesn't warrant yet (see
+            # nexus-flag-calibration-lifecycle).
             if latest["status"] == "false_positive" and latest["resolved_at"]:
                 resolved_at = datetime.fromisoformat(latest["resolved_at"])
                 cooldown_days = int(getattr(settings, "outcome_flag_false_positive_cooldown_days", 30))
                 if now - resolved_at < timedelta(days=cooldown_days):
+                    logger.warning(
+                        f"record_flag_ex: {fingerprint} re-fired but is suppressed by the "
+                        f"false_positive cooldown ({cooldown_days}d, resolved {latest['resolved_at']}) "
+                        f"-- if the underlying condition is still real, this is why it hasn't paged."
+                    )
                     return {"id": None, "surface": False, "reason": "false_positive_cooldown"}
 
         # Branch 4 — otherwise, insert a new open row.
