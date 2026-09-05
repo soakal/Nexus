@@ -585,10 +585,11 @@ async def resolve_flag(
 ) -> str:
     """Close (or park) an open/needs_follow_up/deferred flag.
 
-    Returns "not_found" | "already_closed" | "invalid_status" | the applied
-    status string on success (e.g. "resolved", "deferred", "false_positive",
-    "needs_follow_up") — mirrors broker.reject_action's status-string return
-    convention so Telegram/REST/tests share one mapping.
+    Returns "not_found" | "already_closed" | "invalid_status" |
+    "note_required" | the applied status string on success (e.g. "resolved",
+    "deferred", "false_positive", "needs_follow_up") — mirrors
+    broker.reject_action's status-string return convention so
+    Telegram/REST/tests share one mapping.
     """
     if status not in _VALID_TARGET_STATUSES:
         return "invalid_status"
@@ -598,6 +599,16 @@ async def resolve_flag(
         return "not_found"
     if row["status"] in _CLOSED_STATUSES:
         return "already_closed"
+
+    # vault_signals fingerprints are one-shot and content-hashed (see
+    # _db_calibration) -- a false_positive there can never be re-derived
+    # from a recurrence, so a note is the only record of *why* the audit
+    # was wrong that the next run can learn from. Without this, both of
+    # 2026-08-30's false-positives went in with no note and took a manual
+    # digest-file archaeology dig to explain (see resolution_note on flags
+    # ecab492f/5ceae689). Other sources/statuses are unaffected.
+    if status == "false_positive" and row["source"] == "vault_signals" and not (note and note.strip()):
+        return "note_required"
 
     now = datetime.utcnow()
     update_fields: dict = {

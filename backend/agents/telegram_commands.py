@@ -491,6 +491,10 @@ async def _cmd_resolve(args: str, msg: dict) -> str:
         "not_found": f"Flag #{flag_id} not found.",
         "already_closed": f"Flag #{flag_id} is already closed.",
         "invalid_status": f"Invalid status: {status}",
+        "note_required": (
+            f"Flag #{flag_id} is a vault_signals finding — false_positive needs a note "
+            f"explaining why (e.g. \"/resolve {flag_id} false_positive superseded by #123\")."
+        ),
     }
     return mapping.get(result, f"Flag #{flag_id} marked {result}.")
 

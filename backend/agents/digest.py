@@ -12,6 +12,7 @@ asyncio.to_thread — no Session/ORM crosses an await boundary.
 import asyncio
 import html
 import logging
+import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,26 @@ def _db_proposed_goals() -> list[dict]:
     except Exception as e:
         logger.debug(f"digest._db_proposed_goals failed: {e}")
         return []
+
+
+_HASH_SUFFIX = re.compile(r"^[0-9a-f]{8}$")
+
+
+def _humanize_vault_check(check: str) -> str:
+    """`vault_signals` checks are relay_vault_signals.py's raw hyphenated
+    slugs -- e.g. "homelab:open-unresolved-items-ha-has-a-large-never-triag-
+    ecab492f" -- built to be a unique fingerprint, not something a human
+    reads on a phone. Only called for a check that's about to get its own
+    bullet in the calibration line (see build_autonomy_digest), so this
+    trades the fingerprint's precision for a skimmable label: drop the
+    optional "<category>:" tag, drop the trailing content-hash word, turn
+    the rest into space-separated words, and cap it at 6 of them."""
+    check = check.split(":", 1)[1] if ":" in check else check
+    words = check.split("-")
+    if words and _HASH_SUFFIX.match(words[-1]):
+        words = words[:-1]
+    label = " ".join(words[:6])
+    return label + "…" if len(words) > 6 else label
 
 
 # ---------------------------------------------------------------------------
@@ -243,15 +264,44 @@ async def build_autonomy_digest() -> str:
             failed_line = "Failed (24h): none"
 
         # Flag calibration (spec §4.4) — per-source:check raised/false_positive
-        # counts over the last 30 days, one advisory line matching the
-        # Completed (24h) line's style. calibration is {} on an empty table or
-        # on gather's own exception fallback above; both degrade to "none".
+        # counts over the last 30 days. Only false_positive > 0 checks get a
+        # bullet -- that's the only actionable signal (a check with 0 false
+        # positives fired correctly, nothing to calibrate) -- sorted
+        # worst-offender-first; everything else rolls into the summary
+        # counts. A dump of every check, mostly "0 false_positive", was an
+        # unreadable wall of noise burying the rest of the digest.
+        #
+        # A bulleted vault_signals check gets its raw slug run through
+        # _humanize_vault_check instead of shown verbatim -- that source's
+        # `check` is a machine fingerprint (see relay_vault_signals.py), not
+        # a label, and unlike collapsing it into a category bucket (tried
+        # and reverted -- it laundered away exactly which finding was wrong,
+        # and silently changed the total check count), this keeps the
+        # per-finding identity while dropping only the parts a human never
+        # needed to read.
+        #
+        # calibration is {} on an empty table or on gather's own exception
+        # fallback above; both degrade to "none".
         if calibration:
-            calibration_parts = ", ".join(
-                f"{key} — {sum(counts.values())} raised, {counts.get('false_positive', 0)} false_positive"
-                for key, counts in calibration.items()
+            entries = []
+            for key, counts in calibration.items():
+                if not isinstance(counts, dict):
+                    continue
+                source, _, check = key.partition(":")
+                label = _humanize_vault_check(check) if source == "vault_signals" else key
+                entries.append((label, sum(counts.values()), counts.get("false_positive", 0)))
+
+            total_raised = sum(e[1] for e in entries)
+            total_fp = sum(e[2] for e in entries)
+            calibration_line = (
+                f"Flag calibration (30d): {len(entries)} checks, {total_raised} raised, "
+                f"{total_fp} false positive{'s' if total_fp != 1 else ''}"
             )
-            calibration_line = f"Flag calibration (30d): {calibration_parts}"
+            flagged = sorted((e for e in entries if e[2] > 0), key=lambda e: e[2], reverse=True)
+            if flagged:
+                calibration_line += "\n    - " + "\n    - ".join(
+                    f"{label} — {raised} raised, {fp} false_positive" for label, raised, fp in flagged
+                )
         else:
             calibration_line = "Flag calibration (30d): none"
 

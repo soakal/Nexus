@@ -115,6 +115,10 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
                 "resolved": "Marked resolved.",
                 "false_positive": "Marked false alarm.",
                 "deferred": "Deferred.",
+                # This button carries no note, so a vault_signals false_positive
+                # (which requires one -- see outcomes.resolve_flag) always lands
+                # here; fall back to /resolve, the one path that can supply one.
+                "note_required": f"Needs a note -- use /resolve {obj_id} false_positive <note>.",
             }
             # A flag resolve never dispatches anything (no broker call, no
             # external side effect) -- there is no transport-error case to

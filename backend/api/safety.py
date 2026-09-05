@@ -280,7 +280,7 @@ async def resolve_flag_route(
       200  — resolved (applied status in body)
       404  — flag not found
       409  — already closed
-      400  — invalid target status
+      400  — invalid target status, or a vault_signals false_positive with no note
     """
     from backend.agents import outcomes
 
@@ -307,6 +307,11 @@ async def resolve_flag_route(
         raise HTTPException(status_code=409, detail="Flag is already closed")
     if result == "invalid_status":
         raise HTTPException(status_code=400, detail="Invalid target status")
+    if result == "note_required":
+        raise HTTPException(
+            status_code=400,
+            detail="A note is required to mark a vault_signals flag false_positive",
+        )
 
     return {"id": flag_id, "status": result}
 
