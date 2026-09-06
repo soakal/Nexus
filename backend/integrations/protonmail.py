@@ -265,16 +265,24 @@ async def health_check() -> bool:
     from backend.config import get_settings
     settings = get_settings()
     try:
-        # timeout=5, not the 20s default: this is a liveness probe (feeds the
-        # dashboard's online/offline pill), not a functional read — every
-        # other integration's health_check() bounds its own call the same
-        # way. Note this caps each of _call_tool's two round trips
-        # (initialize + call_tool) at 5s, so ~10s is the realistic worst
-        # case, not a hard 5s wall. A slow/hung bridge used to be able to
-        # hold this open for up to 2x20s, which stalled unrelated concurrent
-        # requests behind Chrome's per-origin connection cap (found live
-        # 2026-07-25).
-        text = await _call_tool("list_available_accounts", {}, timeout=5.0)
-        return settings.protonmail_account in text
+        # Deliberately NOT list_available_accounts: verified 2026-09-06 against
+        # the mcp-email-server source (proton-bridge LXC) that it's annotated
+        # _READ_ONLY_LOCAL -- it reads locally configured account names, not a
+        # live mailbox, so it stays "healthy" even if Proton force-logs-out the
+        # bridge session server-side (password change, security event). That is
+        # the exact failure mode a health check exists to catch. list_emails_
+        # metadata (page_size=1) is _READ_ONLY_REMOTE -- it actually touches the
+        # live IMAP session, so a dead session fails here instead of reporting
+        # green. timeout=5, not the 20s default: this is a liveness probe (feeds
+        # the dashboard's online/offline pill), not a functional read — every
+        # other integration's health_check() bounds its own call the same way.
+        # Note this caps each of _call_tool's two round trips (initialize +
+        # call_tool) at 5s, so ~10s is the realistic worst case, not a hard 5s
+        # wall. A slow/hung bridge used to be able to hold this open for up to
+        # 2x20s, which stalled unrelated concurrent requests behind Chrome's
+        # per-origin connection cap (found live 2026-07-25).
+        args = {"account_name": settings.protonmail_account, "page_size": 1, "order": "desc"}
+        await _call_tool("list_emails_metadata", args, timeout=5.0)
+        return True
     except Exception:
         return False

@@ -15,14 +15,23 @@ _ACCOUNT = "test-proton-account"
 
 
 @pytest.mark.asyncio
-async def test_health_check_true_when_account_present():
+async def test_health_check_true_when_mailbox_reachable():
+    # list_emails_metadata (page_size=1), not list_available_accounts: the
+    # latter is _READ_ONLY_LOCAL in mcp-email-server's own source (reads
+    # configured account names, not a live mailbox) and stays "healthy"
+    # through a server-side forced logout. Verified live against that
+    # project's source 2026-09-06.
     with patch(
         "backend.integrations.protonmail._call_tool",
-        AsyncMock(return_value=f'{{"result": [{{"account_name": "{_ACCOUNT}"}}]}}'),
+        AsyncMock(return_value="[]"),
     ) as mock_call:
         from backend.integrations.protonmail import health_check
         assert await health_check() is True
-        mock_call.assert_awaited_once_with("list_available_accounts", {}, timeout=5.0)
+        mock_call.assert_awaited_once_with(
+            "list_emails_metadata",
+            {"account_name": _ACCOUNT, "page_size": 1, "order": "desc"},
+            timeout=5.0,
+        )
 
 
 @pytest.mark.asyncio
