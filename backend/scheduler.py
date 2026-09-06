@@ -334,6 +334,33 @@ async def _knowledge_backup():
         raise
 
 
+async def _proton_bridge_vault_backup():
+    try:
+        import asyncio
+        from backend.backup import backup_proton_bridge_vault
+        result = await asyncio.to_thread(backup_proton_bridge_vault)
+        if result["ok"]:
+            logger.info(f"proton-bridge vault backup ok: {result['dest']}")
+        else:
+            # Phone-escalated like vault_backup, NOT log-only like
+            # knowledge_backup -- losing this vault means re-pairing Bridge
+            # from scratch, the same disaster-recovery stakes as the
+            # nexus.vault/DB backup, not a "just retries next cycle" miss.
+            logger.warning(f"proton-bridge vault backup failed: {result['error']}")
+            try:
+                from backend import events
+                await events.notify_phone(
+                    f"PROTON-BRIDGE VAULT BACKUP FAILED: {result.get('error') or 'unknown error'}",
+                    kind="backup_failed",
+                )
+            except Exception as ne:
+                logger.error(f"notify_phone for proton-bridge vault backup failure failed: {ne}")
+    except Exception as e:
+        logger.error(f"proton-bridge vault backup job error: {e}")
+        raise
+        raise
+
+
 async def _checkpoint():
     try:
         from backend.agents.backup import run_checkpoint_job
@@ -936,6 +963,16 @@ def setup_scheduler(briefing_time: str, timezone: str):
                 replace_existing=True,
             )
             logger.info("Knowledge store backup to Unraid enabled: every 30 min")
+            scheduler.add_job(
+                _proton_bridge_vault_backup,
+                CronTrigger(hour=bh, minute=bm + 10 if bm < 50 else 0, timezone=timezone),
+                id="proton_bridge_vault_backup",
+                replace_existing=True,
+            )
+            logger.info(
+                f"proton-bridge Bridge vault backup enabled: daily at "
+                f"{bh:02d}:{(bm+10) if bm < 50 else 0:02d} {timezone}"
+            )
         logger.info(f"Backup enabled: checkpoint hourly, backup daily at {bh:02d}:{bm:02d} {timezone}")
     if getattr(s, "watchdog_enabled", False):
         scheduler.add_job(

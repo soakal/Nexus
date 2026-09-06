@@ -85,10 +85,12 @@ def _rclone_sync(local_dir: pathlib.Path, unc_path: str) -> bool:
     """Mirror local_dir to the Unraid share via the pre-configured
     `nexus-unraid` rclone remote (rclone config create, one-time host setup --
     not done here). Root-anchored --exclude keeps backup_vault()'s sync from
-    ever touching backup_knowledge()'s separate knowledge/ subtree living in
-    the same remote root (both write under the same Nexus_backup-lxc/ path;
-    without this, backup_vault's mirror-delete semantics wipe the knowledge
-    mirror on every run -- reproduced live 2026-08-14).
+    ever touching backup_knowledge()'s separate knowledge/ subtree, or
+    backup_proton_bridge_vault()'s separate proton-bridge-vault/ subtree,
+    living in the same remote root (all three write under the same
+    Nexus_backup-lxc/ path; without this, backup_vault's mirror-delete
+    semantics wipe the other mirrors on every run -- reproduced live
+    2026-08-14 for knowledge/, same reasoning extends to proton-bridge-vault/).
 
     Returns True on success, False on failure -- the caller MUST fold this
     into its own `ok` result; a swallowed failure here previously meant
@@ -100,7 +102,8 @@ def _rclone_sync(local_dir: pathlib.Path, unc_path: str) -> bool:
     try:
         remote = _rclone_remote(unc_path)
         result = _run_rclone(
-            ["rclone", "sync", str(local_dir), remote, "--fast-list", "--exclude", "/knowledge/**"],
+            ["rclone", "sync", str(local_dir), remote, "--fast-list",
+             "--exclude", "/knowledge/**", "--exclude", "/proton-bridge-vault/**"],
             timeout=300,
         )
         if result.returncode != 0:
@@ -252,6 +255,112 @@ def backup_knowledge() -> dict:
     except Exception as e:
         logger.warning("Knowledge backup failed (non-fatal): %s", e)
         return {"ok": False, "error": str(e)}
+
+
+def backup_proton_bridge_vault() -> dict:
+    """Back up ProtonMail Bridge's local vault from the proton-bridge LXC
+    (Proxmox VMID 204) -- specifically /home/proton/.config/protonmail/
+    bridge-v3/ (vault.enc + keychain state, ~36KB), NOT the sibling
+    /home/proton/.local/share/protonmail/bridge-v3/ (1.8GB of regenerable
+    Gluon mailbox cache + logs -- the tar command below can only reach the
+    small config dir, by construction, so there's no way to accidentally
+    pull the large one in). Losing this vault means re-pairing Bridge from
+    scratch, not just losing cached mail -- that's what makes 36KB worth a
+    dedicated backup.
+
+    proton-bridge has no SSH credential of its own in Infisical (see the
+    nexus-lxc-access skill); this reaches it via the Proxmox host's own
+    credential (cred:proxmox:*) and `pct exec 204`, over an in-process
+    paramiko session -- the Proxmox password is never printed or written to
+    disk. Runs daily (see scheduler.py) since the vault rarely changes.
+
+    Own dedicated local staging dir + remote subpath (mirrors
+    backup_knowledge()'s pattern, not backup_vault()'s whole-root sync) so
+    this backup's retention/failure handling is fully independent of the
+    other two -- see _rclone_sync's docstring for why backup_vault()'s own
+    sync now excludes this subtree.
+
+    Returns {"ok": bool, "dest": str, "error": str | None}. Never raises.
+    """
+    try:
+        import io
+        import tarfile
+
+        import paramiko
+
+        from backend.config import get_settings
+        from backend.secrets.infisical_client import get_secret
+
+        s = get_settings()
+        dest_root = s.unraid_backup_path.strip()
+        if not dest_root.startswith("\\\\"):
+            return {"ok": False, "dest": "", "error": "unraid_backup_path is not a UNC path"}
+
+        proxmox_host = get_secret("cred:proxmox:host")
+        proxmox_user = get_secret("cred:proxmox:user")
+        proxmox_password = get_secret("cred:proxmox:password")
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(hostname=proxmox_host, username=proxmox_user, password=proxmox_password, timeout=15)
+        try:
+            _, stdout, stderr = client.exec_command(
+                "pct exec 204 -- tar czf - -C /home/proton/.config protonmail", timeout=30,
+            )
+            data = stdout.read()
+            exit_status = stdout.channel.recv_exit_status()
+            err = stderr.read().decode(errors="replace")
+        finally:
+            client.close()
+
+        if exit_status != 0:
+            return {"ok": False, "dest": "", "error": f"pct exec tar failed (exit {exit_status}): {err[:500]}"}
+
+        # Emptiness/corruption guard -- must run BEFORE anything touches disk
+        # or _run_rclone, so a bad pull can never propagate through a mirror
+        # sync (see _rclone_sync's docstring on why an unvalidated source is
+        # dangerous there).
+        if len(data) < 1024:
+            return {"ok": False, "dest": "", "error": f"pulled tarball suspiciously small ({len(data)} bytes)"}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                names = tf.getnames()
+        except Exception as e:
+            return {"ok": False, "dest": "", "error": f"pulled tarball not readable: {e}"}
+        if not any(n.endswith("vault.enc") for n in names):
+            return {"ok": False, "dest": "", "error": "pulled tarball missing vault.enc"}
+
+        local_dir = _STAGING_ROOT / "proton-bridge-vault"
+        history = local_dir / "history"
+        local_dir.mkdir(parents=True, exist_ok=True)
+        history.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        tar_name = "protonmail-bridge-v3.tar.gz"
+        (local_dir / tar_name).write_bytes(data)
+        hist_dir = history / ts
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        (hist_dir / tar_name).write_bytes(data)
+
+        entries = sorted(history.iterdir(), key=lambda p: p.name)
+        for old in entries[:-_HISTORY_KEEP]:
+            try:
+                shutil.rmtree(old)
+            except Exception:
+                pass
+
+        remote = _rclone_remote(dest_root, "proton-bridge-vault")
+        result = _run_rclone(["rclone", "sync", str(local_dir), remote, "--fast-list"], timeout=60)
+        if result.returncode != 0:
+            logger.warning("proton-bridge vault rclone sync failed: %s", result.stderr[:500])
+            return {"ok": False, "dest": remote, "error": "rclone sync to Unraid failed"}
+
+        logger.info(f"proton-bridge Bridge vault backed up to {remote} ({ts})")
+        return {"ok": True, "dest": remote, "error": None}
+
+    except Exception as e:
+        logger.warning(f"proton-bridge vault backup failed (non-fatal): {e}")
+        return {"ok": False, "dest": "", "error": str(e)}
 
 
 def restore_vault(timestamp: str | None = None) -> dict:

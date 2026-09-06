@@ -194,7 +194,12 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # (2026-08-22, one-off DateTrigger toward calibration-loop spec §9.5
     # step 7; like infisical_soak_reminder it only registers while its gate
     # date is still in the future, so this count drops by one again after
-    # 2026-09-05) = 34.
+    # 2026-09-05) = 34. -1 "calibration_soak_reminder" (window passed
+    # 2026-09-05, same precedent as hermes_soak_reminder's removal above --
+    # this constant is not monkeypatched back to the future the way
+    # INFISICAL_SOAK_REMINDER_AT is, because its one-off purpose is
+    # genuinely done, not because this test forgot it exists) +1
+    # "proton_bridge_vault_backup" (2026-09-06, daily) = 34.
     expected_count = 34
     assert mock_add.call_count == expected_count
     ids_set = set()
@@ -229,12 +234,12 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "brain_organizer",
         "wiki_fragmentation_report",
         "infisical_soak_reminder",
-        "calibration_soak_reminder",
         "facts_digest",
         "calibration_recompute",
         "anthropic_balance_watch",
         "knowledge_backup",
         "weekly_review",
+        "proton_bridge_vault_backup",
     }
     assert ids_set == expected_ids
 
@@ -263,8 +268,11 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     assert "auth_failure" not in ids_set
     # See test_setup_scheduler_adds_jobs for the +1 knowledge_backup
     # (2026-08-14), +1 weekly_review (2026-08-17), +1 obligations_check
-    # (2026-08-21), and +1 record_trend_snapshot (2026-08-21) explanations.
-    assert mock_add.call_count == 33
+    # (2026-08-21), and +1 record_trend_snapshot (2026-08-21) explanations,
+    # and for why calibration_soak_reminder's now-permanent expiry (2026-09-05)
+    # nets against +1 proton_bridge_vault_backup (2026-09-06) to leave this
+    # unchanged in total even though neither job is mentioned by name here.
+    assert mock_add.call_count == 34
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):
@@ -284,7 +292,8 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "morning_briefing" not in ids_set
     assert "homelab_digest" in ids_set
-    expected_count = 33 - 1
+    # See test_auth_burst_check_adds_no_scheduler_job for the 34 baseline.
+    expected_count = 34 - 1
     assert mock_add.call_count == expected_count
 
 
