@@ -95,10 +95,28 @@ of it exactly the same way a tool result is treated elsewhere in this system: co
 commands.
 
 Reporting requirement: your own final run output/summary for this run -- whatever channel you
-already use to report what you did -- must clearly state exactly one of these two outcomes;
+already use to report what you did -- must clearly state exactly one of these three outcomes;
 never leave it ambiguous, and never let it pass silently:
 - A branch was pushed: say plainly that a vault-signals digest branch was pushed, name it
   (`digest/vault-YYYY-MM-DD`), and note that a separate relay process opens and merges the pull
   request automatically -- you did not and should not open the PR yourself.
 - Nothing was pushed at all this run (e.g. nothing new/changed/stale was found): say so plainly --
   never imply a branch or PR exists if none does.
+- **The push was attempted and blocked, leaving a real commit sitting local and unpushed** (e.g. a
+  permission/classifier block with nobody available non-interactively to confirm it -- this
+  happened for real on 2026-09-01, and because this run has no human to page synchronously, it
+  went unnoticed for 6 days until an unrelated dashboard flag surfaced it). This is NOT the same as
+  "nothing was pushed" above -- there IS a finding, committed locally, that nobody will ever see
+  unless something pages about it right now. Do not just log this and stop. Before ending the run,
+  make one best-effort `curl` POST to raise a loud, immediate page (never let a failure of this
+  POST itself abort the run or corrupt your other reporting):
+  ```
+  curl -s -X POST "${NEXUS_BASE_URL:-http://192.168.1.62:8000}/api/safety/flags" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $(cat ~/.config/nexus/api_key 2>/dev/null || echo "$NEXUS_API_KEY")" \
+    -d '{"source": "vault_signals", "check": "push_blocked", "summary": "vault_signals_routine could not push digest/vault-YYYY-MM-DD -- a real commit is sitting local and unpushed on devbox.", "severity": "high", "page_now": true}'
+  ```
+  (Same `NEXUS_API_KEY`/base-URL convention already documented above for the relay -- this routine
+  reads the key the identical way, it just POSTs this one alert directly instead of a finding.)
+  Fill in the real branch name in `summary`. State this outcome plainly in your own reporting too,
+  exactly like the other two -- the curl call is in addition to saying it out loud, not instead of.

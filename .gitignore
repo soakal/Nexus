@@ -56,6 +56,9 @@ logs/
 *.log
 *.db
 
+# bin/cron_run.sh heartbeat files (devbox-local cron state, not tracked content)
+state/heartbeat/
+
 # OS
 .DS_Store
 Thumbs.db

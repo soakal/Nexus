@@ -1,5 +1,9 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(git push origin digest/vault-*)",
+      "Bash(git push -u origin digest/vault-*)"
+    ],
     "deny": [
       "Edit(.env)",
       "Write(.env)",
