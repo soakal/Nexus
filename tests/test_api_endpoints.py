@@ -495,6 +495,32 @@ def test_flags_endpoints_require_auth(app_client):
     assert app_client.post("/api/safety/flags/1/resolve", json={"status": "resolved"}).status_code == 401
 
 
+def test_flags_page_now_calls_notify_phone(app_client, auth_headers):
+    """page_now: true calls events.notify_phone once the flag actually
+    writes; omitted/false never calls it -- added 2026-09-06 for the
+    dead-man's-switch checker, which can't wait for the next scheduled
+    briefing to surface an overdue/failed cron job."""
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify:
+        no_page = app_client.post(
+            "/api/safety/flags",
+            json={"check": "page_now_test_1", "summary": "should not page"},
+            headers=auth_headers,
+        )
+        assert no_page.status_code == 200
+        mock_notify.assert_not_awaited()
+
+        paged = app_client.post(
+            "/api/safety/flags",
+            json={"check": "page_now_test_2", "summary": "should page", "page_now": True},
+            headers=auth_headers,
+        )
+        assert paged.status_code == 200
+        mock_notify.assert_awaited_once()
+        args, kwargs = mock_notify.call_args
+        assert "page_now_test_2" in args[0]
+        assert "should page" in args[0]
+
+
 def test_flags_full_lifecycle(app_client, auth_headers):
     """AC17: POST /flags creates a row and returns its id; GET /flags lists it
     newest-first with the full field shape and honors ?status=; GET

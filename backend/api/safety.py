@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 from datetime import datetime
 
@@ -9,6 +10,7 @@ from sqlmodel import Session, select
 from backend.auth import require_api_key
 from backend.database import ActionLog, OutcomeFlag, TaskOutcome, get_session
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Source values used by internal detectors, each with resolve-time or
@@ -247,7 +249,19 @@ async def create_flag(
     """Manual create, for Claude Code sessions (and other trusted callers)
     logging their own observations. `source` defaults to "manual" if omitted.
     Delegates to outcomes.record_flag, which NEVER raises — a
-    suppressed/deduped/disabled call returns id: null, not an error."""
+    suppressed/deduped/disabled call returns id: null, not an error.
+
+    `page_now: true` additionally calls events.notify_phone immediately,
+    for a caller that can't wait for the next scheduled briefing/digest to
+    surface an open flag -- record_flag itself never pages on its own (see
+    its docstring); this is the one place an external, non-interactive
+    caller (a cron heartbeat checker, a routine that can't page a human
+    for confirmation) can ask for an immediate page through the same
+    channel every other urgent NEXUS failure already uses. Added
+    2026-09-06 after a 6-day silent cron outage was only ever noticed via
+    an unrelated dashboard flag -- see the dead-man's-switch checker this
+    exists for. Best-effort: a notify_phone failure is logged, never
+    turned into a 500 for what is otherwise a successful flag write."""
     from backend.agents import outcomes
 
     check = body.get("check")
@@ -266,6 +280,12 @@ async def create_flag(
         detail=body.get("detail"),
         severity=body.get("severity", "medium"),
     )
+    if flag_id is not None and body.get("page_now"):
+        try:
+            from backend import events
+            await events.notify_phone(f"{source}:{check} — {summary}", kind="external_flag")
+        except Exception as e:
+            logger.warning(f"create_flag page_now notify_phone failed (non-fatal): {e}")
     return {"id": flag_id}
 
 
