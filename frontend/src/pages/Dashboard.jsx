@@ -205,10 +205,22 @@ export default function Dashboard() {
   const srcVals = Object.values(sources || {})
   const online = srcVals.filter(s => s.healthy).length
   const total = srcVals.length
-  const staleCount = [
-    ...srcVals.map(s => s.freshness),
-    ...Object.values(stateFreshness),
-  ].filter(v => v && v !== 'fresh').length
+  // Named, not just counted -- `sources` keys are backend health-check names
+  // (e.g. "channels_dvr") and `stateFreshness` keys are response/display
+  // names (e.g. "channels") for some of the same integrations under two
+  // different schemes (see the nexus-collector-trace skill). Shown as-is,
+  // duplicates and mismatches included -- an accepted rough edge, not solved
+  // here.
+  const staleItems = [
+    ...Object.entries(sources || {}).filter(([, s]) => s.freshness && s.freshness !== 'fresh').map(([name]) => name),
+    ...Object.entries(stateFreshness).filter(([, v]) => v && v !== 'fresh').map(([name]) => name),
+  ]
+  // claude_usage staleness is expected/normal (statusline capture timing,
+  // not a broken integration -- see the Claude Usage card's own comment
+  // below) and would otherwise clutter this list with a non-issue every
+  // time it's stale, which is often.
+  const claudeUsageStale = staleItems.includes('claude_usage')
+  const otherStaleItems = staleItems.filter(name => name !== 'claude_usage')
 
   // DVR storage pct
   const pct = channels && channels.storage_total_gb > 0
@@ -258,9 +270,17 @@ export default function Dashboard() {
         }
       />
 
-      {staleCount > 0 && (
+      {(otherStaleItems.length > 0 || claudeUsageStale) && (
         <div style={{ padding: '10px 14px', borderRadius: '6px', border: '1px solid rgba(232,196,104,0.25)', background: 'rgba(232,196,104,0.06)', color: '#f0d896', fontSize: '12px' }}>
-          {staleCount} cached state item{staleCount === 1 ? '' : 's'} stale or unavailable. Last known values remain visible while background workers retry.
+          {otherStaleItems.length > 0 ? (
+            <>
+              Stale: {otherStaleItems.slice(0, 6).join(', ')}
+              {otherStaleItems.length > 6 ? ` +${otherStaleItems.length - 6} more` : ''}.
+              {' '}Last known values remain visible while background workers retry.
+            </>
+          ) : (
+            'claude_usage stale (expected — capture timing, not a broken integration).'
+          )}
         </div>
       )}
 
