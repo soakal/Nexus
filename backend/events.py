@@ -29,7 +29,7 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "homelab_docker_restart_failed",
     "homelab_docker_stopped", "homelab_expected_mismatch", "homelab_garage",
     "homelab_recovered", "homelab_vm_stopped", "incident_diagnosis", "job_failing",
-    "mail_draft_created", "needs_confirm", "obligation_due", "scheduler_stall",
+    "mail_draft_created", "masonry_watch", "needs_confirm", "obligation_due", "scheduler_stall",
     "soak_reminder", "spend_report", "stale_delivery", "throttled",
     "task_completed", "task_failed", "trial_verdict", "weekly_review",
 })

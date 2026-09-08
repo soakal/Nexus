@@ -468,6 +468,16 @@ async def _anthropic_balance_watch():
         raise
 
 
+async def _masonry_watch():
+    try:
+        from backend.agents.masonry_watch import run_masonry_watch
+        result = await run_masonry_watch()
+        logger.info(f"Masonry watch job: {result}")
+    except Exception as e:
+        logger.error(f"Masonry watch job error: {e}")
+        raise
+
+
 async def _run_facts_digest():
     try:
         from backend.agents.facts_digest import run_facts_digest
@@ -1064,6 +1074,21 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Anthropic balance-feature watch enabled: monthly on the 1st at 09:30")
+    if getattr(s, "masonry_watch_enabled", True):
+        watch_time = getattr(s, "masonry_watch_time", "08:15")
+        try:
+            mwh, mwm = watch_time.split(":")
+            mwh, mwm = int(mwh), int(mwm)
+        except Exception:
+            logger.warning(f"Invalid masonry_watch_time {watch_time!r}; falling back to 08:15")
+            mwh, mwm = 8, 15
+        scheduler.add_job(
+            _masonry_watch,
+            CronTrigger(hour=mwh, minute=mwm, timezone=timezone),
+            id="masonry_watch",
+            replace_existing=True,
+        )
+        logger.info(f"Masonry contractor watch enabled: daily at {mwh:02d}:{mwm:02d} {timezone}")
     if getattr(s, "goal_recurrence_enabled", True):
         scheduler.add_job(
             _goal_recurrence,
