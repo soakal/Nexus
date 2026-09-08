@@ -30,6 +30,7 @@ def _settings(**overrides):
     s = MagicMock()
     s.homelab_watch_enabled = True
     s.homelab_disk_temp_warn_c = 45
+    s.unifi_switch_temp_warn_c = 55
     s.homelab_garage_entity_id = "cover.garage_door_garage_door"
     s.homelab_garage_open_minutes = 30
     s.homelab_recovery_notify_enabled = False
@@ -538,6 +539,7 @@ async def test_escalation_tick_does_not_retrigger_incident_diagnosis():
          patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=bad), \
          patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=_proxmox_data([])), \
          patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data([])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=_unifi_data({})), \
          patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value={"node": "pve", "status": "none"}), \
          patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True), \
          patch("backend.agents.incident_diag.diagnose", new_callable=AsyncMock) as mock_diagnose, \
@@ -696,6 +698,43 @@ async def test_disk_temp_none_and_non_numeric_ignored_not_crashed():
          patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=data), \
          patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
         fired = await homelab_watch.check_disk_temps()
+
+    assert fired == []
+    mock_notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# UniFi switch temp
+# ---------------------------------------------------------------------------
+
+def _unifi_data(device_temps_c):
+    return SimpleNamespace(device_temps_c=device_temps_c)
+
+
+@pytest.mark.asyncio
+async def test_switch_temp_over_threshold_fires_once_and_rearms():
+    hot = _unifi_data({"USW Pro 24 PoE": 60})
+    cool = _unifi_data({"USW Pro 24 PoE": 44})
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, side_effect=[hot, hot, cool, hot]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
+        fired1 = await homelab_watch.check_switch_temp()
+        fired2 = await homelab_watch.check_switch_temp()
+        await homelab_watch.check_switch_temp()
+        fired3 = await homelab_watch.check_switch_temp()
+
+    assert fired1 == ["unifi_switch_temp"]
+    assert fired2 == []
+    assert fired3 == ["unifi_switch_temp"]
+
+
+@pytest.mark.asyncio
+async def test_switch_temp_none_read_failure_skipped_not_crashed():
+    data = _unifi_data(None)
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=data), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        fired = await homelab_watch.check_switch_temp()
 
     assert fired == []
     mock_notify.assert_not_called()
@@ -1222,6 +1261,7 @@ async def test_expected_resources_included_in_run_homelab_watch(eng):
          patch("backend.integrations.unraid.fetch", new_callable=AsyncMock,
                return_value=_unraid_data(docker_containers=[{"name": "sonarr", "state": "EXITED"}])), \
          patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data([])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=_unifi_data({})), \
          patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value={"node": "pve", "status": "none"}), \
          patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True):
         result = await homelab_watch.run_homelab_watch()
@@ -1249,12 +1289,14 @@ async def test_run_homelab_watch_all_integrations_failing_never_raises():
          patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, side_effect=RuntimeError("down")), \
          patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, side_effect=RuntimeError("down")), \
          patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, side_effect=RuntimeError("down")), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, side_effect=RuntimeError("down")), \
          patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, side_effect=RuntimeError("down")):
         result = await homelab_watch.run_homelab_watch()
 
     assert isinstance(result, dict)
     assert result["vms"] == []
     assert result["docker"] == []
+    assert result["switch_temp"] == []
 
 
 @pytest.mark.asyncio
@@ -1269,7 +1311,8 @@ async def test_run_homelab_watch_one_check_raising_does_not_cancel_the_others():
          patch("backend.agents.homelab_watch.check_proxmox_vms", new_callable=AsyncMock, return_value=[]), \
          patch("backend.agents.homelab_watch.check_docker", new_callable=AsyncMock, return_value=[]), \
          patch("backend.agents.homelab_watch.check_unraid_array", new_callable=AsyncMock, return_value=[]), \
-         patch("backend.agents.homelab_watch.check_disk_temps", new_callable=AsyncMock, return_value=[]):
+         patch("backend.agents.homelab_watch.check_disk_temps", new_callable=AsyncMock, return_value=[]), \
+         patch("backend.agents.homelab_watch.check_switch_temp", new_callable=AsyncMock, return_value=[]):
         result = await homelab_watch.run_homelab_watch()
 
     assert result["garage"] == []  # the raiser degraded to empty, not propagated
@@ -1283,10 +1326,11 @@ async def test_run_homelab_watch_returns_summary_dict_shape():
          patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=_proxmox_data([])), \
          patch("backend.integrations.unraid.fetch", new_callable=AsyncMock, return_value=_unraid_data()), \
          patch("backend.integrations.homeassistant.fetch", new_callable=AsyncMock, return_value=_ha_data([])), \
+         patch("backend.integrations.unifi.fetch", new_callable=AsyncMock, return_value=_unifi_data({})), \
          patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value={"node": "pve", "status": "none"}):
         result = await homelab_watch.run_homelab_watch()
 
-    assert set(result.keys()) == {"vms", "docker", "array", "disk_temps", "garage", "backups", "expected"}
+    assert set(result.keys()) == {"vms", "docker", "array", "disk_temps", "switch_temp", "garage", "backups", "expected"}
 
 
 # ---------------------------------------------------------------------------
@@ -1297,7 +1341,7 @@ def test_kinds_are_not_on_the_never_mutable_floor():
     from backend.safety import governor
     kinds = {
         "homelab_vm_stopped", "homelab_docker_stopped", "homelab_array",
-        "homelab_disk_temp", "homelab_garage", "homelab_backup_failed",
+        "homelab_disk_temp", "homelab_switch_temp", "homelab_garage", "homelab_backup_failed",
     }
     assert kinds.isdisjoint(governor._NEVER_MUTABLE_NOTIFY_KINDS)
 

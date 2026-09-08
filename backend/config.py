@@ -419,6 +419,13 @@ class Settings(BaseSettings):
     # process can't monitor its own death — needs external monitoring).
     homelab_watch_enabled: bool = True
     homelab_disk_temp_warn_c: int = 45
+    # ponytail: first-guess threshold, not a manufacturer spec — the USW Pro
+    # 24 PoE switch was reading 44C at the time this was added, and vault
+    # notes flagged ~42-43C readings as "elevated" relative to its own
+    # earlier baseline. Set with headroom above the current reading so it
+    # won't fire immediately; tune down if it never fires, or down further
+    # if it should have fired on a reading you already know was concerning.
+    unifi_switch_temp_warn_c: int = 55
     homelab_garage_entity_id: str = "cover.garage_door_garage_door"
     homelab_garage_open_minutes: int = 30
     # B10: opt-in "all clear" notice once a homelab_watch alert that actually

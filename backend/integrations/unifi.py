@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,6 +10,8 @@ from sqlmodel import Session, select
 
 from backend.cache import async_ttl_cache
 from backend.integrations.unifi_tls_pinning import build_transport
+
+logger = logging.getLogger(__name__)
 
 _MAC_HEX_RE = re.compile(r"^[0-9a-fA-F]{12}$")
 
@@ -32,6 +35,12 @@ class UniFiData:
     # for why this must never quietly collapse to a false all-clear.
     alerts: list | None = field(default_factory=list)
     new_devices: list = field(default_factory=list)
+    # {device_name: temp_c} for devices reporting has_temperature=True
+    # (live-verified 2026-09-08: `stat/device`'s general_temperature field —
+    # the USW Pro 24 PoE switch is the only device on this controller that
+    # reports it; APs/gateway don't). None means the read failed this cycle
+    # (same None-vs-{} distinction as `alerts` above) — never silently 0.
+    device_temps_c: dict[str, float] | None = field(default_factory=dict)
 
 
 async def _login(client: httpx.AsyncClient) -> dict:
@@ -192,6 +201,29 @@ async def fetch() -> UniFiData:
         # Re-check manually after the next controller firmware upgrade.
         alerts = None
 
+        # Per-device temperature (2026-09-08) — closes a real gap: the USW
+        # Pro 24 PoE switch's thermal question had been chased three times
+        # via one-off autonomous investigation goals (75, 77, 78, 86), all
+        # failing criteria_not_met because nothing ever actually polled the
+        # real sensor. `stat/device` (live-verified) returns
+        # has_temperature/general_temperature per device. Isolated in its
+        # own try/except like `alerts` above — a failure here must not take
+        # down clients/uplink/bandwidth, which are independently working.
+        try:
+            dev_resp = await client.get(
+                f"{settings.unifi_host}/proxy/network/api/s/default/stat/device", headers=headers
+            )
+            if dev_resp.status_code != 200:
+                raise Exception(f"UniFi device stat fetch failed: {dev_resp.status_code}")
+            device_temps_c = {
+                (d.get("name") or d.get("model") or d.get("mac")): d["general_temperature"]
+                for d in dev_resp.json().get("data", [])
+                if d.get("has_temperature") and isinstance(d.get("general_temperature"), (int, float))
+            }
+        except Exception as e:
+            logger.warning(f"UniFi device temp fetch failed (ignored, degrades to None): {e}")
+            device_temps_c = None
+
     # Check for new devices
     new_devices = []
     with Session(engine) as session:
@@ -215,6 +247,7 @@ async def fetch() -> UniFiData:
         bandwidth_mbps=bandwidth_mbps,
         alerts=alerts,
         new_devices=new_devices,
+        device_temps_c=device_temps_c,
     )
 
 

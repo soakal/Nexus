@@ -392,13 +392,18 @@ async def test_unifi_fetch_alerts_always_none():
     """list/alarm is permanently broken on the real controller (HTTP 400
     api.err.InvalidObject on every request, confirmed live) -- fetch() no
     longer calls it at all, alerts is unconditionally None (never [], which
-    would read as a false all-clear). Only 2 GET calls now (clients, health),
-    not 3."""
+    would read as a false all-clear). 3 GET calls now (clients, health,
+    device stats — the last added 2026-09-08 for per-device temperature)."""
     login_resp = MagicMock(status_code=200)
     clients_resp = MagicMock(status_code=200)
     clients_resp.json.return_value = {"data": [{"mac": "aa:bb:cc:dd:ee:ff"}]}
     health_resp = MagicMock(status_code=200)
     health_resp.json.return_value = {"data": [{"subsystem": "wan", "status": "ok"}]}
+    device_resp = MagicMock(status_code=200)
+    device_resp.json.return_value = {"data": [
+        {"name": "USW Pro 24 PoE", "has_temperature": True, "general_temperature": 44},
+        {"name": "Patio UAP-AC-LR", "has_temperature": False},
+    ]}
 
     with patch("httpx.AsyncClient") as mock_cls, \
          patch("backend.integrations.unifi.Session") as mock_session_cls, \
@@ -407,7 +412,7 @@ async def test_unifi_fetch_alerts_always_none():
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value.post = AsyncMock(return_value=login_resp)
         mock_client.__aenter__.return_value.get = AsyncMock(
-            side_effect=[clients_resp, health_resp]
+            side_effect=[clients_resp, health_resp, device_resp]
         )
         mock_cls.return_value = mock_client
 
@@ -423,7 +428,8 @@ async def test_unifi_fetch_alerts_always_none():
     assert data.alerts is None
     assert data.client_count == 1
     assert data.uplink_status == "ok"
-    assert mock_client.__aenter__.return_value.get.await_count == 2
+    assert data.device_temps_c == {"USW Pro 24 PoE": 44}
+    assert mock_client.__aenter__.return_value.get.await_count == 3
 
 
 def test_unifi_data_defaults():
@@ -434,6 +440,7 @@ def test_unifi_data_defaults():
     assert data.bandwidth_mbps == 0.0
     assert data.alerts == []
     assert data.new_devices == []
+    assert data.device_temps_c == {}
 
 
 # ---------------------------------------------------------------------------

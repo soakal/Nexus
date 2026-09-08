@@ -417,6 +417,38 @@ async def check_disk_temps() -> list[str]:
     return ["unraid_temp"] if fired else []
 
 
+async def check_switch_temp() -> list[str]:
+    """Any UniFi device (has_temperature=True) over the configured threshold.
+
+    Replaces three failed one-off autonomous investigation goals (75, 77, 78,
+    86) chasing the USW Pro 24 PoE switch's thermal question — none of them
+    ever actually polled the real sensor, so all failed criteria_not_met.
+    This is that missing poll. None (read failed this cycle) is skipped
+    silently, same as check_disk_temps' spun-down-disk handling — a failed
+    read isn't evidence of "not hot", so it must not fire OR clear an alert."""
+    try:
+        from backend.config import get_settings
+        from backend.integrations import unifi
+        data = await unifi.fetch()
+    except Exception as e:
+        logger.warning(f"check_switch_temp: fetch failed (ignored): {e}")
+        return []
+
+    if data.device_temps_c is None:
+        return []
+
+    threshold = get_settings().unifi_switch_temp_warn_c
+    hot = {name: t for name, t in data.device_temps_c.items() if t > threshold}
+    detail = ", ".join(f"{html.escape(str(name))}={t}C" for name, t in hot.items())
+    fired = await _edge_alert(
+        "unifi_switch_temp",
+        bool(hot),
+        f"NEXUS: UniFi device(s) over {threshold}C — {detail}.",
+        kind="homelab_switch_temp",
+    )
+    return ["unifi_switch_temp"] if fired else []
+
+
 async def check_garage() -> list[str]:
     """Garage door open longer than the configured minutes. Entity missing
     from HA (never installed, HA down) degrades to 'closed' + timer cleared —
@@ -617,6 +649,7 @@ async def run_homelab_watch() -> dict:
             "docker": await _run_check("docker", check_docker()),
             "array": await _run_check("array", check_unraid_array()),
             "disk_temps": await _run_check("disk_temps", check_disk_temps()),
+            "switch_temp": await _run_check("switch_temp", check_switch_temp()),
             "garage": await _run_check("garage", check_garage()),
             "backups": await _run_check("backups", check_backups()),
             "expected": await _run_check("expected", check_expected_resources()),
@@ -631,6 +664,6 @@ async def run_homelab_watch() -> dict:
     except Exception as exc:
         logger.error(f"run_homelab_watch error (ignored): {exc}")
         return {
-            "vms": [], "docker": [], "array": [], "disk_temps": [], "garage": [],
+            "vms": [], "docker": [], "array": [], "disk_temps": [], "switch_temp": [], "garage": [],
             "backups": [], "expected": [],
         }

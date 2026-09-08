@@ -140,6 +140,12 @@ CONTRACTS: dict[str, tuple[FieldContract, ...]] = {
         # here too, not a contract breach.
         FieldContract("bandwidth_mbps", (int, float), "type", consumer="tools.py:157"),
         FieldContract("alerts", (list, type(None)), "type", consumer="tools.py:153 (None means the alarms read failed this cycle)"),
+        # device_temps_c (2026-09-08): "type" not "nonempty" — a controller
+        # with no has_temperature=True devices legitimately reports {}, and
+        # None means the stat/device read itself failed this cycle (same
+        # None-vs-{} distinction as alerts above).
+        FieldContract("device_temps_c", (dict, type(None)), "type",
+                       consumer="homelab_watch.py:check_switch_temp (None means the stat/device read failed this cycle)"),
     ),
     "proxmox": (
         FieldContract("node", (str,), "nonempty", consumer="proxmox.py:114-116"),
