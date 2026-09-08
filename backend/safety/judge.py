@@ -69,9 +69,17 @@ def _db_task_prompt(task_id: int) -> str | None:
         return None
 
 
-def _db_recent_action_log(target: str, since: datetime, limit: int = 5) -> list[dict]:
+def _db_recent_action_log(
+    target: str, since: datetime, limit: int = 5, *, exclude_id: int | None = None
+) -> list[dict]:
     """Last <= `limit` ActionLog rows for `target` since `since` (thrash/flip-flop
     detection). Sync only — call via asyncio.to_thread. Returns [] on any error.
+
+    `exclude_id` must be the id of the row currently being judged — the broker
+    inserts that row BEFORE calling the judge, so without this exclusion every
+    call sees its own in-flight row as "recent history" and misreads it as a
+    duplicate/loop (confirmed live: 780/780 verdicts since 2026-07-15 were
+    "veto", citing this exact false duplicate).
     """
     try:
         from sqlmodel import Session, select
@@ -83,6 +91,7 @@ def _db_recent_action_log(target: str, since: datetime, limit: int = 5) -> list[
                 select(ActionLog)
                 .where(ActionLog.target == target)
                 .where(ActionLog.created_at >= since)
+                .where(ActionLog.id != exclude_id)
                 .order_by(ActionLog.created_at.desc())
                 .limit(limit)
             )
@@ -254,11 +263,15 @@ async def _automation_context(target: str) -> str:
         return "(none)"
 
 
-async def _history_context(target: str) -> str:
-    """Section 5: last <=5 ActionLog rows for the same target in the past 24h."""
+async def _history_context(target: str, exclude_id: int) -> str:
+    """Section 5: last <=5 ActionLog rows for the same target in the past 24h,
+    excluding `exclude_id` (the row currently being judged — see
+    `_db_recent_action_log`'s docstring)."""
     try:
         since = datetime.utcnow() - timedelta(hours=24)
-        rows = await asyncio.to_thread(_db_recent_action_log, target, since, 5)
+        rows = await asyncio.to_thread(
+            _db_recent_action_log, target, since, 5, exclude_id=exclude_id
+        )
         if not rows:
             return "(none)"
         return "\n".join(f"- {r['created_at']} {r['kind']} -> {r['decision']}" for r in rows)
@@ -283,8 +296,15 @@ async def _owner_intent_context() -> str:
 # The judge
 # ---------------------------------------------------------------------------
 
-async def evaluate_action(actor, kind, target, payload, risk, reversibility) -> dict:
+async def evaluate_action(actor, kind, target, payload, risk, reversibility, *, log_id: int) -> dict:
     """Ask the action-judge model whether this action should be allowed to dispatch.
+
+    `log_id` is the id of the ActionLog row the broker already inserted for
+    THIS action (before calling the judge) — required, not optional, so this
+    can never silently regress to the self-referential-history bug fixed
+    2026-09-08 (every verdict since 2026-07-15 was "veto": the judge was
+    reading its own in-flight row back as "recent history" and misreading it
+    as a duplicate/loop).
 
     Returns {"allow": bool, "confidence": float, "reason": str, "verdict": str}
     where verdict is one of "approve" | "veto" | "error" (matching
@@ -305,7 +325,7 @@ async def evaluate_action(actor, kind, target, payload, risk, reversibility) -> 
         origin_section = await _origin_context()
         time_section = await _time_context()
         automation_section = await _automation_context(target)
-        history_section = await _history_context(target)
+        history_section = await _history_context(target, log_id)
         intent_section = await _owner_intent_context()
 
         prompt = (

@@ -999,7 +999,9 @@ async def execute_action(
             from backend.safety import judge
 
             try:
-                verdict = await judge.evaluate_action(actor, kind, target, payload, risk, reversibility)
+                verdict = await judge.evaluate_action(
+                    actor, kind, target, payload, risk, reversibility, log_id=log_id
+                )
             except Exception as e:  # pragma: no cover - evaluate_action never raises
                 # per its own contract; this is a defensive fail-safe only, so a
                 # future regression there can never escape execute_action either.

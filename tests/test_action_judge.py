@@ -99,6 +99,26 @@ async def test_judge_invoked_for_agent_allowed(eng, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_judge_excludes_its_own_inflight_row_from_history(eng, monkeypatch):
+    """Regression for the self-referential-history bug (fixed 2026-09-08):
+    the broker inserts this action's own ActionLog row BEFORE calling the
+    judge, so without excluding that row by id, every single call sees
+    itself as "recent history for this target" and misreads it as a
+    duplicate/loop. Confirmed live: 780/780 verdicts since 2026-07-15 were
+    "veto" for exactly this reason. A single dispatch with no other history
+    for the target must show "(none)", not its own in-flight row."""
+    _set_judge_mode(monkeypatch, "shadow")
+    with patch("backend.agents.router.run_model", new_callable=AsyncMock, return_value=_APPROVE_JSON) as rm, \
+         patch("backend.integrations.obsidian.complete_task", new_callable=AsyncMock, return_value=None):
+        await execute_action(
+            actor=Actor.AGENT, kind="obsidian_task", target="vault",
+            payload={"note_path": "tasks.md", "task_text": "do thing"},
+        )
+    prompt = rm.await_args.args[1]
+    assert "RECENT HISTORY FOR THIS TARGET (last 24h):\n(none)" in prompt
+
+
+@pytest.mark.asyncio
 async def test_judge_invoked_for_autonomous_allowed(eng, monkeypatch):
     _set_judge_mode(monkeypatch, "shadow")
     with patch("backend.agents.router.run_model", new_callable=AsyncMock, return_value=_APPROVE_JSON) as rm, \
