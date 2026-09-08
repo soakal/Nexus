@@ -500,6 +500,21 @@ class Settings(BaseSettings):
     # independently configurable.
     homelab_digest_enabled: bool = True
 
+    # Masonry/tuck-pointing contractor watch (backend/agents/masonry_watch.py,
+    # 2026-09-08, Brian's own request via a scheduled research task) -- a
+    # daily Sonnet+web_search research call for local contractor ratings,
+    # delivered to Telegram. Unlike every other watch job in this file this
+    # has no deterministic API to probe (ratings live on Yelp/Angi/BBB, not
+    # in NEXUS's own DB) -- see that module's docstring for why it's LLM-only
+    # and skips the send outright on a research failure rather than falling
+    # back to stale/hardcoded data. masonry_watch_best_pick_day is the one day
+    # per week the message adds a "BEST PICK" callout on top of the daily
+    # top-5 list (APScheduler-style day_of_week value, e.g. "sun").
+    masonry_watch_enabled: bool = True
+    masonry_watch_location: str = "Southgate, MI"
+    masonry_watch_time: str = "08:15"
+    masonry_watch_best_pick_day: str = "sun"
+
     # Secret properties via vault (lazy)
     @property
     def anthropic_api_key(self) -> str:
