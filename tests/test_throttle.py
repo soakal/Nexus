@@ -409,6 +409,50 @@ async def test_reconcile_user_approved_failure_alerts(eng, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_stopped_task_does_not_alert(eng, monkeypatch):
+    """A running goal whose Task is 'stopped' (autonomy paused, or a
+    cooperative cancel — see orchestrator.py's per-step kill-switch/cancel
+    gate) must NOT trigger the goal_failed phone alert. Regression for a
+    real bug introduced 2026-09-08 when the alert was widened off
+    auto-approved-only: 'stopped' shares the same reconcile branch as
+    'failed' (both retry/backoff the same way), but 'stopped' is not a
+    failure — a real POST /api/safety/pause would have paged 'FAILED' for
+    every in-flight goal-backed task, exactly when Brian is deliberately
+    pausing during an incident."""
+    from backend.agents import goals
+    from backend.database import Goal, Task
+
+    with Session(eng) as s:
+        t = Task(prompt="do user thing", status="stopped")
+        s.add(t)
+        s.commit()
+        s.refresh(t)
+        task_id = t.id
+
+        g = Goal(
+            title="Paused goal",
+            description="A goal whose task was stopped, not failed.",
+            status="running",
+            fingerprint="stop0000stop0000",
+            task_id=task_id,
+            approved_by="user",
+            attempts=0,
+        )
+        s.add(g)
+        s.commit()
+
+    notify_mock = AsyncMock(return_value=True)
+    with patch("backend.events.notify_phone", notify_mock):
+        await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
+
+    goal_failed_calls = [
+        call for call in notify_mock.call_args_list
+        if call.kwargs.get("kind") == "goal_failed"
+    ]
+    assert len(goal_failed_calls) == 0
+
+
+@pytest.mark.asyncio
 async def test_reconcile_no_approved_by_still_alerts(eng, monkeypatch):
     """A running goal with no approved_by field (None / empty) still alerts
     on failure (2026-09-08: the alert is no longer gated on approved_by at

@@ -1026,8 +1026,8 @@ async def reconcile_running(
                     f"Reason: {fail_reason or 'no failure reason recorded'}",
                 )
 
-                # Best-effort phone alert on ANY goal failure (2026-09-08: was
-                # gated to auto-approved goals only, on the assumption a
+                # Best-effort phone alert on a genuine goal FAILURE (2026-09-08:
+                # was gated to auto-approved goals only, on the assumption a
                 # human who tapped Approve already knows it's running and
                 # will see a failure in tomorrow's digest. That assumption
                 # broke for monitoring-category goals (91/92/93, the back
@@ -1038,13 +1038,24 @@ async def reconcile_running(
                 # whether this was intentional." A goal's own in-plan notify
                 # step can't be relied on for the failure case either — it
                 # never runs if the task fails before reaching it, which is
-                # exactly what happened here. Inside the per-goal try/except
-                # so a notify failure never aborts the loop.
-                from backend import events
-                await events.notify_phone(
-                    f"NEXUS goal FAILED: {g.get('title')}",
-                    kind="goal_failed",
-                )
+                # exactly what happened here.
+                #
+                # Deliberately excludes task_status=="stopped": that status
+                # also covers a deliberate autonomy pause (POST
+                # /api/safety/pause) or a cooperative task cancel
+                # (orchestrator.py's per-step kill-switch/cancel gate) —
+                # neither is a failure, and paging "FAILED" for every
+                # in-flight goal on every pause/cancel would be misleading
+                # spam, especially since pausing is often exactly what
+                # happens during a real incident. Inside the per-goal
+                # try/except so a notify failure never aborts the loop.
+                if task_status == "failed":
+                    from backend import events
+                    reason_suffix = f" — {fail_reason}" if fail_reason else ""
+                    await events.notify_phone(
+                        f"NEXUS goal FAILED: {g.get('title')}{reason_suffix}"[:300],
+                        kind="goal_failed",
+                    )
             # still-running tasks are left untouched
         except Exception:
             logger.exception("reconcile_running: error processing goal %s", g.get("id"))
