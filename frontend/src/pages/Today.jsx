@@ -116,7 +116,8 @@ export default function Today() {
       flexDirection: 'column',
       gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Today" title="Today" />
+      <ScreenHeader section="Today" title="Today"
+        help="Your day at a glance: Priority Actions from this morning's briefing (checkable — checks are saved on this device only, not synced), your calendar agenda, and inbox summary. This is a lens on data that lives elsewhere (Briefing, Mail, Calendar) — nothing here is unique to this page." />
 
       {!data ? (
         <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>

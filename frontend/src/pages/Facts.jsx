@@ -136,7 +136,8 @@ export default function Facts() {
       {/* ------------------------------------------------------------------ */}
       {/* Header                                                               */}
       {/* ------------------------------------------------------------------ */}
-      <ScreenHeader section="Facts" title="Fact Store" />
+      <ScreenHeader section="Facts" title="Fact Store"
+        help="Things NEXUS has learned about you and your home — device nicknames, preferences, standing intent — extracted automatically from chat, Telegram, and briefings. It reads these back to itself before taking actions and when proposing goals. Wrong or stale facts can be dismissed here." />
 
       {/* ------------------------------------------------------------------ */}
       {/* Recall Tester                                                        */}

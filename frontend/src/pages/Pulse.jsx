@@ -239,6 +239,7 @@ export default function Pulse() {
         section="Systems"
         title="Pulse"
         subline="What NEXUS is doing right now"
+        help="Now Running shows anything actively in progress with a live timer. Actors groups every worker, scheduled job, and task by type, each showing when it last ran and whether it succeeded — a job stuck at 'running' far past its usual cadence is the one thing this catches that logs don't. Live Ticker is a scrolling event feed; hover it to pause while you read. All of this is live/in-memory — nothing here is a permanent record (see Traces for that)."
         right={
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <StatusDot color={connected ? '#5fe0b4' : '#fb7185'} pulse={connected} />

@@ -93,7 +93,8 @@ export default function Media() {
       flexDirection: 'column',
       gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Media" title="Media Operations" />
+      <ScreenHeader section="Media" title="Media Operations"
+        help="Status and controls for Channels DVR (recordings, storage) and Jellyfin (now-playing). Read-mostly — this page shows what's already happening rather than scheduling new recordings." />
 
       {!data && (
         <div style={{ color: '#7a776d', fontSize: '13px' }}>Loading…</div>

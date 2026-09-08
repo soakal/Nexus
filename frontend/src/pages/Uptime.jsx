@@ -48,7 +48,8 @@ export default function Uptime() {
       flexDirection: 'column',
       gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Uptime" title="Uptime & Connectivity" />
+      <ScreenHeader section="Uptime" title="Uptime & Connectivity"
+        help="Reachability history for every monitored system (self, homelab services, external HTTP targets) plus periodic internet speed tests. Checks run sequentially, not all at once, so a slow one can't false-fail its neighbors." />
 
       {/* Section 1 — Source Uptime */}
       {!summary ? (

@@ -487,7 +487,8 @@ export default function Safety() {
       padding: 'clamp(16px,3vw,32px)',
       display: 'flex', flexDirection: 'column', gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Safety" title="Safety & Governance" />
+      <ScreenHeader section="Safety" title="Safety & Governance"
+        help="The autonomy kill switch (pause stops all self-directed action instantly), spending caps, and the full audit log of every side-effecting action NEXUS has taken or attempted — who/what did it, what it decided, and why. Rows marked 'needs confirm' are waiting on you (Confirm executes, Reject discards, both one-time). This is the ground-truth record for 'what has NEXUS actually done', separate from what it merely reported doing." />
 
       {/* ------------------------------------------------------------------ */}
       {/* 1. Autonomy Control                                                  */}

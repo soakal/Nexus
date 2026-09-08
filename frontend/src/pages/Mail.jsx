@@ -148,7 +148,8 @@ export default function Mail() {
 
   return (
     <div style={{ width: '100%', maxWidth: '900px', margin: '0 auto', padding: 'clamp(16px,3vw,32px)', display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
-      <ScreenHeader section="Mail" title="Proton Mail" />
+      <ScreenHeader section="Mail" title="Proton Mail"
+        help="Your Proton inbox, read directly through a self-hosted mail server — not cached or duplicated anywhere else. NEXUS can also auto-draft replies and auto-trash obvious junk from known automated senders in the background; sending a new message from here always requires you to hit Send yourself, NEXUS can never send unconfirmed." />
 
       <Card style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
         <Eyebrow>Compose</Eyebrow>

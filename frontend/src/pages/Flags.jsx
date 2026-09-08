@@ -400,7 +400,8 @@ export default function Flags() {
       padding: 'clamp(16px,3vw,32px)',
       display: 'flex', flexDirection: 'column', gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Flags" title="Outcome Flags" />
+      <ScreenHeader section="Flags" title="Outcome Flags"
+        help="Things NEXUS noticed on its own — a stopped VM, a degraded array, a failed backup — that don't fit the chat/briefing flow. Each stays 'open' until you mark it Resolved or False Alarm; a false alarm won't re-page for the same pattern for 30 days. This is the honest 'what did NEXUS actually flag' list, separate from what it decided to tell you about proactively." />
 
       {/* ------------------------------------------------------------------ */}
       {/* 1. Health + counts                                                   */}

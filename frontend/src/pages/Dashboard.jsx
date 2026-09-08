@@ -241,6 +241,7 @@ export default function Dashboard() {
         section="Dashboard"
         title="Command Center"
         subline={nowStr}
+        help="A live snapshot of every homelab system NEXUS watches: Proxmox VMs/LXCs, UniFi network, Unraid array/disks/Docker, AdGuard DNS, GitHub PRs, Claude/OpenRouter usage, weather, and more. Each card polls independently and shows its own age/status — one system going stale or offline never blanks the others."
         right={
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '9px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>

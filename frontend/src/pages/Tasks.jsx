@@ -80,7 +80,8 @@ export default function Tasks() {
       flexDirection: 'column',
       gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Tasks" title="Mission Control" />
+      <ScreenHeader section="Tasks" title="Mission Control"
+        help="Multi-step jobs you hand NEXUS directly — it plans the steps, executes them one at a time with real tool access (checking status, reading logs, etc.), and can resume from where it left off if interrupted. A failed task shows the actual reason it stopped, not just 'failed'." />
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
         <TextInput

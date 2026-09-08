@@ -339,7 +339,8 @@ export default function Vault() {
     <div style={{ width: '100%', maxWidth: '1200px', margin: '0 auto',
       padding: 'clamp(16px,3vw,32px)', display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
       <ScreenHeader section="Vault" title="Knowledge Vault"
-        subline={catalog ? `${pages.length} wiki pages · catalog built ${catalog.built_at || 'n/a'}` : 'Loading catalog…'} />
+        subline={catalog ? `${pages.length} wiki pages · catalog built ${catalog.built_at || 'n/a'}` : 'Loading catalog…'}
+        help="Your Obsidian notes vault, browsable read-only here. NEXUS writes into it nightly (the Brain Organizer folds raw notes/events into wiki pages) — this page reads what's already on disk, it doesn't edit or trigger writes." />
 
       <div style={{ display: 'flex', gap: '8px' }}>
         {tabBtn('browse', 'Browse')}

@@ -43,6 +43,7 @@ export default function Briefing() {
         section="Briefing"
         title="Intel Briefing"
         subline={subline}
+        help="NEXUS's daily AI-written summary: Priority Actions at the top (things worth doing today), then sections pulled from your homelab and mail (never fabricated — each section either has real data or says so). Generated once each morning; use the button to regenerate on demand."
         right={
           <PrimaryButton
             onClick={trigger}

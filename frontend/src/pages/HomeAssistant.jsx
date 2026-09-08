@@ -694,6 +694,7 @@ export default function HomeAssistant() {
       <ScreenHeader
         section="Home Assistant"
         title="Home Systems"
+        help="Direct control for a curated set of lights, locks, garage, fans, and the thermostat, plus your Proxmox VM/LXC list. A toggle here executes immediately as you — no confirmation step. After a light/switch toggle the page waits ~2s before refreshing, since real devices lag the poll; the thermostat panel uses a fixed setpoint offset intentionally (your utility's peak-hours program, not a bug)."
         right={
           <div style={{ display: 'flex', flexDirection: 'row', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={{ fontSize: '13px', color: '#98958c' }}>

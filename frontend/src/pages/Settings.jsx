@@ -174,7 +174,8 @@ export default function Settings() {
       flexDirection: 'column',
       gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Settings" title="System Configuration" />
+      <ScreenHeader section="Settings" title="System Configuration"
+        help="Your API key (for pairing a new browser/device), and secrets NEXUS uses to reach other systems (Proxmox, Home Assistant, etc.) — stored encrypted, never shown in full once saved. Changes here affect the live running system immediately, no restart needed for most fields." />
 
       {notifyBroken && (
         <Card style={{

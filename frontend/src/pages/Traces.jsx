@@ -160,7 +160,8 @@ export default function Traces() {
       padding: 'clamp(16px,3vw,32px)',
       display: 'flex', flexDirection: 'column', gap: 'var(--gap)',
     }}>
-      <ScreenHeader section="Traces" title="Agent Traces" />
+      <ScreenHeader section="Traces" title="Agent Traces"
+        help="The permanent, searchable record of every LLM call and multi-step run NEXUS has made — model used, cost, tokens, and the actual input/output text (click a span to expand it). Search matches a trace's label or any span's text. This is the detailed after-the-fact log; Pulse shows the same kinds of activity live, while it's still happening." />
 
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>

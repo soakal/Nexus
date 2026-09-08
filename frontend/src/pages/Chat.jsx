@@ -318,6 +318,7 @@ export default function Chat() {
       <ScreenHeader
         section="Chat"
         title="Assistant"
+        help="Talk to NEXUS directly. It can answer questions, control Home Assistant devices, and run multi-step tasks — anything typed here executes as YOU (no confirmation gate), same trust level as a valid API key. Conversation history persists across visits until you start a new chat."
         right={
           <div style={{ display: 'flex', flexDirection: 'row', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
             <GhostButton
