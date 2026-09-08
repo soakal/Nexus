@@ -366,9 +366,14 @@ async def test_reconcile_auto_approved_failure_alerts(eng, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reconcile_user_approved_failure_no_alert(eng, monkeypatch):
-    """A running goal whose Task is 'failed' AND approved_by='user' does NOT
-    trigger the goal_failed phone alert."""
+async def test_reconcile_user_approved_failure_alerts(eng, monkeypatch):
+    """A running goal whose Task is 'failed' AND approved_by='user' DOES
+    trigger the goal_failed phone alert (2026-09-08: was previously silent —
+    see the fix comment at the notify_phone call site in goals.py for why
+    that was a real bug, not intentional quiet). Monitoring-category goals
+    can never be auto-approved by design, so gating this alert to
+    auto-approved-only meant every monitoring goal's failure was silent
+    except in the next day's digest."""
     from backend.agents import goals
     from backend.database import Goal, Task
 
@@ -395,17 +400,19 @@ async def test_reconcile_user_approved_failure_no_alert(eng, monkeypatch):
     with patch("backend.events.notify_phone", notify_mock):
         await goals.reconcile_running(backoff_base_seconds=300, max_attempts=5)
 
-    # goal_failed must NOT have been called.
     goal_failed_calls = [
         call for call in notify_mock.call_args_list
         if call.kwargs.get("kind") == "goal_failed"
     ]
-    assert len(goal_failed_calls) == 0
+    assert len(goal_failed_calls) == 1
+    assert "User-approved task" in goal_failed_calls[0].args[0]
 
 
 @pytest.mark.asyncio
-async def test_reconcile_no_approved_by_no_alert(eng, monkeypatch):
-    """A running goal with no approved_by field (None / empty) does NOT alert."""
+async def test_reconcile_no_approved_by_still_alerts(eng, monkeypatch):
+    """A running goal with no approved_by field (None / empty) still alerts
+    on failure (2026-09-08: the alert is no longer gated on approved_by at
+    all — see test_reconcile_user_approved_failure_alerts)."""
     from backend.agents import goals
     from backend.database import Goal, Task
 
@@ -436,4 +443,4 @@ async def test_reconcile_no_approved_by_no_alert(eng, monkeypatch):
         call for call in notify_mock.call_args_list
         if call.kwargs.get("kind") == "goal_failed"
     ]
-    assert len(goal_failed_calls) == 0
+    assert len(goal_failed_calls) == 1

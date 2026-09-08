@@ -1026,14 +1026,25 @@ async def reconcile_running(
                     f"Reason: {fail_reason or 'no failure reason recorded'}",
                 )
 
-                # Best-effort phone alert for auto-approved goals that failed.
-                # Inside the per-goal try/except so a notify failure never aborts the loop.
-                if g.get("approved_by", "").startswith("auto:"):
-                    from backend import events
-                    await events.notify_phone(
-                        f"NEXUS auto-started goal FAILED: {g.get('title')}",
-                        kind="goal_failed",
-                    )
+                # Best-effort phone alert on ANY goal failure (2026-09-08: was
+                # gated to auto-approved goals only, on the assumption a
+                # human who tapped Approve already knows it's running and
+                # will see a failure in tomorrow's digest. That assumption
+                # broke for monitoring-category goals (91/92/93, the back
+                # door/garage verification goals) — those can never be
+                # auto-approved by design, so their task failures went
+                # completely silent except in the next day's digest, even
+                # though the goal's own stated purpose was "notify Brian
+                # whether this was intentional." A goal's own in-plan notify
+                # step can't be relied on for the failure case either — it
+                # never runs if the task fails before reaching it, which is
+                # exactly what happened here. Inside the per-goal try/except
+                # so a notify failure never aborts the loop.
+                from backend import events
+                await events.notify_phone(
+                    f"NEXUS goal FAILED: {g.get('title')}",
+                    kind="goal_failed",
+                )
             # still-running tasks are left untouched
         except Exception:
             logger.exception("reconcile_running: error processing goal %s", g.get("id"))
