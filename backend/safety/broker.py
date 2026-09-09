@@ -199,6 +199,17 @@ def classify(kind: str, payload: dict) -> tuple[Risk, Reversibility]:
         # kill switch forbids it when autonomy is off.
         return Risk.LOW, Reversibility.REVERSIBLE
 
+    if kind == "schedule_reminder":
+        # Same band as send_notification (it IS a send_notification, just
+        # deferred) — a message to the owner only, undo = the PendingDelivery
+        # row is simply never sent (delete it, or it dead-letters harmlessly
+        # after _MAX_ATTEMPTS once its time comes and Telegram is somehow
+        # unreachable). LOW + REVERSIBLE so an agent may schedule one without
+        # a human tap — the whole point is to close the gap where "remind me
+        # at X" had no honest tool and the model faked success via
+        # send_notification instead (2026-09-08 incident).
+        return Risk.LOW, Reversibility.REVERSIBLE
+
     if kind == "system_restart":
         # Restart NEXUS -- target "nexus"/"lxc" both mean "this instance"
         # here (2026-08-15: "lxc" added so a system:restart:lxc button --
@@ -392,6 +403,54 @@ async def _dispatch_send_notification(target: str, payload: dict) -> dict:
     return {"delivered": True}
 
 
+async def _dispatch_schedule_reminder(target: str, payload: dict) -> dict:
+    """Schedule a one-time phone reminder for a future local time — the real
+    tool `send_notification` was being substituted for (2026-09-08 incident:
+    chat had no way to actually schedule anything, so the model used an
+    IMMEDIATE notification and its own reply text falsely claimed a future
+    reminder was set). `payload["fire_at"]` is local wall-clock time
+    (briefing_timezone), naive, no offset — e.g. "2026-09-08T06:45"; ISO
+    `fromisoformat` handles both a bare date-time and one with seconds.
+
+    Raises (never silently "succeeds") on: an unparseable fire_at, a fire_at
+    already in the past (the exact failure mode that would otherwise fire
+    instantly and get reported as "scheduled" — a typo'd date must be loud,
+    not a surprise immediate page), or the queue write itself failing (see
+    telegram._queue_delivery's docstring for why this one MUST propagate
+    unlike send_notification's fire-and-forget queue-on-retry path).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from backend import events
+    from backend.config import get_settings
+
+    fire_at_raw = payload.get("fire_at")
+    content = payload.get("content")
+    if not fire_at_raw or not content:
+        raise ValueError("schedule_reminder requires both 'fire_at' and 'content'")
+
+    settings = get_settings()
+    try:
+        local_dt = datetime.fromisoformat(fire_at_raw)
+        if local_dt.tzinfo is None:
+            local_dt = local_dt.replace(tzinfo=ZoneInfo(settings.briefing_timezone))
+    except (ValueError, KeyError) as e:
+        raise ValueError(f"unparseable fire_at {fire_at_raw!r}: {e}") from e
+
+    fire_at_utc = local_dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    if fire_at_utc <= datetime.utcnow():
+        raise ValueError(
+            f"fire_at {fire_at_raw!r} resolves to {fire_at_utc.isoformat()} UTC, "
+            "which is already in the past — refusing to fire it instantly"
+        )
+
+    scheduled = await events.notify_phone(content, kind="reminder", not_before=fire_at_utc)
+    if not scheduled:
+        raise RuntimeError("reminder could not be persisted — nothing was scheduled")
+    return {"scheduled": True, "fire_at_utc": fire_at_utc.isoformat()}
+
+
 async def _dispatch_protonmail_send(target: str, payload: dict) -> dict:
     """Send a Proton Mail email via the MCP client integration.
 
@@ -520,6 +579,7 @@ _DISPATCHERS = {
     "unifi_unblock": _dispatch_unifi_unblock,
     "obsidian_task": _dispatch_obsidian_task,
     "send_notification": _dispatch_send_notification,
+    "schedule_reminder": _dispatch_schedule_reminder,
     "protonmail_send": _dispatch_protonmail_send,
     "protonmail_archive": _dispatch_protonmail_archive,
     "protonmail_delete": _dispatch_protonmail_delete,

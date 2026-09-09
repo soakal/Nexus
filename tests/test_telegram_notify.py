@@ -1,9 +1,11 @@
+import json
 import logging
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlmodel import Session, select
 
 from backend.integrations import telegram
 
@@ -424,3 +426,93 @@ def test_queue_delivery_writes_a_real_row():
         assert len(rows) == 1
         assert rows[0].delivery_type == "notify"
         assert json.loads(rows[0].payload_json) == {"content": "test alert"}
+
+
+# ---------------------------------------------------------------------------
+# Reminders (2026-09-08) — not_before, against a REAL engine (not a mocked
+# Session) specifically because _load_pending's not_before filter is a real
+# SQL WHERE clause now, not a Python-side check — a mocked session can't
+# catch a real syntax/logic error in that clause the way test_load_pending_
+# skips_not_yet_eligible's MagicMock-based tests structurally cannot.
+# ---------------------------------------------------------------------------
+
+def _real_engine():
+    from sqlmodel import SQLModel, create_engine
+    from sqlmodel.pool import StaticPool
+    import backend.database  # noqa: F401 — register PendingDelivery on metadata
+
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    return eng
+
+
+def test_queue_delivery_persists_not_before_and_returns_true():
+    eng = _real_engine()
+    with patch("backend.database.engine", eng):
+        result = telegram._queue_delivery(
+            {"content": "reminder"}, "notify", not_before=datetime(2030, 1, 1, 6, 45)
+        )
+    assert result is True
+
+    from backend.database import PendingDelivery
+    with Session(eng) as session:
+        rows = session.exec(select(PendingDelivery)).all()
+        assert len(rows) == 1
+        assert rows[0].not_before == datetime(2030, 1, 1, 6, 45)
+
+
+def test_queue_delivery_returns_false_on_db_failure():
+    """A real DB failure must be reported, not swallowed into a false 'it
+    queued fine' — notify()'s not_before branch propagates this return value
+    directly as its own result, so this MUST be accurate."""
+    with patch("sqlmodel.Session", side_effect=Exception("db is gone")):
+        result = telegram._queue_delivery({"content": "x"}, "notify")
+    assert result is False
+
+
+def test_load_pending_excludes_future_not_before():
+    eng = _real_engine()
+    from backend.database import PendingDelivery
+
+    with Session(eng) as session:
+        session.add(PendingDelivery(payload_json='{"content":"future"}', delivery_type="notify",
+                                     not_before=datetime(2030, 1, 1, 6, 45)))
+        session.add(PendingDelivery(payload_json='{"content":"due now"}', delivery_type="notify",
+                                     not_before=None))
+        session.add(PendingDelivery(payload_json='{"content":"due earlier"}', delivery_type="notify",
+                                     not_before=datetime(2000, 1, 1)))
+        session.commit()
+
+    with patch("backend.database.engine", eng):
+        result = telegram._load_pending()
+
+    contents = {json.loads(r["payload_json"])["content"] for r in result}
+    assert contents == {"due now", "due earlier"}
+
+
+@pytest.mark.asyncio
+async def test_notify_not_before_queues_without_sending():
+    """notify(payload, not_before=future) must never attempt an immediate
+    send — the whole point is deferred delivery."""
+    eng = _real_engine()
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("backend.database.engine", eng):
+        result = await telegram.notify({"content": "later"}, not_before=datetime(2030, 1, 1))
+        assert result is True
+        mock_client_cls.assert_not_called()
+
+    from backend.database import PendingDelivery
+    with Session(eng) as session:
+        rows = session.exec(select(PendingDelivery)).all()
+        assert len(rows) == 1
+        assert rows[0].not_before == datetime(2030, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_notify_no_not_before_is_unaffected():
+    """Bare notify() (not_before=None, the default) must behave exactly as
+    before this parameter existed — an immediate send attempt."""
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client_cls.return_value = _mock_post_client([MagicMock(status_code=200)])
+        result = await telegram.notify({"content": "now"})
+    assert result is True

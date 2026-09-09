@@ -29,7 +29,7 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "homelab_docker_restart_failed",
     "homelab_docker_stopped", "homelab_expected_mismatch", "homelab_garage",
     "homelab_recovered", "homelab_switch_temp", "homelab_vm_stopped", "incident_diagnosis", "job_failing",
-    "mail_draft_created", "needs_confirm", "obligation_due", "scheduler_stall",
+    "mail_draft_created", "needs_confirm", "obligation_due", "reminder", "scheduler_stall",
     "soak_reminder", "spend_report", "stale_delivery", "throttled",
     "task_completed", "task_failed", "trial_verdict", "weekly_review",
 })
@@ -45,7 +45,8 @@ async def publish(event_type: str, payload: dict) -> None:
 
 
 async def notify_phone(
-    content: str, *, kind: str = "autonomy_alert", buttons: list | None = None
+    content: str, *, kind: str = "autonomy_alert", buttons: list | None = None,
+    not_before=None,
 ) -> bool:
     """Best-effort phone push via NEXUS's own Telegram bot. Gated by phone_notifications_enabled.
 
@@ -54,6 +55,11 @@ async def notify_phone(
 
     `buttons` (optional): [{"text": ..., "callback_data": ...}] — rendered as a
     Telegram inline keyboard on the last chunk of the message.
+
+    `not_before` (optional, UTC datetime): pass-through to telegram.notify —
+    makes this a scheduled reminder instead of an immediate send. See that
+    function's own docstring. None (default) is identical to before this
+    parameter existed.
 
     NEVER raises (a notify failure must not affect the caller). Returns delivered bool.
     """
@@ -95,7 +101,7 @@ async def notify_phone(
             payload["parse_mode"] = parse_mode
         if buttons:
             payload["buttons"] = buttons
-        return await telegram.notify(payload)
+        return await telegram.notify(payload, not_before=not_before)
     except Exception as e:
         logger.debug(f"events.notify_phone failed (ignored): {e}")
         return False

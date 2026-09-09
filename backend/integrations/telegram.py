@@ -305,14 +305,24 @@ async def _send_payload(payload: dict) -> tuple[bool, bool]:
         return False, False
 
 
-async def notify(payload: dict) -> bool:
+async def notify(payload: dict, *, not_before: datetime | None = None) -> bool:
     """Send a phone notification. Payload shape: content/message/text,
     parse_mode, buttons. NEVER raises.
+
+    `not_before` (UTC) makes this a scheduled reminder rather than an
+    immediate send: queued unconditionally (never attempted now), and
+    retry_deliveries' 60s tick won't pick it up until that time passes —
+    see _load_pending's own filter. This is what backend.safety.broker's
+    schedule_reminder dispatcher uses; a bare notify() call (not_before=None)
+    is unaffected, identical to before.
 
     401/403/404/400 and a missing secret are TERMINAL — logged at ERROR and
     NOT queued (a byte-identical retry cannot succeed). 429/5xx/transport
     errors are retryable and get queued for deliver_pending().
     """
+    if not_before is not None:
+        return _queue_delivery(payload, "notify", not_before=not_before)
+
     delivered, terminal = await _send_payload(payload)
     if delivered:
         return True
@@ -334,16 +344,28 @@ def _next_eligible(attempts: int, last_attempt: datetime | None) -> datetime:
     return last_attempt + timedelta(seconds=delay)
 
 
-def _queue_delivery(payload: dict, delivery_type: str) -> None:
+def _queue_delivery(payload: dict, delivery_type: str, *, not_before: datetime | None = None) -> bool:
+    """Returns whether the row was actually persisted. The immediate-send
+    retry path (notify()'s pre-existing branch) has always ignored this
+    return value — a queue failure there just means one fewer retry attempt
+    exists, not silence about something that already fired. A scheduled
+    reminder (not_before set) is different: the queue write IS the entire
+    action, so notify() must not report success unless this really
+    returns True — anything else reintroduces the exact "confirmed but
+    nothing happened" failure this parameter was added to fix."""
     try:
         from sqlmodel import Session
 
         from backend.database import PendingDelivery, engine
         with Session(engine) as session:
-            session.add(PendingDelivery(payload_json=json.dumps(payload), delivery_type=delivery_type))
+            session.add(PendingDelivery(
+                payload_json=json.dumps(payload), delivery_type=delivery_type, not_before=not_before,
+            ))
             session.commit()
+        return True
     except Exception as e:
         logger.error(f"Failed to queue delivery: {e}")
+        return False
 
 
 def _load_pending() -> list[dict]:
@@ -354,14 +376,17 @@ def _load_pending() -> list[dict]:
     hit the dead-letter cap (attempts >= _MAX_ATTEMPTS) or if its exponential-backoff
     window has not yet elapsed. This stops a permanently-failing 'poison' row from
     occupying a delivery slot every cycle and starving newer deliveries."""
-    from sqlmodel import Session, select
+    from sqlmodel import Session, select, or_
 
     from backend.database import PendingDelivery, engine
 
     now = datetime.utcnow()
     with Session(engine) as session:
         rows = session.exec(
-            select(PendingDelivery).order_by(PendingDelivery.created_at).limit(50)
+            select(PendingDelivery)
+            .where(or_(PendingDelivery.not_before == None, PendingDelivery.not_before <= now))  # noqa: E711
+            .order_by(PendingDelivery.created_at)
+            .limit(50)
         ).all()
         eligible: list[dict] = []
         for r in rows:

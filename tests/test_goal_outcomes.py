@@ -151,7 +151,7 @@ async def test_notify_phone_passes_buttons_through(monkeypatch):
 
     sent = {}
 
-    async def _fake_notify(payload):
+    async def _fake_notify(payload, not_before=None):
         sent.update(payload)
         return True
 
@@ -223,7 +223,7 @@ async def test_notify_phone_no_buttons_key_when_absent(monkeypatch):
 
     sent = {}
 
-    async def _fake_notify(payload):
+    async def _fake_notify(payload, not_before=None):
         sent.update(payload)
         return True
 

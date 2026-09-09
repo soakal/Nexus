@@ -18,6 +18,20 @@ from sqlmodel.pool import StaticPool
 
 # Ensure all tables (incl. ActionLog, SystemState) are registered on metadata.
 import backend.database  # noqa: F401,E402
+from backend.safety import throttle
+
+
+@pytest.fixture(autouse=True)
+def reset_throttle_state():
+    """Process-global circuit-breaker state (backend/safety/throttle.py)
+    persists across tests regardless of each test's own fresh `eng` — several
+    schedule_reminder tests here deliberately produce repeated dispatch
+    FAILUREs (past-time/unparseable/missing-fields), which trips the breaker
+    for the rest of the process without this reset. Same pattern as
+    test_action_judge.py's identical fixture."""
+    throttle.reset()
+    yield
+    throttle.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -580,8 +594,8 @@ def test_all_tool_specs_length():
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 9, (
-        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 10, (
+        f"expected {len(read_specs) + 10} specs, got {len(all_specs)}"
     )
 
 
@@ -602,8 +616,8 @@ def test_all_dispatchers_contains_new_kinds():
 
 
 def test_write_tool_names_includes_new_tools():
-    """write_tool_names() includes all nine write tools (Phase 7a/7b added 3;
-    Phase 7d added unraid_docker_prune)."""
+    """write_tool_names() includes all ten write tools (Phase 7a/7b added 3;
+    Phase 7d added unraid_docker_prune; 2026-09-08 added schedule_reminder)."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
@@ -616,7 +630,8 @@ def test_write_tool_names_includes_new_tools():
     assert "home_control" in names
     assert "send_notification" in names
     assert "unraid_docker_prune" in names
-    assert len(names) == 9
+    assert "schedule_reminder" in names
+    assert len(names) == 10
 
 
 # ===========================================================================
@@ -916,3 +931,92 @@ async def test_unraid_docker_prune_dispatch_failure_recorded_failed_not_reraised
     logs = _all_logs(eng)
     assert len(logs) == 1
     assert logs[0].decision == "failed"
+
+
+# ===========================================================================
+# 9. schedule_reminder dispatcher — timezone conversion, past-time rejection
+# (2026-09-08 — the real fix for the incident where chat had no scheduling
+# tool and send_notification's reply text falsely claimed a future reminder
+# had been set)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_converts_local_time_to_utc(eng, monkeypatch):
+    """briefing_timezone=America/Detroit (EDT, UTC-4 in September) + a local
+    fire_at must reach notify_phone as the correctly-offset UTC instant, not
+    the naive local value reinterpreted as UTC."""
+    _seed_state(eng, autonomy=True)
+    from backend.config import get_settings
+    monkeypatch.setattr(get_settings(), "briefing_timezone", "America/Detroit")
+
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.events.notify_phone", new_callable=AsyncMock, return_value=True,
+    ) as np:
+        res = await execute_action(
+            actor="agent",
+            kind="schedule_reminder",
+            target="owner",
+            payload={"content": "put air in Trudy's tire", "fire_at": "2030-06-15T06:45"},
+        )
+
+    assert res.decision == Decision.EXECUTED
+    _, kwargs = np.call_args
+    # EDT (summer) is UTC-4 -- 06:45 local == 10:45 UTC.
+    from datetime import datetime
+    assert kwargs["not_before"] == datetime(2030, 6, 15, 10, 45)
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_rejects_past_time(eng):
+    _seed_state(eng, autonomy=True)
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.events.notify_phone", new_callable=AsyncMock, return_value=True,
+    ) as np:
+        res = await execute_action(
+            actor="agent",
+            kind="schedule_reminder",
+            target="owner",
+            payload={"content": "too late", "fire_at": "2020-01-01T06:45"},
+        )
+
+    assert res.decision == Decision.FAILED
+    assert "past" in (res.error or "").lower()
+    np.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_rejects_unparseable_fire_at(eng):
+    _seed_state(eng, autonomy=True)
+    from backend.safety.broker import execute_action, Decision
+
+    with patch(
+        "backend.events.notify_phone", new_callable=AsyncMock, return_value=True,
+    ) as np:
+        res = await execute_action(
+            actor="agent",
+            kind="schedule_reminder",
+            target="owner",
+            payload={"content": "whenever", "fire_at": "not-a-date"},
+        )
+
+    assert res.decision == Decision.FAILED
+    np.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_missing_fields_fails(eng):
+    _seed_state(eng, autonomy=True)
+    from backend.safety.broker import execute_action, Decision
+
+    res = await execute_action(
+        actor="agent",
+        kind="schedule_reminder",
+        target="owner",
+        payload={"content": "no time given"},
+    )
+
+    assert res.decision == Decision.FAILED

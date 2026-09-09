@@ -140,6 +140,11 @@ class PendingDelivery(SQLModel, table=True):
     attempts: int = 0
     last_attempt: datetime | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Reminders (2026-09-08): a row with not_before set is a real future
+    # delivery, not a stuck one -- retry_deliveries' 60s tick must not treat
+    # it as due until this timestamp passes. None means "as soon as
+    # possible", the pre-existing behavior for every other queued delivery.
+    not_before: datetime | None = None
 
 
 class MemoLog(SQLModel, table=True):
@@ -907,6 +912,12 @@ def _ensure_processedmail_columns():
     _safe_add_column("processedmailid", "trashed", "BOOLEAN DEFAULT 0")
 
 
+def _ensure_pendingdelivery_columns():
+    """not_before, added 2026-09-08 for the schedule_reminder tool -- see
+    PendingDelivery's own field docstring."""
+    _safe_add_column("pendingdelivery", "not_before", "TIMESTAMP")
+
+
 def _ensure_outcomeflag_index():
     """Partial unique index: at most one OPEN flag per fingerprint. Hard backstop
     against record_flag()'s check-then-insert TOCTOU, exactly as
@@ -938,6 +949,7 @@ def create_db_and_tables():
     _ensure_outcomeflag_columns()
     _ensure_outcomeflag_index()
     _ensure_briefing_columns()
+    _ensure_pendingdelivery_columns()
 
 
 def get_session():

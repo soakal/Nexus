@@ -377,6 +377,42 @@ async def _send_notification(input: dict) -> str:  # noqa: A002
         return f"send_notification error: {e}"
 
 
+async def _schedule_reminder(input: dict) -> str:  # noqa: A002
+    """Schedule a one-time future phone reminder — see backend.safety.broker's
+    _dispatch_schedule_reminder for the actual scheduling logic (fire_at
+    parsing/validation, queuing via events.notify_phone(not_before=...)).
+
+    This closes the 2026-09-08 incident where chat had no real scheduling
+    tool and substituted send_notification (immediate), then the model's own
+    reply text falsely claimed a future reminder was set. execute_action's
+    dispatch-error handling means an unparseable/past fire_at or a queue
+    failure comes back as a FAILED decision here, not a silent success —
+    _decision_to_str renders that honestly for the model to report.
+    """
+    try:
+        content = str((input or {}).get("content", "")).strip()
+        fire_at = str((input or {}).get("fire_at", "")).strip()
+        if not content or not fire_at:
+            return (
+                "schedule_reminder error: both 'content' and 'fire_at' are required; "
+                f"got content={content!r} fire_at={fire_at!r}"
+            )
+
+        key = _idem_key_for("schedule_reminder", {"content": content, "fire_at": fire_at})
+
+        from backend.safety.broker import execute_action
+        res = await execute_action(
+            actor="agent",
+            kind="schedule_reminder",
+            target="owner",
+            payload={"content": content, "fire_at": fire_at},
+            idempotency_key=key,
+        )
+        return _wtruncate(_decision_to_str(res))
+    except Exception as e:
+        return f"schedule_reminder error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Write tool registry
 # ---------------------------------------------------------------------------
@@ -549,9 +585,12 @@ WRITE_TOOLS: list[ReadTool] = [
     ReadTool(
         name="send_notification",
         description=(
-            "Send a phone (Telegram) notification to the owner. "
+            "Send a phone (Telegram) notification to the owner RIGHT NOW. "
             "Use this to confirm something, surface a finding, or send a requested message. "
-            "Goes through the safety broker (LOW risk — auto-allowed for agents, but rate-limited)."
+            "This is IMMEDIATE ONLY — it cannot schedule or delay a message. "
+            "For 'remind me at/tomorrow/in N hours', use schedule_reminder instead. "
+            "Never describe a message sent with this tool as a future reminder — "
+            "it already happened the instant this tool returns."
         ),
         input_schema={
             "type": "object",
@@ -564,6 +603,36 @@ WRITE_TOOLS: list[ReadTool] = [
             "required": ["content"],
         },
         dispatch=_send_notification,
+    ),
+    ReadTool(
+        name="schedule_reminder",
+        description=(
+            "Schedule a ONE-TIME phone (Telegram) reminder for a future local time — this is "
+            "the ONLY tool that actually schedules anything; send_notification cannot. Use this "
+            "whenever the owner asks to be reminded/notified at a specific future time, "
+            "tomorrow, in N hours, etc. Only report success (\"reminder set\") if this tool's "
+            "own result says ALLOWED/executed — if it errors, say so plainly, do not claim a "
+            "reminder was set anyway."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The reminder message text to send to the owner's phone when it fires.",
+                },
+                "fire_at": {
+                    "type": "string",
+                    "description": (
+                        "Local wall-clock date-time (owner's own timezone, NOT UTC) in ISO "
+                        "format, e.g. '2026-09-09T06:45'. Must be in the future — a past time "
+                        "is rejected outright, it will NOT fire instantly."
+                    ),
+                },
+            },
+            "required": ["content", "fire_at"],
+        },
+        dispatch=_schedule_reminder,
     ),
 ]
 

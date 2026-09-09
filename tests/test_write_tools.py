@@ -13,6 +13,20 @@ from sqlmodel.pool import StaticPool
 
 # Ensure all tables (incl. ActionLog, SystemState) are registered on metadata.
 import backend.database  # noqa: F401,E402
+from backend.safety import throttle
+
+
+@pytest.fixture(autouse=True)
+def reset_throttle_state():
+    """Process-global circuit-breaker state (backend/safety/throttle.py)
+    persists across tests regardless of each test's own fresh `eng` — several
+    schedule_reminder tests here deliberately produce repeated dispatch
+    FAILUREs (past-time/unparseable/queue-failure), which trips the breaker
+    for the rest of the process without this reset. Same pattern as
+    test_action_judge.py's identical fixture."""
+    throttle.reset()
+    yield
+    throttle.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +204,8 @@ def test_combined_providers_all_tool_specs():
 
     read_specs = tool_specs()
     all_specs = all_tool_specs()
-    assert len(all_specs) == len(read_specs) + 9, (
-        f"expected {len(read_specs) + 9} specs, got {len(all_specs)}"
+    assert len(all_specs) == len(read_specs) + 10, (
+        f"expected {len(read_specs) + 10} specs, got {len(all_specs)}"
     )
 
 
@@ -207,8 +221,8 @@ def test_combined_providers_all_dispatchers():
 
 
 def test_write_tool_names():
-    """write_tool_names() returns all nine write tool names (Phase 7a/7b added 3;
-    Phase 7d added unraid_docker_prune)."""
+    """write_tool_names() returns all ten write tool names (Phase 7a/7b added 3;
+    Phase 7d added unraid_docker_prune; 2026-09-08 added schedule_reminder)."""
     from backend.agents.write_tools import write_tool_names
 
     names = write_tool_names()
@@ -221,7 +235,8 @@ def test_write_tool_names():
     assert "unifi_unblock" in names
     assert "vm_power" in names
     assert "unraid_docker_prune" in names
-    assert len(names) == 9
+    assert "schedule_reminder" in names
+    assert len(names) == 10
 
 
 # ===========================================================================
@@ -558,4 +573,146 @@ async def test_send_notification_bad_input_no_broker(eng):
         result = await _send_notification({"content": "   "})
 
     assert "content" in result.lower() or "error" in result.lower()
+    mock_broker.assert_not_awaited()
+
+
+# ===========================================================================
+# schedule_reminder write tool (2026-09-08 — real fix for the incident where
+# chat had no scheduling tool and send_notification's confident-sounding
+# reply text falsely claimed a future reminder had been set)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_executed(eng):
+    """Autonomy on + future fire_at + persisted → LOW risk → ALLOWED → 'OK';
+    notify_phone called with not_before set, not an immediate send."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _schedule_reminder
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as np:
+        result = await _schedule_reminder({
+            "content": "put air in Trudy's tire",
+            "fire_at": "2030-01-01T06:45",
+        })
+
+    assert result.startswith("OK"), f"expected OK, got: {result!r}"
+    np.assert_awaited_once()
+    _, kwargs = np.call_args
+    assert kwargs.get("kind") == "reminder"
+    assert kwargs.get("not_before") is not None
+    logs = _all_logs(eng)
+    assert logs[-1].kind == "schedule_reminder"
+    assert logs[-1].decision == "executed"
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_past_time_is_failed_not_instant(eng):
+    """A fire_at already in the past must FAIL loudly, never fire instantly
+    and get reported as 'scheduled' — the exact trap a typo'd date would be."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _schedule_reminder
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as np:
+        result = await _schedule_reminder({
+            "content": "too late",
+            "fire_at": "2020-01-01T06:45",
+        })
+
+    assert result.startswith("FAILED"), f"expected FAILED, got: {result!r}"
+    np.assert_not_awaited()
+    logs = _all_logs(eng)
+    assert logs[-1].kind == "schedule_reminder"
+    assert logs[-1].decision == "failed"
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_unparseable_fire_at_is_failed(eng):
+    """Garbage fire_at must FAIL, not silently default to "now" (which would
+    reintroduce the exact bug — an unschedulable input firing instantly)."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _schedule_reminder
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as np:
+        result = await _schedule_reminder({
+            "content": "whenever",
+            "fire_at": "not a date",
+        })
+
+    assert result.startswith("FAILED"), f"expected FAILED, got: {result!r}"
+    np.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_queue_failure_is_failed_not_ok(eng):
+    """notify_phone returning False (queue write failed) must surface as
+    FAILED — this is the exact 'confirmed but nothing happened' failure mode
+    the whole fix exists to close, so it must never silently read as OK."""
+    _seed_state(eng, autonomy=True)
+
+    from backend.agents.write_tools import _schedule_reminder
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        result = await _schedule_reminder({
+            "content": "will not persist",
+            "fire_at": "2030-01-01T06:45",
+        })
+
+    assert result.startswith("FAILED"), f"expected FAILED, got: {result!r}"
+    logs = _all_logs(eng)
+    assert logs[-1].kind == "schedule_reminder"
+    assert logs[-1].decision == "failed"
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_forbidden_kill_switch(eng):
+    """Kill switch OFF → FORBIDDEN; notify_phone never called."""
+    _seed_state(eng, autonomy=False)
+
+    from backend.agents.write_tools import _schedule_reminder
+
+    with patch(
+        "backend.events.notify_phone",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as np:
+        result = await _schedule_reminder({
+            "content": "blocked",
+            "fire_at": "2030-01-01T06:45",
+        })
+
+    assert result.startswith("FORBIDDEN"), f"expected FORBIDDEN, got: {result!r}"
+    np.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_reminder_bad_input_no_broker(eng):
+    """Missing fire_at → helpful error, broker not called."""
+    from backend.agents.write_tools import _schedule_reminder
+
+    with patch(
+        "backend.safety.broker.execute_action",
+        new_callable=AsyncMock,
+    ) as mock_broker:
+        result = await _schedule_reminder({"content": "no time given"})
+
+    assert "fire_at" in result.lower() or "error" in result.lower()
     mock_broker.assert_not_awaited()
