@@ -154,6 +154,59 @@ async def test_opus_plan_uses_planner_tool_block():
 
 
 @pytest.mark.asyncio
+async def test_opus_plan_includes_current_date(monkeypatch):
+    """2026-09-08 fix: without a current-date anchor, the planner cannot
+    resolve a relative time ('tomorrow', 'in 2 hours') into anything
+    schedule_reminder (or any date-relative tool) could act on — real
+    incident: chat correctly refused to guess and asked the owner to supply
+    an exact ISO datetime for something they'd already said in plain
+    language. This pins the fix, not just its absence."""
+    from backend.config import get_settings
+    monkeypatch.setattr(get_settings(), "briefing_timezone", "America/Detroit")
+
+    captured = {}
+
+    async def fake_run_model(model, prompt, *a, **k):
+        captured["prompt"] = prompt
+        return '{"steps": [{"index": 1, "description": "d", "prompt": "p"}]}'
+
+    with patch("backend.agents.router.run_model", new=fake_run_model):
+        from backend.agents.orchestrator import _opus_plan
+        await _opus_plan("remind me tomorrow at 8:30am to call the doctor")
+
+    assert "Current date/time" in captured["prompt"]
+    assert "America/Detroit" not in captured["prompt"]  # rendered as EDT/EST, not the zone name
+    import re
+    assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", captured["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_sonnet_execute_includes_current_date(monkeypatch):
+    """Same fix, executor side — this is the prompt that actually fills in a
+    tool call's concrete arguments (e.g. schedule_reminder's fire_at), so
+    it's the more load-bearing of the two injection points."""
+    from backend.config import get_settings
+    monkeypatch.setattr(get_settings(), "briefing_timezone", "America/Detroit")
+    monkeypatch.setattr(get_settings(), "agent_write_enabled", False)
+
+    from backend.agents.orchestrator import Step
+
+    captured = {}
+
+    async def fake_run_with_tools(*a, **kwargs):
+        captured["prompt"] = kwargs.get("prompt", "")
+        return "done"
+
+    with patch("backend.agents.router.run_with_tools", new=fake_run_with_tools):
+        from backend.agents.orchestrator import _sonnet_execute
+        await _sonnet_execute(Step(index=1, prompt="do it", description="d"), [])
+
+    import re
+    assert "Current date/time" in captured["prompt"]
+    assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", captured["prompt"])
+
+
+@pytest.mark.asyncio
 async def test_budget_exceeded_mid_step_durable(tmp_path):
     """A BudgetExceeded raised by the per-task brake mid-task finalizes the task
     failed/budget_exceeded via the durable path (task_id set)."""

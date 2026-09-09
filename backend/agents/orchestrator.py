@@ -158,8 +158,21 @@ async def _opus_plan(task_prompt: str, learning: str = "") -> Plan:
     if learning:
         learning_block = f"\nPRIOR ATTEMPTS THAT FAILED (avoid repeating these mistakes):\n{learning}\n"
 
+    # 2026-09-08: without this, a relative time in the task ("tomorrow",
+    # "in 2 hours", "next Monday") is unsolvable — the planner has no way to
+    # resolve it into a concrete instruction for schedule_reminder (or
+    # anything else date-relative), and either gets it wrong or, correctly
+    # but unhelpfully, refuses and asks the owner to supply an exact ISO
+    # datetime for something they already said in plain language. Same
+    # pattern chat.py's CALENDAR intent branch already uses.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    _now = datetime.now(ZoneInfo(get_settings().briefing_timezone))
+    now_block = f"Current date/time (owner's own timezone): {_now.strftime('%Y-%m-%d %H:%M %A %Z')}\n"
+
     plan_prompt = f"""Decompose this task into numbered execution steps for an executor agent.
 
+{now_block}
 TASK: {task_prompt}
 
 THE EXECUTOR HAS THESE TOOLS (it calls them natively — do NOT prefix steps):
@@ -202,8 +215,15 @@ async def _sonnet_execute(step: Step, context: list, *, task_id=None, task_start
         from backend.agents.tools import tool_specs, dispatcher_map
         specs, dispatch = tool_specs(), dispatcher_map()
 
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    _now = datetime.now(ZoneInfo(get_settings().briefing_timezone))
+    now_line = f"Current date/time (owner's own timezone): {_now.strftime('%Y-%m-%d %H:%M %A %Z')}"
+
     context_str = "\n".join([f"Step {i+1} result: {r}" for i, r in enumerate(context)]) if context else "No prior context."
-    full_prompt = f"""Previous results:
+    full_prompt = f"""{now_line}
+
+Previous results:
 {context_str}
 
 Current task:
