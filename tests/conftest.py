@@ -32,6 +32,17 @@ os.environ.setdefault("GITHUB_USERNAME", "testuser")
 # ever be built from the safe empty value.
 os.environ["UNRAID_BACKUP_PATH"] = ""
 
+# Never read a cwd `.env` during tests. Settings uses env_file=".env" (cwd-
+# relative -- the same trap _isolate_test_database exists for), and devbox's
+# checkout carries a real one (bin/cron_run.sh's relay cron reads it) whose
+# `*_ENABLED=false` lines silently override the class defaults that
+# test_config_validation/test_coverage_boost/test_facts_digest/
+# test_recurring_goals assert on. Process env still wins (the lines above,
+# per-test monkeypatch.setenv), so this only removes the file layer -- which
+# is exactly how /opt/nexus's .env-less pytest already runs.
+from backend.config import Settings as _Settings
+_Settings.model_config["env_file"] = None
+
 # Mock secrets so vault isn't required in tests
 MOCK_SECRETS = {
     "ANTHROPIC_API_KEY": "sk-ant-test-key",
