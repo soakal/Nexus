@@ -828,3 +828,74 @@ def test_calibration_registered_in_command_menu():
     assert "calibration" in telegram_commands.COMMANDS
     menu_names = {m["command"] for m in telegram_commands.command_menu()}
     assert "calibration" in menu_names
+
+
+# ---------------------------------------------------------------------------
+# /reminders — list + cancel (2026-09-09)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cmd_reminders_empty():
+    with patch("backend.integrations.telegram.list_reminders", return_value=[]):
+        reply = await telegram_commands._cmd_reminders("", _msg("/reminders"))
+    assert reply == "No reminders scheduled."
+
+
+@pytest.mark.asyncio
+async def test_cmd_reminders_lists_with_local_time_and_strips_safety_link():
+    from datetime import datetime
+    rows = [{
+        "id": 12,
+        "content": 'Take the trash out\n<a href="https://nexus-lxc.tailfa52c.ts.net/safety">Open Safety</a>',
+        "not_before": datetime(2026, 9, 10, 10, 45),  # UTC
+        "attempts": 0,
+    }]
+    s = MagicMock()
+    s.briefing_timezone = "America/Detroit"
+    with patch("backend.integrations.telegram.list_reminders", return_value=rows), \
+         patch("backend.config.get_settings", return_value=s):
+        reply = await telegram_commands._cmd_reminders("", _msg("/reminders"))
+
+    assert "#12" in reply
+    assert "Take the trash out" in reply
+    assert "Open Safety" not in reply
+    assert "<a href" not in reply
+    assert "06:45" in reply  # 10:45 UTC == 06:45 EDT
+
+
+@pytest.mark.asyncio
+async def test_cmd_reminders_shows_overdue_attempts():
+    from datetime import datetime
+    rows = [{
+        "id": 13, "content": "Call dentist", "not_before": datetime(2020, 1, 1), "attempts": 3,
+    }]
+    s = MagicMock()
+    s.briefing_timezone = "America/Detroit"
+    with patch("backend.integrations.telegram.list_reminders", return_value=rows), \
+         patch("backend.config.get_settings", return_value=s):
+        reply = await telegram_commands._cmd_reminders("", _msg("/reminders"))
+    assert "overdue" in reply.lower()
+    assert "3 attempts" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_reminders_cancel_success():
+    with patch("backend.integrations.telegram.cancel_reminder", return_value=True) as mock_cancel:
+        reply = await telegram_commands._cmd_reminders("cancel 12", _msg("/reminders cancel 12"))
+    assert reply == "Reminder #12 cancelled."
+    mock_cancel.assert_called_once_with(12)
+
+
+@pytest.mark.asyncio
+async def test_cmd_reminders_cancel_not_found():
+    with patch("backend.integrations.telegram.cancel_reminder", return_value=False):
+        reply = await telegram_commands._cmd_reminders("cancel 999", _msg("/reminders cancel 999"))
+    assert reply == "No reminder #999."
+
+
+@pytest.mark.asyncio
+async def test_cmd_reminders_cancel_bad_id_no_broker_call():
+    with patch("backend.integrations.telegram.cancel_reminder") as mock_cancel:
+        reply = await telegram_commands._cmd_reminders("cancel abc", _msg("/reminders cancel abc"))
+    assert "usage" in reply.lower()
+    mock_cancel.assert_not_called()

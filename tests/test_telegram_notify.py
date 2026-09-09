@@ -516,3 +516,92 @@ async def test_notify_no_not_before_is_unaffected():
         mock_client_cls.return_value = _mock_post_client([MagicMock(status_code=200)])
         result = await telegram.notify({"content": "now"})
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# list_reminders / cancel_reminder (2026-09-09) — the /reminders Telegram
+# command's backing store, against a REAL engine same as the not_before
+# tests above.
+# ---------------------------------------------------------------------------
+
+def test_list_reminders_excludes_ordinary_retry_rows():
+    eng = _real_engine()
+    from backend.database import PendingDelivery
+
+    with Session(eng) as session:
+        session.add(PendingDelivery(payload_json='{"content":"a reminder"}', delivery_type="notify",
+                                     not_before=datetime(2030, 1, 1, 6, 45)))
+        session.add(PendingDelivery(payload_json='{"content":"a stuck retry"}', delivery_type="notify",
+                                     not_before=None, attempts=2))
+        session.commit()
+
+    with patch("backend.database.engine", eng):
+        result = telegram.list_reminders()
+
+    assert len(result) == 1
+    assert result[0]["content"] == "a reminder"
+
+
+def test_list_reminders_soonest_first_including_past_due():
+    eng = _real_engine()
+    from backend.database import PendingDelivery
+
+    with Session(eng) as session:
+        session.add(PendingDelivery(payload_json='{"content":"later"}', delivery_type="notify",
+                                     not_before=datetime(2030, 6, 1)))
+        session.add(PendingDelivery(payload_json='{"content":"overdue"}', delivery_type="notify",
+                                     not_before=datetime(2000, 1, 1), attempts=3))
+        session.commit()
+
+    with patch("backend.database.engine", eng):
+        result = telegram.list_reminders()
+
+    assert [r["content"] for r in result] == ["overdue", "later"]
+
+
+def test_cancel_reminder_deletes_real_row():
+    eng = _real_engine()
+    from backend.database import PendingDelivery
+
+    with Session(eng) as session:
+        row = PendingDelivery(payload_json='{"content":"cancel me"}', delivery_type="notify",
+                               not_before=datetime(2030, 1, 1))
+        session.add(row)
+        session.commit()
+        row_id = row.id
+
+    with patch("backend.database.engine", eng):
+        result = telegram.cancel_reminder(row_id)
+    assert result is True
+
+    with Session(eng) as session:
+        assert session.get(PendingDelivery, row_id) is None
+
+
+def test_cancel_reminder_refuses_ordinary_retry_row():
+    """A not_before=None row is a retry-queue entry, not a reminder — must
+    never be cancellable through this path (that would silently drop a
+    real pending notification some OTHER code path is still waiting on)."""
+    eng = _real_engine()
+    from backend.database import PendingDelivery
+
+    with Session(eng) as session:
+        row = PendingDelivery(payload_json='{"content":"not a reminder"}', delivery_type="notify",
+                               not_before=None)
+        session.add(row)
+        session.commit()
+        row_id = row.id
+
+    with patch("backend.database.engine", eng):
+        result = telegram.cancel_reminder(row_id)
+    assert result is False
+
+    with Session(eng) as session:
+        assert session.get(PendingDelivery, row_id) is not None
+
+
+def test_cancel_reminder_missing_id_returns_false():
+    eng = _real_engine()
+    with patch("backend.database.engine", eng):
+        result = telegram.cancel_reminder(9999)
+    assert result is False

@@ -483,6 +483,60 @@ def delivery_queue_health() -> dict:
         }
 
 
+def list_reminders(limit: int = 20) -> list[dict]:
+    """Sync helper: every real scheduled reminder (not_before set — this is
+    what distinguishes a reminder row from an ordinary retry-queue row
+    awaiting backoff, which has not_before=None and isn't one). Soonest
+    first, past-due included on purpose: a still-present past-due row means
+    it's either inside the 60s delivery tick or genuinely stuck retrying,
+    and hiding it would make "is this actually going to arrive" unanswerable
+    from Telegram. Run via asyncio.to_thread. Never raises."""
+    try:
+        from sqlmodel import Session, select
+        from backend.database import PendingDelivery, engine
+
+        with Session(engine) as session:
+            rows = session.exec(
+                select(PendingDelivery)
+                .where(PendingDelivery.not_before != None)  # noqa: E711
+                .order_by(PendingDelivery.not_before)
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": r.id,
+                    "content": json.loads(r.payload_json).get("content", ""),
+                    "not_before": r.not_before,
+                    "attempts": r.attempts,
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        logger.warning(f"list_reminders failed (ignored): {e}")
+        return []
+
+
+def cancel_reminder(row_id: int) -> bool:
+    """Delete a scheduled reminder by id. Refuses (returns False) for a row
+    that isn't a reminder at all (not_before=None — an ordinary retry-queue
+    row must never be cancellable through this path) or that doesn't exist.
+    Sync — run via asyncio.to_thread. Never raises."""
+    try:
+        from sqlmodel import Session
+        from backend.database import PendingDelivery, engine
+
+        with Session(engine) as session:
+            row = session.get(PendingDelivery, row_id)
+            if row is None or row.not_before is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"cancel_reminder({row_id}) failed (ignored): {e}")
+        return False
+
+
 async def deliver_pending() -> None:
     """Retries queued deliveries. Sends directly (not via notify()) so a
     retryable failure updates attempts/backoff through _apply_pending_results

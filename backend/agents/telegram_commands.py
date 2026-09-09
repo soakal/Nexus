@@ -644,6 +644,49 @@ async def _cmd_calibration(args: str, msg: dict) -> str:
     return "\n".join(lines)
 
 
+async def _cmd_reminders(args: str, msg: dict) -> str:
+    """/reminders — list upcoming scheduled reminders (the schedule_reminder
+    tool's own queue, backend.integrations.telegram.list_reminders).
+    /reminders cancel <id> — delete one. Subcommand, not a new command,
+    matching /calibration [suppress|unsuppress] <x>'s existing shape.
+
+    Cancel is actor=user (a Telegram command IS Brian, same trust as any
+    other command here) undoing an unsent message he no longer wants — same
+    tier as /forget and /resolve, which also act directly without going
+    through the broker (that gate is for external side effects an
+    agent/autonomous actor might take, not the owner clearing his own queue).
+    """
+    import asyncio
+    from zoneinfo import ZoneInfo
+    from backend.config import get_settings
+    from backend.integrations import telegram as telegram_integration
+
+    parts = args.split(maxsplit=1)
+    if parts and parts[0].lower() == "cancel":
+        raw_id = parts[1].strip() if len(parts) > 1 else ""
+        if not raw_id.isdigit():
+            return "Usage: /reminders cancel <id>"
+        row_id = int(raw_id)
+        cancelled = await asyncio.to_thread(telegram_integration.cancel_reminder, row_id)
+        return f"Reminder #{row_id} cancelled." if cancelled else f"No reminder #{row_id}."
+
+    rows = await asyncio.to_thread(telegram_integration.list_reminders, 20)
+    if not rows:
+        return "No reminders scheduled."
+
+    tz = ZoneInfo(get_settings().briefing_timezone)
+    lines = []
+    for r in rows:
+        # Strip the "Open Safety" link notify_phone appends — the exact
+        # suffix it adds, see events.py's own build of that string.
+        content = r["content"].split('\n<a href="', 1)[0]
+        local = r["not_before"].replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+        when = local.strftime("%a %b ") + str(local.day) + local.strftime(" %H:%M")
+        suffix = f" (overdue, {r['attempts']} attempts)" if r["attempts"] > 0 else ""
+        lines.append(f"#{r['id']} · {when} — {content}{suffix}")
+    return "\n".join(lines)
+
+
 async def _cmd_twin(args: str, msg: dict) -> str:
     """Reply as Brian's own voice/judgment — the nexus-twin package (pip
     installed into this venv, separate repo) owns context-fetching and
@@ -696,6 +739,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "flag": (_cmd_flag, "Log your own item into the outcome tracker"),
     "calibration": (_cmd_calibration, "Flag calibration status / suppress-unsuppress a rule"),
     "twin": (_cmd_twin, "Reply as Brian's own voice/judgment — /twin <anything>"),
+    "reminders": (_cmd_reminders, "List upcoming reminders, or /reminders cancel <id>"),
 }
 
 
