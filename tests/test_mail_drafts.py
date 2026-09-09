@@ -130,6 +130,75 @@ async def test_rebuild_voice_profile_upsert_idempotent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_rebuild_voice_profile_telegram_only_no_mail_still_succeeds(monkeypatch):
+    """No Sent-folder samples at all, but Brian's own Telegram conversation
+    has usable messages — must NOT raise, and the Telegram bodies must reach
+    the distill prompt."""
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+    from backend.database import ChatMessage, MailVoiceProfile, SystemState
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1, telegram_conversation_id=7))
+        s.add(ChatMessage(conversation_id=7, role="user",
+                           content="hey can you check if the garage door is open"))
+        s.add(ChatMessage(conversation_id=7, role="assistant", content="Checking now."))
+        # A different conversation's user row must never leak in.
+        s.add(ChatMessage(conversation_id=99, role="user", content="unrelated other conversation message"))
+        s.commit()
+
+    with patch("backend.integrations.protonmail.list_recent",
+               new_callable=AsyncMock, return_value=json.dumps({"emails": []})), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock,
+               return_value="Terse, casual over Telegram.") as mock_sonnet:
+        from backend.agents.mail_drafts import _rebuild_voice_profile
+        result = await _rebuild_voice_profile()
+
+    assert result == "Terse, casual over Telegram."
+    prompt = mock_sonnet.await_args.args[0]
+    assert "garage door" in prompt
+    assert "unrelated other conversation" not in prompt
+
+    with Session(eng) as s:
+        row = s.get(MailVoiceProfile, 1)
+        assert row.sample_count == 1
+
+
+@pytest.mark.asyncio
+async def test_rebuild_voice_profile_no_mail_no_telegram_raises(monkeypatch):
+    """Neither source has anything usable — must raise, matching the
+    pre-existing mail-only contract (get_voice_profile handles the fallback)."""
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    with patch("backend.integrations.protonmail.list_recent",
+               new_callable=AsyncMock, return_value=json.dumps({"emails": []})):
+        from backend.agents.mail_drafts import _rebuild_voice_profile
+        with pytest.raises(RuntimeError):
+            await _rebuild_voice_profile()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_voice_profile_telegram_lookup_failure_degrades_to_mail_only(monkeypatch):
+    """A broken governor lookup must degrade to mail-only, never propagate."""
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+
+    list_json = json.dumps({"emails": [{"email_id": "1", "subject": "Hi"}]})
+    content_json = json.dumps({"emails": [{"body": "Some sent email body long enough to count."}]})
+
+    with patch("backend.integrations.protonmail.list_recent", new_callable=AsyncMock, return_value=list_json), \
+         patch("backend.integrations.protonmail.read_email", new_callable=AsyncMock, return_value=content_json), \
+         patch("backend.safety.governor.get_telegram_conversation_id", side_effect=RuntimeError("db down")), \
+         patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="Mail only.") as mock_sonnet:
+        from backend.agents.mail_drafts import _rebuild_voice_profile
+        result = await _rebuild_voice_profile()
+
+    assert result == "Mail only."
+    mock_sonnet.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_compose_reply_prompt_contains_voice_summary():
     with patch("backend.agents.router.sonnet", new_callable=AsyncMock, return_value="Reply body.") as mock_sonnet:
         from backend.agents.mail_drafts import compose_reply

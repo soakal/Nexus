@@ -276,6 +276,7 @@ from backend.api import (
     facts,
     goals,
     homeassistant,
+    persona,
     protonmail,
     proxmox_api,
     safety,
@@ -316,6 +317,7 @@ app.include_router(today.router, prefix="/api/today", tags=["today"])
 app.include_router(safety.router, prefix="/api/safety", tags=["safety"])
 app.include_router(traces.router, prefix="/api/traces", tags=["traces"])
 app.include_router(vault.router, prefix="/api/vault", tags=["vault"])
+app.include_router(persona.router, prefix="/api/persona", tags=["persona"])
 app.include_router(trigger_router, tags=["trigger"])
 
 from backend.auth import require_api_key  # noqa: E402

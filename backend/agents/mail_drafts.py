@@ -69,6 +69,39 @@ def _db_upsert_voice_row(summary: str, sample_count: int) -> None:
         session.commit()
 
 
+def _db_telegram_user_bodies(conversation_id: int, limit: int = 40) -> list[str]:
+    """Last <=`limit` user-authored message bodies from Brian's OWN Telegram
+    conversation, most recent first, length/count-filtered the same way the
+    mail loop above is (>=20 chars, truncated to 2000, capped at 8 kept).
+    Sync — call via asyncio.to_thread. Returns [] on any error."""
+    try:
+        from sqlmodel import Session, select
+
+        from backend.database import ChatMessage, engine
+
+        with Session(engine) as session:
+            stmt = (
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conversation_id)
+                .where(ChatMessage.role == "user")
+                .order_by(ChatMessage.created_at.desc())
+                .limit(limit)
+            )
+            rows = session.exec(stmt).all()
+    except Exception:
+        return []
+
+    out = []
+    for r in rows:
+        body = (r.content or "").strip()
+        if len(body) < 20:
+            continue
+        out.append(body[:2000])
+        if len(out) >= 8:
+            break
+    return out
+
+
 async def _rebuild_voice_profile() -> str:
     """One-time (per refresh window) Sonnet distill of Brian's writing voice from
     his Sent folder. Raises on any failure — get_voice_profile handles fallback.
@@ -100,23 +133,54 @@ async def _rebuild_voice_profile() -> str:
         if len(bodies) >= 8:
             break
 
-    if not bodies:
-        raise RuntimeError("no usable Sent-folder samples found")
+    # Telegram messages Brian actually typed/spoke (voice messages are
+    # transcribed before they ever reach chat()) — a second, distinct sample
+    # source from his Sent mail. Scoped to HIS OWN Telegram conversation
+    # specifically (governor.get_telegram_conversation_id()), never a bare
+    # ChatMessage.role=="user" query: other rows with that role are Claude
+    # Code speaking on Brian's behalf ("This is Brian's Claude Code
+    # assistant asking on his behalf..."), not Brian's own words — feeding
+    # those in would poison the profile with the wrong voice. Best-effort:
+    # any failure here degrades to mail-only, matching this function's own
+    # only-raise-when-truly-nothing-usable contract below.
+    tg: list[str] = []
+    try:
+        from backend.safety import governor
 
-    sample_block = "\n\n---\n\n".join(bodies)
-    prompt = f"""Here are {len(bodies)} emails Brian actually sent, verbatim:
+        cid = await asyncio.to_thread(governor.get_telegram_conversation_id)
+        if cid:
+            tg = await asyncio.to_thread(_db_telegram_user_bodies, cid)
+    except Exception:
+        tg = []
 
-{sample_block}
+    if not bodies and not tg:
+        raise RuntimeError("no usable Sent-folder or Telegram samples found")
+
+    sections = []
+    if bodies:
+        sections.append(
+            f"Here are {len(bodies)} emails Brian actually sent, verbatim:\n\n"
+            + "\n\n---\n\n".join(bodies)
+        )
+    if tg:
+        sections.append(
+            f"Here are {len(tg)} Telegram messages Brian actually typed/spoke, verbatim:\n\n"
+            + "\n\n---\n\n".join(tg)
+        )
+
+    prompt = f"""{chr(10).join(sections)}
 
 Distill Brian's writing voice into a short style guide (<=1200 chars) another writer could
 follow to sound exactly like him: typical greeting, typical sign-off, tone/formality register,
-typical length, phrasing quirks. Style guide text only, no preamble."""
+typical length, phrasing quirks. If both an email and Telegram sample set are present, note
+where the register differs (e.g. more casual/terse over Telegram than email). Style guide text
+only, no preamble."""
 
     summary = (await sonnet(prompt, label="mail_voice_distill")).strip()[:1200]
     if not summary:
         raise RuntimeError("distill returned empty summary")
 
-    await asyncio.to_thread(_db_upsert_voice_row, summary, len(bodies))
+    await asyncio.to_thread(_db_upsert_voice_row, summary, len(bodies) + len(tg))
     return summary
 
 

@@ -644,6 +644,29 @@ async def _cmd_calibration(args: str, msg: dict) -> str:
     return "\n".join(lines)
 
 
+async def _cmd_twin(args: str, msg: dict) -> str:
+    """Reply as Brian's own voice/judgment — the nexus-twin package (pip
+    installed into this venv, separate repo) owns context-fetching and
+    prompt assembly; this handler just wires it to NEXUS's own metered
+    Sonnet call so twin usage is covered by the same spend tracking as
+    every other LLM call in this file. Free-form: no mode keyword, the
+    model itself infers from the situation text whether Brian wants a
+    drafted message, a decision, or both."""
+    from backend.agents.router import sonnet
+    from backend.config import get_settings
+    from nexus_twin.persona import build_prompt, fetch_context
+
+    situation = args.strip()
+    if not situation:
+        return "Usage: /twin <anything — a message to reply to, a decision, a question>"
+
+    await telegram.send_chat_action("typing", chat_id=_chat_id(msg))
+    settings = get_settings()
+    ctx = await fetch_context(situation, "http://127.0.0.1:8000", settings.nexus_api_key)
+    system, prompt = build_prompt(situation, ctx)
+    return await sonnet(prompt, system=system, label="twin")
+
+
 COMMANDS: dict[str, tuple[Handler, str]] = {
     "nx": (_cmd_chat, "Ask NEXUS anything"),
     "help": (_cmd_help, "List commands"),
@@ -672,6 +695,7 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "defer": (_cmd_defer, "Defer an outcome flag for N days"),
     "flag": (_cmd_flag, "Log your own item into the outcome tracker"),
     "calibration": (_cmd_calibration, "Flag calibration status / suppress-unsuppress a rule"),
+    "twin": (_cmd_twin, "Reply as Brian's own voice/judgment — /twin <anything>"),
 }
 
 
