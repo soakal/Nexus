@@ -69,10 +69,15 @@ def _db_upsert_voice_row(summary: str, sample_count: int) -> None:
         session.commit()
 
 
-def _db_telegram_user_bodies(conversation_id: int, limit: int = 40) -> list[str]:
+def _db_telegram_user_bodies(conversation_id: int, limit: int = 80) -> list[str]:
     """Last <=`limit` user-authored message bodies from Brian's OWN Telegram
     conversation, most recent first, length/count-filtered the same way the
-    mail loop above is (>=20 chars, truncated to 2000, capped at 8 kept).
+    mail loop above is (>=20 chars, truncated to 2000, capped at 16 kept —
+    2x mail's cap: Telegram messages run ~10x shorter than a mail body, and
+    a single-evening burst of similar messages was under-spanning real topic
+    variety at the old cap of 8, 2026-09-09). `limit=80` (up from 40) keeps
+    the same 5x headroom over the kept-cap so a chatty "ok"/"yes" streak
+    can't silently starve the set before the length filter even runs.
     Sync — call via asyncio.to_thread. Returns [] on any error."""
     try:
         from sqlmodel import Session, select
@@ -97,7 +102,7 @@ def _db_telegram_user_bodies(conversation_id: int, limit: int = 40) -> list[str]
         if len(body) < 20:
             continue
         out.append(body[:2000])
-        if len(out) >= 8:
+        if len(out) >= 16:
             break
     return out
 

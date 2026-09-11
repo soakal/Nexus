@@ -165,6 +165,27 @@ async def test_rebuild_voice_profile_telegram_only_no_mail_still_succeeds(monkey
 
 
 @pytest.mark.asyncio
+async def test_telegram_user_bodies_capped_at_sixteen(monkeypatch):
+    """2026-09-09: cap raised 8→16 (a single-evening burst of similar
+    messages was under-spanning real topic variety at the old cap). Pins
+    the new value so it can't silently regress."""
+    eng = _make_engine()
+    monkeypatch.setattr("backend.database.engine", eng)
+    from backend.database import ChatMessage, SystemState
+
+    with Session(eng) as s:
+        s.add(SystemState(id=1, telegram_conversation_id=7))
+        for i in range(20):
+            s.add(ChatMessage(conversation_id=7, role="user",
+                               content=f"a real message long enough to count number {i}"))
+        s.commit()
+
+    from backend.agents.mail_drafts import _db_telegram_user_bodies
+    bodies = _db_telegram_user_bodies(7)
+    assert len(bodies) == 16
+
+
+@pytest.mark.asyncio
 async def test_rebuild_voice_profile_no_mail_no_telegram_raises(monkeypatch):
     """Neither source has anything usable — must raise, matching the
     pre-existing mail-only contract (get_voice_profile handles the fallback)."""
