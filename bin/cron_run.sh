@@ -72,6 +72,18 @@ if ! git pull --quiet; then
     exit 1
 fi
 
+# Give `claude` a long-lived token so it doesn't depend on an interactive
+# session's OAuth login (which silently expires when idle -- the real cause
+# of the 2026-09-14 vault_signals_routine outage). Best-effort: if Infisical
+# is unreachable or the secret isn't set yet, CLAUDE_CODE_OAUTH_TOKEN just
+# stays unset and `claude` falls back to its normal shared-session auth,
+# same as before this existed.
+if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+    if token="$(python3 "$REPO_DIR/bin/infisical_secret.py" get cred:devbox:claude_code_oauth_token 2>>"$LOG_DIR/${JOB_NAME}.log")"; then
+        export CLAUDE_CODE_OAUTH_TOKEN="$token"
+    fi
+fi
+
 "$@"
 EXIT_CODE=$?
 
