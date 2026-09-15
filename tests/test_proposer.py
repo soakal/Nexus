@@ -845,10 +845,10 @@ async def test_night_exempt_light_goal_dropped(eng, monkeypatch):
 
     haiku_response = json.dumps([
         {
-            "title": "Turn off garage lights left and right",
-            "description": "garage_light_left (light.left_garage_light) and "
-                            "garage_light_right (light.right_garage_light) are on overnight.",
-            "success_criteria": "Both garage lights report state=off.",
+            "title": "Turn off porch lights left and right",
+            "description": "porch_light_left (light.left_porch_light) and "
+                            "porch_light_right (light.right_porch_light) are on overnight.",
+            "success_criteria": "Both porch lights report state=off.",
             "risk": "low",
             "reversibility": "reversible",
             "confidence": 0.8,
@@ -883,6 +883,77 @@ async def test_night_exempt_light_goal_dropped(eng, monkeypatch):
     assert "Docker" in goals_rows[0].title
     assert result["count_filtered"] == 1
     assert result["filtered"][0]["reason"] == "night_exempt"
+
+
+# ---------------------------------------------------------------------------
+# Test 12c — Automated-schedule backstop (2026-09-14): the garage lights run
+# on a dusk-to-dawn Home Assistant automation, so a goal about either one must
+# be dropped unconditionally -- including in broad daytime, unlike the porch
+# lights' NIGHT_EXEMPT rule above. Real incident: goal #108 proposed "turn off
+# right garage light" at 5pm because the LLM correctly read it as daytime and
+# NIGHT_EXEMPT no longer covered garage lights at all.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_automated_garage_light_goal_dropped_daytime(eng, monkeypatch):
+    import datetime as dt_module
+    from backend.agents import proposer
+
+    class FakeDatetime(dt_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt_module.datetime(2026, 9, 14, 17, 0, tzinfo=tz)  # 5pm, broad daylight
+
+        @classmethod
+        def utcnow(cls):
+            return dt_module.datetime(2026, 9, 14, 17, 0)
+
+    monkeypatch.setattr(proposer, "datetime", FakeDatetime)
+
+    _seed_state(eng, autonomy=True)
+    _mock_integrations(monkeypatch)
+
+    haiku_response = json.dumps([
+        {
+            "title": "Turn off right garage light",
+            "description": "The right garage light (light.right_garage_light) is on "
+                            "during daytime hours with no active work in the garage.",
+            "success_criteria": "light.right_garage_light state changes to off.",
+            "risk": "low",
+            "reversibility": "reversible_by_inverse",
+            "confidence": 0.95,
+        },
+        {
+            "title": "Clean up old Docker images",
+            "description": "Run docker system prune to free disk space on Unraid.",
+            "success_criteria": "docker system df shows reclaimable space under 1 GB.",
+            "risk": "low",
+            "reversibility": "reversible",
+            "confidence": 0.85,
+        },
+    ])
+
+    with patch("backend.agents.router.haiku", new=AsyncMock(return_value=haiku_response)):
+        with patch("backend.config.get_settings") as mock_settings:
+            s = MagicMock()
+            s.proposer_max_per_tick = 3
+            s.goal_ttl_seconds = 86400
+            s.goal_debounce_seconds = 3600
+            s.auto_approve_low_risk = False
+            s.briefing_timezone = "UTC"
+            mock_settings.return_value = s
+
+            result = await proposer.propose_goals_tick()
+
+    assert result["status"] == "ok"
+    assert result["count_proposed"] == 1
+
+    goals_rows = _all_goals(eng)
+    assert len(goals_rows) == 1
+    assert "Docker" in goals_rows[0].title
+    assert not any("garage" in g.title.lower() for g in goals_rows)
+    assert result["count_filtered"] == 1
+    assert result["filtered"][0]["reason"] == "automated_light"
 
 
 # ---------------------------------------------------------------------------

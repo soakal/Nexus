@@ -153,8 +153,16 @@ WATCH = {
 
 # Brian leaves these exterior lights on overnight on purpose (security lighting) —
 # never auto-off them at night, regardless of what the LLM proposes.
-NIGHT_EXEMPT_LABELS = {"porch_light_left", "porch_light_right", "garage_light_left", "garage_light_right"}
+NIGHT_EXEMPT_LABELS = {"porch_light_left", "porch_light_right"}
 NIGHT_EXEMPT_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in NIGHT_EXEMPT_LABELS}
+
+# PERMANENT (Brian, 2026-09-14): both garage lights run on an automated
+# dusk-to-dawn Home Assistant schedule -- their on/off state at any hour
+# reflects that automation, not something left on by accident. Unconditional,
+# not gated by time of day (unlike NIGHT_EXEMPT above) -- never propose a
+# goal about either garage light.
+AUTOMATED_GARAGE_LIGHT_LABELS: set[str] = {"garage_light_left", "garage_light_right"}
+AUTOMATED_GARAGE_LIGHT_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in AUTOMATED_GARAGE_LIGHT_LABELS}
 
 # TEMPORARY (added 2026-07-09, Brian): the porch light circuit has water damage
 # and is only reliably operable via the physical wall switch right now -- HA
@@ -501,14 +509,18 @@ async def propose_goals_tick() -> dict:
             "propose ANYTHING about these two lights (turning off, investigating, or otherwise),\n"
             "even if HA ENTITY STATES shows them on/unavailable. This is temporary until Brian\n"
             "confirms the repair.\n"
+            "The garage lights (light.left_garage_light, light.right_garage_light) run on an\n"
+            "automated dusk-to-dawn Home Assistant schedule — do NOT propose ANYTHING about these\n"
+            "two lights (turning off, investigating, or otherwise), regardless of what HA ENTITY\n"
+            "STATES shows or what time of day it is. This is permanent, not a night-only rule.\n"
             + (
-                "It is currently NIGHTTIME (local time {:%H:%M}). Brian leaves the porch and garage\n"
-                "lights on overnight ON PURPOSE as security lighting — do NOT propose turning off\n"
-                "porch_light_left, porch_light_right, garage_light_left, or garage_light_right while\n"
-                "nighttime holds, even though HA ENTITY STATES shows them on. Only propose turning them\n"
-                "off if they are still on well after sunrise (daytime).\n\n".format(local_now)
+                "It is currently NIGHTTIME (local time {:%H:%M}). Brian leaves the porch lights on\n"
+                "overnight ON PURPOSE as security lighting — do NOT propose turning off\n"
+                "porch_light_left or porch_light_right while nighttime holds, even though HA ENTITY\n"
+                "STATES shows them on. Only propose turning them off if they are still on well after\n"
+                "sunrise (daytime).\n\n".format(local_now)
                 if is_night else
-                "(daytime — normal left-on-light rules apply to porch/garage lights)\n\n"
+                "(daytime — normal left-on-light rules apply to porch lights)\n\n"
             )
             + f"Return JSON only, no prose — an array (max {max_per_tick}) of:\n"
             '[{"title": "...", "description": "concrete goal the executor can pursue", '
@@ -597,6 +609,16 @@ async def propose_goals_tick() -> dict:
                     "proposer: dropped known-hardware-issue light goal: %r", title
                 )
                 filtered.append({"title": title[:80], "reason": "hardware_issue"})
+                continue
+
+            # Deterministic backstop for the automated-schedule garage lights
+            # (see AUTOMATED_GARAGE_LIGHT_LABELS above) -- unconditional, not
+            # gated by time of day. Never rely on the LLM alone to honor this.
+            if any(tok in haystack for tok in AUTOMATED_GARAGE_LIGHT_ENTITY_IDS | AUTOMATED_GARAGE_LIGHT_LABELS):
+                logger.info(
+                    "proposer: dropped automated-garage-light goal: %r", title
+                )
+                filtered.append({"title": title[:80], "reason": "automated_light"})
                 continue
 
             # Deterministic backstop for rejection memory. The prompt above
