@@ -245,6 +245,9 @@ _PRICE_PER_MTOK = {
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0},
+    # 2026-09 shadow trial candidate (Trial A harness) -- verified live against
+    # GET https://openrouter.ai/api/v1/models 2026-09-20 ($0.20 / $1.20).
+    "openai/gpt-5.6-luna": {"input": 0.20, "output": 1.20},
 }
 
 # Anthropic model id -> roughly-equivalent OpenRouter model id, used only when
@@ -960,7 +963,7 @@ def _shadow_active(label: str, settings) -> bool:
     return label in labels
 
 
-async def _maybe_shadow(model: str, prompt: str, system: str, label: str, primary_text: str) -> None:
+async def _maybe_shadow(model: str, prompt: str, system: str, label: str, primary_text: str, response_schema: dict | None = None) -> None:
     """Fire the shadow call as a background task -- never awaited by the real
     caller, so it can never add latency or a failure mode to the real response."""
     try:
@@ -968,14 +971,45 @@ async def _maybe_shadow(model: str, prompt: str, system: str, label: str, primar
         settings = get_settings()
         if not _shadow_active(label, settings):
             return
-        task = asyncio.create_task(_run_shadow_call(settings.shadow_model, prompt, system, label, primary_text))
+        task = asyncio.create_task(_run_shadow_call(settings.shadow_model, prompt, system, label, primary_text, response_schema))
         _shadow_tasks.add(task)
         task.add_done_callback(_shadow_tasks.discard)
     except Exception as e:  # never let the shadow trigger touch the real call
         logger.warning(f"shadow trigger failed (non-fatal): {e}")
 
 
-async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: str, primary_text: str) -> None:
+def _shadow_request_body(shadow_model: str, messages: list, label: str, response_schema: dict | None) -> tuple[dict, bool]:
+    """OpenAI-format request for the shadow call. Returns (body, wrapped).
+
+    When the real call carried a `response_schema`, the shadow gets the same
+    schema as a strict `response_format` so the shape criterion measures the
+    model, not the harness. OpenAI strict mode requires an object root, and
+    NEXUS's two shadowed schemas (facts_extract, goal_proposer) are arrays --
+    those get wrapped in {"items": <array>} here and unwrapped by the caller,
+    so out_b lands in shadow.jsonl in the same shape as out_a.
+    `reasoning.effort=low` matches production intent for these single-shot
+    classify/extract labels (and is dropped by models that don't reason).
+    """
+    body: dict = {
+        "model": shadow_model,
+        "max_tokens": 4096,
+        "messages": messages,
+        "reasoning": {"effort": "low"},
+    }
+    wrapped = False
+    if response_schema is not None:
+        schema = response_schema
+        if schema.get("type") == "array":
+            schema = {"type": "object", "properties": {"items": schema}, "required": ["items"], "additionalProperties": False}
+            wrapped = True
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": label, "strict": True, "schema": schema},
+        }
+    return body, wrapped
+
+
+async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: str, primary_text: str, response_schema: dict | None = None) -> None:
     """The actual shadow call + logging. Whole body is one try/except -- a
     shadow failure must be invisible to everything except its own log line."""
     try:
@@ -986,23 +1020,37 @@ async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: s
 
         from backend.config import get_settings
         from backend.http_client import SSL_CONTEXT
+        from backend.safety.governor import today_spend_usd
 
         settings = get_settings()
+        # Hard per-day shadow cap, independent of the real daily_budget_usd:
+        # shadow rows are metered like any other SpendLog row, so a runaway
+        # trial would otherwise trip the REAL budget brake and block real calls.
+        cap = float(getattr(settings, "shadow_daily_cap_usd", 0.25) or 0.0)
+        if await asyncio.to_thread(today_spend_usd, "shadow:") >= cap:
+            logger.warning(f"shadow call skipped: daily shadow cap ${cap:.2f} reached (label={label!r})")
+            return
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}
         ]
+        body, wrapped = _shadow_request_body(shadow_model, messages, label, response_schema)
         t0 = time.monotonic()
         async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
             resp = await client.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-                json={"model": shadow_model, "max_tokens": 4096, "messages": messages},
+                json=body,
             )
             resp.raise_for_status()
             data = resp.json()
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         shadow_text = data["choices"][0]["message"]["content"] or ""
+        if wrapped:
+            try:
+                shadow_text = json.dumps(json.loads(shadow_text)["items"])
+            except Exception:
+                pass  # leave the raw text: a parse failure is itself a finding
         usage = data.get("usage") or {}
         fake_resp = SimpleNamespace(usage=SimpleNamespace(
             input_tokens=int(usage.get("prompt_tokens") or 0),
@@ -1081,7 +1129,7 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
             return fallback
         raise
     if model == HAIKU_MODEL:
-        await _maybe_shadow(model, prompt, system, label, result)
+        await _maybe_shadow(model, prompt, system, label, result, response_schema)
     return result
 
 

@@ -68,3 +68,28 @@ or be deleted once the trial's decided.
   the box).
 
 Powered by CwiAI
+
+## Luna trial (2026-09, prepared — crons NOT installed until Brian says go)
+
+Same harness, new candidate: `openai/gpt-5.6-luna` for both `sonnet_model` and
+`haiku_model` (`api_provider: openrouter`; the trial fork routes any `/`-bearing
+model id straight to OpenRouter regardless, `reasoning_max_tokens: 2048` maps to
+a low/medium reasoning budget there). Sync price, no batch — quality is what's
+being measured. Expected cost ≈ $0.35 for 5 nights.
+
+**Go:** install the two crons from *Setup* above (snapshot 01:55 + run 03:00).
+**Stop:** `crontab -l | grep -v brain-trial | crontab -` — nothing else to undo.
+
+**Each morning (5 nights):** read `nights/<date>/rc` (0 = ran), skim
+`diff-trial.txt` and `census.md`, then append one line to
+`/var/lib/nexus/brain-trial/preference-log.md`:
+
+```
+YYYY-MM-DD | preferred|indifferent|worse | one-line why
+```
+
+**Pass bar (from NEXUS-PROVIDER-COMPARE):** 0 failed nights (`rc` = 0 on 5/5),
+wikilink census not worse on ≥4/5, `preferred`/`indifferent` on ≥3/5, output
+tokens within ±20 % of the Sonnet run (`nights/<date>/usage.jsonl`). Anything
+short of that is a NO-GO and the crons come out; nothing in production changed
+either way.

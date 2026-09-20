@@ -1,10 +1,11 @@
 {
-  "_comment": "Not the live config -- this documents exactly which keys differ from the real modules/brain-organizer/config.json on nexus-lxc. Build the real trial config.json by copying the live one and changing exactly these keys.",
+  "_comment": "Not the live config -- this documents exactly which keys differ from the real modules/brain-organizer/config.json on nexus-lxc. Build the real trial config.json by copying the live one and changing exactly these keys. 2026-09: model ids repointed from the 2026-08 Gemini trial to openai/gpt-5.6-luna (see README 'Luna trial' section).",
   "vault_path": "/var/lib/nexus/brain-trial/vault/Brain",
   "logs_folder": "/var/lib/nexus/brain-trial/logs",
   "processed_file": "/var/lib/nexus/brain-trial/processed.json",
-  "sonnet_model": "google/gemini-2.5-pro",
-  "haiku_model": "google/gemini-2.5-flash-lite",
+  "sonnet_model": "openai/gpt-5.6-luna",
+  "haiku_model": "openai/gpt-5.6-luna",
   "sonnet_max_tokens": 32768,
-  "reasoning_max_tokens": 2048
+  "reasoning_max_tokens": 2048,
+  "api_provider": "openrouter"
 }
