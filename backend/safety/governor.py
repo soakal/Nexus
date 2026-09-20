@@ -93,18 +93,22 @@ def _local_midnight_utc_naive() -> datetime:
     return utc_midnight.replace(tzinfo=None)
 
 
-def today_spend_usd() -> float:
-    """Sum of SpendLog.cost_usd for the current local day (sync)."""
+def today_spend_usd(label_prefix: str | None = None) -> float:
+    """Sum of SpendLog.cost_usd for the current local day (sync).
+
+    `label_prefix` narrows the sum to labels starting with it (e.g. "shadow:"
+    for the router's per-day shadow-call cap); None keeps the whole-day total.
+    """
     from sqlmodel import Session, func, select
 
     from backend.database import SpendLog, engine
 
     since = _local_midnight_utc_naive()
+    stmt = select(func.coalesce(func.sum(SpendLog.cost_usd), 0.0)).where(SpendLog.created_at >= since)
+    if label_prefix:
+        stmt = stmt.where(SpendLog.label.startswith(label_prefix))  # type: ignore[union-attr]
     with Session(engine) as session:
-        total = session.exec(
-            select(func.coalesce(func.sum(SpendLog.cost_usd), 0.0))
-            .where(SpendLog.created_at >= since)
-        ).one()
+        total = session.exec(stmt).one()
     return float(total or 0.0)
 
 

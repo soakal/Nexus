@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -1129,3 +1131,67 @@ async def test_shadow_failure_never_touches_real_response(spend_eng, monkeypatch
             await t
 
     assert result == "KEEP"
+
+
+def _shadow_http_mock(content: str):
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "choices": [{"message": {"content": content}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+    }
+    client = AsyncMock()
+    client.post.return_value = resp
+    cls = MagicMock()
+    cls.return_value.__aenter__.return_value = client
+    return cls, client
+
+
+@pytest.mark.asyncio
+async def test_shadow_call_sends_strict_schema_and_low_reasoning(spend_eng, monkeypatch, tmp_path):
+    """2026-09 luna shadow trial: when the real call carried a response_schema,
+    the shadow request must carry it as a STRICT json_schema response_format
+    (array roots wrapped in {"items": ...}, since strict mode needs an object
+    root) plus reasoning.effort=low -- and out_b is logged UNWRAPPED so the
+    shape comparator sees the same array shape as out_a."""
+    from backend.agents import router
+    from backend.config import Settings
+
+    log = tmp_path / "shadow.jsonl"
+    monkeypatch.setattr(router, "_SHADOW_LOG", log)
+    settings = Settings(shadow_model="openai/gpt-5.6-luna", shadow_labels="facts_extract")
+    array_schema = {"type": "array", "items": {"type": "object", "properties": {"subject": {"type": "string"}}, "required": ["subject"], "additionalProperties": False}}
+    cls, client = _shadow_http_mock('{"items": [{"subject": "x"}]}')
+
+    with patch("backend.config.get_settings", return_value=settings), patch("httpx.AsyncClient", cls):
+        await router._run_shadow_call("openai/gpt-5.6-luna", "p", "", "facts_extract", '[{"subject": "x"}]', array_schema)
+
+    body = client.post.call_args.kwargs["json"]
+    assert body["reasoning"] == {"effort": "low"}
+    rf = body["response_format"]
+    assert rf["type"] == "json_schema" and rf["json_schema"]["strict"] is True
+    assert rf["json_schema"]["schema"]["type"] == "object"
+    assert rf["json_schema"]["schema"]["properties"]["items"] == array_schema
+    row = json.loads(log.read_text().strip())
+    assert json.loads(row["out_b"]) == [{"subject": "x"}]
+    assert row["agree"] is True
+
+    # No schema on the real call -> no response_format on the shadow either.
+    cls, client = _shadow_http_mock("KEEP")
+    with patch("backend.config.get_settings", return_value=settings), patch("httpx.AsyncClient", cls):
+        await router._run_shadow_call("openai/gpt-5.6-luna", "p", "", "mail_junk_classify", "KEEP")
+    assert "response_format" not in client.post.call_args.kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_shadow_daily_cap_blocks_call(spend_eng, monkeypatch):
+    """shadow_daily_cap_usd is a hard per-day stop, independent of the real
+    daily_budget_usd: at/over the cap no HTTP call is made."""
+    from backend.agents import router
+    from backend.config import Settings
+
+    settings = Settings(shadow_model="openai/gpt-5.6-luna", shadow_labels="mail_junk_classify", shadow_daily_cap_usd=0.0)
+    cls, client = _shadow_http_mock("KEEP")
+    with patch("backend.config.get_settings", return_value=settings), patch("httpx.AsyncClient", cls):
+        await router._run_shadow_call("openai/gpt-5.6-luna", "p", "", "mail_junk_classify", "KEEP")
+    client.post.assert_not_called()

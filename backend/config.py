@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # past shadow_until so a forgotten trial can't run (and spend) forever.
     shadow_model: str = ""
     shadow_until: str = ""  # "YYYY-MM-DD"
+    # Hard per-day cap on shadow spend (USD), checked before every shadow
+    # call. Independent of daily_budget_usd so a runaway trial can never
+    # trip the real budget brake. Local-day sum of SpendLog "shadow:*" rows.
+    shadow_daily_cap_usd: float = 0.25
     shadow_labels: str = (
         "mail_junk_classify,mail_reply_classify,facts_extract,goal_proposer,"
         "goal_criteria_eval,chat_classify,voice_intent,action_judge"
