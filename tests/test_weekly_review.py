@@ -193,3 +193,75 @@ async def test_run_weekly_review_llm_failure_falls_back_to_deterministic_memo(en
 def test_weekly_review_kind_registered():
     from backend.events import NOTIFY_KINDS
     assert "weekly_review" in NOTIFY_KINDS
+
+
+# ---------------------------------------------------------------------------
+# _stale_flags — open-and-ignored call-out
+# ---------------------------------------------------------------------------
+
+def test_stale_flags_picks_only_old_and_repeatedly_surfaced():
+    now = datetime.utcnow()
+    flags = [
+        # In: old (13d) AND repeatedly re-surfaced (14x) -- the real
+        # flag-408 shape this feature exists for.
+        {"id": 408, "fingerprint": "briefing:ha_unavailable_entities", "summary": "s1",
+         "created_at": (now - timedelta(days=13)).isoformat(), "surfaced_count": 14},
+        # Out: recent (2d), despite being surfaced a lot.
+        {"id": 500, "fingerprint": "homelab_watch:garage_open", "summary": "s2",
+         "created_at": (now - timedelta(days=2)).isoformat(), "surfaced_count": 20},
+        # Out: old (30d), but only surfaced once -- not "ignored", just quiet.
+        {"id": 501, "fingerprint": "homelab_watch:vzdump_failed", "summary": "s3",
+         "created_at": (now - timedelta(days=30)).isoformat(), "surfaced_count": 1},
+    ]
+
+    result = weekly_review._stale_flags(flags, now)
+
+    assert [f["id"] for f in result] == [408]
+
+
+def test_fallback_memo_lists_stale_flags():
+    data = {
+        "spend": {"total_usd": 0.0, "total_calls": 0, "by_label": []},
+        "actions": [],
+        "mute_candidates": [],
+        "stale_flags": [
+            {"id": 408, "fingerprint": "briefing:ha_unavailable_entities",
+             "summary": "s", "age_days": 13, "surfaced_count": 14},
+        ],
+    }
+
+    memo = weekly_review._fallback_memo(data)
+
+    assert "#408" in memo
+    assert "/resolve 408" in memo
+
+
+@pytest.mark.asyncio
+async def test_run_weekly_review_delivers_when_only_stale_flags(eng):
+    now = datetime.utcnow()
+    with Session(eng) as s:
+        flag = OutcomeFlag(source="briefing", check="github_stale_prs",
+                            fingerprint="briefing:github_stale_prs", summary="stale PRs",
+                            status="open", surfaced_count=9, created_at=now - timedelta(days=10))
+        s.add(flag)
+        s.commit()
+        s.refresh(flag)
+        flag_id = flag.id
+
+    # sonnet's return echoes the stale flag's id, standing in for what a
+    # real memo (told BY ID, per _SYSTEM's clause 3) would say -- proves the
+    # id actually reached the prompt/memo/notify pipeline, not just that
+    # SOME memo was delivered.
+    sonnet_mock = AsyncMock(return_value=f"This week was quiet, but flag #{flag_id} is still open and ignored.")
+    notify_mock = AsyncMock(return_value=True)
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch("backend.safety.governor.get_muted_notify_kinds", return_value=set()), \
+         patch("backend.safety.governor.spend_report", return_value={"total_usd": 0.0, "total_calls": 0, "by_label": []}), \
+         patch("backend.agents.outcomes.calibration_summary", new_callable=AsyncMock, return_value={}), \
+         patch("backend.agents.router.sonnet", sonnet_mock), \
+         patch("backend.events.notify_phone", notify_mock):
+        result = await weekly_review.run_weekly_review()
+
+    assert result["skipped"] is None
+    notify_mock.assert_awaited_once()
+    assert f"#{flag_id}" in notify_mock.await_args.args[0]

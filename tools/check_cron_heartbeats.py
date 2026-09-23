@@ -31,7 +31,10 @@ bumps the existing flag's surfaced_count rather than spamming duplicates --
 though page_now still re-pages on every run while the problem persists,
 which is intentional escalation, not a bug: an unresolved "your automation
 pipeline is dead" is exactly the kind of thing worth being re-annoyed about
-until it's fixed.
+until it's fixed. Once the condition clears, the flag is auto-resolved on
+the next run (see _check_one / _resolve_flag) -- a recovered job must not
+leave a page-worthy flag sitting open, which it did for a solid week before
+this was added (flag 431, 2026-09-15..22).
 
 Run every few hours via its own cron_run.sh-wrapped cron entry (see
 crontab) -- deliberately not scheduled less often than that, since running
@@ -50,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,17 +109,86 @@ def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
         return False
 
 
-def _check_one(job: str, expected_hours: int, base_url: str, key: str) -> None:
+# Every check kind this script can raise, per job. _check_one clears the
+# ones that DON'T currently apply, so a recovered job's flag closes itself
+# instead of sitting open forever -- flag 431 (failed:vault_signals_routine)
+# sat open for a week after the job started exiting 0 again, because this
+# script only ever posted, never cleared.
+_CHECK_KINDS = ("missing_heartbeat", "unreadable_heartbeat", "overdue", "failed")
+_LIVE_STATUSES = {"open", "needs_follow_up", "deferred"}
+
+
+def _open_flags(base_url: str, key: str) -> dict[str, int]:
+    """check -> flag id for every still-live cron_heartbeat flag, via the
+    existing GET /api/safety/flags. There is no clear-by-fingerprint HTTP
+    endpoint, and outcomes.clear_flag is in-process only (this script runs
+    on devbox, the API on nexus-lxc) -- so recovery is a GET + a resolve
+    POST on the two routes that already exist, not a new channel.
+    Returns {} on any failure -- never raises: a dead API means "cleared
+    nothing this run", never a skipped check."""
+    req = urllib.request.Request(
+        f"{base_url}/api/safety/flags?source=cron_heartbeat&limit=200",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            rows = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"GET /api/safety/flags failed, clearing nothing this run: {e}")
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    return {
+        r["check"]: r["id"]
+        for r in rows
+        if isinstance(r, dict)
+        and r.get("status") in _LIVE_STATUSES
+        and r.get("check")
+        and r.get("id") is not None
+    }
+
+
+def _resolve_flag(base_url: str, key: str, flag_id: int, check: str) -> bool:
+    """Close one recovered flag via POST /api/safety/flags/{id}/resolve.
+    A 409 (a human resolved it between our GET and this POST) is a success,
+    not an error -- the flag is closed either way, which is all we wanted."""
+    body = json.dumps(
+        {"status": "resolved",
+         "note": "auto-cleared by check_cron_heartbeats: condition no longer present"}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/safety/flags/{flag_id}/resolve",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            ok = 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            return True
+        print(f"resolve failed for flag {flag_id} ({check}): {e}")
+        return False
+    except Exception as e:
+        print(f"resolve failed for flag {flag_id} ({check}): {e}")
+        return False
+    if ok:
+        print(f"cleared recovered flag {flag_id} ({check})")
+    return ok
+
+
+def _diagnose(job: str, expected_hours: int) -> tuple[str, str] | None:
+    """The ONE problem (check_kind, summary) this job currently has, or None
+    if it's healthy. Split out of _check_one so the caller can both raise
+    the live problem and clear every OTHER kind's stale flag."""
     path = STATE_DIR / f"{job}.json"
     now = datetime.now(timezone.utc)
 
     if not path.exists():
-        _post_flag(
-            base_url, key, f"missing_heartbeat:{job}",
-            f"Cron job '{job}' has never written a heartbeat file ({path}). "
-            f"Either it has never run via bin/cron_run.sh, or it predates this check.",
-        )
-        return
+        return ("missing_heartbeat",
+                f"Cron job '{job}' has never written a heartbeat file ({path}). "
+                f"Either it has never run via bin/cron_run.sh, or it predates this check.")
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -124,25 +197,33 @@ def _check_one(job: str, expected_hours: int, base_url: str, key: str) -> None:
             finished_at = finished_at.replace(tzinfo=timezone.utc)
         exit_code = int(data["exit_code"])
     except Exception as e:
-        _post_flag(
-            base_url, key, f"unreadable_heartbeat:{job}",
-            f"Cron job '{job}'s heartbeat file is unreadable/malformed: {e}",
-        )
-        return
+        return ("unreadable_heartbeat",
+                f"Cron job '{job}'s heartbeat file is unreadable/malformed: {e}")
 
     age_hours = (now - finished_at).total_seconds() / 3600
     if age_hours > expected_hours * 2:
-        _post_flag(
-            base_url, key, f"overdue:{job}",
-            f"Cron job '{job}' last finished {age_hours:.1f}h ago "
-            f"(expected every ~{expected_hours}h) -- it has likely stopped running.",
-        )
-    elif exit_code != 0:
-        _post_flag(
-            base_url, key, f"failed:{job}",
-            f"Cron job '{job}'s last run (finished {finished_at.isoformat()}) "
-            f"exited with code {exit_code}.",
-        )
+        return ("overdue",
+                f"Cron job '{job}' last finished {age_hours:.1f}h ago "
+                f"(expected every ~{expected_hours}h) -- it has likely stopped running.")
+    if exit_code != 0:
+        return ("failed",
+                f"Cron job '{job}'s last run (finished {finished_at.isoformat()}) "
+                f"exited with code {exit_code}.")
+    return None
+
+
+def _check_one(job: str, expected_hours: int, base_url: str, key: str,
+               open_flags: dict[str, int]) -> None:
+    problem = _diagnose(job, expected_hours)
+    if problem is not None:
+        kind, summary = problem
+        _post_flag(base_url, key, f"{kind}:{job}", summary)
+    for kind in _CHECK_KINDS:
+        if problem is not None and kind == problem[0]:
+            continue  # still true -- record_flag_ex's own dedup owns that row
+        flag_id = open_flags.get(f"{kind}:{job}")
+        if flag_id is not None:
+            _resolve_flag(base_url, key, flag_id, f"{kind}:{job}")
 
 
 def main() -> None:
@@ -151,8 +232,9 @@ def main() -> None:
         print("check_cron_heartbeats: no NEXUS_API_KEY available, cannot report -- exiting 1")
         raise SystemExit(1)
     base_url = os.environ.get("NEXUS_BASE_URL", _DEFAULT_BASE_URL)
+    open_flags = _open_flags(base_url, key)
     for job, hours in EXPECTED_INTERVAL_HOURS.items():
-        _check_one(job, hours, base_url, key)
+        _check_one(job, hours, base_url, key, open_flags)
 
 
 if __name__ == "__main__":

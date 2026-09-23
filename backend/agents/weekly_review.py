@@ -40,12 +40,24 @@ _FINGERPRINT_PREFIX_KIND = {
 _MUTE_SURFACED_THRESHOLD = 10
 _MUTE_MAX_CANDIDATES = 3
 
+# The inverse of the mute candidates above: not noisy-and-wrong, but
+# actionable-and-ignored. 7d/5x is deliberately conservative -- run against
+# the live DB on 2026-09-22 it selected exactly the two real offenders
+# (flag 408 briefing:ha_unavailable_entities, 13d/14x; flag 425
+# briefing:github_stale_prs, 10d/11x) out of ~45 open flags.
+_STALE_MIN_DAYS = 7
+_STALE_MIN_SURFACED = 5
+_STALE_MAX = 5
+
 _SYSTEM = (
     "You are NEXUS writing your own weekly self-review for Brian. Below are "
-    "your real aggregates for the last 7 days (JSON). Write a memo under 180 "
+    "your real aggregates for the last 7 days (JSON). Write a memo under 220 "
     "words: (1) what you did (actions, spend, top cost labels); (2) what "
     "went wrong or was noisy (failed actions, false-positive flags, repeat "
-    "alerts); (3) at most 3 concrete recommendations, each naming an exact "
+    "alerts); (3) if `stale_flags` is non-empty, call each one out BY ID — "
+    "these have been open for days and keep re-surfacing with nobody acting "
+    "on them; they are the opposite of noise, so never suggest muting them; "
+    "(4) at most 3 concrete recommendations, each naming an exact "
     "existing lever: /mute <kind>, /defer <id> <days>, /resolve <id>, or a "
     "budget change. Only reference kinds/fingerprints/labels present in the "
     "data — never invent one. Plain text, no markdown headers."
@@ -57,6 +69,31 @@ def _kind_for_fingerprint(fp: str) -> str | None:
         if fp.startswith(prefix):
             return kind
     return None
+
+
+def _stale_flags(flags: list[dict], now: datetime) -> list[dict]:
+    """Open flags nobody is acting on: old AND repeatedly re-surfaced.
+    A pure filter over outcomes.open_flags()' existing result -- no new
+    query. Oldest/loudest first, capped at _STALE_MAX."""
+    out = []
+    for f in flags:
+        created = f.get("created_at")
+        if not created:
+            continue
+        try:
+            age_days = (now - datetime.fromisoformat(created)).days
+        except (TypeError, ValueError):
+            continue
+        if age_days >= _STALE_MIN_DAYS and (f.get("surfaced_count") or 0) >= _STALE_MIN_SURFACED:
+            out.append({
+                "id": f.get("id"),
+                "fingerprint": f.get("fingerprint"),
+                "summary": (f.get("summary") or "")[:160],
+                "age_days": age_days,
+                "surfaced_count": f.get("surfaced_count"),
+            })
+    out.sort(key=lambda f: (f["age_days"], f["surfaced_count"]), reverse=True)
+    return out[:_STALE_MAX]
 
 
 def _db_action_log_counts(cutoff: datetime) -> list[dict]:
@@ -113,6 +150,7 @@ async def _gather(cutoff: datetime) -> dict:
     mute_candidates = await asyncio.to_thread(_db_mute_candidates, cutoff, muted)
     calibration = await outcomes.calibration_summary(days=7)
     spend = await asyncio.to_thread(governor.spend_report, 7)
+    stale_flags = _stale_flags(await outcomes.open_flags(limit=200), datetime.utcnow())
 
     return {
         "actions": actions,
@@ -123,6 +161,7 @@ async def _gather(cutoff: datetime) -> dict:
             "by_label": spend.get("by_label", [])[:5],
         },
         "mute_candidates": mute_candidates,
+        "stale_flags": stale_flags,
         "already_muted": sorted(muted),
     }
 
@@ -143,6 +182,13 @@ def _fallback_memo(data: dict) -> str:
     if data["mute_candidates"]:
         names = ", ".join(c["kind"] for c in data["mute_candidates"])
         lines.append(f"Noisy kinds worth muting: {names}")
+    if data.get("stale_flags"):
+        lines.append("Open and ignored:")
+        for f in data["stale_flags"]:
+            lines.append(
+                f"  - #{f['id']} {f['fingerprint']}: open {f['age_days']}d, "
+                f"surfaced {f['surfaced_count']}x — /resolve {f['id']}"
+            )
     return "\n".join(lines)
 
 
@@ -166,7 +212,8 @@ async def run_weekly_review() -> dict:
         cutoff = datetime.utcnow() - timedelta(days=7)
         data = await _gather(cutoff)
 
-        if not data["actions"] and not data["mute_candidates"] and data["spend"]["total_usd"] == 0:
+        if (not data["actions"] and not data["mute_candidates"]
+                and not data["stale_flags"] and data["spend"]["total_usd"] == 0):
             return {"skipped": "no_activity"}
 
         try:

@@ -148,6 +148,97 @@ def test_slug_is_stable_across_digests(monkeypatch, tmp_path):
     assert calls[0] == calls[1]
 
 
+def test_reworded_recurring_finding_keeps_the_same_slug(monkeypatch, tmp_path):
+    """Live evidence this guards: 43 open vault_signals flags for only ~7
+    real recurring topics as of 2026-09-22, because the old sentence-hash
+    slug treated every reworded restatement of "the USW Pro 24 PoE switch
+    keeps throwing thermal alerts" as a brand new finding. Three real
+    restatements of that one topic, across three dated digests, must now
+    bump the SAME flag."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append(check)
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    _write_digest(
+        tmp_path, "2026-09-01.md",
+        "## New / changed since last digest\n"
+        "- [homelab] USW Pro 24 PoE switch thermal alert fired again overnight; cause still unclear.\n",
+    )
+    _write_digest(
+        tmp_path, "2026-09-08.md",
+        "## New / changed since last digest\n"
+        "- [homelab] The USW Pro 24 PoE switch's thermal alerts continue, unresolved after three attempts.\n",
+    )
+    _write_digest(
+        tmp_path, "2026-09-15.md",
+        "## New / changed since last digest\n"
+        "- [homelab] USW Pro 24 PoE switch flagged a thermal issue overnight, still investigating root cause.\n",
+    )
+
+    relay.main()
+
+    assert len(calls) == 3
+    assert len(set(calls)) == 1
+
+
+def test_distinct_topics_still_get_distinct_slugs(monkeypatch, tmp_path):
+    """Guards against over-merging: two genuinely different homelab findings
+    must not collapse onto the same fingerprint just because both are
+    3-word-keyed."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append(check)
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    _write_digest(
+        tmp_path, "2026-09-01.md",
+        "## New / changed since last digest\n"
+        "- [homelab] Back door lock battery is critically low and needs replacement soon.\n"
+        "- [homelab] Garage light left on well past midnight despite the automation rule.\n",
+    )
+
+    relay.main()
+
+    assert len(calls) == 2
+    assert len(set(calls)) == 2
+
+
+def test_section_title_does_not_drive_the_slug(monkeypatch, tmp_path):
+    """The boilerplate `"<section title> — "` prefix _extract_findings
+    prepends must never be part of the topic key -- the same bullet under
+    two differently-worded section headings on two dated digests must slug
+    identically."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append(check)
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    bullet = "- [personal] AdGuard block-rate spike continues; investigate DNS filter rules.\n"
+    _write_digest(tmp_path, "2026-09-01.md", "## New / changed since last digest\n" + bullet)
+    _write_digest(tmp_path, "2026-09-08.md", "## Recap of earlier findings\n" + bullet)
+
+    relay.main()
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+
+
 def test_bullets_under_a_section_are_separate_findings(monkeypatch, tmp_path):
     """A `## ` section with multiple bullets must yield one finding PER
     bullet, not one finding for the whole section -- and the same bullet

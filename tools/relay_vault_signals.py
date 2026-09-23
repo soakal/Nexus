@@ -438,20 +438,52 @@ def _extract_findings(content: str) -> list[tuple[str | None, str]]:
     return findings
 
 
+# Topic-fingerprint knobs for _slugify. 3 significant words was chosen by
+# replaying every real digest in digests/vault-signals/ (2026-09-01..22):
+# 49 findings collapse to 34 fingerprints, merging exactly the 7 genuinely
+# recurring topics (USW Pro 24 PoE switch, switch.unifi_network, back door
+# lock, Unraid array capacity, Proton Mail draft pileup, AdGuard block rate,
+# post-image-orchestrator) with no observed false merge. 2 words over-merges
+# (28); 4+ leaves the churn in place (38/43).
+_TOPIC_WORDS = 3
+_TOPIC_STOPWORDS = {"a", "an", "the"}
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def _slugify(text: str) -> str:
-    """Derive a stable, deterministic slug from a finding's own text so a
-    still-open finding re-surfaced on a later digest bumps the SAME
-    OutcomeFlag row instead of duplicating it (record_flag dedups on
+    """Derive a stable, deterministic TOPIC fingerprint from a finding so a
+    recurring condition re-worded by a later digest bumps the SAME
+    OutcomeFlag row instead of opening a new one (record_flag dedups on
     source:check).
 
-    # ponytail: the slug is derived from wording, not meaning -- if a later
-    # digest rewords the same underlying finding, it gets treated as a new
-    # finding (new flag) rather than a bump. Known, accepted limitation for
-    # v1; revisit only if reworded-finding churn shows up in practice.
+    Keyed off the first `_TOPIC_WORDS` significant words of the finding's
+    own body. Dropped first: the "<section title> — " prefix
+    _extract_findings prepends (boilerplate -- "New / changed since last
+    digest" on nearly every row, zero topic signal), ISO dates,
+    punctuation/markdown, and leading articles.
+
+    # ponytail: keyword heuristic, not semantic dedup. Two findings whose
+    # first 3 significant words match are assumed to be one topic, and two
+    # phrasings of one topic that DON'T share an opening ("Unraid array
+    # capacity-watch connectivity failures" vs "A real 24-hour Unraid
+    # outage occurred") still open separate flags. Replayed against the
+    # real 2026-09 digest corpus: 49 findings -> 34 flags, all 7 recurring
+    # topics collapsed, no false merge. Narrower than the v1 limitation it
+    # replaces (which keyed on the WHOLE sentence and produced 20+ open
+    # flags for ~7 topics by 2026-09-22). Upgrade path if this stops
+    # holding: have the digest routine emit an explicit stable topic id per
+    # finding, or embed-and-cluster.
     """
     stripped = re.sub(r"^\s*\d+[.)]\s*", "", text)  # leading "1. "/"1) " numbering
-    slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
-    digest = hashlib.sha1(stripped.encode("utf-8")).hexdigest()[:8]
+    body = stripped.split(" — ", 1)[1] if " — " in stripped else stripped
+    words = [
+        w
+        for w in re.sub(r"[^a-z0-9]+", " ", _ISO_DATE.sub(" ", body).lower()).split()
+        if len(w) > 1 and w not in _TOPIC_STOPWORDS
+    ]
+    key = " ".join(words[:_TOPIC_WORDS]) or stripped.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
     return (slug[:48].strip("-") or "finding") + "-" + digest
 
 
