@@ -17,6 +17,29 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**Outcome-flag lifecycle hygiene — clear, dedup, escalate (2026-09-22)** — three small fixes to
+flags that were opening correctly but never closing. Found by querying the live DB: flag 431
+(`cron_heartbeat:failed:vault_signals_routine`) sat `open` for a week after the job resumed
+exiting 0, 43 `vault_signals` flags were open for ~7 real topics, and flags 408/425 had been
+re-surfacing for 13 and 10 days with nobody acting.
+- `tools/check_cron_heartbeats.py` now **clears on recovery**, not just posts on failure.
+  `_check_one` was split into `_diagnose()` (the one current problem, or `None`) plus a clear pass
+  over the other three check kinds, so a transition (`overdue` → `failed` → healthy) closes the
+  stale row too. Runs on **devbox**, so it clears over the existing `GET /api/safety/flags` +
+  `POST /api/safety/flags/{id}/resolve` — `outcomes.clear_flag` is in-process only and there is no
+  clear-by-fingerprint endpoint. A 409 (human resolved it first) counts as success.
+- `tools/relay_vault_signals.py::_slugify` now fingerprints the **topic**, not the sentence: the
+  boilerplate `"<section> — "` prefix, ISO dates, punctuation and articles are stripped, and the
+  first 3 significant words are hashed. Replayed over the real 2026-09 digest corpus: 49 findings →
+  34 flags (was 49), collapsing all 7 recurring topics with no false merge. Still a keyword
+  heuristic, not semantic dedup — the `# ponytail:` note was narrowed, not deleted. One-time
+  re-churn: pre-existing open `vault_signals` flags keep their old slugs and won't be bumped again.
+- `backend/agents/weekly_review.py` gained `_stale_flags()` — the inverse of the existing
+  `_db_mute_candidates` (noisy-and-wrong): open ≥7 days AND surfaced ≥5×, a pure filter over
+  `outcomes.open_flags()` with no new query. Feeds the LLM memo, the deterministic fallback memo,
+  and the `no_activity` skip guard, through the same Sunday-evening `notify_phone` delivery.
+  Requires a `nexus-backend` restart; the two script fixes deploy on the next cron `git pull`.
+
 **nexus-lxc can push to GitHub on its own (2026-08-22)** — the deployed checkout at
 `/opt/nexus` on nexus-lxc now has its own SSH deploy key with **write** access to
 `github.com/soakal/Nexus`, so a commit authored on nexus-lxc reaches `origin/main` with a plain
