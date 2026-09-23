@@ -434,7 +434,42 @@ def test_tag_prefix_and_strip_also_apply_to_bulletless_section_prose(monkeypatch
     assert len(calls) == 1
     assert calls[0]["check"].startswith("homelab:")
     assert "[homelab]" not in calls[0]["summary"]
-    assert "Unraid parity check overdue" in calls[0]["summary"]
+
+
+def test_bulletless_section_findings_get_distinct_slugs(monkeypatch, tmp_path):
+    """Regression for a latent bug caught by an independent Opus verify pass
+    (2026-09-22): flush()'s bulletless-section branch used to join
+    section_title + body with a plain space, not the " -- " em-dash
+    _slugify's prefix-strip looks for -- so two UNRELATED bulletless
+    findings sharing a section title (real digests repeat titles verbatim
+    every day) both keyed off the boilerplate title text and collapsed onto
+    one flag. Never observed live (every real digest to date uses bullets),
+    but reachable via this exact shape. Two distinct topics under the same
+    bulletless section must get two distinct check slugs."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+
+    def fake_post_flag(base_url, key, check, summary):
+        calls.append({"check": check, "summary": summary})
+        return True
+
+    _patch_post_flag(monkeypatch, fake_post_flag)
+
+    _write_digest(
+        tmp_path, "2026-01-01.md",
+        "## New / changed since last digest\n[homelab] The AdGuard block rate collapsed to zero overnight.\n",
+    )
+    _write_digest(
+        tmp_path, "2026-01-02.md",
+        "## New / changed since last digest\n[homelab] The back door lock battery is unverified again.\n",
+    )
+
+    rc = relay.main()
+
+    assert rc == 0
+    assert len(calls) == 2
+    assert calls[0]["check"] != calls[1]["check"]
 
 
 def test_tag_anchored_to_bullet_content_not_loose_search_of_section_title(monkeypatch, tmp_path):

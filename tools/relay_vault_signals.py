@@ -410,7 +410,14 @@ def _extract_findings(content: str) -> list[tuple[str | None, str]]:
         if section_title is not None and not section_had_bullet:
             body_text = " ".join(section_body).strip()
             category, body_text = _parse_tag(body_text)
-            text = " ".join([section_title, body_text]).strip() if body_text else section_title.strip()
+            # Em-dash separator, matching the bullet branches below (line ~430) --
+            # _slugify's " -- " prefix-strip only fires on that exact separator. A
+            # plain-space join here was a latent bug: a bulletless section's finding
+            # always starts with the boilerplate section_title, so _slugify's key
+            # became the title text itself, merging every unrelated bulletless
+            # finding under one flag (found by the Opus verify pass, 2026-09-22,
+            # never observed live since every real digest to date uses bullets).
+            text = f"{section_title} — {body_text}".strip() if body_text else section_title.strip()
             if text:
                 findings.append((category, text))
 
