@@ -34,6 +34,78 @@ _INTENT_SCHEMA = {
 }
 
 
+def _parse_llm_json(raw: str, label: str) -> dict | None:
+    """Pull the JSON object out of a haiku reply. With response_schema attached the
+    reply is already valid JSON; the find/rfind slice stays for the OpenRouter
+    fallback path (router._maybe_openrouter_fallback drops the schema). Returns None
+    -- and logs -- on anything unparseable, so a bad extraction is never silent."""
+    s, e = raw.find("{"), raw.rfind("}") + 1
+    if s >= 0 and e > s:
+        try:
+            d = json.loads(raw[s:e])
+            if isinstance(d, dict):
+                return d
+        except ValueError:  # json.JSONDecodeError subclasses ValueError
+            pass
+    logger.warning(f"{label}: unparseable model output: {raw[:300]!r}")
+    return None
+
+
+_HA_PICK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "entity_id": {"type": ["string", "null"]},
+        "service": {"type": ["string", "null"]},
+        "value": {"type": ["number", "null"]},
+        "option": {"type": ["string", "null"]},
+    },
+    "required": ["entity_id", "service", "value", "option"],
+    "additionalProperties": False,
+}
+
+_NOTE_EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "content": {"type": "string"}},
+    "required": ["title", "content"],
+    "additionalProperties": False,
+}
+
+_CALENDAR_QUERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "days_ahead": {"type": "integer"},
+        "keyword": {"type": ["string", "null"]},
+    },
+    "required": ["days_ahead", "keyword"],
+    "additionalProperties": False,
+}
+
+_MAIL_QUERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "mode": {"type": "string", "enum": ["list", "read"]},
+        "unread_only": {"type": "boolean"},
+        "from_address": {"type": ["string", "null"]},
+        "subject": {"type": ["string", "null"]},
+        "since": {"type": ["string", "null"]},
+        "limit": {"type": "integer"},
+    },
+    "required": ["mode", "unread_only", "from_address", "subject", "since", "limit"],
+    "additionalProperties": False,
+}
+
+_MAIL_SEND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recipients": {"type": "array", "items": {"type": "string"}},
+        "subject": {"type": "string"},
+        "body": {"type": "string"},
+    },
+    "required": ["recipients", "subject", "body"],
+    "additionalProperties": False,
+}
+
+
 def _db_latest_briefing(max_age_hours: int = 12) -> dict | None:
     """Return the most recent Briefing row if it's within max_age_hours. Sync — call via to_thread."""
     try:
@@ -701,22 +773,12 @@ If no entity matches, return:
 {{"entity_id": null, "service": null, "value": null, "option": null}}"""
 
                         _pick_started = datetime.utcnow()
-                        raw_pick = await haiku(pick_prompt, label="chat_lane_pick")
-                        entity_id = None
-                        service = None
-                        value = None
-                        option = None
-                        try:
-                            ps = raw_pick.find("{")
-                            pe = raw_pick.rfind("}") + 1
-                            if ps >= 0 and pe > ps:
-                                pick = json.loads(raw_pick[ps:pe])
-                                entity_id = pick.get("entity_id")
-                                service = pick.get("service")
-                                value = pick.get("value")
-                                option = pick.get("option")
-                        except Exception:
-                            pass
+                        raw_pick = await haiku(pick_prompt, response_schema=_HA_PICK_SCHEMA, label="chat_lane_pick")
+                        pick = _parse_llm_json(raw_pick, "chat_lane_pick") or {}
+                        entity_id = pick.get("entity_id")
+                        service = pick.get("service")
+                        value = pick.get("value")
+                        option = pick.get("option")
 
                         try:
                             await asyncio.to_thread(
@@ -815,17 +877,15 @@ If they're saving something from the conversation, use the relevant prior assist
 
                 title, content = "Chat Note", user_message
                 try:
-                    raw_note = await haiku(extract_prompt, label="chat_note_extract")
-                    ns = raw_note.find("{")
-                    ne = raw_note.rfind("}") + 1
-                    if ns >= 0 and ne > ns:
-                        nd = json.loads(raw_note[ns:ne])
+                    raw_note = await haiku(extract_prompt, response_schema=_NOTE_EXTRACT_SCHEMA, label="chat_note_extract")
+                    nd = _parse_llm_json(raw_note, "chat_note_extract")
+                    if nd:
                         title = nd.get("title") or "Chat Note"
                         content = nd.get("content") or user_message
                 except BudgetExceeded:
                     raise  # budget brake reaches the outer handler
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat_note_extract failed; saving raw message: {e}", exc_info=True)
 
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M")
                 body = f"# {title}\n\n*Saved from NEXUS chat — {ts}*\n\n{content}\n"
@@ -908,17 +968,15 @@ keyword: a SHORT distinctive search term (1-2 words) matching the event title, i
 
                 days_ahead, keyword = 30, None
                 try:
-                    raw_q = await haiku(calendar_query_prompt, label="chat_calendar_query")
-                    qs = raw_q.find("{")
-                    qe = raw_q.rfind("}") + 1
-                    if qs >= 0 and qe > qs:
-                        qd = json.loads(raw_q[qs:qe])
+                    raw_q = await haiku(calendar_query_prompt, response_schema=_CALENDAR_QUERY_SCHEMA, label="chat_calendar_query")
+                    qd = _parse_llm_json(raw_q, "chat_calendar_query")
+                    if qd:
                         days_ahead = min(int(qd.get("days_ahead") or 30), 90)
                         keyword = (qd.get("keyword") or "").strip() or None
                 except BudgetExceeded:
                     raise
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat_calendar_query failed: {e}", exc_info=True)
 
                 try:
                     data = await calendar.upcoming(days_ahead)
@@ -963,11 +1021,9 @@ limit: how many emails they want, default 5, max 10."""
 
                 mode, unread_only, from_address, subject, since, limit = "list", False, None, None, None, 5
                 try:
-                    raw_q = await haiku(mail_query_prompt, label="chat_mail_query")
-                    qs = raw_q.find("{")
-                    qe = raw_q.rfind("}") + 1
-                    if qs >= 0 and qe > qs:
-                        qd = json.loads(raw_q[qs:qe])
+                    raw_q = await haiku(mail_query_prompt, response_schema=_MAIL_QUERY_SCHEMA, label="chat_mail_query")
+                    qd = _parse_llm_json(raw_q, "chat_mail_query")
+                    if qd:
                         mode = qd.get("mode") or "list"
                         unread_only = bool(qd.get("unread_only", False))
                         from_address = qd.get("from_address") or None
@@ -976,8 +1032,8 @@ limit: how many emails they want, default 5, max 10."""
                         limit = min(int(qd.get("limit") or 5), 10)
                 except BudgetExceeded:
                     raise
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat_mail_query failed: {e}", exc_info=True)
 
                 try:
                     if mode == "read":
@@ -1042,12 +1098,13 @@ Return JSON only:
 If a recipient, subject, or body is missing/unclear, return an empty string for that field (or an empty list for recipients) rather than guessing."""
 
                 recipients, mail_subject, mail_body = [], "", ""
+                extract_failed = False
                 try:
-                    raw_send = await haiku(send_prompt, label="chat_mail_send")
-                    ss = raw_send.find("{")
-                    se = raw_send.rfind("}") + 1
-                    if ss >= 0 and se > ss:
-                        sd = json.loads(raw_send[ss:se])
+                    raw_send = await haiku(send_prompt, response_schema=_MAIL_SEND_SCHEMA, label="chat_mail_send")
+                    sd = _parse_llm_json(raw_send, "chat_mail_send")
+                    if sd is None:
+                        extract_failed = True
+                    else:
                         recipients = sd.get("recipients") or []
                         if not isinstance(recipients, list):
                             recipients = []
@@ -1055,8 +1112,9 @@ If a recipient, subject, or body is missing/unclear, return an empty string for 
                         mail_body = (sd.get("body") or "").strip()
                 except BudgetExceeded:
                     raise
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"chat_mail_send extraction failed: {e}", exc_info=True)
+                    extract_failed = True
 
                 import re as _re
                 recipients = [
@@ -1064,7 +1122,9 @@ If a recipient, subject, or body is missing/unclear, return an empty string for 
                     if isinstance(r, str) and _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", r)
                 ]
 
-                if not recipients or not mail_subject or not mail_body:
+                if extract_failed:
+                    reply = "I couldn't work out the email details (extraction failed), so nothing was sent. Try rephrasing."
+                elif not recipients or not mail_subject or not mail_body:
                     missing = []
                     if not recipients:
                         missing.append("who to send it to")

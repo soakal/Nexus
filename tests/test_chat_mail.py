@@ -8,6 +8,7 @@ from sqlmodel import SQLModel, create_engine
 from sqlalchemy.pool import StaticPool
 
 import backend.database  # noqa: F401,E402 — registers all tables on metadata
+from backend.agents.chat import _MAIL_SEND_SCHEMA
 
 
 def _make_engine():
@@ -132,6 +133,7 @@ async def test_mail_send_happy_path_calls_broker(monkeypatch):
     assert kwargs["payload"]["recipients"] == ["a@example.com"]
     assert kwargs["payload"]["subject"] == "Hi"
     assert "Sent" in result["reply"]
+    assert mock_haiku.call_args_list[1].kwargs["response_schema"] == _MAIL_SEND_SCHEMA
 
 
 @pytest.mark.asyncio
@@ -168,6 +170,25 @@ async def test_mail_send_garbage_extraction_does_not_call_broker(monkeypatch):
 
     mock_exec.assert_not_awaited()
     assert isinstance(result["reply"], str)
+    assert "nothing was sent" in result["reply"]
+
+
+@pytest.mark.asyncio
+async def test_mail_send_extraction_api_error_does_not_call_broker(monkeypatch):
+    monkeypatch.setattr("backend.database.engine", _make_engine())
+    p1, p2, p3, p4 = _db_patches()
+    with p1, p2, p3, p4, \
+         patch("backend.agents.router.haiku", new_callable=AsyncMock) as mock_haiku, \
+         patch("backend.safety.broker.execute_action", new_callable=AsyncMock) as mock_exec:
+        mock_haiku.side_effect = [
+            '{"intent":"MAIL_SEND"}',
+            RuntimeError("api down"),
+        ]
+        from backend.agents.chat import chat
+        result = await chat(1, "send an email")
+
+    mock_exec.assert_not_awaited()
+    assert "nothing was sent" in result["reply"]
 
 
 @pytest.mark.asyncio
