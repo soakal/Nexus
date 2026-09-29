@@ -31,6 +31,7 @@ from brain_organizer import (
     _extract_page_entry as _bo_extract_page_entry,
     _make_temp_path,
     _normalize_title,
+    _normalize_wiki_page,
     load_config,
 )
 
@@ -373,7 +374,9 @@ def apply_groups(
                 a_content = a_path.read_text(encoding="utf-8") if a_path.exists() else ""
                 absorbed_contents.append((a["title"], a_content))
 
-            merged = merge_pages(canonical_title, canonical_content, absorbed_contents, config, client)
+            merged = _normalize_wiki_page(
+                merge_pages(canonical_title, canonical_content, absorbed_contents, config, client)
+            )
 
             # Atomic write of merged result to canonical path
             tmp = _make_temp_path(canonical_path.parent, f".{canonical_path.stem}_", ".tmp")

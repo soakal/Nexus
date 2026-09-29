@@ -3355,3 +3355,30 @@ def test_reconcile_tags_dedup_output_round_trips_through_frontmatter_write_parse
 
     written_twice = bo._write_frontmatter_tags(written_once, reparsed)
     assert written_twice == written_once  # byte-identical no-op -- criterion 14
+
+
+def test_process_file_normalizes_fence_wrapped_llm_output_before_write(
+    tmp_vault: Path, tmp_config: dict[str, Any]
+) -> None:
+    """Regression for the 2026-09-29 02:00 run that re-broke AdGuard.md /
+    Goals-*.md / Capacity-Planning.md: the LLM returned the whole page wrapped
+    in ```markdown with the fence eating the opening "---". Phase 2 must
+    normalize before the tag write so the page lands clean AND tags merge."""
+    wiki_path = tmp_vault / "wiki" / "Alpha.md"
+    wiki_path.write_text("---\ntags:\n  - alpha\n---\n# Alpha\n\nOld.\n", encoding="utf-8")
+    f = write_raw(tmp_vault, "note.md", "New info about Alpha")
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        "```markdown\ntags:\n  - alpha\n---\n# Alpha\n\nMerged body.\n```"
+    )
+
+    bo.process_file(
+        f, tmp_config, client, logging.getLogger("test"), catalog=[],
+        _routes=[("Alpha", wiki_path, False)],
+    )
+
+    result = wiki_path.read_text(encoding="utf-8")
+    assert result.startswith("---\n")
+    assert "```" not in result
+    assert bo._parse_frontmatter_tags(result)[:1] == ["alpha"]
+    assert "Merged body." in result

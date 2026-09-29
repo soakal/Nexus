@@ -103,3 +103,31 @@ def test_main_dry_run_produces_valid_consolidation_plan(
     # --apply was never passed -- dry run must never touch source files.
     assert (wiki_folder / "Financial-Forecast.md").exists()
     assert (wiki_folder / "Financial-Forecasting.md").exists()
+
+
+def test_apply_groups_normalizes_fence_wrapped_merge_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """merge_pages is an LLM call with the same fence-wrapper failure mode as
+    synthesis; apply_groups must write the normalized page, not the raw one."""
+    wiki = tmp_path / "wiki"
+    meta = tmp_path / "_meta"
+    wiki.mkdir()
+    meta.mkdir()
+    canon = wiki / "Alpha.md"
+    canon.write_text("---\ntags:\n  - alpha\n---\n# Alpha\n", encoding="utf-8")
+    absorbed = wiki / "Alpha-2.md"
+    absorbed.write_text("# Alpha 2\n", encoding="utf-8")
+    monkeypatch.setattr(
+        cw, "merge_pages",
+        lambda *a, **k: "```markdown\ntags:\n  - alpha\n---\n# Alpha\n\nMerged.\n```",
+    )
+
+    cw.apply_groups(
+        [{"canonical": "Alpha", "canonical_path": str(canon),
+          "absorbed": [{"title": "Alpha 2", "path_str": str(absorbed)}]}],
+        meta, {}, client=None,
+    )
+
+    assert canon.read_text(encoding="utf-8") == "---\ntags:\n  - alpha\n---\n# Alpha\n\nMerged.\n"
+    assert not absorbed.exists()

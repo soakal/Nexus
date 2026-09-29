@@ -2969,6 +2969,10 @@ def process_file(
     updated_topics: list[tuple[str, Path]] = []
     for topic, wiki_file, wiki_content, existing_tags, orig_fm in topic_results:
         wiki_file.parent.mkdir(parents=True, exist_ok=True)
+        # Strip a whole-page ```markdown wrapper / merge stacked frontmatter the
+        # LLM sometimes emits, BEFORE the tag write (which refuses to touch a
+        # fence-wrapped page). No-op on an undamaged page.
+        wiki_content = _normalize_wiki_page(wiki_content)
         # Spec #3 §3.3/§3.4 -- preserve/merge frontmatter (category/date/tags)
         # that synthesize_wiki may otherwise silently drop, and union in this
         # note's newly suggested tags. Union = existing tags (verbatim, original
