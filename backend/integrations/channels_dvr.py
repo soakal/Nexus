@@ -31,6 +31,10 @@ class ChannelsData:
     storage_used_gb: float = 0.0
     storage_total_gb: float = 0.0
     failed_recordings: list = field(default_factory=list)
+    # None = read failed (unknown), never a fake 0 -- see fetch().
+    rules_total: int | None = None
+    rules_enabled: int | None = None
+    last_recording: dict | None = None
 
 
 @async_ttl_cache(30)
@@ -108,6 +112,34 @@ async def fetch() -> ChannelsData:
             # the whole integration reports UNAVAILABLE instead.
             logger.warning(f"Channels DVR jobs unavailable (reporting unavailable): {e}")
             raise RuntimeError(f"Channels DVR jobs unavailable: {e}") from e
+
+        # Recording rules + newest library recording. Goals 112/122 failed
+        # criteria_not_met because nothing exposed these. Non-fatal: /dvr above
+        # is the availability signal; a failed read leaves the fields None.
+        try:
+            resp = await client.get(f"{host}/dvr/rules")
+            resp.raise_for_status()
+            rules = resp.json() or []
+            data.rules_total = len(rules)
+            data.rules_enabled = sum(1 for r in rules if not r.get("Paused"))
+        except Exception as e:
+            logger.warning(f"Channels DVR rules read failed: {e}")
+        try:
+            resp = await client.get(
+                f"{host}/api/v1/all", params={"sort": "date_added", "order": "desc", "limit": 1}
+            )
+            resp.raise_for_status()
+            recs = resp.json() or []
+            if recs:
+                r = recs[0]
+                data.last_recording = {
+                    "title": r.get("title", ""),
+                    "added": _epoch_to_iso((r.get("created_at") or 0) / 1000),  # ms
+                    "completed": bool(r.get("completed")),
+                    "corrupted": bool(r.get("corrupted")),
+                }
+        except Exception as e:
+            logger.warning(f"Channels DVR last-recording read failed: {e}")
 
     return data
 

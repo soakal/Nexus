@@ -793,3 +793,26 @@ async def test_run_with_tools_web_search_tool_added():
     tools_sent = mock_client.messages.create.call_args.kwargs["tools"]
     assert tools_sent[0] == router._WEB_SEARCH_TOOL
     assert any(t.get("name") == "weather" for t in tools_sent if isinstance(t, dict))
+
+
+@pytest.mark.asyncio
+async def test_channels_status_reports_rules_and_last_recording():
+    """Goals 112/122 failed criteria_not_met because the tool never exposed
+    recording rules or the last recording. Real values render; None renders
+    unavailable (never a fake 0)."""
+    from backend.agents import tools
+    from backend.integrations.channels_dvr import ChannelsData
+
+    data = ChannelsData(storage_used_gb=1.0, storage_total_gb=2.0, upcoming=[{}, {}],
+                        rules_total=10, rules_enabled=9,
+                        last_recording={"title": "NFL Football", "added": "2026-09-27T20:25:00+00:00",
+                                        "completed": True, "corrupted": False})
+    with patch("backend.integrations.channels_dvr.fetch", new=AsyncMock(return_value=data)):
+        out = await tools._channels_status({})
+    assert "upcoming=2" in out and "rules=9/10 enabled" in out
+    assert "last_recording=NFL Football @ 2026-09-27T20:25:00+00:00 (completed)" in out
+
+    with patch("backend.integrations.channels_dvr.fetch",
+               new=AsyncMock(return_value=ChannelsData(storage_total_gb=2.0))):
+        out = await tools._channels_status({})
+    assert "rules=unavailable" in out and "last_recording=unavailable" in out

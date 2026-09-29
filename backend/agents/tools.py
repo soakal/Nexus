@@ -217,10 +217,22 @@ async def _channels_status(_input: dict) -> str:
             # the "zero failed recordings" criterion (reads a missing field as
             # "data unavailable" and rejects the goal). An explicit =0 satisfies it.
             failed_str = ", failed/skipped(24h)=0"
+        total, enabled = getattr(data, "rules_total", None), getattr(data, "rules_enabled", None)
+        rules_str = f"{enabled}/{total} enabled" if isinstance(total, int) and isinstance(enabled, int) else "unavailable"
+        last = getattr(data, "last_recording", None)
+        if isinstance(last, dict):
+            flags = "completed" if last.get("completed") else "incomplete"
+            if last.get("corrupted"):
+                flags += ",corrupted"
+            last_str = f"{last.get('title', '?')} @ {last.get('added', '?')} ({flags})"
+        else:
+            last_str = "unavailable"
+        upcoming = _safe(data, "upcoming", [])
         summary = (
             f"Channels DVR: recording={rec_str}, "
             f"storage={_safe(data, 'storage_used_gb', 0)}/{_safe(data, 'storage_total_gb', 0)} GB"
-            f"{failed_str}"
+            f"{failed_str}, upcoming={len(upcoming) if isinstance(upcoming, list) else '?'}, "
+            f"rules={rules_str}, last_recording={last_str}"
         )
         return _truncate(summary)
     except Exception as e:
@@ -453,7 +465,7 @@ READ_TOOLS: list[ReadTool] = [
     ),
     ReadTool(
         name="channels_status",
-        description="Read live Channels DVR status: what is recording now and storage used/total.",
+        description="Read live Channels DVR status: recording now, storage used/total, failed/skipped recordings (24h), upcoming job count, enabled/total recording rules, and the newest recording (title, time added, completed/corrupted).",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_channels_status,
     ),
