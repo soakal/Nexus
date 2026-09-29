@@ -187,7 +187,7 @@ class TaskAborted(Exception):
         self.reason = reason
         super().__init__(f"task aborted: {reason}")
 
-OPUS_MODEL = "claude-opus-4-8"
+OPUS_MODEL = "claude-opus-5"
 # Migrated 2026-08-28: claude-sonnet-4-6 -> claude-sonnet-5. Confirmed live
 # against Anthropic's pricing page that Sonnet 5's $2/$10-per-MTok rate is
 # the permanent standard price (see _PRICE_PER_MTOK below), not a promo, and
@@ -230,6 +230,9 @@ _PRICE_PER_MTOK = {
     # Sonnet 5 above) -- kept for historical SpendLog rows and for the
     # separate brain-organizer subprocess, which still runs its own pin.
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    # claude-opus-4-8: retired as OPUS_MODEL 2026-09-28 (migrated to Opus 5
+    # above, same price) -- kept for historical SpendLog rows.
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0},
     # OpenRouter model-swap trial (Trial A/B) -- verified live against
     # GET https://openrouter.ai/api/v1/models 2026-08-16.
     "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
