@@ -22,7 +22,7 @@ import os
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 NEXUS_ROOT = Path("/opt/nexus")
@@ -33,6 +33,16 @@ HEARTBEAT = Path(os.environ.get("BG_HEARTBEAT", WORKDIR / "heartbeat" / "breakgl
 BASE_URL = os.environ.get("NEXUS_BASE_URL", "http://127.0.0.1:8000")
 MAX_AGE_HOURS = 8 * 24  # weekly job + one day of slack
 JOB = "breakglass_sync"
+
+# nexus-breakglass-sync PAT: created 2026-09-29 with --expiration 1y. `pass-cli
+# personal-access-token list` can't be run from inside a PAT session to read this
+# back, so it's hardcoded -- confirm the exact date in Proton Pass's web settings
+# if precision matters. No code path can renew it automatically (that's an
+# interactive pass-cli command), so check() pages ahead of time instead of
+# waiting for the "it broke" page.
+PAT_EXPIRES = date(2027, 9, 29)
+PAT_WARN_DAYS = 30  # visible in `check` output, no page yet
+PAT_PAGE_DAYS = 7  # actually pages once this close
 
 
 def _api_key() -> str:
@@ -95,17 +105,33 @@ def check(dry_run: bool) -> int:
         _page(f"overdue:{JOB}", f"Break-Glass sync last ran {age_h:.0f}h ago (expected weekly); the cron has likely stopped.", dry_run)
     elif rc != 0:
         _page(f"failed:{JOB}", f"Break-Glass sync's last run exited {rc}: {d.get('last_line', '')}", dry_run)
-    elif subprocess.run([str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC), "--ensure-session"],
-                        capture_output=True,
-                        env={**os.environ, "PROTON_PASS_AGENT_REASON": "break-glass session check"}).returncode != 0:
-        # The session doesn't survive a host reboot (lost 2026-09-27 09:40) -- ensure-session
-        # auto-logs-in with the Break-Glass-scoped PAT (PROTON_PASS_BREAKGLASS_PAT in
-        # Infisical) when that happens, so this only pages if the PAT itself is bad.
-        _page(f"no_session:{JOB}", "Break-Glass sync: auto-login from PROTON_PASS_BREAKGLASS_PAT failed "
-              "(missing/expired/revoked?). Generate a new PAT (role: editor, vault: Break-Glass) "
-              "and update Infisical.", dry_run)
     else:
-        print(f"ok: last run {age_h:.1f}h ago, exit 0")
+        session_check = subprocess.run(
+            [str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC), "--ensure-session"],
+            capture_output=True, text=True,
+            env={**os.environ, "PROTON_PASS_AGENT_REASON": "break-glass session check"})
+        if session_check.returncode != 0:
+            # The session doesn't survive a host reboot (lost 2026-09-27 09:40) -- ensure-session
+            # auto-logs-in with the Break-Glass-scoped PAT (PROTON_PASS_BREAKGLASS_PAT in
+            # Infisical) when that happens. ensure_session()'s own error strings are fixed
+            # text (never include the token), so it's safe to put the last line in the page --
+            # it also lets this distinguish "PAT is bad" from e.g. "Infisical unreachable".
+            output = (session_check.stderr or session_check.stdout or "").strip()
+            last_err = output.splitlines()[-1] if output else "(no output)"
+            _page(f"no_session:{JOB}", "Break-Glass sync: auto-login from PROTON_PASS_BREAKGLASS_PAT failed: "
+                  f"{last_err}. If the PAT itself is the problem (missing/expired/revoked), generate a new "
+                  "one (role: editor, vault: Break-Glass) and update Infisical.", dry_run)
+        else:
+            days_left = (PAT_EXPIRES - datetime.now(timezone.utc).date()).days
+            if days_left <= PAT_PAGE_DAYS:
+                _page(f"pat_expiring:{JOB}",
+                      f"Break-Glass sync PAT expires in {days_left}d ({PAT_EXPIRES}). Run: "
+                      "pass-cli personal-access-token renew --personal-access-token-name "
+                      "nexus-breakglass-sync, then update PROTON_PASS_BREAKGLASS_PAT in Infisical.", dry_run)
+            elif days_left <= PAT_WARN_DAYS:
+                print(f"ok: last run {age_h:.1f}h ago, exit 0 (PAT expires in {days_left}d, no page yet)")
+            else:
+                print(f"ok: last run {age_h:.1f}h ago, exit 0")
     return 0
 
 
