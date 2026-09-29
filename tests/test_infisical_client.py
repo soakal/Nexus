@@ -128,6 +128,17 @@ def test_get_secret_raises_runtime_error_when_unreachable_and_no_cache(monkeypat
         ic.get_secret("ANTHROPIC_API_KEY")
 
 
+def test_get_secret_cred_key_falls_back_to_lowercased_service(monkeypatch):
+    """cred: services are always lowercased on write; a caller using the
+    original mixed-case service name must still find the secret via the
+    lowercase fallback. An exact match (e.g. a folder created outside this
+    client, preserving its original case) is tried first and wins over the
+    fallback rather than getting silently merged with a lowercase sibling."""
+    monkeypatch.setattr(ic, "_cache", {"cred:unraid:host": "x", "cred:Unraid-Main:host": "y"})
+    assert ic.get_secret("cred:Unraid:host") == "x"
+    assert ic.get_secret("cred:Unraid-Main:host") == "y"
+
+
 def test_stale_cache_served_on_refresh_failure(monkeypatch):
     monkeypatch.setattr(ic, "_cache", {"ANTHROPIC_API_KEY": "sk-ant-stale"})
     monkeypatch.setattr(ic, "_last_fetch_ok", True)

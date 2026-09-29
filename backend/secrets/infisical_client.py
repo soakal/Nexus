@@ -199,12 +199,30 @@ def warm_up() -> bool:
     return ok
 
 
+def _cred_fallback_key(key: str) -> str | None:
+    """cred: services are always lowercased on write (_vault_key_to_path_and_name
+    lowercases the folder name), so a caller using the original mixed-case
+    service name (e.g. "cred:Unraid:host") misses an exact cache hit even
+    though the secret is really there under "cred:unraid:host". Returns that
+    lowercased form to try as a fallback, or None if not applicable/no-op."""
+    if not key.startswith("cred:"):
+        return None
+    parts = key.split(":", 2)
+    if len(parts) != 3:
+        return None
+    lowered = f"cred:{parts[1].lower()}:{parts[2].lower()}"
+    return lowered if lowered != key else None
+
+
 def get_secret(key: str) -> str:
     with _lock:
         has_cache = bool(_cache)
         failed_at = _last_fetch_failed_at
         if key in _cache:
             return _cache[key]
+        fallback = _cred_fallback_key(key)
+        if fallback and fallback in _cache:
+            return _cache[fallback]
     if not has_cache:
         if failed_at is not None and _monotonic() - failed_at < FETCH_FAILURE_COOLDOWN_S:
             raise RuntimeError(
@@ -216,6 +234,9 @@ def get_secret(key: str) -> str:
         with _lock:
             if key in _cache:
                 return _cache[key]
+            fallback = _cred_fallback_key(key)
+            if fallback and fallback in _cache:
+                return _cache[fallback]
     raise KeyError(f"Secret '{key}' not in Infisical project")
 
 
