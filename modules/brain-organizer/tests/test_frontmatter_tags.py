@@ -415,3 +415,76 @@ def test_suggest_tags_returns_empty_list_on_non_json_response(
     assert result == []
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert len(warnings) == 1
+
+
+# --- _normalize_wiki_page ---------------------------------------------------
+
+
+def test_normalize_fence_replacing_opener_restores_frontmatter() -> None:
+    """A1 shape (25 live pages): ```markdown stands in for the opening ---."""
+    src = "```markdown\ntags:\n  - adguard\n---\n# AdGuard\n\nBody.\n```"
+    out = bo._normalize_wiki_page(src)
+    assert out == "---\ntags:\n  - adguard\n---\n# AdGuard\n\nBody.\n"
+    assert bo._parse_frontmatter_tags(out) == ["adguard"]
+
+
+def test_normalize_fence_wrapping_intact_frontmatter() -> None:
+    """A2 shape (20 live pages): fence wraps a real ---...--- block."""
+    src = "```markdown\n---\ncategory: Ref\ntags: [a]\n---\n# T\n```\n"
+    assert bo._normalize_wiki_page(src) == "---\ncategory: Ref\ntags: [a]\n---\n# T\n"
+
+
+def test_normalize_mid_file_closer_before_appended_section_keeps_inner_code_blocks() -> None:
+    """Testing.md/Project-Updates.md shape: organizer appended '## date' sections
+    after the wrapper's closer, one containing a bare-fenced code block."""
+    src = ("```markdown\ntags:\n  - t\n---\n# T\n\n```bash\nls\n```\n\nOld.\n```\n\n"
+           "## 2026-09-19 — from note\n\n```\ncurl x\n```\nTail.\n")
+    out = bo._normalize_wiki_page(src)
+    assert out == ("---\ntags:\n  - t\n---\n# T\n\n```bash\nls\n```\n\nOld.\n\n"
+                   "## 2026-09-19 — from note\n\n```\ncurl x\n```\nTail.\n")
+
+
+def test_normalize_ambiguous_wrapper_unchanged_and_warns(caplog) -> None:
+    """A page that legitimately opens with a ```markdown example followed by prose
+    has no candidate closer -- never guess."""
+    src = "```markdown\n# example\n```\nProse explaining the example.\n"
+    with caplog.at_level("WARNING", logger="brain_organizer"):
+        assert bo._normalize_wiki_page(src) == src
+    assert "no unambiguous closing fence" in caplog.text
+
+
+def test_normalize_stacked_tags_blocks_union_dedup_first_spelling_wins() -> None:
+    """Secrets-Management shape: second block has no opener of its own."""
+    src = "---\ntags:\n  - Homelab\n  - security\n---\ntags:\n  - hermes\n  - homelab\n---\n# S\n"
+    out = bo._normalize_wiki_page(src)
+    assert out == "---\ntags:\n  - Homelab\n  - security\n  - hermes\n---\n# S\n"
+
+
+def test_normalize_stacked_non_tag_keys_first_wins_new_keys_appended(caplog) -> None:
+    src = "---\ncategory: Work\ntags: [a]\n---\ncategory: Other\ndate: 2026-09-01\ntags: [b]\n---\n# X\n"
+    with caplog.at_level("WARNING", logger="brain_organizer"):
+        out = bo._normalize_wiki_page(src)
+    assert out == "---\ncategory: Work\ntags:\n  - a\n  - b\ndate: 2026-09-01\n---\n# X\n"
+    assert "'category'" in caplog.text
+
+
+def test_normalize_fence_plus_stacked_network_security_shape() -> None:
+    src = "```markdown\ntags:\n  - security\n---\ntags:\n  - adguard\n---\n# N\n```"
+    assert bo._normalize_wiki_page(src) == "---\ntags:\n  - security\n  - adguard\n---\n# N\n"
+
+
+def test_normalize_leaves_clean_pages_and_body_rules_alone() -> None:
+    """Byte-identical for undamaged input, including a body '---' rule after a
+    'Key: value' line (must not be mistaken for a stacked block -- blank line
+    separates it from the frontmatter)."""
+    for src in ("# Beta\n\nNo frontmatter.",
+                "---\ntags: [a]\n---\n\nStatus: done\n---\n",
+                "---\ntags: [a]\n---\n# T\n\n```yaml\ntags: [x]\n```\n"):
+        assert bo._normalize_wiki_page(src) == src
+
+
+def test_normalize_preserves_bom_and_crlf_and_is_idempotent() -> None:
+    src = "﻿```markdown\r\ntags:\r\n  - a\r\n---\r\n# T\r\n```"
+    out = bo._normalize_wiki_page(src)
+    assert out == "﻿---\r\ntags:\r\n  - a\r\n---\r\n# T\r\n"
+    assert bo._normalize_wiki_page(out) == out

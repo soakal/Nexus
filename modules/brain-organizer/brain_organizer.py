@@ -764,6 +764,147 @@ def _write_frontmatter_tags(
 
 
 # ---------------------------------------------------------------------------
+# Page-shape normalization -- the last gate before any wiki page hits disk,
+# model-agnostic. Two live damage classes (47 pages, found 2026-09-28):
+#  1. the model wraps the whole page in ```markdown ... ``` (sometimes the
+#     fence REPLACES the opening "---"), which _find_frontmatter and
+#     _write_frontmatter_tags then refuse to touch forever;
+#  2. stacked "---" blocks, produced by _write_frontmatter_tags' original-
+#     frontmatter re-prepend when the model emits a block without its opener.
+# Never guesses: an ambiguous wrapper (no unique closing fence) is left
+# unchanged with one WARNING, same policy as _write_frontmatter_tags.
+# ---------------------------------------------------------------------------
+
+_WRAP_OPEN_RE = re.compile(r"^(`{3,}|~{3,})\s*(markdown|md)\s*$", re.IGNORECASE)
+_ANY_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_FM_KEY_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:(?:\s|$)")
+_FM_CONT_RE = re.compile(r"^(?:\s+\S.*|-(?:\s.*)?)$")
+
+
+def _find_wrapper_closer(lines: list[str]) -> int | None:
+    """Index of the bare fence closing a line-0 ```markdown wrapper, or None
+    if not exactly one candidate. A candidate is a bare fence followed only
+    by blank lines, EOF, or a "## " section (the organizer appends dated
+    sections after the closer), whose removal leaves every other fence
+    paired (open on any fence, close on a bare one)."""
+    fences = [i for i in range(1, len(lines)) if _ANY_FENCE_RE.match(lines[i].rstrip("\r\n"))]
+
+    def _info(i: int) -> str:
+        return _ANY_FENCE_RE.match(lines[i].rstrip("\r\n")).group(2).strip()
+
+    def _pairs_up(idxs: list[int]) -> bool:
+        open_i = None
+        for i in idxs:
+            if open_i is None:
+                open_i = i
+            elif not _info(i):
+                open_i = None
+        return open_i is None
+
+    candidates = []
+    for k in fences:
+        if _info(k):
+            continue
+        nxt = next((ln for ln in lines[k + 1 :] if ln.strip()), None)
+        if nxt is not None and not nxt.startswith("## "):
+            continue
+        if _pairs_up([i for i in fences if i != k]):
+            candidates.append(k)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _yaml_block_end(lines: list[str], start: int) -> int | None:
+    """If lines[start:] is a key-led, blank-free YAML run ending in an exact
+    "---" line within _FM_MAX_LINES, return that line's index, else None."""
+    if start >= len(lines) or not _FM_KEY_RE.match(lines[start]):
+        return None
+    for j in range(start, min(len(lines), start + _FM_MAX_LINES)):
+        s = lines[j].rstrip("\r\n")
+        if s == "---":
+            return j if j > start else None
+        if not (_FM_KEY_RE.match(s) or _FM_CONT_RE.match(s)):
+            return None
+    return None
+
+
+def _normalize_wiki_page(text: str) -> str:
+    """Strip a whole-page ```markdown wrapper (restoring a fence-eaten
+    opening "---") and merge stacked frontmatter blocks into the first:
+    tags are unioned case-insensitively (first spelling wins, via
+    _parse_frontmatter_tags); any other key keeps its first-block value, and
+    keys only in later blocks are appended. Byte-identical return for an
+    undamaged page; BOM, newline style, and everything below the frontmatter
+    are preserved byte-for-byte."""
+    logger = logging.getLogger("brain_organizer")
+    bom = "﻿" if text.startswith("﻿") else ""
+    body = text[len(bom):]
+    nl = "\r\n" if "\r\n" in body[:2000] else "\n"
+    lines = body.splitlines(keepends=True)
+
+    if lines and _WRAP_OPEN_RE.match(lines[0].strip()):
+        closer = _find_wrapper_closer(lines)
+        if closer is None:
+            logger.warning(
+                "_normalize_wiki_page: leading ```markdown fence with no unambiguous "
+                "closing fence -- leaving content unchanged"
+            )
+            return text
+        del lines[closer]
+        del lines[0]
+        while lines and not lines[0].strip():
+            del lines[0]
+        if lines and _yaml_block_end(lines, 0) is not None:
+            lines.insert(0, "---" + nl)  # the fence had replaced the opener
+
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        return bom + "".join(lines)
+    end = next(
+        (i for i in range(1, min(len(lines), _FM_MAX_LINES)) if lines[i].rstrip("\r\n") == "---"),
+        None,
+    )
+    if end is None:
+        return bom + "".join(lines)
+
+    blocks = [[ln.rstrip("\r\n") for ln in lines[1:end]]]
+    nxt_end = _yaml_block_end(lines, end + 1)
+    while nxt_end is not None:
+        blocks.append([ln.rstrip("\r\n") for ln in lines[end + 1 : nxt_end]])
+        end = nxt_end
+        nxt_end = _yaml_block_end(lines, end + 1)
+    if len(blocks) == 1:
+        return bom + "".join(lines)
+
+    merged = list(blocks[0])
+    seen_keys = {m.group(1).lower() for ln in merged if (m := _FM_KEY_RE.match(ln))}
+    tags: list[str] = []
+    for b in blocks:
+        for t in _parse_frontmatter_tags("---\n" + "\n".join(b) + "\n---\n"):
+            if t.lower() not in {x.lower() for x in tags}:
+                tags.append(t)
+    for b in blocks[1:]:
+        i = 0
+        while i < len(b):
+            m = _FM_KEY_RE.match(b[i])
+            j = i + 1
+            while j < len(b) and not _FM_KEY_RE.match(b[j]):
+                j += 1
+            key = m.group(1).lower() if m else ""
+            if key and key != "tags" and key not in seen_keys:
+                merged.extend(b[i:j])
+                seen_keys.add(key)
+            elif key and key != "tags":
+                logger.warning(
+                    "_normalize_wiki_page: duplicate frontmatter key %r in stacked "
+                    "block dropped (first block wins)", key,
+                )
+            i = j
+    fm = ["---"] + merged + ["---"]
+    if tags:
+        fm = _splice_tags_field(fm, 1, len(fm) - 1, tags, nl)
+    return bom + nl.join(fm) + nl + "".join(lines[end + 1 :])
+
+
+# ---------------------------------------------------------------------------
 # Tag reconciliation (spec #3 SS1.3) -- the deterministic anti-sprawl gate
 # between an LLM's proposed tags and what actually gets written; never trust
 # the prompt alone. Wired into process_file, same as the frontmatter
