@@ -217,6 +217,9 @@ def setup_logging(config: dict[str, Any]) -> logging.Logger:
         logging.StreamHandler(sys.stdout),
     ]
     logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
+    # httpx INFO lines carry full request URLs, and Telegram's embeds the bot
+    # token. Same suppression as backend/main.py.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     return logging.getLogger("brain_organizer")
 
 
