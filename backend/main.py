@@ -3,6 +3,8 @@ import os
 
 import logging
 import pathlib
+import subprocess
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, WebSocket
@@ -44,9 +46,98 @@ def _brain_mcp_spawn_env(token: str | None) -> dict | None:
     return {**os.environ, "MCP_WRITE_TOKEN": token}
 
 
+_BO_DIR = pathlib.Path(__file__).parent.parent / "modules" / "brain-organizer"
+_bo_lock = threading.Lock()
+# proc: the Popen we own (None = never spawned / module not installed).
+# token: the MCP_WRITE_TOKEN that proc was spawned with (None = token-less).
+# stopped: set by shutdown so a late scheduler tick can't respawn an orphan.
+_bo_state: dict = {"proc": None, "token": None, "stopped": False}
+
+
+def _read_brain_mcp_token() -> str | None:
+    """Fresh read (Settings.brain_mcp_write_token is an uncached property over
+    the Infisical in-memory cache). Unreadable or blank -> None."""
+    try:
+        from backend.config import get_settings
+        return get_settings().brain_mcp_write_token or None
+    except Exception:
+        return None
+
+
+def _brain_mcp_spawn(token: str | None) -> None:
+    """Caller holds _bo_lock. No-op if the module isn't installed. Raises on
+    Popen failure; state is only updated on success."""
+    py = brain_organizer.venv_python_path(_BO_DIR)
+    srv = _BO_DIR / "mcp_server.py"
+    if not (py.exists() and srv.exists()):
+        return
+    proc = subprocess.Popen(
+        [str(py), str(srv)],
+        cwd=str(_BO_DIR),
+        env=_brain_mcp_spawn_env(token),
+    )
+    _bo_state["proc"] = proc
+    _bo_state["token"] = token
+    logger.info(f"Brain Organizer MCP server started (PID {proc.pid}, token {'set' if token else 'unset'})")
+
+
+def _brain_mcp_stop(proc) -> None:
+    """Caller holds _bo_lock. Must leave the port free: mcp_server.py's
+    singleton guard makes a new instance exit if the old one still answers
+    /health. Raises subprocess.TimeoutExpired if even kill() doesn't reap it."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _brain_mcp_start() -> None:
+    with _bo_lock:
+        _bo_state["stopped"] = False
+        _brain_mcp_spawn(_read_brain_mcp_token())
+
+
+def _brain_mcp_reconcile() -> str:
+    """One scheduler tick. Returns an outcome tag (for logs/tests):
+    stopped | not_managed | ok | skipped_empty | respawned | restarted_dead."""
+    with _bo_lock:
+        if _bo_state["stopped"]:
+            return "stopped"
+        proc = _bo_state["proc"]
+        if proc is None:
+            return "not_managed"
+        current = _read_brain_mcp_token()
+        if proc.poll() is not None:
+            logger.warning(
+                f"Brain Organizer MCP server not running (rc={proc.returncode}); respawning"
+            )
+            _brain_mcp_spawn(current)
+            return "restarted_dead"
+        if current == _bo_state["token"]:
+            return "ok"
+        if not current:
+            logger.warning(
+                "Brain MCP write token now empty/unreadable; keeping running server on its spawn-time token"
+            )
+            return "skipped_empty"
+        logger.warning("Brain MCP write token changed since spawn; respawning MCP server")
+        _brain_mcp_stop(proc)
+        _brain_mcp_spawn(current)
+        return "respawned"
+
+
+def _brain_mcp_shutdown() -> None:
+    with _bo_lock:
+        _bo_state["stopped"] = True
+        proc = _bo_state["proc"]
+        if proc is not None and proc.poll() is None:
+            _brain_mcp_stop(proc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _bo_proc: list = [None]  # mutable slot for the Brain Organizer MCP server subprocess
     _activity_broadcaster_task: list = [None]  # mutable slot for the Pulse broadcast loop
 
     # Startup
@@ -158,24 +249,11 @@ async def lifespan(app: FastAPI):
             from backend import activity
             _activity_broadcaster_task[0] = asyncio.create_task(activity.run_activity_broadcaster())
 
-            # Brain Organizer MCP server — optional, only starts if the module is installed
+            # Brain Organizer MCP server — optional, only starts if the module is installed.
+            # State lives at module level (_bo_state) so scheduler job
+            # brain_mcp_token_check can respawn it on token drift.
             try:
-                import subprocess
-                from pathlib import Path
-                _bo_dir = Path(__file__).parent.parent / "modules" / "brain-organizer"
-                _bo_py = brain_organizer.venv_python_path(_bo_dir)
-                _bo_srv = _bo_dir / "mcp_server.py"
-                if _bo_py.exists() and _bo_srv.exists():
-                    try:
-                        _bo_token = settings.brain_mcp_write_token
-                    except Exception:
-                        _bo_token = None  # vault hiccup -> spawn token-less (remote writes stay disabled)
-                    _bo_proc[0] = subprocess.Popen(
-                        [str(_bo_py), str(_bo_srv)],
-                        cwd=str(_bo_dir),
-                        env=_brain_mcp_spawn_env(_bo_token),
-                    )
-                    logger.info(f"Brain Organizer MCP server started (PID {_bo_proc[0].pid})")
+                await asyncio.to_thread(_brain_mcp_start)
             except Exception as e:
                 logger.warning(f"Brain Organizer MCP server not started: {e}")
 
@@ -202,9 +280,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        if _bo_proc[0] is not None:
-            _bo_proc[0].terminate()
-            _bo_proc[0].wait(timeout=5)
+        await asyncio.to_thread(_brain_mcp_shutdown)
     except Exception:
         pass
     try:

@@ -244,6 +244,18 @@ async def _secret_fallback_drain():
         raise
 
 
+async def _brain_mcp_token_check():
+    try:
+        import asyncio
+        from backend.main import _brain_mcp_reconcile
+        outcome = await asyncio.to_thread(_brain_mcp_reconcile)
+        if outcome in ("respawned", "restarted_dead"):
+            logger.info(f"Brain MCP token check: {outcome}")
+    except Exception as e:
+        logger.error(f"Brain MCP token check job error: {e}")
+        raise
+
+
 async def _step_watchdog():
     try:
         from backend.agents.worker_pool import get_pool
@@ -721,7 +733,7 @@ async def _calibration_soak_reminder():
 # otherwise dominate the 200-row ring and drown out anything worth watching.
 _TICKER_QUIET_JOBS = frozenset({
     "state_refresh_30s", "state_refresh_60s", "state_refresh_300s", "state_refresh_600s",
-    "retry_deliveries", "secret_fallback_drain",
+    "retry_deliveries", "secret_fallback_drain", "brain_mcp_token_check",
 })
 
 _activity_listener_registered = False
@@ -860,6 +872,16 @@ def setup_scheduler(briefing_time: str, timezone: str):
         _secret_fallback_drain,
         IntervalTrigger(seconds=300),
         id="secret_fallback_drain",
+        replace_existing=True,
+    )
+    # Unconditional (like secret_fallback_drain): re-checks the Brain MCP
+    # subprocess's spawn-time MCP_WRITE_TOKEN against the live secret and
+    # respawns on drift / self-heals a dead child. No-ops if the module
+    # isn't installed (proc never spawned).
+    scheduler.add_job(
+        _brain_mcp_token_check,
+        IntervalTrigger(seconds=300),
+        id="brain_mcp_token_check",
         replace_existing=True,
     )
     scheduler.add_job(
