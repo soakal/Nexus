@@ -61,6 +61,7 @@ import os
 import re
 import subprocess
 import urllib.request
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -590,11 +591,37 @@ def _relay_file(path: Path, base_url: str, key: str) -> bool:
     return all_ok
 
 
+def _todays_digest_present() -> bool:
+    """True if today's (local date) digest file is on disk after the merge
+    step. The 09:30 routine writes a file EVERY day, even a "nothing new"
+    one, so its absence at 11:00 always means generation never ran or never
+    landed -- never "nothing changed"."""
+    return (DIGEST_DIR / f"{date.today().isoformat()}.md").exists()
+
+
 def main() -> int:
     merged = _open_and_merge_pending_digest_prs()
     if merged:
         print(f"auto-merged {len(merged)} vault-signals digest PR(s): {', '.join(merged)}")
 
+    rc = _relay_pending()
+    # 2026-09-27: devbox was down 09:23-09:40, cron skipped the 09:30
+    # generation run outright, and this relay logged "nothing new to relay"
+    # and exited 0 -- a missed day was indistinguishable from a quiet one, and
+    # check_cron_heartbeats' 2x-interval overdue rule can't see a single miss.
+    # Exiting 1 here routes it through the existing heartbeat "failed" page,
+    # which auto-clears on the next day's successful run.
+    if not _todays_digest_present():
+        print(
+            f"WARNING: no {date.today().isoformat()}.md digest -- "
+            "vault_signals_routine did not produce/land one today "
+            "(see logs/vault_signals_routine.log); exiting 1"
+        )
+        return 1
+    return rc
+
+
+def _relay_pending() -> int:
     if not DIGEST_DIR.exists():
         print("no digests/vault-signals/ dir yet — nothing to relay")
         return 0

@@ -51,6 +51,9 @@ def _no_pending_digest_prs_by_default(monkeypatch):
     overrides this by calling monkeypatch.setattr(relay, "subprocess", ...)
     itself, which simply wins for the rest of that test."""
     monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=lambda cmd, **kw: _FakeCP(0, "", "")))
+    # Tests below write fixed-date digests; default "today's digest landed"
+    # so only the dedicated missing-today tests exercise that exit-1 path.
+    monkeypatch.setattr(relay, "_todays_digest_present", lambda: True)
 
 
 def _write_digest(tmp_path, name: str, content: str) -> pathlib.Path:
@@ -1173,3 +1176,32 @@ def test_gitignore_contains_relay_state_entry():
     lines = [line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()]
     expected = relay.STATE_FILE.relative_to(repo_root).as_posix()
     assert expected in lines, f"{expected!r} not found in .gitignore lines: {lines}"
+
+
+def test_main_returns_1_when_todays_digest_never_landed(monkeypatch, tmp_path, capsys):
+    """2026-09-27 regression: generation never ran (host down at 09:30), so
+    there was nothing to relay -- that must exit 1 (heartbeat pages), not
+    log "nothing new to relay" and exit 0 like a quiet day."""
+    monkeypatch.undo()  # drop the autouse "present" default, re-patch the rest
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=lambda cmd, **kw: _FakeCP(0, "", "")))
+    _patch_post_flag(monkeypatch, lambda *a: True)
+    _write_digest(tmp_path, "2026-01-01.md", "- [personal] old finding\n")
+
+    assert relay.main() == 1
+    assert "did not produce/land one today" in capsys.readouterr().out
+    # The older file still relayed -- the missing-today check never blocks it.
+    assert json.loads((tmp_path / ".relay_state.json").read_text()) == ["2026-01-01.md"]
+
+
+def test_main_returns_0_when_todays_digest_present(monkeypatch, tmp_path):
+    from datetime import date
+    monkeypatch.undo()
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    monkeypatch.setattr(relay, "subprocess", types.SimpleNamespace(run=lambda cmd, **kw: _FakeCP(0, "", "")))
+    _patch_post_flag(monkeypatch, lambda *a: True)
+    _write_digest(tmp_path, f"{date.today().isoformat()}.md", "- [personal] today\n")
+
+    assert relay.main() == 0
