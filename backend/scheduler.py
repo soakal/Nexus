@@ -256,6 +256,162 @@ async def _brain_mcp_token_check():
         raise
 
 
+def _secret_drift_scan() -> dict:
+    """Sync -- runs via asyncio.to_thread (vault.get_secret is file I/O +
+    Fernet; infisical_client can make a synchronous network call). Compares
+    every legacy-vault key's value against Infisical's DIRECTLY (not through
+    manager.get_secret, whose fallback would hide exactly this difference).
+    Raw values never leave this function -- only sha256 prefixes do.
+
+    Returns {"skipped": reason} when no trustworthy comparison is possible
+    this run, else {"mismatched": {key: (vault_hash, infisical_hash)},
+    "vault_only": [key], "errors": [key], "compared": int}.
+
+    Blank ("" / whitespace) counts as absent on either side: a blank vault
+    entry has nothing to drift from; a blank Infisical value is reported as
+    vault_only, never compared (same never-downgrade-to-empty rule as
+    _brain_mcp_reconcile)."""
+    import hashlib
+    from backend.secrets import infisical_client, manager, vault
+
+    if manager._active_backend_name() != "infisical":
+        return {"skipped": "active secrets backend is not infisical"}
+    # A real bulk fetch NOW (never raises). False = Infisical unreachable --
+    # comparing against a stale/empty cache would produce false drift, so the
+    # whole run is skipped rather than treating every key as vault-only.
+    if not infisical_client.warm_up():
+        return {"skipped": "infisical unreachable"}
+
+    def _h(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()[:12]
+
+    mismatched: dict = {}
+    vault_only: list = []
+    errors: list = []
+    compared = 0
+    for key in vault.list_keys():
+        try:
+            v = vault.get_secret(key)
+        except Exception:
+            errors.append(key)
+            continue
+        if not v or not v.strip():
+            continue
+        try:
+            i = infisical_client.get_secret(key)
+        except KeyError:
+            vault_only.append(key)
+            continue
+        except RuntimeError:
+            # Only raised on an EMPTY cache that can't be refetched --
+            # connectivity, not drift. Abort the whole run.
+            return {"skipped": "infisical unreachable mid-scan"}
+        if not i or not i.strip():
+            vault_only.append(key)
+            continue
+        compared += 1
+        if v != i:
+            mismatched[key] = (_h(v), _h(i))
+    return {"mismatched": mismatched, "vault_only": vault_only,
+            "errors": errors, "compared": compared}
+
+
+async def _secret_drift_check():
+    """Daily hygiene: a legacy-vault value that differs from Infisical is a
+    loaded gun -- it's what manager.get_secret serves the moment Infisical
+    blips (the 2026-09-28 Brain MCP outage). One high-severity OutcomeFlag
+    per drifted key (source="secret_drift", check=<key>), one consolidated
+    phone page per run for the flags the write gate says to surface
+    (re-surfaces daily while unresolved -- /defer or fix the vault entry),
+    auto-clear of any open secret_drift flag whose key no longer mismatches.
+    Vault-only keys are a log line, not a flag: any of them actually read at
+    runtime is already recorded by the SecretFallback pipeline."""
+    try:
+        import asyncio
+        import html
+        from backend import events
+        from backend.agents import outcomes
+
+        result = await asyncio.to_thread(_secret_drift_scan)
+        if "skipped" in result:
+            logger.warning(f"Secret drift check skipped: {result['skipped']}")
+            return
+        mismatched = result["mismatched"]
+        if result["vault_only"]:
+            logger.info(
+                f"Secret drift check: {len(result['vault_only'])} key(s) only in legacy vault: "
+                f"{sorted(result['vault_only'])}"
+            )
+        if result["errors"]:
+            logger.warning(
+                f"Secret drift check: could not read {len(result['errors'])} vault key(s): "
+                f"{sorted(result['errors'])}"
+            )
+
+        # Close drift flags that no longer apply (value fixed, or key removed
+        # from the vault entirely -- a per-matched-key clear would miss that).
+        for f in await outcomes.open_flags(limit=1000, include_suppressed=True):
+            if f.get("source") == "secret_drift" and f.get("check") not in mismatched:
+                await outcomes.clear_flag("secret_drift", f["check"])
+
+        lines = []
+        for key, (vh, ih) in sorted(mismatched.items()):
+            d = await outcomes.record_flag_ex(
+                "secret_drift", key,
+                f"Secret drift: {key} differs between legacy vault (sha256:{vh}) "
+                f"and Infisical (sha256:{ih})",
+                detail=(
+                    "Infisical is the source of truth. The legacy vault value is served "
+                    "whenever Infisical is unreachable. Fix: update or delete the vault "
+                    "entry; this flag auto-clears on the next daily run."
+                ),
+                severity="high",
+            )
+            if d["surface"]:
+                lines.append(f"• {html.escape(key)} (vault {vh} ≠ infisical {ih})")
+        if lines:
+            await events.notify_phone(
+                f"NEXUS: legacy vault ≠ Infisical for {len(lines)} secret(s) — the stale "
+                "vault value would be served on the next Infisical outage:\n" + "\n".join(lines),
+                kind="secret_drift",
+            )
+        logger.info(
+            f"Secret drift check: {result['compared']} compared, {len(mismatched)} mismatched"
+        )
+    except Exception as e:
+        logger.error(f"Secret drift check job error: {e}")
+        raise
+
+
+async def _telegram_poller_ensure():
+    """Retry telegram_poller.start() when the poller isn't running -- covers
+    a TELEGRAM_BOT_TOKEN read that failed at boot (start() returned None and
+    nothing else ever called it again). A running poller already re-reads the
+    token fresh per API call, so this only matters for 'never started' /
+    'task exited'."""
+    try:
+        import asyncio
+        from backend.agents import telegram_poller
+        from backend.config import get_settings
+        task = telegram_poller._task
+        if task is not None and not task.done():
+            return
+        # Read the secret OFF the loop first: on a cold Infisical cache
+        # get_secret can make a synchronous network call (up to ~20s of
+        # httpx timeouts) that must never run on the event loop. start()'s own
+        # read right after is then a cache hit, or fails fast inside
+        # infisical_client's 30s fetch-failure cooldown and falls back.
+        try:
+            await asyncio.to_thread(lambda: get_settings().telegram_bot_token)
+        except Exception:
+            return  # still unavailable -- retry next tick
+        if telegram_poller.start() is not None:
+            logger.info("Telegram poller started by telegram_poller_ensure")
+    except Exception as e:
+        logger.error(f"Telegram poller ensure job error: {e}")
+        raise
+
+
 async def _step_watchdog():
     try:
         from backend.agents.worker_pool import get_pool
@@ -734,6 +890,7 @@ async def _calibration_soak_reminder():
 _TICKER_QUIET_JOBS = frozenset({
     "state_refresh_30s", "state_refresh_60s", "state_refresh_300s", "state_refresh_600s",
     "retry_deliveries", "secret_fallback_drain", "brain_mcp_token_check",
+    "telegram_poller_ensure",
 })
 
 _activity_listener_registered = False
@@ -884,6 +1041,30 @@ def setup_scheduler(briefing_time: str, timezone: str):
         id="brain_mcp_token_check",
         replace_existing=True,
     )
+    # Unconditional (like secret_fallback_drain): daily read-only compare of
+    # legacy-vault values vs Infisical by sha256 prefix. Wall-clock cron (see
+    # record_trend_snapshot's comment for why not IntervalTrigger(hours=24)).
+    # 09:05, not a 03:xx slot: a mismatch pages, and this is low-urgency
+    # hygiene that shouldn't wake anyone; also clear of the 09:00/09:15/09:30
+    # jobs.
+    scheduler.add_job(
+        _secret_drift_check,
+        CronTrigger(hour=9, minute=5, timezone=timezone),
+        id="secret_drift_check",
+        replace_existing=True,
+    )
+    # Gated only on the poller being enabled at all (a .env setting, fixed
+    # for the process lifetime) -- otherwise start()'s "disabled" info line
+    # would log every 5 min forever. 300s matches the other self-heal jobs
+    # (brain_mcp_token_check, secret_fallback_drain): worst case the inbound
+    # buttons come up ~5 min after Infisical recovers.
+    if getattr(_get_settings(), "telegram_poll_enabled", True):
+        scheduler.add_job(
+            _telegram_poller_ensure,
+            IntervalTrigger(seconds=300),
+            id="telegram_poller_ensure",
+            replace_existing=True,
+        )
     scheduler.add_job(
         _record_speedtest,
         # 3h, not 30m: each test saturates the link (~1.5-5.5s ping), too

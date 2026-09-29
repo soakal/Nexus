@@ -329,6 +329,186 @@ async def test_start_creates_task_when_configured():
 
 
 # ---------------------------------------------------------------------------
+# start() — idempotent (2026-09-28: closes the "never retries after a boot
+# token-read failure" bug — see backend.scheduler._telegram_poller_ensure)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_is_idempotent_while_task_running():
+    live_task = asyncio.create_task(asyncio.sleep(3600))
+    monkeypatch_task = live_task
+    telegram_poller._task = monkeypatch_task
+    try:
+        with patch("asyncio.create_task") as mock_create_task:
+            result = telegram_poller.start()
+        assert result is live_task
+        mock_create_task.assert_not_called()
+    finally:
+        telegram_poller._task = None
+        live_task.cancel()
+        try:
+            await live_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_start_replaces_exited_task():
+    async def _already_done():
+        return None
+    done_task = asyncio.create_task(_already_done())
+    await done_task
+    telegram_poller._task = done_task
+
+    settings = MagicMock()
+    settings.telegram_poll_enabled = True
+    settings.telegram_bot_token = "real-token"
+    try:
+        with patch("backend.config.get_settings", return_value=settings), \
+             patch("backend.agents.telegram_poller.run_poller", new_callable=AsyncMock):
+            new_task = telegram_poller.start()
+        assert new_task is not None
+        assert new_task is not done_task
+    finally:
+        await telegram_poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_succeeds_on_retry_after_token_unavailable_at_boot():
+    """Models the real 2026-09-28 bug: start() called once at boot with a
+    failing token read must not permanently prevent a LATER start() call
+    (the new telegram_poller_ensure job) from succeeding once the token
+    recovers."""
+    telegram_poller._task = None
+    bad_settings = MagicMock()
+    bad_settings.telegram_poll_enabled = True
+    type(bad_settings).telegram_bot_token = property(
+        lambda self: (_ for _ in ()).throw(KeyError("TELEGRAM_BOT_TOKEN"))
+    )
+    with patch("backend.config.get_settings", return_value=bad_settings), \
+         patch("asyncio.create_task") as mock_create_task:
+        first = telegram_poller.start()
+    assert first is None
+    assert telegram_poller._task is None
+    mock_create_task.assert_not_called()
+
+    good_settings = MagicMock()
+    good_settings.telegram_poll_enabled = True
+    good_settings.telegram_bot_token = "real-token"
+    try:
+        with patch("backend.config.get_settings", return_value=good_settings), \
+             patch("backend.agents.telegram_poller.run_poller", new_callable=AsyncMock):
+            second = telegram_poller.start()
+        assert second is not None
+    finally:
+        await telegram_poller.stop()
+
+
+# ---------------------------------------------------------------------------
+# backend.scheduler._telegram_poller_ensure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poller_ensure_noop_when_running():
+    from backend import scheduler as scheduler_module
+    live_task = asyncio.create_task(asyncio.sleep(3600))
+    telegram_poller._task = live_task
+    try:
+        with patch("backend.agents.telegram_poller.start") as mock_start:
+            await scheduler_module._telegram_poller_ensure()
+        mock_start.assert_not_called()
+    finally:
+        telegram_poller._task = None
+        live_task.cancel()
+        try:
+            await live_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_poller_ensure_skips_start_when_token_still_unreadable():
+    from backend import scheduler as scheduler_module
+    telegram_poller._task = None
+    bad_settings = MagicMock()
+    type(bad_settings).telegram_bot_token = property(
+        lambda self: (_ for _ in ()).throw(KeyError("TELEGRAM_BOT_TOKEN"))
+    )
+    with patch("backend.config.get_settings", return_value=bad_settings), \
+         patch("backend.agents.telegram_poller.start") as mock_start:
+        await scheduler_module._telegram_poller_ensure()
+    mock_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poller_ensure_starts_when_not_running():
+    from backend import scheduler as scheduler_module
+    telegram_poller._task = None
+    good_settings = MagicMock()
+    good_settings.telegram_bot_token = "real-token"
+    with patch("backend.config.get_settings", return_value=good_settings), \
+         patch("backend.agents.telegram_poller.start", return_value=object()) as mock_start:
+        await scheduler_module._telegram_poller_ensure()
+    mock_start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_poller_ensure_restarts_exited_task():
+    from backend import scheduler as scheduler_module
+
+    async def _already_done():
+        return None
+    done_task = asyncio.create_task(_already_done())
+    await done_task
+    telegram_poller._task = done_task
+
+    good_settings = MagicMock()
+    good_settings.telegram_bot_token = "real-token"
+    with patch("backend.config.get_settings", return_value=good_settings), \
+         patch("backend.agents.telegram_poller.start", return_value=object()) as mock_start:
+        await scheduler_module._telegram_poller_ensure()
+    mock_start.assert_called_once()
+    telegram_poller._task = None
+
+
+@pytest.mark.asyncio
+async def test_poller_ensure_reraises_on_error():
+    from backend import scheduler as scheduler_module
+    telegram_poller._task = None
+    good_settings = MagicMock()
+    good_settings.telegram_bot_token = "real-token"
+    with patch("backend.config.get_settings", return_value=good_settings), \
+         patch("backend.agents.telegram_poller.start", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            await scheduler_module._telegram_poller_ensure()
+
+
+def test_scheduler_registers_telegram_poller_ensure_300s():
+    from backend import scheduler as scheduler_module
+    scheduler_module.setup_scheduler("07:00", "America/Detroit")
+    job = scheduler_module.scheduler.get_job("telegram_poller_ensure")
+    assert job is not None
+    assert job.trigger.interval.total_seconds() == 300
+
+
+def test_poller_ensure_not_registered_when_poll_disabled(monkeypatch):
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setenv("TELEGRAM_POLL_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert "telegram_poller_ensure" not in ids_set
+
+
+# ---------------------------------------------------------------------------
 # Phase 2a — text message handling
 # ---------------------------------------------------------------------------
 

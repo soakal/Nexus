@@ -461,10 +461,18 @@ async def run_poller(stop: asyncio.Event) -> None:
 
 
 def start() -> "asyncio.Task | None":
-    """Starts the poller task. Returns None (no task created) when disabled or
-    the bot token isn't configured yet — a poller failure/absence degrades to
-    'no inbound buttons', never blocks NEXUS boot."""
+    """Starts the poller task. Idempotent: if a poller task is still running,
+    returns it unchanged -- never two concurrent getUpdates consumers (that's
+    the documented Telegram 409). A task that has exited is replaced.
+    Returns None (no task created) when disabled or the bot token isn't
+    configured yet — a poller failure/absence degrades to 'no inbound
+    buttons', never blocks NEXUS boot. Called at boot by main.py's lifespan
+    and every 300s by scheduler.py's telegram_poller_ensure job, so a token
+    that was unreadable at boot (e.g. Infisical down) still brings the poller
+    up once it recovers."""
     global _task, _stop_event
+    if _task is not None and not _task.done():
+        return _task
     from backend.config import get_settings
     settings = get_settings()
     if not settings.telegram_poll_enabled:
@@ -476,6 +484,9 @@ def start() -> "asyncio.Task | None":
         logger.info("Telegram poller not started — TELEGRAM_BOT_TOKEN not configured")
         return None
 
+    if _task is not None:
+        exc = None if _task.cancelled() else _task.exception()
+        logger.warning(f"Telegram poller task had exited ({exc!r}) — restarting it")
     _stop_event = asyncio.Event()
     _task = asyncio.create_task(run_poller(_stop_event))
     return _task
