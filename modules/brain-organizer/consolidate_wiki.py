@@ -296,7 +296,7 @@ def merge_pages(
     """Iteratively merge absorbed pages into the canonical page via Sonnet."""
     max_chars: int = config.get("max_file_chars", 50000)
     max_tokens: int = config.get("sonnet_max_tokens", 16384)
-    model: str = config.get("sonnet_model", "claude-sonnet-4-6")
+    model: str = config.get("sonnet_model", "claude-sonnet-5")
 
     accumulated = canonical_content
     for absorbed_title, absorbed_content in absorbed_contents:
