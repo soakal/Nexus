@@ -13,10 +13,12 @@ recreates the full current set from Infisical. Do not store anything else
 in that vault manually -- it will be trashed on the next run (recoverable
 from Proton's own trash, but still).
 
-Read-only against Infisical. Auth: relies on an already-active `pass-cli`
-session (logged in via `pass-cli login` as the real account -- Proton's
-Personal Access Tokens are read-only and cannot create/edit items, so no
-token login is attempted here).
+Read-only against Infisical. Auth: uses a Personal Access Token scoped to
+just the Break-Glass vault (`editor` role -- confirmed 2026-09-29 that a PAT
+*can* create/trash items despite the CLI's own docs suggesting otherwise),
+stored in Infisical as PROTON_PASS_BREAKGLASS_PAT. ensure_session() logs in
+automatically if the host's pass-cli session was lost (e.g. a reboot clears
+the kernel keyring backing it) -- see breakglass_sync_guard.py.
 
 Never prints a secret value under any code path -- only counts/timestamps.
 """
@@ -126,17 +128,36 @@ def create_note(key, value, env):
     )
 
 
+def ensure_session(env) -> None:
+    """Log in with the Break-Glass PAT if the host has no active pass-cli
+    session (e.g. lost on reboot -- the kernel keyring backing it doesn't
+    survive one). Never pass the token as a CLI arg: run_pass_cli's failure
+    path joins argv into the raised error, which would put the token in a
+    log. The token only ever goes in via env var, to a direct subprocess
+    call whose error text never includes argv or env."""
+    if run_pass_cli(["info"], env, check=False).returncode == 0:
+        return
+
+    ic.warm_up()
+    pat = ic.get_secret("PROTON_PASS_BREAKGLASS_PAT")
+    if not pat:
+        raise RuntimeError("No active pass-cli session and PROTON_PASS_BREAKGLASS_PAT is not set in Infisical")
+
+    login_env = {**env, "PROTON_PASS_PERSONAL_ACCESS_TOKEN": pat}
+    result = subprocess.run(["pass-cli", "login"], env=login_env, capture_output=True, text=True)
+    if result.returncode != 0 or run_pass_cli(["info"], env, check=False).returncode != 0:
+        raise RuntimeError(
+            "Auto-login with PROTON_PASS_BREAKGLASS_PAT failed -- the token may be "
+            "missing, expired, or revoked. Check Proton Pass settings and, if needed, "
+            "generate a new PAT (role: editor, vault: Break-Glass) and update Infisical."
+        )
+
+
 def main() -> int:
     env = os.environ.copy()
     env["PROTON_PASS_AGENT_REASON"] = REASON
 
-    info = run_pass_cli(["info"], env, check=False)
-    if info.returncode != 0:
-        raise RuntimeError(
-            "No active pass-cli session -- run `pass-cli login` interactively on this "
-            "host first (Proton's Personal Access Tokens can't write items, so this "
-            "can't self-recover)."
-        )
+    ensure_session(env)
 
     creds, flat = export_infisical()
 
@@ -156,6 +177,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
+        if "--ensure-session" in sys.argv[1:]:
+            env = os.environ.copy()
+            env["PROTON_PASS_AGENT_REASON"] = REASON
+            ensure_session(env)
+            print("OK: pass-cli session active")
+            sys.exit(0)
         sys.exit(main())
     except Exception as exc:
         print(f"FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)

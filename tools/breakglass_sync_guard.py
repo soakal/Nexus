@@ -95,12 +95,15 @@ def check(dry_run: bool) -> int:
         _page(f"overdue:{JOB}", f"Break-Glass sync last ran {age_h:.0f}h ago (expected weekly); the cron has likely stopped.", dry_run)
     elif rc != 0:
         _page(f"failed:{JOB}", f"Break-Glass sync's last run exited {rc}: {d.get('last_line', '')}", dry_run)
-    elif subprocess.run(["pass-cli", "info"], capture_output=True,
+    elif subprocess.run([str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC), "--ensure-session"],
+                        capture_output=True,
                         env={**os.environ, "PROTON_PASS_AGENT_REASON": "break-glass session check"}).returncode != 0:
-        # The session doesn't survive a host reboot (lost 2026-09-27 09:40); without
-        # this, the heartbeat stays green until the NEXT weekly run fails.
-        _page(f"no_session:{JOB}", "Break-Glass sync: no pass-cli session on nexus-lxc (lost on reboot?) -- "
-              "the next weekly sync will fail. Run `pass-cli login` on nexus-lxc.", dry_run)
+        # The session doesn't survive a host reboot (lost 2026-09-27 09:40) -- ensure-session
+        # auto-logs-in with the Break-Glass-scoped PAT (PROTON_PASS_BREAKGLASS_PAT in
+        # Infisical) when that happens, so this only pages if the PAT itself is bad.
+        _page(f"no_session:{JOB}", "Break-Glass sync: auto-login from PROTON_PASS_BREAKGLASS_PAT failed "
+              "(missing/expired/revoked?). Generate a new PAT (role: editor, vault: Break-Glass) "
+              "and update Infisical.", dry_run)
     else:
         print(f"ok: last run {age_h:.1f}h ago, exit 0")
     return 0
