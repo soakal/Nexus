@@ -524,6 +524,62 @@ async def check_integration_contracts() -> list[str]:
         return []
 
 
+def _format_mail_sender_filter(senders: list[str]) -> str:
+    shown = ", ".join(senders[:5]) + (f" (+{len(senders) - 5} more)" if len(senders) > 5 else "")
+    return (
+        f"NEXUS mail alert: the Proton mail server (mcp-email-server, CT 204) has an "
+        f"inbound sender allowlist set — only mail from [{shown}] is visible. Every "
+        f"mail feature (dashboard inbox, briefing, chat, autodraft/autotrash) will "
+        f"silently treat everything else as 'no mail'. Fix: remove `allowed_senders` "
+        f"from /home/proton/.config/mcp-email-server/config.toml on CT 204 and "
+        f"restart mcp-email-server."
+    )
+
+
+async def check_mail_sender_filter(*, cooldown_s: int) -> bool:
+    """Page when the mail server is silently filtering what NEXUS can read.
+
+    The 2026-09-26..28 incident: an `allowed_senders` line added to the mail
+    server's config on CT 204 hid nearly all real mail. Every call still
+    succeeded, so protonmail.health_check() stayed green and every consumer
+    reported "all caught up" for two days. Any non-empty sender allowlist is
+    wrong for NEXUS (it reads Brian's whole inbox), so there is no "expected"
+    list to compare against. The recipient allowlist is deliberately NOT
+    checked: it only restricts outgoing mail and fails loudly on send.
+
+    A failed allowlist read is an outage (uptime job's job), not a breach:
+    logged, no page, flag left as is. Best-effort, never raises. Returns True
+    iff it paged this tick."""
+    try:
+        from backend.integrations import protonmail
+        try:
+            senders = await protonmail.allowed_senders()
+        except Exception as exc:
+            logger.warning(f"check_mail_sender_filter: couldn't read allowlist: {exc}")
+            return False
+
+        from backend.agents import outcomes
+        if not senders:
+            await outcomes.clear_flag("watchdog", "mail_sender_filter")
+            return False
+
+        msg = _format_mail_sender_filter(senders)
+        logger.warning(msg)
+        if not _should_alert("mail_sender_filter", cooldown_s):
+            return False
+        d = await outcomes.record_flag_ex("watchdog", "mail_sender_filter", msg, severity="high")
+        if d["surface"]:
+            from backend import events
+            # contract_breach, not a new kind: same "call OK, data lying" class,
+            # and it's in governor._NEVER_MUTABLE_NOTIFY_KINDS so /mute can't
+            # silence it.
+            await events.notify_phone(msg, kind="contract_breach")
+        return True
+    except Exception as exc:
+        logger.warning(f"check_mail_sender_filter error (ignored): {exc}")
+        return False
+
+
 def _format_flag_followup(flag_id: int, flag: dict | None) -> str:
     summary = flag["summary"] if flag else f"flag #{flag_id}"
     return (
@@ -790,7 +846,7 @@ async def check_expected_deliveries(*, cooldown_s: int) -> list[str]:
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all nine checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all ten checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -812,6 +868,7 @@ async def run_watchdog() -> dict:
         deferred_swept = await check_deferred_flags()
         drift = await check_deploy_drift(cooldown_s=cooldown_s)
         stale_deliveries = await check_expected_deliveries(cooldown_s=cooldown_s)
+        mail_filter = await check_mail_sender_filter(cooldown_s=cooldown_s)
 
         return {
             "stalled": stalled,
@@ -823,6 +880,7 @@ async def run_watchdog() -> dict:
             "deferred_swept": deferred_swept,
             "deploy_drift": drift,
             "stale_deliveries": stale_deliveries,
+            "mail_sender_filter": mail_filter,
         }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
@@ -836,4 +894,5 @@ async def run_watchdog() -> dict:
             "deferred_swept": [],
             "deploy_drift": False,
             "stale_deliveries": [],
+            "mail_sender_filter": False,
         }

@@ -1816,3 +1816,68 @@ async def test_run_watchdog_includes_stale_deliveries_key(eng):
     with patch("backend.config.get_settings", side_effect=RuntimeError("boom")):
         result2 = await watchdog.run_watchdog()
     assert result2["stale_deliveries"] == []
+
+
+# ---------------------------------------------------------------------------
+# check_mail_sender_filter — the 2026-09-26..28 "inbox silently filtered" bug
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mail_sender_filter_pages_and_flags_when_allowlist_set(eng):
+    """The exact CT 204 misconfiguration: a non-empty allowed_senders pages
+    once (debounced), writes a high flag naming the patterns, and says how to fix."""
+    from backend.agents import outcomes, watchdog
+
+    watchdog.reset()
+    notify_mock = AsyncMock(return_value=True)
+    senders = AsyncMock(return_value=["soakal@pm.me", "*@tbfamily.us"])
+    with patch("backend.integrations.protonmail.allowed_senders", senders), \
+         patch("backend.events.notify_phone", notify_mock):
+        assert await watchdog.check_mail_sender_filter(cooldown_s=3600) is True
+        assert await watchdog.check_mail_sender_filter(cooldown_s=3600) is False  # debounced
+
+    notify_mock.assert_awaited_once()
+    assert notify_mock.await_args.kwargs["kind"] == "contract_breach"
+    msg = notify_mock.await_args.args[0]
+    assert "*@tbfamily.us" in msg and "allowed_senders" in msg
+    flags = await outcomes.open_flags()
+    assert [f for f in flags if f["summary"] == msg and f["severity"] == "high"]
+
+
+@pytest.mark.asyncio
+async def test_mail_sender_filter_clears_flag_when_allowlist_removed(eng):
+    from backend.agents import outcomes, watchdog
+
+    watchdog.reset()
+    with patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        with patch("backend.integrations.protonmail.allowed_senders", AsyncMock(return_value=["a@b.c"])):
+            await watchdog.check_mail_sender_filter(cooldown_s=3600)
+        assert len(await outcomes.open_flags()) == 1
+        with patch("backend.integrations.protonmail.allowed_senders", AsyncMock(return_value=[])):
+            assert await watchdog.check_mail_sender_filter(cooldown_s=3600) is False
+    assert await outcomes.open_flags() == []
+
+
+@pytest.mark.asyncio
+async def test_mail_sender_filter_unreachable_is_not_a_page(eng):
+    from backend.agents import watchdog
+
+    watchdog.reset()
+    notify_mock = AsyncMock(return_value=True)
+    with patch("backend.integrations.protonmail.allowed_senders", AsyncMock(side_effect=RuntimeError("down"))), \
+         patch("backend.events.notify_phone", notify_mock):
+        assert await watchdog.check_mail_sender_filter(cooldown_s=3600) is False
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_watchdog_includes_mail_sender_filter_key(eng):
+    from backend.agents import watchdog
+
+    settings = _settings_with_canary()
+    with patch("backend.config.get_settings", return_value=settings), \
+         patch("backend.scheduler.scheduler", SimpleNamespace(get_jobs=lambda: [])), \
+         patch("backend.integrations.protonmail.allowed_senders", AsyncMock(return_value=[])), \
+         patch("backend.events.notify_phone", AsyncMock(return_value=True)):
+        result = await watchdog.run_watchdog()
+    assert result["mail_sender_filter"] is False

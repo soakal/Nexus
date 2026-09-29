@@ -37,7 +37,7 @@ def _mcp_client_factory(
     return httpx.AsyncClient(**kwargs)
 
 
-async def _call_tool(tool_name: str, arguments: dict, *, timeout: float = 20.0) -> str:
+async def _call_tool_result(tool_name: str, arguments: dict, *, timeout: float = 20.0):
     """Open a fresh MCP session, call one tool, close. No persistent session —
     ClientSession is not safe for concurrent calls and a per-call session is
     naturally concurrency-safe and resilient to the remote LXC restarting
@@ -54,10 +54,34 @@ async def _call_tool(tool_name: str, arguments: dict, *, timeout: float = 20.0) 
             await session.initialize()
             result = await session.call_tool(tool_name, arguments)
 
-    text = "".join(block.text for block in result.content if hasattr(block, "text"))
     if result.isError:
+        text = "".join(block.text for block in result.content if hasattr(block, "text"))
         raise IntegrationError(text or f"{tool_name} returned an error")
-    return text
+    return result
+
+
+async def _call_tool(tool_name: str, arguments: dict, *, timeout: float = 20.0) -> str:
+    """_call_tool_result(), flattened to the concatenated text content."""
+    result = await _call_tool_result(tool_name, arguments, timeout=timeout)
+    return "".join(block.text for block in result.content if hasattr(block, "text"))
+
+
+async def allowed_senders() -> list[str]:
+    """The mail server's inbound sender allowlist (mcp-email-server's
+    `allowed_senders` in config.toml on the proton-bridge LXC, CT 204).
+    Non-empty means every read tool silently hides mail from anyone not on it,
+    so list_recent() returns a VALID but filtered result — this is what made
+    2026-09-26..28 look like "inbox empty" everywhere while health_check()
+    stayed green. [] means unrestricted. Raises on transport/tool error.
+
+    Uses structuredContent (the tool's declared {"result": [...]} schema), not
+    the flattened text: a list return arrives as one text block PER item, and
+    _call_tool's "".join would glue the patterns together."""
+    result = await _call_tool_result("list_allowed_senders", {}, timeout=5.0)
+    structured = getattr(result, "structuredContent", None) or {}
+    if "result" in structured:
+        return list(structured["result"] or [])
+    return [b.text for b in result.content if hasattr(b, "text")]
 
 
 async def list_recent(

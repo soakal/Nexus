@@ -366,3 +366,23 @@ async def test_inbox_summary_swallows_raising_list_recent():
         result = await inbox_summary()
 
     assert "unavailable" in result
+
+
+@pytest.mark.asyncio
+async def test_allowed_senders_reads_structured_list_not_glued_text():
+    """A list return arrives as one text block per item; the structured
+    {"result": [...]} must be used so patterns aren't concatenated."""
+    from types import SimpleNamespace
+    fake = SimpleNamespace(
+        isError=False,
+        structuredContent={"result": ["soakal@pm.me", "*@tbfamily.us"]},
+        content=[SimpleNamespace(text="soakal@pm.me"), SimpleNamespace(text="*@tbfamily.us")],
+    )
+    with patch("backend.integrations.protonmail._call_tool_result", AsyncMock(return_value=fake)) as m:
+        from backend.integrations.protonmail import allowed_senders
+        assert await allowed_senders() == ["soakal@pm.me", "*@tbfamily.us"]
+        assert m.await_args.args == ("list_allowed_senders", {})
+
+    empty = SimpleNamespace(isError=False, structuredContent={"result": []}, content=[])
+    with patch("backend.integrations.protonmail._call_tool_result", AsyncMock(return_value=empty)):
+        assert await allowed_senders() == []
