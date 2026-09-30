@@ -455,7 +455,7 @@ async def run_poller(stop: asyncio.Event) -> None:
             logger.error(f"Telegram getUpdates conflict: {e} — sleeping 30s")
             await _sleep_or_stop(stop, 30)
         except Exception as e:
-            logger.warning(f"Telegram poller error (backing off {backoff:.0f}s): {e}")
+            logger.warning(f"Telegram poller error (backing off {backoff:.0f}s): {e!r}")
             await _sleep_or_stop(stop, backoff)
             backoff = min(backoff * 2, 60)
 
