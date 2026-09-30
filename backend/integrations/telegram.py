@@ -110,7 +110,14 @@ async def send_message(
             ]]}
         except Exception:
             pass  # malformed buttons never block the text
-    return await _call("sendMessage", params)
+    resp = await _call("sendMessage", params)
+    if resp.status_code == 400 and parse_mode and "parse entities" in resp.text:
+        # Unescaped < or & in dynamic text: a byte-identical retry can never
+        # succeed and the alert would be lost. Resend as plain text instead.
+        logger.warning(f"Telegram {parse_mode} parse failed, resending plain: {resp.text[:120]}")
+        params.pop("parse_mode")
+        resp = await _call("sendMessage", params)
+    return resp
 
 
 async def answer_callback_query(cq_id: str, text: str | None = None, show_alert: bool = False) -> bool:

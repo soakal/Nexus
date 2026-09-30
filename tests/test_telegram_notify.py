@@ -605,3 +605,14 @@ def test_cancel_reminder_missing_id_returns_false():
     with patch("backend.database.engine", eng):
         result = telegram.cancel_reminder(9999)
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_send_message_html_parse_error_falls_back_to_plain():
+    bad = MagicMock(status_code=400, text="Bad Request: can't parse entities: Unsupported start tag")
+    ok = MagicMock(status_code=200, text="")
+    with patch("backend.integrations.telegram._call", new_callable=AsyncMock, side_effect=[bad, ok]) as call, \
+         patch("backend.config.get_settings", return_value=MagicMock(telegram_chat_id="1")):
+        resp = await telegram.send_message("down <1h", parse_mode="HTML")
+    assert resp is ok
+    assert "parse_mode" not in call.await_args_list[1].args[1]
