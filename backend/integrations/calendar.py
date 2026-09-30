@@ -6,6 +6,7 @@ One bug fixed during an earlier port (do not re-add):
   - date.today() reads the PROCESS timezone; briefing_timezone is used instead
     so this stays correct if NEXUS ever runs on a UTC host.
 """
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -60,13 +61,20 @@ async def _fetch_ical() -> tuple[str, int, int]:
     async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
         for url in urls:
             fetch_url = "https://" + url[len("webcal://"):] if url.startswith("webcal://") else url
-            try:
-                r = await client.get(fetch_url)
-                r.raise_for_status()
-                texts.append(r.text)
-                ok += 1
-            except Exception as e:
-                logger.warning(f"Calendar feed failed, skipping: {e}")
+            # One retry: Google's feeds occasionally time out or 500 for a
+            # single request, which would drop that feed's events for a cycle.
+            for attempt in range(2):
+                try:
+                    r = await client.get(fetch_url)
+                    r.raise_for_status()
+                    texts.append(r.text)
+                    ok += 1
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    logger.warning(f"Calendar feed failed, skipping: {e!r}")
     return "\n".join(texts), ok, len(urls)
 
 

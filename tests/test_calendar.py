@@ -367,3 +367,18 @@ async def test_get_today_events_degrades_to_string_on_failure():
         mock_client_cls.return_value = _mock_async_client(responses)
         result = await calendar.get_today_events()
     assert result.startswith("(Calendar unavailable:")
+
+
+def test_fetch_ical_retries_a_transient_feed_failure(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from backend.integrations import calendar
+
+    good = MagicMock(text="BEGIN:VCALENDAR\nEND:VCALENDAR")
+    good.raise_for_status = MagicMock()
+    get = AsyncMock(side_effect=[httpx.ReadTimeout(""), good])
+    monkeypatch.setattr(calendar, "_ical_urls", lambda: ["https://example.test/a.ics"])
+    with patch("httpx.AsyncClient.get", get), patch("asyncio.sleep", AsyncMock()):
+        text, ok, total = asyncio.run(calendar._fetch_ical())
+    assert (ok, total) == (1, 1)
+    assert get.await_count == 2
