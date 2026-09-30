@@ -965,7 +965,20 @@ async def test_automated_garage_light_goal_dropped_daytime(eng, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_known_hardware_issue_light_goal_dropped(eng, monkeypatch):
+    import datetime as dt_module
     from backend.agents import proposer
+
+    # Pin to daytime so the night_exempt filter can't claim the goal first.
+    class FakeDatetime(dt_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt_module.datetime(2026, 9, 14, 17, 0, tzinfo=tz)
+
+        @classmethod
+        def utcnow(cls):
+            return dt_module.datetime(2026, 9, 14, 17, 0)
+
+    monkeypatch.setattr(proposer, "datetime", FakeDatetime)
 
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
