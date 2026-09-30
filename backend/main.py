@@ -28,6 +28,9 @@ logging.basicConfig(
 # Google/Apple calendar ICS tokens), which would otherwise write cleartext
 # secrets to the (persistent) journal on every single call.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+# ...and mask any such URL a caller logs itself (exception text, tracebacks).
+from backend.log_redact import install as _install_log_redaction  # noqa: E402
+_install_log_redaction("uvicorn", "uvicorn.access")
 logger = logging.getLogger(__name__)
 
 
