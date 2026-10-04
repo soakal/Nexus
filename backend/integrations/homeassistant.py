@@ -73,13 +73,14 @@ _ALERT_ALLOWLIST = frozenset({
     "cover.garage_door_garage_door",
     # August / back door lock
     "lock.dining_room",
-    # UniFi integration health
-    "switch.unifi_network",
-    # AdGuard
+    # UniFi integration health — any live UniFi entity works as the canary; the old
+    # switch.unifi_network was an orphan (its UniFi rule was deleted) and was removed
+    # from HA 2026-10-03, which silently left this check watching nothing.
+    "switch.unifi_network_vpn",
+    # AdGuard — these two go unavailable if AdGuard (CT 108) is unreachable, which also
+    # covers the old binary_sensor.pve_adguard (retired CT 107's PVE sensor, gone from HA).
     "switch.adguard_home_protection",
     "switch.adguard_home_filtering",
-    # Proxmox (PVE integration)
-    "binary_sensor.pve_adguard",
 })
 
 
