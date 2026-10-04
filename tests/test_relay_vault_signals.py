@@ -410,6 +410,28 @@ def test_untagged_bullet_is_skipped_but_file_still_marked_relayed(monkeypatch, t
     assert "skipping untagged finding" in out
 
 
+def test_untagged_nested_subbullet_inherits_parent_tag(monkeypatch, tmp_path, capsys):
+    """2026-10-04: 10/20 findings were skipped because detail sub-bullets
+    nested under a tagged parent carried no tag of their own. An indented
+    sub-bullet inherits its parent's category; an untagged TOP-LEVEL bullet
+    is still skipped."""
+    _patch_dirs(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    calls = []
+    _patch_post_flag(monkeypatch, lambda base_url, key, check, summary: calls.append(check) or True)
+    digest = (
+        "## New / changed\n"
+        "- [homelab] **Parent finding** -- body\n"
+        "  - nested detail one, no tag\n"
+        "  - [work] nested detail with its own tag\n"
+        "- untagged top-level bullet\n"
+    )
+    _write_digest(tmp_path, "2026-01-01.md", digest)
+    assert relay.main() == 0
+    assert [c.split(":")[0] for c in calls] == ["homelab", "homelab", "work"]
+    assert capsys.readouterr().out.count("skipping untagged finding") == 1
+
+
 def test_tag_prefix_and_strip_also_apply_to_bulletless_section_prose(monkeypatch, tmp_path):
     """`_extract_findings`' flush() branch (a `## ` section with no bullets
     at all -- its own prose body is the finding) parses/strips the tag via

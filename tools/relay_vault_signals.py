@@ -35,7 +35,9 @@ applied, never via a loose search of the fully-assembled display string, so
 a section title that happens to contain bracketed text can never be
 mistaken for the finding's own tag -- and returns `(category, text)` pairs
 with the tag stripped out of `text`. A finding with no recognized tag at
-its own start comes back as `(None, text)`; `_relay_file` skips those
+its own start comes back as `(None, text)` -- unless it is an indented
+sub-bullet under a tagged top-level bullet, in which case it inherits that
+parent's tag; `_relay_file` skips the untagged ones
 (logging a warning) rather than posting them, but still counts the file as
 fully relayed as long as every *tagged* finding posted successfully -- an
 untagged bullet must never block the whole digest file from being marked
@@ -406,6 +408,16 @@ def _extract_findings(content: str) -> list[tuple[str | None, str]]:
     section_title: str | None = None
     section_body: list[str] = []
     section_had_bullet = False
+    parent_category: str | None = None
+
+    def inherit(raw_line: str, category: str | None) -> str | None:
+        # A nested (indented) sub-bullet with no tag of its own inherits its
+        # top-level parent's tag; a top-level bullet becomes the new parent.
+        nonlocal parent_category
+        if raw_line[:1].isspace():
+            return category if category is not None else parent_category
+        parent_category = category
+        return category
 
     def flush() -> None:
         if section_title is not None and not section_had_bullet:
@@ -429,18 +441,21 @@ def _extract_findings(content: str) -> list[tuple[str | None, str]]:
             section_title = line[3:].strip()
             section_body = []
             section_had_bullet = False
+            parent_category = None
         elif section_title is not None:
             bullet_match = _BULLET.match(line)
             if bullet_match:
                 section_had_bullet = True
                 bullet_text = _BULLET.sub("", line).strip()
                 category, bullet_text = _parse_tag(bullet_text)
+                category = inherit(raw_line, category)
                 findings.append((category, f"{section_title} — {bullet_text}"))
             elif line:
                 section_body.append(line)
         elif _BULLET.match(line):
             bullet_text = _BULLET.sub("", line).strip()
             category, bullet_text = _parse_tag(bullet_text)
+            category = inherit(raw_line, category)
             findings.append((category, bullet_text))
     flush()
     return findings

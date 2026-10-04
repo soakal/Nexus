@@ -41,6 +41,7 @@ step can parse which category a finding belongs to. For example:
   window that hasn't been revisited since June; no resolution found.
 - [homelab] **Unraid parity check overdue** -- `MOC-Homelab.md` notes the monthly parity check
   hasn't run in six weeks; no resolution found.
+Indented sub-bullets under a tagged bullet inherit its tag and need no tag of their own; every top-level bullet must carry one.
 Restating the point above: it is entirely normal, and correct, for a run to find nothing that
 passes both the relevance filter and the tagging requirement -- an empty digest is the correct
 outcome on a quiet day, not a failure to try harder.
