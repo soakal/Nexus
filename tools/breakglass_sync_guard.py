@@ -34,13 +34,13 @@ BASE_URL = os.environ.get("NEXUS_BASE_URL", "http://127.0.0.1:8000")
 MAX_AGE_HOURS = 8 * 24  # weekly job + one day of slack
 JOB = "breakglass_sync"
 
-# nexus-breakglass-sync PAT: created 2026-09-29 with --expiration 1y. `pass-cli
+# nexus-breakglass-sync-2026-10 PAT: created 2026-10-04 with --expiration 1y. `pass-cli
 # personal-access-token list` can't be run from inside a PAT session to read this
 # back, so it's hardcoded -- confirm the exact date in Proton Pass's web settings
 # if precision matters. No code path can renew it automatically (that's an
 # interactive pass-cli command), so check() pages ahead of time instead of
 # waiting for the "it broke" page.
-PAT_EXPIRES = date(2027, 9, 29)
+PAT_EXPIRES = date(2027, 10, 4)
 PAT_WARN_DAYS = 30  # visible in `check` output, no page yet
 PAT_PAGE_DAYS = 7  # actually pages once this close
 
