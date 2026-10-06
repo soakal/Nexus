@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -43,6 +44,7 @@ JOB = "breakglass_sync"
 PAT_EXPIRES = date(2027, 10, 4)
 PAT_WARN_DAYS = 30  # visible in `check` output, no page yet
 PAT_PAGE_DAYS = 7  # actually pages once this close
+RETRY_DELAY_S = 300  # cron, nothing waits; 2026-10-05's network blips spanned >1h at ~20-45min spacing
 
 
 def _api_key() -> str:
@@ -78,17 +80,35 @@ def _write_heartbeat(rc: int, last_line: str) -> None:
     tmp.replace(HEARTBEAT)
 
 
-def run(dry_run: bool) -> int:
+def _sync_once() -> tuple[int, str]:
     r = subprocess.run([str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC)],
                        capture_output=True, text=True)
     out = (r.stdout + r.stderr).strip()
     with LOG.open("a") as f:
         f.write(f"=== {datetime.now().astimezone().isoformat()} guard: exit {r.returncode} ===\n{out}\n")
+    return r.returncode, out
+
+
+def run(dry_run: bool) -> int:
+    rc, out = _sync_once()
+    if rc != 0:
+        # Same one-retry rule as check(): a transient blip shouldn't page, or leave
+        # a failed heartbeat that check() then re-pages daily until next Sunday.
+        # Safe to re-run -- the sync trashes and recreates the whole vault each time.
+        time.sleep(RETRY_DELAY_S)
+        rc, out = _sync_once()
     last = out.splitlines()[-1] if out else "(no output)"
-    _write_heartbeat(r.returncode, last)
-    if r.returncode != 0:
-        _page(f"failed:{JOB}", f"Break-Glass sync failed (exit {r.returncode}): {last}", dry_run)
-    return r.returncode
+    _write_heartbeat(rc, last)
+    if rc != 0:
+        _page(f"failed:{JOB}", f"Break-Glass sync failed (exit {rc}): {last}", dry_run)
+    return rc
+
+
+def _ensure_session() -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC), "--ensure-session"],
+        capture_output=True, text=True,
+        env={**os.environ, "PROTON_PASS_AGENT_REASON": "break-glass session check"})
 
 
 def check(dry_run: bool) -> int:
@@ -106,10 +126,12 @@ def check(dry_run: bool) -> int:
     elif rc != 0:
         _page(f"failed:{JOB}", f"Break-Glass sync's last run exited {rc}: {d.get('last_line', '')}", dry_run)
     else:
-        session_check = subprocess.run(
-            [str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC), "--ensure-session"],
-            capture_output=True, text=True,
-            env={**os.environ, "PROTON_PASS_AGENT_REASON": "break-glass session check"})
+        session_check = _ensure_session()
+        if session_check.returncode != 0:
+            # One retry before paging: 2026-10-05's 09:15 check failed and was fine
+            # by evening with no reboot or token change -- a transient blip.
+            time.sleep(RETRY_DELAY_S)
+            session_check = _ensure_session()
         if session_check.returncode != 0:
             # The session doesn't survive a host reboot (lost 2026-09-27 09:40) -- ensure-session
             # auto-logs-in with the Break-Glass-scoped PAT (PROTON_PASS_BREAKGLASS_PAT in
@@ -118,9 +140,9 @@ def check(dry_run: bool) -> int:
             # it also lets this distinguish "PAT is bad" from e.g. "Infisical unreachable".
             output = (session_check.stderr or session_check.stdout or "").strip()
             last_err = output.splitlines()[-1] if output else "(no output)"
-            _page(f"no_session:{JOB}", "Break-Glass sync: auto-login from PROTON_PASS_BREAKGLASS_PAT failed: "
-                  f"{last_err}. If the PAT itself is the problem (missing/expired/revoked), generate a new "
-                  "one (role: editor, vault: Break-Glass) and update Infisical.", dry_run)
+            # last_err already carries the remediation text + pass-cli's reason.
+            _page(f"no_session:{JOB}",
+                  f"Break-Glass sync: auto-login from PROTON_PASS_BREAKGLASS_PAT failed: {last_err}", dry_run)
         else:
             days_left = (PAT_EXPIRES - datetime.now(timezone.utc).date()).days
             if days_left <= PAT_PAGE_DAYS:
