@@ -24,6 +24,7 @@ Never prints a secret value under any code path -- only counts/timestamps.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -135,7 +136,8 @@ def ensure_session(env) -> None:
     path joins argv into the raised error, which would put the token in a
     log. The token only ever goes in via env var, to a direct subprocess
     call whose error text never includes argv or env."""
-    if run_pass_cli(["info"], env, check=False).returncode == 0:
+    info = run_pass_cli(["info"], env, check=False)
+    if info.returncode == 0:
         return
 
     ic.warm_up()
@@ -145,12 +147,31 @@ def ensure_session(env) -> None:
 
     login_env = {**env, "PROTON_PASS_PERSONAL_ACCESS_TOKEN": pat}
     result = subprocess.run(["pass-cli", "login"], env=login_env, capture_output=True, text=True)
-    if result.returncode != 0 or run_pass_cli(["info"], env, check=False).returncode != 0:
+    after = run_pass_cli(["info"], env, check=False)
+    if result.returncode != 0 or after.returncode != 0:
+        # pass-cli's own text is what tells "token revoked" apart from "network
+        # blip" (2026-10-05: a transient failure paged as "token may be revoked").
+        # Redacted anyway in case a future pass-cli ever echoes the token.
+        detail = _redact(
+            f"info before: {_last_line(info.stderr)}; "
+            f"login (exit {result.returncode}): {_last_line(result.stderr)}; "
+            f"info after (exit {after.returncode}): {_last_line(after.stderr)}", pat)
         raise RuntimeError(
             "Auto-login with PROTON_PASS_BREAKGLASS_PAT failed -- the token may be "
             "missing, expired, or revoked. Check Proton Pass settings and, if needed, "
-            "generate a new PAT (role: editor, vault: Break-Glass) and update Infisical."
+            "generate a new PAT (role: editor, vault: Break-Glass) and update Infisical. "
+            f"pass-cli said: {detail}"
         )
+
+
+def _last_line(text) -> str:
+    lines = (text or "").strip().splitlines()
+    return lines[-1][:200] if lines else "(no output)"
+
+
+def _redact(text: str, pat: str) -> str:
+    text = text.replace(pat, "[REDACTED]")
+    return re.sub(r"pst_\S+", "[REDACTED]", text)
 
 
 def main() -> int:

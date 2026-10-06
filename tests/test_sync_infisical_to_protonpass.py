@@ -61,3 +61,24 @@ def test_ensure_session_raises_when_pat_missing_from_infisical(monkeypatch):
 
     with pytest.raises(RuntimeError, match="PROTON_PASS_BREAKGLASS_PAT"):
         sync.ensure_session({})
+
+
+def test_ensure_session_failure_surfaces_pass_cli_reason_without_token(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        if cmd == ["pass-cli", "login"]:
+            return _completed(1, stderr="error: login failed for pst_fake::key\nConnection timed out")
+        return _completed(1, stderr="No session found")
+
+    monkeypatch.setattr(sync.subprocess, "run", MagicMock(side_effect=fake_run))
+    monkeypatch.setattr(sync.ic, "warm_up", MagicMock())
+    monkeypatch.setattr(sync.ic, "get_secret", MagicMock(return_value="pst_fake::key"))
+
+    with pytest.raises(RuntimeError) as exc:
+        sync.ensure_session({})
+    msg = str(exc.value)
+    assert "Connection timed out" in msg and "No session found" in msg
+    assert "pst_fake" not in msg
+
+
+def test_redact_strips_token_even_if_echoed_mid_line():
+    assert "pst_" not in sync._redact("bad token pst_abc::xyz here", "pst_other::val")
