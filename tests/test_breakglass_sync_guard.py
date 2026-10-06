@@ -40,3 +40,29 @@ def test_check_pages_with_latest_reason_when_retry_also_fails(tmp_path, monkeypa
     assert ensure.call_count == 2
     assert page.call_args[0][0] == "no_session:breakglass_sync"
     assert "still" in page.call_args[0][1]
+
+
+def test_run_retries_once_and_records_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(bg, "HEARTBEAT", tmp_path / "hb.json")
+    monkeypatch.setattr(bg.time, "sleep", MagicMock())
+    sync = MagicMock(side_effect=[(1, "FAIL: blip"), (0, "OK: synced 1 credential items")])
+    monkeypatch.setattr(bg, "_sync_once", sync)
+    page = MagicMock(return_value=True)
+    monkeypatch.setattr(bg, "_page", page)
+
+    assert bg.run(dry_run=False) == 0
+    assert sync.call_count == 2
+    page.assert_not_called()
+    assert json.loads((tmp_path / "hb.json").read_text())["exit_code"] == 0
+
+
+def test_run_pages_when_retry_also_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(bg, "HEARTBEAT", tmp_path / "hb.json")
+    monkeypatch.setattr(bg.time, "sleep", MagicMock())
+    monkeypatch.setattr(bg, "_sync_once", MagicMock(side_effect=[(1, "FAIL: a"), (1, "FAIL: still")]))
+    page = MagicMock(return_value=True)
+    monkeypatch.setattr(bg, "_page", page)
+
+    assert bg.run(dry_run=False) == 1
+    assert page.call_args[0][0] == "failed:breakglass_sync"
+    assert "still" in page.call_args[0][1]

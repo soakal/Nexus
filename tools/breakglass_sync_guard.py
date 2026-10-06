@@ -80,17 +80,28 @@ def _write_heartbeat(rc: int, last_line: str) -> None:
     tmp.replace(HEARTBEAT)
 
 
-def run(dry_run: bool) -> int:
+def _sync_once() -> tuple[int, str]:
     r = subprocess.run([str(NEXUS_ROOT / "venv" / "bin" / "python"), str(SYNC)],
                        capture_output=True, text=True)
     out = (r.stdout + r.stderr).strip()
     with LOG.open("a") as f:
         f.write(f"=== {datetime.now().astimezone().isoformat()} guard: exit {r.returncode} ===\n{out}\n")
+    return r.returncode, out
+
+
+def run(dry_run: bool) -> int:
+    rc, out = _sync_once()
+    if rc != 0:
+        # Same one-retry rule as check(): a transient blip shouldn't page, or leave
+        # a failed heartbeat that check() then re-pages daily until next Sunday.
+        # Safe to re-run -- the sync trashes and recreates the whole vault each time.
+        time.sleep(RETRY_DELAY_S)
+        rc, out = _sync_once()
     last = out.splitlines()[-1] if out else "(no output)"
-    _write_heartbeat(r.returncode, last)
-    if r.returncode != 0:
-        _page(f"failed:{JOB}", f"Break-Glass sync failed (exit {r.returncode}): {last}", dry_run)
-    return r.returncode
+    _write_heartbeat(rc, last)
+    if rc != 0:
+        _page(f"failed:{JOB}", f"Break-Glass sync failed (exit {rc}): {last}", dry_run)
+    return rc
 
 
 def _ensure_session() -> subprocess.CompletedProcess:
