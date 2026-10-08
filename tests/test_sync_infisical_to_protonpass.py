@@ -54,6 +54,52 @@ def test_ensure_session_logs_in_with_pat_when_session_missing(monkeypatch):
     assert all("pst_fake" not in str(c[0]) for c in calls)
 
 
+def test_ensure_session_resets_stale_local_state_when_login_refuses(monkeypatch):
+    # The daily 2026-10-05..07 page: server dropped the PAT session, so `info` fails,
+    # but pass-cli still refuses `login` over the stale local store.
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["pass-cli", "login"]:
+            assert kwargs["env"].get("PROTON_PASS_PERSONAL_ACCESS_TOKEN") == "pst_fake::key"
+            logged_out = ["pass-cli", "logout", "--force"] in calls
+            return _completed(0) if logged_out else _completed(1, "Error: Already authenticated")
+        if cmd == ["pass-cli", "logout", "--force"]:
+            assert "PROTON_PASS_PERSONAL_ACCESS_TOKEN" not in kwargs["env"]
+            return _completed(0)
+        return _completed(1, "    2: non-existent session") if len(calls) == 1 else _completed(0)
+
+    monkeypatch.setattr(sync.subprocess, "run", MagicMock(side_effect=fake_run))
+    monkeypatch.setattr(sync.ic, "warm_up", MagicMock())
+    monkeypatch.setattr(sync.ic, "get_secret", MagicMock(return_value="pst_fake::key"))
+
+    sync.ensure_session({})
+
+    assert calls == [
+        ["pass-cli", "info"],
+        ["pass-cli", "login"],
+        ["pass-cli", "logout", "--force"],
+        ["pass-cli", "login"],
+        ["pass-cli", "info"],
+    ]
+
+
+def test_ensure_session_does_not_reset_when_first_login_works(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _completed(1) if len(calls) == 1 else _completed(0)
+
+    monkeypatch.setattr(sync.subprocess, "run", MagicMock(side_effect=fake_run))
+    monkeypatch.setattr(sync.ic, "warm_up", MagicMock())
+    monkeypatch.setattr(sync.ic, "get_secret", MagicMock(return_value="pst_fake::key"))
+
+    sync.ensure_session({})
+    assert ["pass-cli", "logout", "--force"] not in calls
+
+
 def test_ensure_session_raises_when_pat_missing_from_infisical(monkeypatch):
     monkeypatch.setattr(sync.subprocess, "run", MagicMock(return_value=_completed(1)))
     monkeypatch.setattr(sync.ic, "warm_up", MagicMock())
@@ -77,6 +123,7 @@ def test_ensure_session_failure_surfaces_pass_cli_reason_without_token(monkeypat
         sync.ensure_session({})
     msg = str(exc.value)
     assert "Connection timed out" in msg and "No session found" in msg
+    assert "logout --force (exit 1)" in msg  # the reset was tried and reported
     assert "pst_fake" not in msg
 
 
