@@ -133,9 +133,10 @@ def check(dry_run: bool) -> int:
             time.sleep(RETRY_DELAY_S)
             session_check = _ensure_session()
         if session_check.returncode != 0:
-            # The session doesn't survive a host reboot (lost 2026-09-27 09:40) -- ensure-session
-            # auto-logs-in with the Break-Glass-scoped PAT (PROTON_PASS_BREAKGLASS_PAT in
-            # Infisical) when that happens. ensure_session()'s own error strings are fixed
+            # The session doesn't survive a host reboot (lost 2026-09-27 09:40) and Proton drops
+            # a PAT session within a day anyway (2026-10-05..07 paged every morning) --
+            # ensure-session resets stale local state and auto-logs-in with the Break-Glass-scoped
+            # PAT (PROTON_PASS_BREAKGLASS_PAT in Infisical). ensure_session()'s own error strings are fixed
             # text (never include the token), so it's safe to put the last line in the page --
             # it also lets this distinguish "PAT is bad" from e.g. "Infisical unreachable".
             output = (session_check.stderr or session_check.stdout or "").strip()

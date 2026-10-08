@@ -130,9 +130,9 @@ def create_note(key, value, env):
 
 
 def ensure_session(env) -> None:
-    """Log in with the Break-Glass PAT if the host has no active pass-cli
-    session (e.g. lost on reboot -- the kernel keyring backing it doesn't
-    survive one). Never pass the token as a CLI arg: run_pass_cli's failure
+    """Log in with the Break-Glass PAT if the host has no usable pass-cli
+    session (the server drops PAT sessions within a day; a reboot clears the
+    kernel keyring that encrypts the local copy). Never pass the token as a CLI arg: run_pass_cli's failure
     path joins argv into the raised error, which would put the token in a
     log. The token only ever goes in via env var, to a direct subprocess
     call whose error text never includes argv or env."""
@@ -147,6 +147,15 @@ def ensure_session(env) -> None:
 
     login_env = {**env, "PROTON_PASS_PERSONAL_ACCESS_TOKEN": pat}
     result = subprocess.run(["pass-cli", "login"], env=login_env, capture_output=True, text=True)
+    reset = None
+    if result.returncode != 0:
+        # pass-cli refuses to log in over stale local state: "Already authenticated"
+        # when the server has dropped the PAT session (every morning 2026-10-05..07),
+        # or "file is not a database" after a reboot cleared the keyring key that
+        # encrypts it. Its own advice for both is `logout --force`; the session is
+        # PAT-scoped, so wiping it loses nothing.
+        reset = subprocess.run(["pass-cli", "logout", "--force"], env=env, capture_output=True, text=True)
+        result = subprocess.run(["pass-cli", "login"], env=login_env, capture_output=True, text=True)
     after = run_pass_cli(["info"], env, check=False)
     if result.returncode != 0 or after.returncode != 0:
         # pass-cli's own text is what tells "token revoked" apart from "network
@@ -154,13 +163,14 @@ def ensure_session(env) -> None:
         # Redacted anyway in case a future pass-cli ever echoes the token.
         detail = _redact(
             f"info before: {_last_line(info.stderr)}; "
-            f"login (exit {result.returncode}): {_last_line(result.stderr)}; "
+            + (f"logout --force (exit {reset.returncode}): {_last_line(reset.stderr)}; " if reset else "")
+            + f"login (exit {result.returncode}): {_last_line(result.stderr)}; "
             f"info after (exit {after.returncode}): {_last_line(after.stderr)}", pat)
         raise RuntimeError(
-            "Auto-login with PROTON_PASS_BREAKGLASS_PAT failed -- the token may be "
-            "missing, expired, or revoked. Check Proton Pass settings and, if needed, "
-            "generate a new PAT (role: editor, vault: Break-Glass) and update Infisical. "
-            f"pass-cli said: {detail}"
+            "Auto-login with PROTON_PASS_BREAKGLASS_PAT failed even after `pass-cli logout "
+            "--force`. If the login step reports an invalid/expired token, generate a new PAT "
+            "(role: editor, vault: Break-Glass) and update Infisical; otherwise it's the "
+            f"network or Proton. pass-cli said: {detail}"
         )
 
 
