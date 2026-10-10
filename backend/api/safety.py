@@ -7,7 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlmodel import Session, select
 
-from backend.auth import require_api_key
+from backend.auth import require_api_key, require_flags_key
 from backend.database import ActionLog, OutcomeFlag, TaskOutcome, get_session
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ async def list_flags(
 @router.post("/flags")
 async def create_flag(
     body: dict = Body(...),
-    _=Depends(require_api_key),
+    key_scope: str = Depends(require_flags_key),
 ):
     """Manual create, for Claude Code sessions (and other trusted callers)
     logging their own observations. `source` defaults to "manual" if omitted.
@@ -272,6 +272,11 @@ async def create_flag(
     source = str(body.get("source") or "manual").strip()
     if not _SAFE_SOURCE_RE.match(source) or source in _RESERVED_FLAG_SOURCES:
         raise HTTPException(status_code=400, detail="invalid source")
+    # The scoped key (nightshift) may only write its own flags and never pages:
+    # notify_phone sends parse_mode=HTML around the summary, which is model-written there.
+    if key_scope == "flags" and source != "nightshift":
+        raise HTTPException(status_code=403, detail="flags key may only post source=nightshift")
+    page_now = body.get("page_now") and key_scope == "full"
 
     flag_id = await outcomes.record_flag(
         source,
@@ -280,7 +285,7 @@ async def create_flag(
         detail=body.get("detail"),
         severity=body.get("severity", "medium"),
     )
-    if flag_id is not None and body.get("page_now"):
+    if flag_id is not None and page_now:
         try:
             from backend import events
             await events.notify_phone(f"{source}:{check} — {summary}", kind="external_flag")

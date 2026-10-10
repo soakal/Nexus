@@ -872,3 +872,32 @@ def test_flags_resolve_deferred_rejects_string_defer_days(app_client, auth_heade
         headers=auth_headers,
     )
     assert bad.status_code == 400
+
+
+def test_flags_scoped_key_only_posts_nightshift_flags(app_client, monkeypatch):
+    """NEXUS_FLAGS_KEY (held by nightshift) can create source=nightshift flags and nothing else:
+    other sources 403, page_now is ignored, and every other route still 401s."""
+    monkeypatch.setenv("NEXUS_FLAGS_KEY", "test-flags-key")
+    h = {"Authorization": "Bearer test-flags-key"}
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as mock_notify:
+        ok = app_client.post("/api/safety/flags", headers=h, json={
+            "source": "nightshift", "check": "disk-watch", "summary": "pve / at 91%", "page_now": True})
+        assert ok.status_code == 200
+        assert ok.json()["id"] is not None
+        mock_notify.assert_not_awaited()
+    assert app_client.post("/api/safety/flags", headers=h, json={"check": "x", "summary": "y"}).status_code == 403
+    assert app_client.post("/api/safety/flags", headers=h, json={
+        "source": "manual", "check": "x", "summary": "y"}).status_code == 403
+    assert app_client.get("/api/safety/flags", headers=h).status_code == 401
+    assert app_client.post("/api/safety/flags/1/resolve", headers=h, json={"status": "resolved"}).status_code == 401
+    assert app_client.get("/api/safety/status", headers=h).status_code == 401
+    bad = {"Authorization": "Bearer nope"}
+    assert app_client.post("/api/safety/flags", headers=bad, json={
+        "source": "nightshift", "check": "x", "summary": "y"}).status_code == 401
+
+
+def test_flags_full_key_still_works_without_scoped_key(app_client, auth_headers, monkeypatch):
+    monkeypatch.delenv("NEXUS_FLAGS_KEY", raising=False)
+    r = app_client.post("/api/safety/flags", headers=auth_headers, json={
+        "source": "nightshift", "check": "full-key", "summary": "ok"})
+    assert r.status_code == 200
