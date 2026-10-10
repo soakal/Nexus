@@ -277,6 +277,9 @@ async def create_flag(
     if key_scope == "flags" and source != "nightshift":
         raise HTTPException(status_code=403, detail="flags key may only post source=nightshift")
     page_now = body.get("page_now") and key_scope == "full"
+    if key_scope == "flags":  # model-written text from nightshift: bounded before it is stored or reaches a prompt
+        check, summary = str(check)[:64], str(summary)[:200]
+        body["detail"] = str(body.get("detail") or "")[:1000] or None
 
     flag_id = await outcomes.record_flag(
         source,

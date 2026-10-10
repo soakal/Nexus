@@ -901,3 +901,13 @@ def test_flags_full_key_still_works_without_scoped_key(app_client, auth_headers,
     r = app_client.post("/api/safety/flags", headers=auth_headers, json={
         "source": "nightshift", "check": "full-key", "summary": "ok"})
     assert r.status_code == 200
+
+
+def test_flags_scoped_key_caps_text(app_client, auth_headers, monkeypatch):
+    monkeypatch.setenv("NEXUS_FLAGS_KEY", "test-flags-key")
+    h = {"Authorization": "Bearer test-flags-key"}
+    r = app_client.post("/api/safety/flags", headers=h, json={
+        "source": "nightshift", "check": "c" * 300, "summary": "s" * 900, "detail": "d" * 9000})
+    assert r.status_code == 200
+    row = next(f for f in app_client.get("/api/safety/flags", headers=auth_headers).json() if f["id"] == r.json()["id"])
+    assert (len(row["check"]), len(row["summary"]), len(row["detail"])) == (64, 200, 1000)
