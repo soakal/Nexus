@@ -84,3 +84,22 @@ async def require_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return credentials.credentials
+
+
+async def require_flags_key(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    request: Request = None,
+) -> str:
+    """POST /api/safety/flags only: the full NEXUS_API_KEY ("full") or the scoped
+    NEXUS_FLAGS_KEY ("flags", held by nightshift, which can do nothing else with it).
+    An unset NEXUS_FLAGS_KEY simply means only the full key works."""
+    from backend.secrets.manager import get_secret
+    try:
+        flags_key = get_secret("NEXUS_FLAGS_KEY")
+    except (KeyError, RuntimeError):
+        flags_key = ""
+    if credentials is not None and flags_key and hmac.compare_digest(
+            credentials.credentials.encode(), flags_key.encode()):
+        return "flags"
+    await require_api_key(credentials, request)  # 401 (and authfail tracking) on anything else
+    return "full"
