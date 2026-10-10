@@ -157,6 +157,16 @@ async def test_scheduler_retry_pending_exception_reraises():
             await _retry_pending_deliveries()
 
 
+def _pretend_brain_organizer_venv(monkeypatch):
+    """setup_scheduler registers brain_organizer only if modules/brain-organizer's
+    gitignored venv exists, so job counts used to differ between /opt/nexus and any
+    fresh checkout. Point the venv check at this interpreter so counts are stable."""
+    import sys
+    from pathlib import Path
+    import backend.api.brain_organizer as bo_mod
+    monkeypatch.setattr(bo_mod, "venv_python_path", lambda _d: Path(sys.executable))
+
+
 def test_setup_scheduler_adds_jobs(monkeypatch):
     from datetime import datetime
     import backend.config as config_mod
@@ -165,6 +175,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # Far-future so the one-off infisical_soak_reminder job always registers,
     # regardless of the real current date.
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    _pretend_brain_organizer_venv(monkeypatch)
     # This test counts jobs under FULL configuration -- conftest.py forces
     # UNRAID_BACKUP_PATH="" suite-wide (real-backup test isolation, unrelated
     # to this test's own concern), which would also silently skip the
@@ -175,12 +186,9 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     monkeypatch.setattr(config_mod, "_settings_instance", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
-    # Baseline was 25 jobs (this assumes modules/brain-organizer/venv exists,
-    # same as it does on the real running instance -- see the "brain_organizer"
-    # job's venv-presence guard in setup_scheduler; a bare `git worktree add`
-    # checkout without that gitignored venv will register 24 instead and this
-    # one assertion will legitimately fail there until that venv is set up
-    # too) +4 "state_refresh_{30,60,300,600}s" (2026-08-05, see
+    # Baseline was 25 jobs (the brain_organizer job is registered only when its
+    # gitignored venv exists; _pretend_brain_organizer_venv makes that true here,
+    # so a fresh worktree counts the same as /opt/nexus) +4 "state_refresh_{30,60,300,600}s" (2026-08-05, see
     # backend/state_workers.py -- one job per COLLECTOR_GROUPS interval,
     # registered via register_state_workers()) +1 "anthropic_balance_watch"
     # (2026-08-05, monthly) -1 "hermes_soak_reminder" (removed 2026-08-09,
@@ -264,6 +272,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    _pretend_brain_organizer_venv(monkeypatch)
     # See test_setup_scheduler_adds_jobs for why this is needed (conftest's
     # UNRAID_BACKUP_PATH="" test-isolation default would otherwise also
     # silently skip vault_backup/knowledge_backup registration here).
@@ -294,6 +303,7 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
     import backend.scheduler as sched_mod
     from backend.scheduler import setup_scheduler, scheduler
     monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    _pretend_brain_organizer_venv(monkeypatch)
     monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
     monkeypatch.setenv("MORNING_BRIEFING_ENABLED", "false")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
