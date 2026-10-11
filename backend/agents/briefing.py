@@ -596,6 +596,9 @@ Produce a morning brief with these exact sections:
 
 ## Priority Actions (max 3)
 Items requiring action TODAY, ranked by urgency. If nothing urgent, say so.
+Only raise a problem the data actually shows. Calendar events (work on-call shifts, appointments, bills) are the
+user's own schedule: remind about them, but never invent a homelab or monitoring gap from them -- no system here
+tracks or alerts on the user's work rotation, and none should.
 
 ## Weather
 {weather_summary}
