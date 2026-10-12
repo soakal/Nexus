@@ -177,7 +177,7 @@ async def test_sonnet_effort_attaches_output_config():
 
 @pytest.mark.asyncio
 async def test_haiku_response_schema_attaches_output_config():
-    """Haiku 4.5 supports structured outputs, unlike effort."""
+    """Haiku supports structured outputs; haiku() also sends its default low effort."""
     mock_resp = MagicMock()
     mock_resp.content = [MagicMock(text="ok")]
     schema = {"type": "object", "properties": {"intent": {"type": "string"}}, "required": ["intent"], "additionalProperties": False}
@@ -190,15 +190,16 @@ async def test_haiku_response_schema_attaches_output_config():
         from backend.agents import router
         await router.haiku("prompt", response_schema=schema)
         call_kwargs = mock_client.messages.create.call_args[1]
-        assert call_kwargs["output_config"] == {"format": {"type": "json_schema", "schema": schema}}
+        assert call_kwargs["output_config"] == {"format": {"type": "json_schema", "schema": schema}, "effort": "low"}
 
 
-def test_haiku_has_no_effort_parameter():
-    """Haiku 4.5 400s on output_config.effort -- the function signature itself
-    must not offer it, so no caller can accidentally pass it."""
+def test_haiku_defaults_to_low_effort():
+    """Haiku 5.5 thinks at "medium" by default inside haiku()'s 4096 max_tokens;
+    haiku() must default to effort="low"."""
     import inspect
     from backend.agents import router
-    assert "effort" not in inspect.signature(router.haiku).parameters
+    assert inspect.signature(router.haiku).parameters["effort"].default == "low"
+    assert router._build_output_config(router.HAIKU_MODEL, None, "low") == {"effort": "low"}
 
 
 def test_build_output_config_degrades_silently_for_unsupported_model():
@@ -210,17 +211,29 @@ def test_build_output_config_degrades_silently_for_unsupported_model():
     assert router._build_output_config("claude-sonnet-4-6", schema, "medium") is None
 
 
-def test_build_output_config_drops_effort_for_haiku_even_when_supported_model():
+def test_build_output_config_drops_effort_for_haiku_4_5_even_when_supported_model():
+    """Haiku 4.5 (still action_judge's default) 400s on effort."""
     from backend.agents import router
-    cfg = router._build_output_config(router.HAIKU_MODEL, None, "low")
+    cfg = router._build_output_config(router.HAIKU_4_5_MODEL, None, "low")
     assert cfg is None  # effort alone, no schema, on a non-effort model -> nothing to attach
 
 
-def test_build_output_config_keeps_schema_but_drops_effort_for_haiku():
+def test_build_output_config_keeps_schema_but_drops_effort_for_haiku_4_5():
     from backend.agents import router
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
-    cfg = router._build_output_config(router.HAIKU_MODEL, schema, "low")
+    cfg = router._build_output_config(router.HAIKU_4_5_MODEL, schema, "low")
     assert cfg == {"format": {"type": "json_schema", "schema": schema}}  # no "effort" key
+
+
+def test_haiku_4_5_still_priced_for_configured_judge_and_verifier():
+    """action_judge/orchestrator_verifier/council_postmortem still default to
+    Haiku 4.5; an unpriced model meters $0 and blinds the budget brake."""
+    from backend.agents import router
+    from backend.config import Settings
+    for field in ("action_judge_model", "orchestrator_verifier_model", "council_postmortem_model"):
+        model = Settings.model_fields[field].default
+        assert model in router._PRICE_PER_MTOK, field
+        assert model not in router._EFFORT_MODELS, field
 
 
 @pytest.mark.asyncio
