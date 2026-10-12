@@ -124,6 +124,10 @@ _CONFIG_DEFAULTS: dict[str, Any] = {
     # sonnet_model that supports effort (claude-sonnet-5: thinking is on by
     # default and shares max_tokens, so "low" keeps synthesis cheap).
     "sonnet_effort": None,
+    # Same for the Haiku route/tag calls. None = not sent (claude-haiku-4-5
+    # rejects effort with a 400); set "low" alongside haiku_model
+    # claude-haiku-5-5, which thinks by default inside route_max_tokens.
+    "haiku_effort": None,
 }
 
 # Numeric keys with a meaningful valid range, beyond "must be the right type".
@@ -1818,6 +1822,7 @@ def route_topics(
         config["route_max_tokens"],
         config,
         client,
+        effort=config.get("haiku_effort"),
     )
 
     # Strip markdown code fences
@@ -1985,6 +1990,7 @@ def suggest_tags(
             config["route_max_tokens"],
             config,
             client,
+            effort=config.get("haiku_effort"),
         )
     except _APIUsageCapped:
         raise

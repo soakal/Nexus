@@ -3382,3 +3382,19 @@ def test_process_file_normalizes_fence_wrapped_llm_output_before_write(
     assert "```" not in result
     assert bo._parse_frontmatter_tags(result)[:1] == ["alpha"]
     assert "Merged body." in result
+
+
+def test_route_topics_sends_haiku_effort_only_when_configured(
+    tmp_config: dict[str, Any],
+) -> None:
+    """haiku_effort unset must leave the Haiku 4.5 request unchanged (4.5
+    400s on effort); set, it rides along as output_config.effort."""
+    reply = '{"routes": [{"match": "new", "title": "Gardening"}]}'
+    client = MagicMock()
+    client.messages.create.return_value = make_message(reply)
+    bo.route_topics("notes about tomatoes", [], tmp_config, client)
+    assert "output_config" not in client.messages.create.call_args.kwargs
+
+    client.messages.create.return_value = make_message(reply)
+    bo.route_topics("notes about tomatoes", [], {**tmp_config, "haiku_effort": "low"}, client)
+    assert client.messages.create.call_args.kwargs["output_config"] == {"effort": "low"}
