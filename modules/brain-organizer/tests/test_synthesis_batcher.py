@@ -336,3 +336,42 @@ class TestDebounceAndConvergence:
         submitted = client.messages.batches.create.call_args.kwargs["requests"]
         assert len(submitted) == 3
         assert {out[0][0], out[1][0], out[2][0]} == {("r0", "end_turn"), ("r1", "end_turn"), ("r2", "end_turn")}
+
+
+class TestSonnetEffort:
+    def test_effort_set_goes_into_batch_params_and_unset_omits_it(self):
+        client = MagicMock()
+        client.messages.batches.create.return_value = _make_batch("batch_1")
+        client.messages.batches.retrieve.return_value = _make_batch("batch_1", "ended")
+        client.messages.batches.results.return_value = [
+            _make_result("0000", "a"), _make_result("0001", "b"),
+        ]
+        config = {**bo._CONFIG_DEFAULTS, "use_batch_api": True}
+        batcher = bo.SynthesisBatcher(
+            config, client, _fixed_workers(1), debounce_seconds=0.01, poll_seconds=0.01,
+        )
+
+        batcher.call_many([{**_req("x"), "effort": "low"}, _req("y")])
+
+        params = [r["params"] for r in client.messages.batches.create.call_args.kwargs["requests"]]
+        assert params[0]["output_config"] == {"effort": "low"}
+        assert "output_config" not in params[1]
+
+    def test_call_api_sends_output_config_only_when_effort_given(self):
+        client = MagicMock()
+        client.messages.create.return_value = SimpleNamespace(
+            content=[TextBlock(type="text", text="ok")], stop_reason="end_turn", usage=_make_usage(),
+        )
+        config = dict(bo._CONFIG_DEFAULTS)
+
+        bo._call_api("claude-sonnet-5", [{"role": "user", "content": "hi"}], 100, config, client, effort="low")
+        bo._call_api("claude-sonnet-4-6", [{"role": "user", "content": "hi"}], 100, config, client)
+
+        first, second = client.messages.create.call_args_list
+        assert first.kwargs["output_config"] == {"effort": "low"}
+        assert "output_config" not in second.kwargs
+
+    def test_build_synthesis_request_carries_configured_effort(self):
+        config = {**bo._CONFIG_DEFAULTS, "sonnet_model": "claude-sonnet-5", "sonnet_effort": "low"}
+        req = bo.build_synthesis_request("Topic", "new info", None, config)
+        assert req["effort"] == "low"
