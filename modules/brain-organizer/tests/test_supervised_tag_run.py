@@ -25,6 +25,7 @@ report INCONCLUSIVE (exit 3) for all of crit 44-48, never a vacuous PASS.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,7 @@ def test_assert_relative_rejects_dotdot_traversal_nested() -> None:
 
 def test_assert_relative_rejects_absolute_path() -> None:
     """Pre-existing guard: an absolute path is still refused."""
-    config = {"meta_folder": "C:\\Users\\Brian\\elsewhere"}
+    config = {"meta_folder": os.path.abspath("elsewhere")}
 
     with pytest.raises(st.UnsafeDestination):
         st._assert_relative(config, ("meta_folder",))
@@ -85,7 +86,7 @@ def test_assert_relative_rejects_backup_folder_traversal() -> None:
 
 
 def test_assert_relative_rejects_backup_folder_absolute() -> None:
-    config = {"backup_folder": "C:\\Users\\Brian\\elsewhere"}
+    config = {"backup_folder": os.path.abspath("elsewhere")}
 
     with pytest.raises(st.UnsafeDestination):
         st._assert_relative(config, ("backup_folder",))
