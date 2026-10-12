@@ -5,7 +5,6 @@ import json
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
 import anthropic
 
@@ -233,8 +232,8 @@ _PRICE_PER_MTOK = {
     # claude-opus-4-8: retired as OPUS_MODEL 2026-09-28 (migrated to Opus 5
     # above, same price) -- kept for historical SpendLog rows.
     "claude-opus-4-8": {"input": 5.0, "output": 25.0},
-    # OpenRouter model-swap trial (Trial A/B) -- verified live against
-    # GET https://openrouter.ai/api/v1/models 2026-08-16.
+    # Closed OpenRouter model-swap trials (Trial A/B, NO-GO) -- kept for
+    # historical SpendLog rows. Verified live 2026-08-16.
     "google/gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
     "google/gemini-2.5-pro": {"input": 1.25, "output": 10.00},
     # OpenRouter fallback for Anthropic account exhaustion (2026-08-21, see
@@ -248,8 +247,8 @@ _PRICE_PER_MTOK = {
     "anthropic/claude-sonnet-4.6": {"input": 3.0, "output": 15.0},
     "anthropic/claude-haiku-4.5": {"input": 1.0, "output": 5.0},
     "anthropic/claude-sonnet-5": {"input": 2.0, "output": 10.0},
-    # 2026-09 shadow trial candidate (Trial A harness) -- verified live against
-    # GET https://openrouter.ai/api/v1/models 2026-09-20 ($0.20 / $1.20).
+    # Closed 2026-09 shadow trial candidate (NO-GO) -- kept for historical
+    # SpendLog rows. Verified live 2026-09-20 ($0.20 / $1.20).
     "openai/gpt-5.6-luna": {"input": 0.20, "output": 1.20},
 }
 
@@ -829,8 +828,8 @@ async def _maybe_openrouter_fallback(exc, model: str, max_tokens: int, prompt: s
 
     Only wired into `_run` (opus/sonnet/haiku single-shot calls) -- the exact
     entry point the real 2026-08-21 incident hit. Metered via _record_spend
-    exactly like the shadow-call path (_run_shadow_call) reuses, same label as
-    the real call so spend/label reporting needs no new bucket.
+    under the same label as the real call so spend/label reporting needs no
+    new bucket.
     # ponytail: not wired into run_with_tools's multi-round tool loop -- an
     # OpenRouter fallback mid-tool-loop would need to translate Anthropic's
     # tool_use/tool_result blocks to OpenAI-style tool calling, a materially
@@ -894,210 +893,6 @@ async def _run_billed(loop, func):
         raise
 
 
-# --- OpenRouter model-swap trial (Trial A) -----------------------------------
-# Shadows selected Haiku-tier labels with a second, parallel call to
-# settings.shadow_model, logged for later comparison. Never affects the real
-# response -- this is purely for Brian to judge whether a cheaper model is
-# good enough before actually cutting anything over. See tools/shadow_diff.py.
-
-_shadow_tasks: set[asyncio.Task] = set()
-_SHADOW_LOG = Path("/var/lib/nexus/logs/shadow.jsonl")
-
-# Labels whose output is a JSON object carrying ONE decision plus free prose,
-# not a one-word verdict. Case-insensitive text equality -- the comparator every
-# other shadow label uses -- can essentially never be True for these: both
-# action_judge and goal_criteria_eval return a "reason"/rationale string that no
-# two models phrase identically, so the whole label logged as ~100%
-# disagreement, and that fiction was then blended into the daily trial digest's
-# single headline percentage (backend/agents/trial_report.py::_section_trial_a).
-# The decision field is the thing the trial is actually asking about.
-_SHADOW_DECISION_FIELD = {"action_judge": "allow", "goal_criteria_eval": "met"}
-
-
-def shadow_decision(label: str, text: str) -> bool | None:
-    """The bool decision field out of a decision-shaped label's JSON output.
-
-    None means "no decision to compare": the label isn't decision-shaped, the
-    text doesn't parse, or the field is missing/not a bool. None is deliberately
-    NOT folded into False -- "the shadow model emitted garbage" and "the shadow
-    model said no" are different findings, and only the second one is a
-    disagreement.
-
-    Uses the same defensive find("{")/rfind("}") extraction as
-    backend/safety/judge.py::evaluate_action, which also skips over any ```json
-    fence for free. Duplicated by hand in tools/shadow_diff.py (tools/ never
-    imports backend/, same standing rule as _HARMFUL_DIRECTION/_FENCE_RE over in
-    trial_report.py); backend/agents/trial_report.py imports THIS copy.
-    """
-    field = _SHADOW_DECISION_FIELD.get(label)
-    if field is None:
-        return None
-    try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        value = json.loads(text[start:end]).get(field)
-    except Exception:
-        return None
-    return value if isinstance(value, bool) else None
-
-
-def shadow_agree(label: str, out_a: str, out_b: str) -> bool:
-    """Did the shadow model agree with the real one on this call?"""
-    if label in _SHADOW_DECISION_FIELD:
-        a = shadow_decision(label, out_a)
-        return a is not None and a == shadow_decision(label, out_b)
-    return out_a.strip().upper() == out_b.strip().upper()
-
-
-def _shadow_active(label: str, settings) -> bool:
-    model = getattr(settings, "shadow_model", "") or ""
-    if not model:
-        return False
-    until = getattr(settings, "shadow_until", "") or ""
-    if until:
-        from datetime import date
-        try:
-            if date.today() > date.fromisoformat(until):
-                return False
-        except ValueError:
-            logger.warning(f"invalid shadow_until {until!r}; shadow disabled")
-            return False
-    labels = {s.strip() for s in (getattr(settings, "shadow_labels", "") or "").split(",") if s.strip()}
-    return label in labels
-
-
-async def _maybe_shadow(model: str, prompt: str, system: str, label: str, primary_text: str, response_schema: dict | None = None) -> None:
-    """Fire the shadow call as a background task -- never awaited by the real
-    caller, so it can never add latency or a failure mode to the real response."""
-    try:
-        from backend.config import get_settings
-        settings = get_settings()
-        if not _shadow_active(label, settings):
-            return
-        task = asyncio.create_task(_run_shadow_call(settings.shadow_model, prompt, system, label, primary_text, response_schema))
-        _shadow_tasks.add(task)
-        task.add_done_callback(_shadow_tasks.discard)
-    except Exception as e:  # never let the shadow trigger touch the real call
-        logger.warning(f"shadow trigger failed (non-fatal): {e}")
-
-
-def _shadow_request_body(shadow_model: str, messages: list, label: str, response_schema: dict | None) -> tuple[dict, bool]:
-    """OpenAI-format request for the shadow call. Returns (body, wrapped).
-
-    When the real call carried a `response_schema`, the shadow gets the same
-    schema as a strict `response_format` so the shape criterion measures the
-    model, not the harness. OpenAI strict mode requires an object root, and
-    NEXUS's two shadowed schemas (facts_extract, goal_proposer) are arrays --
-    those get wrapped in {"items": <array>} here and unwrapped by the caller,
-    so out_b lands in shadow.jsonl in the same shape as out_a.
-    `reasoning.effort=low` matches production intent for these single-shot
-    classify/extract labels (and is dropped by models that don't reason).
-    """
-    body: dict = {
-        "model": shadow_model,
-        "max_tokens": 4096,
-        "messages": messages,
-        "reasoning": {"effort": "low"},
-    }
-    wrapped = False
-    if response_schema is not None:
-        schema = response_schema
-        if schema.get("type") == "array":
-            schema = {"type": "object", "properties": {"items": schema}, "required": ["items"], "additionalProperties": False}
-            wrapped = True
-        body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": label, "strict": True, "schema": schema},
-        }
-    return body, wrapped
-
-
-async def _run_shadow_call(shadow_model: str, prompt: str, system: str, label: str, primary_text: str, response_schema: dict | None = None) -> None:
-    """The actual shadow call + logging. Whole body is one try/except -- a
-    shadow failure must be invisible to everything except its own log line."""
-    try:
-        import time
-        from types import SimpleNamespace
-
-        import httpx
-
-        from backend.config import get_settings
-        from backend.http_client import SSL_CONTEXT
-        from backend.safety.governor import today_spend_usd
-
-        settings = get_settings()
-        # Hard per-day shadow cap, independent of the real daily_budget_usd:
-        # shadow rows are metered like any other SpendLog row, so a runaway
-        # trial would otherwise trip the REAL budget brake and block real calls.
-        cap = float(getattr(settings, "shadow_daily_cap_usd", 0.25) or 0.0)
-        if await asyncio.to_thread(today_spend_usd, "shadow:") >= cap:
-            logger.warning(f"shadow call skipped: daily shadow cap ${cap:.2f} reached (label={label!r})")
-            return
-        messages = ([{"role": "system", "content": system}] if system else []) + [
-            {"role": "user", "content": prompt}
-        ]
-        body, wrapped = _shadow_request_body(shadow_model, messages, label, response_schema)
-        t0 = time.monotonic()
-        async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=30) as client:
-            resp = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-                json=body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        latency_ms = int((time.monotonic() - t0) * 1000)
-
-        shadow_text = data["choices"][0]["message"]["content"] or ""
-        if wrapped:
-            try:
-                shadow_text = json.dumps(json.loads(shadow_text)["items"])
-            except Exception:
-                pass  # leave the raw text: a parse failure is itself a finding
-        usage = data.get("usage") or {}
-        fake_resp = SimpleNamespace(usage=SimpleNamespace(
-            input_tokens=int(usage.get("prompt_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or 0),
-        ))
-        # Real, metered spend -- shows up in the daily spend report and
-        # autonomy digest automatically, so a forgotten trial is visible
-        # even if nobody ever reads shadow.jsonl. Off the loop: _record_spend
-        # opens a sync Session/commit, same as every other caller of it, all
-        # of which run inside a run_in_executor thread -- this is the only
-        # caller that's a plain asyncio task, so it must hop threads itself.
-        await asyncio.to_thread(_record_spend, shadow_model, fake_resp, f"shadow:{label}")
-
-        agree = shadow_agree(label, primary_text, shadow_text)
-
-        import json as _json
-
-        row = {
-            "ts": datetime.utcnow().isoformat(),
-            "label": label,
-            "model_a": HAIKU_MODEL,
-            "model_b": shadow_model,
-            "prompt": prompt[:4000],
-            # 2000 was cutting long facts_extract/goal_proposer JSON arrays
-            # mid-array, which then read as a parseable-JSON failure for
-            # BOTH models even when the actual output was well-formed.
-            # 8000 comfortably covers the shadow call's own max_tokens=4096
-            # budget above.
-            "out_a": primary_text[:8000],
-            "out_b": shadow_text[:8000],
-            "agree": agree,
-            "latency_ms": latency_ms,
-        }
-
-        def _append() -> None:
-            _SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with _SHADOW_LOG.open("a", encoding="utf-8") as f:
-                f.write(_json.dumps(row) + "\n")
-
-        await asyncio.to_thread(_append)
-    except Exception as e:
-        logger.warning(f"shadow call failed (non-fatal, label={label!r}): {e}")
-
-
 async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search: bool = False, label: str = "", *, response_schema: dict | None = None, effort: str | None = None) -> str:
     """Run the blocking SDK call in the default thread-pool executor.
 
@@ -1131,8 +926,6 @@ async def _run(model: str, max_tokens: int, prompt: str, system: str, web_search
         if fallback is not None:
             return fallback
         raise
-    if model == HAIKU_MODEL:
-        await _maybe_shadow(model, prompt, system, label, result, response_schema)
     return result
 
 

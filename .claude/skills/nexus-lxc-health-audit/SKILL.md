@@ -54,7 +54,7 @@ EOF
 
 Healthy (verified live 2026-08-16): **30 jobs**, including `goal_proposer`, `goal_recurrence`,
 `morning_briefing`, `brain_organizer`, `mail_autodraft`, `knowledge_backup`, `watchdog`,
-`trial_report` (registered but trial harness deliberately OFF pending Brian's go-ahead), the four
+the four
 `state_refresh_*`, `vault_backup`, `db_backup`. Missing job → check its `_ENABLED` flag in
 `/var/lib/nexus/.env`, then whether the service restarted since the flag changed. (The old
 goal-id-overlap-with-Windows reason for disabling jobs is dead — Windows was decommissioned

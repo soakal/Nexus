@@ -100,7 +100,7 @@ PY
 ```
 
 Healthy: a handful of dollars over 30 days, `briefing`/`chat` near the top. Labels prefixed
-`shadow:` are the Trial A shadow calls (see `nexus-trial-status`). A label you don't recognise
+`shadow:` are historical rows from the closed Trial A shadow calls (Sept 2026). A label you don't recognise
 costing real money is the finding.
 
 ## Recipe 2 — settings diff against `config.py`'s defaults
