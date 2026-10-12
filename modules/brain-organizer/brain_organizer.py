@@ -141,6 +141,12 @@ _CONFIG_RANGES: dict[str, tuple[float, float]] = {
 }
 
 
+# effort key -> the model key it applies to. Effort is None (not sent) or one
+# of the API's levels; claude-*-4-x models reject it with a 400.
+_EFFORT_KEYS = {"sonnet_effort": "sonnet_model", "haiku_effort": "haiku_model"}
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     """Validate a loaded config dict and merge in defaults for absent optional keys.
 
@@ -176,6 +182,18 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             continue
 
         value = merged[key]
+        if key in _EFFORT_KEYS:
+            if value is not None and value not in _EFFORT_LEVELS:
+                raise ValueError(
+                    f"brain_organizer config key {key!r} must be null or one of {_EFFORT_LEVELS}, got {value!r}"
+                )
+            model = str(merged.get(_EFFORT_KEYS[key], ""))
+            if value is not None and re.search(r"-4-\d", model):
+                raise ValueError(
+                    f"brain_organizer config: {key!r}={value!r} but {_EFFORT_KEYS[key]!r}={model!r} "
+                    "rejects effort -- change the model and the effort together"
+                )
+            continue
         expected_type = type(default)
         if expected_type is bool:
             if not isinstance(value, bool):

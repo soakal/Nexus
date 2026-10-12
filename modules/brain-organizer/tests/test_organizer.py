@@ -3398,3 +3398,27 @@ def test_route_topics_sends_haiku_effort_only_when_configured(
     client.messages.create.return_value = make_message(reply)
     bo.route_topics("notes about tomatoes", [], {**tmp_config, "haiku_effort": "low"}, client)
     assert client.messages.create.call_args.kwargs["output_config"] == {"effort": "low"}
+
+
+def test_validate_config_effort_keys_accept_null_or_level_and_guard_4x_models(
+    tmp_config: dict[str, Any],
+) -> None:
+    """The planned prod switch (5.x models + effort "low") must validate;
+    a typo'd level, or effort left on a 4.x model (which 400s on every
+    call), must refuse to start rather than fail every note."""
+    switched = {
+        **tmp_config,
+        "sonnet_model": "claude-sonnet-5", "sonnet_effort": "low",
+        "haiku_model": "claude-haiku-5-5", "haiku_effort": "low",
+    }
+    merged = bo.validate_config(switched)
+    assert merged["sonnet_effort"] == "low" and merged["haiku_effort"] == "low"
+
+    assert bo.validate_config({**tmp_config, "sonnet_effort": None})["sonnet_effort"] is None
+
+    with pytest.raises(ValueError, match="sonnet_effort"):
+        bo.validate_config({**switched, "sonnet_effort": "lowest"})
+    with pytest.raises(ValueError, match="haiku_effort"):
+        bo.validate_config({**switched, "haiku_model": "claude-haiku-4-5-20251001"})
+    with pytest.raises(ValueError, match="sonnet_effort"):
+        bo.validate_config({**switched, "sonnet_model": "claude-sonnet-4-6"})
