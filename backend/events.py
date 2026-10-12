@@ -32,7 +32,7 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "mail_draft_created", "needs_confirm", "obligation_due", "reminder", "scheduler_stall",
     "secret_drift",
     "soak_reminder", "spend_report", "stale_delivery", "throttled",
-    "task_completed", "task_failed", "trial_verdict", "weekly_review",
+    "task_completed", "task_failed", "weekly_review",
 })
 
 

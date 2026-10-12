@@ -96,8 +96,8 @@ def _local_midnight_utc_naive() -> datetime:
 def today_spend_usd(label_prefix: str | None = None) -> float:
     """Sum of SpendLog.cost_usd for the current local day (sync).
 
-    `label_prefix` narrows the sum to labels starting with it (e.g. "shadow:"
-    for the router's per-day shadow-call cap); None keeps the whole-day total.
+    `label_prefix` narrows the sum to labels starting with it; None keeps the
+    whole-day total.
     """
     from sqlmodel import Session, func, select
 
