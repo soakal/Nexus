@@ -226,6 +226,17 @@ def test_build_output_config_keeps_schema_but_drops_effort_for_haiku_4_5():
     assert cfg == {"format": {"type": "json_schema", "schema": schema}}  # no "effort" key
 
 
+def test_haiku_4_5_still_priced_for_configured_judge_and_verifier():
+    """action_judge/orchestrator_verifier/council_postmortem still default to
+    Haiku 4.5; an unpriced model meters $0 and blinds the budget brake."""
+    from backend.agents import router
+    from backend.config import Settings
+    for field in ("action_judge_model", "orchestrator_verifier_model", "council_postmortem_model"):
+        model = Settings.model_fields[field].default
+        assert model in router._PRICE_PER_MTOK, field
+        assert model not in router._EFFORT_MODELS, field
+
+
 @pytest.mark.asyncio
 async def test_router_messages_structure():
     """All callers must send a single user-role message."""
@@ -1197,14 +1208,3 @@ async def test_shadow_daily_cap_blocks_call(spend_eng, monkeypatch):
     with patch("backend.config.get_settings", return_value=settings), patch("httpx.AsyncClient", cls):
         await router._run_shadow_call("openai/gpt-5.6-luna", "p", "", "mail_junk_classify", "KEEP")
     client.post.assert_not_called()
-
-
-def test_haiku_4_5_still_priced_for_configured_judge_and_verifier():
-    """action_judge/orchestrator_verifier/council_postmortem still default to
-    Haiku 4.5; an unpriced model meters $0 and blinds the budget brake."""
-    from backend.agents import router
-    from backend.config import Settings
-    for field in ("action_judge_model", "orchestrator_verifier_model", "council_postmortem_model"):
-        model = Settings.model_fields[field].default
-        assert model in router._PRICE_PER_MTOK, field
-        assert model not in router._EFFORT_MODELS, field
