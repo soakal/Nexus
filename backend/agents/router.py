@@ -196,7 +196,14 @@ OPUS_MODEL = "claude-opus-5"
 # (4.6 ran thinking-off) -- see the max_tokens bumps at stream_sonnet(),
 # sonnet(), and orchestrator._sonnet_execute for why that matters.
 SONNET_MODEL = "claude-sonnet-5"
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+# Migrated 2026-10-11: claude-haiku-4-5 ($1/$5) -> claude-haiku-5-5 ($0.10/$0.50).
+# Haiku 5.5 thinks by default (effort default "medium", and thinking shares
+# max_tokens), so haiku() sends effort="low" -- see _EFFORT_MODELS.
+HAIKU_MODEL = "claude-haiku-5-5"
+# Still the configured default for action_judge_model / orchestrator_verifier_model /
+# council_postmortem_model (backend/config.py) -- kept priced and schema-capable
+# so those calls keep metering and structured outputs. Rejects `effort` (400).
+HAIKU_4_5_MODEL = "claude-haiku-4-5-20251001"
 
 # Process-lifetime metering outcome counters (reset on restart — that's fine;
 # they are a live health signal, not a durable ledger). Incrementing a dict
@@ -225,7 +232,10 @@ def metering_counters() -> dict:
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 2.0, "output": 10.0},
-    HAIKU_MODEL: {"input": 1.0, "output": 5.0},
+    # ponytail: flat rate -- Haiku 5.5 bills $0.50/$2.50 above 100K-token
+    # prompts; every NEXUS Haiku prompt is far below that, tier it if one isn't.
+    HAIKU_MODEL: {"input": 0.10, "output": 0.50},
+    HAIKU_4_5_MODEL: {"input": 1.0, "output": 5.0},
     # claude-sonnet-4-6: retired as SONNET_MODEL 2026-08-28 (migrated to
     # Sonnet 5 above) -- kept for historical SpendLog rows and for the
     # separate brain-organizer subprocess, which still runs its own pin.
@@ -268,6 +278,7 @@ _OPENROUTER_FALLBACK_MODEL = {
     OPUS_MODEL: "anthropic/claude-opus-4.8",
     SONNET_MODEL: "anthropic/claude-sonnet-5",
     HAIKU_MODEL: "anthropic/claude-haiku-4.5",
+    HAIKU_4_5_MODEL: "anthropic/claude-haiku-4.5",
     # Kept only for a manual .env rollback of orchestrator_executor_model to
     # claude-sonnet-4-6 -- not reachable via SONNET_MODEL anymore (that's
     # claude-sonnet-5 as of 2026-08-28).
@@ -536,10 +547,10 @@ _WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_us
 # (it attached output_config.format unconditionally, including to
 # _opus_plan/_opus_debug's then-default claude-sonnet-4-6, which doesn't
 # support it at all).
-_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL}
+_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL, HAIKU_4_5_MODEL}
 # Narrower than the set above: Haiku 4.5 supports structured outputs but
-# rejects `effort` outright (400) -- never offer effort on haiku().
-_EFFORT_MODELS = {OPUS_MODEL, SONNET_MODEL}
+# rejects `effort` outright (400), so it is never in here.
+_EFFORT_MODELS = {OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL}
 
 
 def _build_output_config(model: str, response_schema: dict | None, effort: str | None) -> dict | None:
@@ -1386,11 +1397,10 @@ async def sonnet(prompt: str, system: str = "", web_search: bool = False, label:
     return await _run(SONNET_MODEL, 16000, prompt, system, web_search, label, response_schema=response_schema, effort=effort)
 
 
-async def haiku(prompt: str, system: str = "", label: str = "", *, response_schema: dict | None = None) -> str:
-    # No effort= param here on purpose -- Haiku 4.5 rejects output_config.effort
-    # outright (400). Structured outputs ARE supported on Haiku, hence
-    # response_schema.
-    return await _run(HAIKU_MODEL, 4096, prompt, system, label=label, response_schema=response_schema)
+async def haiku(prompt: str, system: str = "", label: str = "", *, response_schema: dict | None = None, effort: str | None = "low") -> str:
+    # effort defaults to "low": Haiku 5.5 would otherwise think at "medium" on
+    # every classify/extract call, inside the same 4096 max_tokens.
+    return await _run(HAIKU_MODEL, 4096, prompt, system, label=label, response_schema=response_schema, effort=effort)
 
 
 async def run_model(
