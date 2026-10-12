@@ -119,6 +119,15 @@ _CONFIG_DEFAULTS: dict[str, Any] = {
     # per request. Off keeps the trial harness's config.json (a separate
     # file, Gemini models) byte-identical to pre-batcher behavior.
     "use_batch_api": False,
+    # output_config.effort for Sonnet synthesis calls. None = not sent (the
+    # pre-2026-10 request, used with claude-sonnet-4-6). Set alongside a
+    # sonnet_model that supports effort (claude-sonnet-5: thinking is on by
+    # default and shares max_tokens, so "low" keeps synthesis cheap).
+    "sonnet_effort": None,
+    # Same for the Haiku route/tag calls. None = not sent (claude-haiku-4-5
+    # rejects effort with a 400); set "low" alongside haiku_model
+    # claude-haiku-5-5, which thinks by default inside route_max_tokens.
+    "haiku_effort": None,
 }
 
 # Numeric keys with a meaningful valid range, beyond "must be the right type".
@@ -130,6 +139,12 @@ _CONFIG_RANGES: dict[str, tuple[float, float]] = {
     "tag_max_per_page": (0, 1000),
     "tag_vocabulary_max_in_prompt": (0, 10000),
 }
+
+
+# effort key -> the model key it applies to. Effort is None (not sent) or one
+# of the API's levels; claude-*-4-x models reject it with a 400.
+_EFFORT_KEYS = {"sonnet_effort": "sonnet_model", "haiku_effort": "haiku_model"}
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -167,6 +182,18 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
             continue
 
         value = merged[key]
+        if key in _EFFORT_KEYS:
+            if value is not None and value not in _EFFORT_LEVELS:
+                raise ValueError(
+                    f"brain_organizer config key {key!r} must be null or one of {_EFFORT_LEVELS}, got {value!r}"
+                )
+            model = str(merged.get(_EFFORT_KEYS[key], ""))
+            if value is not None and re.search(r"-4-\d", model):
+                raise ValueError(
+                    f"brain_organizer config: {key!r}={value!r} but {_EFFORT_KEYS[key]!r}={model!r} "
+                    "rejects effort -- change the model and the effort together"
+                )
+            continue
         expected_type = type(default)
         if expected_type is bool:
             if not isinstance(value, bool):
@@ -1332,6 +1359,7 @@ def _call_api(
     client: anthropic.Anthropic,
     *,
     system: list[dict[str, Any]] | None = None,
+    effort: str | None = None,
     max_retries: int = 6,
 ) -> tuple[str, str]:
     """
@@ -1358,6 +1386,8 @@ def _call_api(
             }
             if system is not None:
                 kwargs["system"] = system
+            if effort:
+                kwargs["output_config"] = {"effort": effort}
             msg = client.messages.create(**kwargs)  # type: ignore[arg-type]
             block = next((b for b in msg.content if isinstance(b, TextBlock)), None)
             if block is None:
@@ -1810,6 +1840,7 @@ def route_topics(
         config["route_max_tokens"],
         config,
         client,
+        effort=config.get("haiku_effort"),
     )
 
     # Strip markdown code fences
@@ -1977,6 +2008,7 @@ def suggest_tags(
             config["route_max_tokens"],
             config,
             client,
+            effort=config.get("haiku_effort"),
         )
     except _APIUsageCapped:
         raise
@@ -2280,6 +2312,7 @@ def build_synthesis_request(
             "prompt": prompt,
             "model": config["sonnet_model"],
             "max_tokens": max_tokens,
+            "effort": config.get("sonnet_effort"),
             "branch": "5b",
             "topic": topic,
             "existing_content": existing_content,
@@ -2370,6 +2403,7 @@ def build_synthesis_request(
         "prompt": prompt,
         "model": config["sonnet_model"],
         "max_tokens": max_tokens,
+        "effort": config.get("sonnet_effort"),
         "branch": branch,
         "topic": topic,
         "existing_content": existing_content,
@@ -2546,6 +2580,7 @@ def synthesize_wiki(
         req["max_tokens"],
         config,
         client,
+        effort=req.get("effort"),
     )
     return finish_synthesis(req, text, stop_reason, stats=stats)
 
@@ -2624,6 +2659,7 @@ class SynthesisBatcher:
                 _call_api(
                     r["model"], [{"role": "user", "content": r["prompt"]}],
                     r["max_tokens"], self._config, self._client,
+                    effort=r.get("effort"),
                 )
                 for r in requests
             ]
@@ -2689,6 +2725,7 @@ class SynthesisBatcher:
                     "model": item["req"]["model"],
                     "max_tokens": item["req"]["max_tokens"],
                     "messages": [{"role": "user", "content": item["req"]["prompt"]}],
+                    **({"output_config": {"effort": item["req"]["effort"]}} if item["req"].get("effort") else {}),
                 },
             }
             for i, item in enumerate(claim)
@@ -2771,6 +2808,7 @@ class SynthesisBatcher:
             item["result"] = _call_api(
                 r["model"], [{"role": "user", "content": r["prompt"]}],
                 r["max_tokens"], self._config, self._client,
+                effort=r.get("effort"),
             )
         except Exception as exc:
             item["result"] = exc
