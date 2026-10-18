@@ -178,7 +178,7 @@ def _db_items(category: str | None = None, status: str | None = None) -> list[di
     from backend.database import Capture, CaptureItem, engine
 
     with Session(engine) as s:
-        q = select(CaptureItem, Capture.path).join(Capture, Capture.id == CaptureItem.capture_id)  # type: ignore[arg-type]
+        q = select(CaptureItem, Capture.path).join(Capture, Capture.id == CaptureItem.capture_id, isouter=True)  # type: ignore[arg-type]
         if category:
             q = q.where(CaptureItem.category == category)
         if status:
