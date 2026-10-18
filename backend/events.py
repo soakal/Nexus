@@ -55,7 +55,8 @@ async def notify_phone(
     """Best-effort phone push via NEXUS's own Telegram bot. Gated by phone_notifications_enabled.
 
     Appends a deep-link to the Safety page when app_base_url is configured so
-    Brian can tap straight through to Safety from any alert.
+    Brian can tap straight through to Safety from any alert (except kinds in
+    _NO_SAFETY_LINK_KINDS, e.g. task digests).
 
     `buttons` (optional): [{"text": ..., "callback_data": ...}] — rendered as a
     Telegram inline keyboard on the last chunk of the message.
