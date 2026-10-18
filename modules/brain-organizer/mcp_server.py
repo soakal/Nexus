@@ -50,7 +50,7 @@ _LOOPBACK_ADDRS = ("127.0.0.1", "::1")
 # One user, one process: serialize /raw so same-request_id retries can't race.
 _RAW_LOCK = threading.Lock()
 _CATEGORIES = ("work", "personal")
-_REQUEST_ID_PAT = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_REQUEST_ID_PAT = re.compile(r"[A-Za-z0-9_-]{1,80}")
 
 
 def _err(msg: str, code: int) -> tuple[Any, int]:
@@ -386,11 +386,12 @@ def create_app(
         if category is not None and category not in _CATEGORIES:
             return _err("category must be 'work' or 'personal'", 400)
         rid = data.get("request_id")
-        if rid is not None and not (isinstance(rid, str) and _REQUEST_ID_PAT.match(rid)):
+        if rid is not None and not (isinstance(rid, str) and _REQUEST_ID_PAT.fullmatch(rid)):
             return _err("request_id must match [A-Za-z0-9_-]{1,80}", 400)
-        # Archive rule: explicit category wins; remote no-category -> unsorted;
-        # loopback no-category (NEXUS itself) keeps the exact legacy raw-only path.
-        archive = category or (None if _is_loopback(request.remote_addr) else "unsorted")
+        # Archive rule: explicit category wins; no category + a `source` (a real
+        # capture client) -> unsorted; otherwise (NEXUS itself, the digest relay)
+        # keep the exact legacy raw-only path.
+        archive = category or ("unsorted" if data.get("source") else None)
         fingerprint = hashlib.sha256(f"{archive or ''}\n{content}".encode()).hexdigest()
 
         broken_links: list[str] = []
@@ -425,12 +426,24 @@ def create_app(
                   "file": _free_name(cap_dir, Path(safe_name).stem + ".md"),
                   "raw": _free_name(rf, safe_name)}
             marker_dir = Path(config["vault_path"]) / config["meta_folder"] / "capture_ids"
-            marker = marker_dir / f"{rid}.json"
+            marker = marker_dir / f"{rid}.json" if rid else None
+
+            def _save_marker() -> None:
+                tmp = _write_tmp(marker_dir, json.dumps(st))
+                try:
+                    os.replace(tmp, marker)
+                finally:
+                    tmp.unlink(missing_ok=True)
+
             if rid:
                 try:  # reserve: exclusive create, so an existing marker is a replay
                     _publish(marker_dir, marker.name, json.dumps(st), exact=True)
                 except FileExistsError:
-                    st = json.loads(marker.read_text(encoding="utf-8"))
+                    try:
+                        st = json.loads(marker.read_text(encoding="utf-8"))
+                    except ValueError:
+                        logger.error("Corrupt capture marker: %s", marker)
+                        raise
                     if st["fingerprint"] != fingerprint:
                         return _err("request_id reused with different payload", 409)
 
@@ -441,23 +454,38 @@ def create_app(
 
             if st["state"] == "committed":
                 return _body(True), 200
+            def _clean(v: Any) -> str:
+                return re.sub(r"[\r\n]+", " ", str(v or ""))[:80]
+
+            fm = {"category": archive, "source": _clean(data.get("source")),
+                  "captured_at": _clean(data.get("captured_at")),
+                  "request_id": rid, "fingerprint": fingerprint}
+            doc = "---\n" + "".join(f"{k}: {json.dumps(v)}\n" for k, v in fm.items()) + "---\n\n" + content
+
+            def _mine(path: Path) -> bool:
+                try:
+                    return f"fingerprint: {json.dumps(fingerprint)}\n" in path.read_text(encoding="utf-8")[:2000]
+                except OSError:
+                    return False
+
+            # A pre-chosen name may have been taken by someone else since the
+            # reservation: only a file carrying our fingerprint counts as ours.
+            renamed = False
+            for key, folder in (("file", cap_dir), ("raw", rf)):
+                if (folder / st[key]).exists() and not _mine(folder / st[key]):
+                    st[key] = _free_name(folder, st[key])
+                    renamed = True
+            if renamed and rid:
+                _save_marker()
             if not (cap_dir / st["file"]).exists():
-                fm = {"category": archive, "source": str(data.get("source") or ""),
-                      "captured_at": str(data.get("captured_at") or ""),
-                      "request_id": rid, "fingerprint": fingerprint}
-                head = "---\n" + "".join(f"{k}: {json.dumps(v)}\n" for k, v in fm.items()) + "---\n\n"
-                st["file"] = _publish(cap_dir, st["file"], head + content).name
+                st["file"] = _publish(cap_dir, st["file"], doc).name
             # ponytail: crash after this raw write but before the commit means a
             # retry rewrites raw (organizer may fold it twice: one duplicate wiki mention).
             if not (rf / st["raw"]).exists():
-                st["raw"] = _publish(rf, st["raw"], content).name
+                st["raw"] = _publish(rf, st["raw"], doc).name
             if rid:
                 st["state"] = "committed"
-                tmp = _write_tmp(marker_dir, json.dumps(st))
-                try:
-                    os.replace(tmp, marker)
-                finally:
-                    tmp.unlink(missing_ok=True)
+                _save_marker()
         except FileExistsError:
             return _err("Too many notes with this filename", 409)
         except (OSError, ValueError, KeyError) as exc:

@@ -850,16 +850,26 @@ def test_loopback_legacy_stays_raw_only(wiki_app, tmp_vault: Path) -> None:
     assert _files(tmp_vault / "raw") == ["backups", "n.md"]
 
 
-def test_remote_no_category_goes_to_unsorted_and_raw(remote_app, tmp_vault: Path) -> None:
-    resp = _remote_post(remote_app, {"content": "hello", "filename": "q.txt"})
+def test_remote_no_category_with_source_goes_to_unsorted_and_raw(remote_app, tmp_vault: Path) -> None:
+    resp = _remote_post(remote_app, {"content": "hello", "filename": "q.txt", "source": "quill-ios"})
     assert resp.status_code == 201
     data = json.loads(resp.data)
     assert data["category"] == "unsorted" and data["deduped"] is False
     assert data["file"] == "q.txt"  # raw copy keeps the legacy extension
     assert data["capture_path"] == "captures/unsorted/q.md"  # archive is always .md
-    assert (tmp_vault / "raw" / "q.txt").read_text(encoding="utf-8") == "hello"
+    raw = (tmp_vault / "raw" / "q.txt").read_text(encoding="utf-8")
+    assert raw.startswith("---\n") and 'category: "unsorted"' in raw and raw.endswith("\n\nhello")
     cap = (tmp_vault / "captures" / "unsorted" / "q.md").read_text(encoding="utf-8")
     assert cap.startswith("---\n") and 'category: "unsorted"' in cap and cap.endswith("\n\nhello")
+
+
+def test_remote_no_category_no_source_is_raw_only(remote_app, tmp_vault: Path) -> None:
+    """The devbox digest relay posts {content, filename}: stays legacy."""
+    resp = _remote_post(remote_app, {"content": "digest", "filename": "d.md"})
+    assert resp.status_code == 201
+    assert json.loads(resp.data) == {"status": "ok", "file": "d.md", "broken_links": []}
+    assert (tmp_vault / "raw" / "d.md").read_text(encoding="utf-8") == "digest"
+    assert _files(tmp_vault / "captures") == []
 
 
 def test_category_writes_both_and_marker(remote_app, tmp_vault: Path) -> None:
@@ -867,7 +877,9 @@ def test_category_writes_both_and_marker(remote_app, tmp_vault: Path) -> None:
                                      "request_id": "r-1", "source": "quill-ios"})
     assert resp.status_code == 201
     assert (tmp_vault / "captures" / "work" / "w.md").exists()
-    assert (tmp_vault / "raw" / "w.md").read_text(encoding="utf-8") == "x"
+    raw = (tmp_vault / "raw" / "w.md").read_text(encoding="utf-8")
+    assert 'category: "work"' in raw and raw.endswith("\n\nx")
+    assert raw == (tmp_vault / "captures" / "work" / "w.md").read_text(encoding="utf-8")
     marker = json.loads((tmp_vault / "_meta" / "capture_ids" / "r-1.json").read_text(encoding="utf-8"))
     assert marker["state"] == "committed"
     assert not list(tmp_vault.rglob(".tmp-*"))
@@ -880,7 +892,7 @@ def test_loopback_with_category_is_archived(wiki_app, tmp_vault: Path) -> None:
 
 @pytest.mark.parametrize("body", [
     {"category": "other"}, {"category": 5}, {"request_id": "bad id!"}, {"request_id": "a" * 81},
-    {"request_id": 7}, {"request_id": ""},
+    {"request_id": 7}, {"request_id": ""}, {"request_id": "id\n"},
 ])
 def test_invalid_category_or_request_id_400(wiki_app, tmp_vault: Path, body: dict[str, Any]) -> None:
     resp = wiki_app.post("/raw", json={"content": "x", **body})
@@ -995,3 +1007,31 @@ def test_create_app_rejects_bad_archive_paths(tmp_config: dict[str, Any], captur
     tmp_config.update(captures_folder=captures, views_folder=views)
     with pytest.raises(ValueError):
         create_app(config=tmp_config)
+
+
+def test_source_and_captured_at_are_capped_single_line(remote_app, tmp_vault: Path) -> None:
+    _remote_post(remote_app, {"content": "x", "filename": "s.md", "category": "work",
+                              "source": "a\nb" + "z" * 200, "captured_at": "t\r\nu"})
+    head = (tmp_vault / "captures" / "work" / "s.md").read_text(encoding="utf-8").split("---\n")[1]
+    lines = head.splitlines()
+    assert len(lines) == 5 and all(len(ln) < 120 for ln in lines)
+
+
+@pytest.mark.parametrize("taken", ["capture", "raw"])
+def test_retry_does_not_trust_foreign_file_at_reserved_name(
+    remote_app, tmp_vault: Path, monkeypatch: pytest.MonkeyPatch, taken: str
+) -> None:
+    body = {"content": "mine", "filename": "q.md", "category": "work", "request_id": "r-7"}
+    _fail_link_for(monkeypatch, "/captures/work/" if taken == "capture" else "/raw/")
+    assert _remote_post(remote_app, body).status_code == 500
+    folder = tmp_vault / ("captures/work" if taken == "capture" else "raw")
+    (folder / "q.md").write_text("someone else", encoding="utf-8")
+    resp = _remote_post(remote_app, body)
+    assert resp.status_code == 201
+    data = json.loads(resp.data)
+    assert (folder / "q.md").read_text(encoding="utf-8") == "someone else"
+    assert (folder / "q_1.md").read_text(encoding="utf-8").endswith("\n\nmine")
+    assert (data["file"] if taken == "raw" else data["capture_path"].rsplit("/", 1)[1]) == "q_1.md"
+    replay = json.loads(_remote_post(remote_app, body).data)
+    assert replay["deduped"] is True and replay["file"] == data["file"] and replay["capture_path"] == data["capture_path"]
+    assert not list(tmp_vault.rglob(".tmp-*"))

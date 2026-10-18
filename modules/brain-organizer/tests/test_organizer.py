@@ -54,6 +54,11 @@ def make_client(routes_text: str, wiki_text: str, stop_reason: str = "end_turn")
 # scan_raw_folder
 # ---------------------------------------------------------------------------
 
+def test_scan_raw_folder_ignores_publish_tmp_files(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
+    (tmp_vault / "raw" / ".tmp-abc").write_text("partial", encoding="utf-8")
+    assert bo.scan_raw_folder(tmp_config, {}) == []
+
+
 def test_scan_raw_folder_finds_new_files(tmp_vault: Path, tmp_config: dict[str, Any]) -> None:
     write_raw(tmp_vault, "note.md", "Hello world")
     write_raw(tmp_vault, "memo.txt", "Some memo")
