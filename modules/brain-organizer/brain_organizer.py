@@ -1751,13 +1751,20 @@ def _rank_catalog_by_relevance(
     return [entry for _, _, entry in scored[:max_in_prompt]]
 
 
+_CATALOG_COVERS_SEP = " — Covers:"
+
+
 def route_topics(
     content: str,
     catalog: list[dict[str, Any]],
     config: dict[str, Any],
     client: anthropic.Anthropic,
+    rejected: list[str] | None = None,
 ) -> list[tuple[str, Path, bool]]:
     """Route note content to existing wiki pages or propose new ones.
+
+    Titles dropped by the guards below are appended to ``rejected`` (when
+    given) so the caller can name the raw file and count them in the summary.
 
     Returns list of (title, wiki_path, is_new) tuples (1-3 routes, de-duped by path).
     Haiku is given the catalog and strongly biased toward existing pages.
@@ -1788,7 +1795,7 @@ def route_topics(
         headers = page.get("headers", "")
         summary = page.get("summary", "").replace("\n", " ")
         if headers:
-            line = f"{i}. {title} — Covers: {headers}. {summary}"
+            line = f"{i}. {title}{_CATALOG_COVERS_SEP} {headers}. {summary}"
         else:
             line = f"{i}. {title}. {summary}"
         catalog_lines.append(line)
@@ -1911,6 +1918,10 @@ def route_topics(
 
         if match_type == "existing":
             entry = _resolve_existing(title)
+            if entry is None and _CATALOG_COVERS_SEP in title:
+                # Haiku echoed the whole catalog line ("Goals — Covers: ...")
+                # back as the title; the part before the separator is the page.
+                entry = _resolve_existing(title.split(_CATALOG_COVERS_SEP, 1)[0].strip())
             if entry is not None:
                 wiki_path = Path(entry["path_str"])
                 path_key = str(wiki_path)
@@ -1918,18 +1929,34 @@ def route_topics(
                     seen_paths.add(path_key)
                     result.append((entry["title"], wiki_path, False))
                 continue
-            else:
-                # Hallucinated existing title — re-check via near-dup guard
+            # Hallucinated existing title: map it onto a near-duplicate page if
+            # one exists, else drop it. Never demote it to a NEW page -- that
+            # is how the "<Title>-Covers-<headers>" shadow pages were created.
+            similar = find_similar_page(
+                title, catalog, config["new_page_similarity_threshold"]
+            )
+            if similar is None:
                 logger.warning(
-                    "route_topics: hallucinated existing title %r — re-checking as new", title
+                    "route_topics: rejected hallucinated existing title %r", title
                 )
-                match_type = "new"
+                if rejected is not None:
+                    rejected.append(title)
+                continue
+            logger.info("Near-duplicate guard: %r -> %r", title, similar["title"])
+            wiki_path = Path(similar["path_str"])
+            path_key = str(wiki_path)
+            if path_key not in seen_paths:
+                seen_paths.add(path_key)
+                result.append((similar["title"], wiki_path, False))
+            continue
 
         if match_type == "new":
-            if _looks_like_session_title(title):
+            if _looks_like_session_title(title) or "Covers:" in title or "|" in title:
                 logger.warning(
-                    "route_topics: rejected session-shaped new title %r", title
+                    "route_topics: rejected malformed new title %r", title
                 )
+                if rejected is not None:
+                    rejected.append(title)
                 continue
             similar = find_similar_page(
                 title, catalog, config["new_page_similarity_threshold"]
@@ -3232,6 +3259,7 @@ def _send_run_summary(
     links_backticked: int = 0,
     tags_added: int = 0,
     tags_new_vocabulary: int = 0,
+    routes_rejected: int = 0,
     all_topics: set[str] | None = None,
     duration: float | None = None,
     _http_client: httpx.Client | None = None,
@@ -3256,7 +3284,7 @@ def _send_run_summary(
         f"uncategorized={uncategorized_count} catalog={catalog_count} "
         f"raw_remaining={raw_remaining} links_rewritten={links_rewritten} "
         f"links_backticked={links_backticked} tags_added={tags_added} "
-        f"tags_new_vocabulary={tags_new_vocabulary}"
+        f"tags_new_vocabulary={tags_new_vocabulary} rejected={routes_rejected}"
     )
     summary = "\n".join(lines)
     logger.info(summary)
@@ -3382,14 +3410,19 @@ def run(
         fp, sha = fp_sha
         try:
             content = fp.read_text(encoding="utf-8")
+            rejected: list[str] = []
             routes = _deterministic_route(fp.stem, list(catalog), wiki_folder, daily_folder) or \
-                route_topics(content, list(catalog), config, client)
+                route_topics(content, list(catalog), config, client, rejected=rejected)
+            if rejected:
+                logger.warning("Rejected route(s) for %s: %s", fp.name, rejected)
+                rejected_routes.extend(rejected)
             logger.info("Routed %s -> %s", fp.name, [t for t, _p, _n in routes])
             return fp, sha, routes, None
         except Exception as exc:
             logger.error("Routing failed for %s: %s", fp.name, exc)
             return fp, sha, None, exc
 
+    rejected_routes: list[str] = []  # list.extend is atomic under the GIL
     route_workers = min(max_workers * 2, 8)
     with ThreadPoolExecutor(max_workers=route_workers) as ex:
         routing_results = list(ex.map(_route_one, files))
@@ -3571,6 +3604,7 @@ def run(
         catalog_count=len(catalog), raw_remaining=_count_raw_remaining(config),
         links_rewritten=links_rewritten_count, links_backticked=links_backticked_count,
         tags_added=tags_added_count, tags_new_vocabulary=tags_new_vocabulary_count,
+        routes_rejected=len(rejected_routes),
         all_topics=all_topics, duration=duration,
         _http_client=_http_client,
     )
