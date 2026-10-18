@@ -1267,13 +1267,16 @@ def setup_scheduler(briefing_time: str, timezone: str):
         )
         logger.info(f"Obligations check enabled: daily at 09:15 {timezone}")
     if getattr(s, "capture_extract_enabled", True):
+        cap_min = getattr(s, "capture_extract_interval_minutes", 15)
+        if not isinstance(cap_min, int) or cap_min < 1:  # tests hand in MagicMock settings
+            cap_min = 15
         scheduler.add_job(
             _capture_extract,
-            IntervalTrigger(minutes=getattr(s, "capture_extract_interval_minutes", 15)),
+            IntervalTrigger(minutes=cap_min),
             id="capture_extract",
             replace_existing=True,
         )
-        logger.info("Capture extract enabled: every %s minutes", getattr(s, "capture_extract_interval_minutes", 15))
+        logger.info("Capture extract enabled: every %s minutes", cap_min)
     if getattr(s, "facts_digest_enabled", False):
         digest_time = getattr(s, "facts_digest_time", "01:30")
         try:
