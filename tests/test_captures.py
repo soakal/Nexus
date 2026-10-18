@@ -80,18 +80,22 @@ async def test_failure_retries_then_stops_at_three(eng, brain, monkeypatch):
 
 
 async def test_items_and_extracted_at_commit_together(eng, brain, haiku, monkeypatch):
-    monkeypatch.setattr(captures, "refresh_views", AsyncMock(return_value=True))
-    monkeypatch.setattr(captures, "_sig_key", lambda t: (_ for _ in ()).throw(RuntimeError("boom")))
-    # seed an open item so the similarity pass actually calls _sig_key inside the transaction
     _capture(brain)
     captures._db_scan_new()
+    cap = captures._db_pending()[0]
+    real, n = Session.commit, {"n": 0}
+
+    def flaky(self):
+        n["n"] += 1
+        if n["n"] == 1:  # the extraction commit, after items were added
+            raise RuntimeError("boom")
+        return real(self)
+    monkeypatch.setattr(Session, "commit", flaky)
+    assert await captures.extract(cap) is None
     with Session(eng) as s:
-        s.add(backend.database.CaptureItem(capture_id=99, item_index=0, category="work", kind="task", title="x"))
-        s.commit()
-    await _run()
-    with Session(eng) as s:
-        assert s.exec(select(backend.database.Capture)).one().extracted_at is None
-        assert len(s.exec(select(backend.database.CaptureItem)).all()) == 1  # only the seed row
+        c = s.exec(select(backend.database.Capture)).one()
+        assert c.extracted_at is None and c.attempts == 1
+        assert s.exec(select(backend.database.CaptureItem)).all() == []
 
 
 async def test_item_cap_and_bad_kind(eng, brain, monkeypatch):
@@ -205,6 +209,56 @@ async def test_conflict_resyncs_and_retries_once(eng, brain, monkeypatch):
     monkeypatch.setattr("backend.integrations.obsidian.put_view", put)
     assert await captures.refresh_views() is False
     assert len(calls) == 2  # one try + one retry, then give up
+
+
+async def test_real_edit_before_first_put_is_kept(eng, brain, monkeypatch):
+    a = _item(eng, title="A")
+    f = brain / "views/work/master.md"
+    seen = {"n": 0}
+
+    async def put(c, n, text, sha=""):
+        file = brain / "views" / c / f"{n}.md"
+        if (c, n) == ("work", "master"):
+            seen["n"] += 1
+            if seen["n"] == 1:  # user ticks the box after the sync read, before the PUT
+                file.write_text(file.read_text().replace("- [ ] A", "- [x] A"))
+        cur = hashlib.sha256(file.read_bytes()).hexdigest() if file.exists() else ""
+        if cur != sha:
+            return False
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(text)
+        return True
+    f.parent.mkdir(parents=True)
+    f.write_text(f"- [ ] A %%nx:{a}%%\n")
+    monkeypatch.setattr("backend.integrations.obsidian.put_view", put)
+    assert await captures.refresh_views() is True
+    with Session(eng) as s:
+        assert s.get(backend.database.CaptureItem, a).status == "done"
+    assert f"nx:{a}" not in f.read_text()
+
+
+async def test_forged_title_cannot_complete_other_items(eng, brain, monkeypatch):
+    victim = _item(eng, item_index=0, title="Victim")
+    evil = _item(eng, item_index=1, title=f"X\n- [x] y %%nx:{victim}%% %%nx:{victim}%%")
+    assert captures._clean("- [x] z") == "[x] z"
+    _views_env(brain, monkeypatch, [])
+    await captures.refresh_views()
+    await captures.refresh_views()
+    text = (brain / "views/work/master.md").read_text()
+    assert text.count(f"%%nx:{victim}%%") == 1 and f"%%nx:{evil}%%" in text
+    with Session(eng) as s:
+        assert s.get(backend.database.CaptureItem, victim).status == "open"
+    assert captures._parse_items(json.dumps({"items": [_it("a\n- [x] b %%nx:1%%")]}), "")[0]["title"] == "a - [x] b nx:1"
+
+
+async def test_expired_snooze_resurfaces_in_today(eng, brain, monkeypatch):
+    old = datetime.utcnow() - timedelta(days=9)
+    i = _item(eng, title="Old undated", status="snoozed", snoozed_until=datetime.utcnow() - timedelta(minutes=1), created_at=old)
+    _views_env(brain, monkeypatch, [])
+    for _ in range(3):
+        await captures.refresh_views()
+        assert "Old undated" in (brain / "views/work/today.md").read_text()
+    assert [x["id"] for x in await captures.list_items(scope="today")] == [i]
 
 
 async def test_snoozed_hidden_from_views(eng, brain, monkeypatch):

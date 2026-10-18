@@ -902,6 +902,7 @@ class CaptureItem(SQLModel, table=True):
     due_at: datetime | None = None
     status: str = Field(default="open", index=True)   # open | snoozed | done
     snoozed_until: datetime | None = None
+    resurfaced_at: datetime | None = None   # set when an expired snooze returns to open
     similar_to_id: int | None = None
     done_at: datetime | None = None
     done_by: str | None = None

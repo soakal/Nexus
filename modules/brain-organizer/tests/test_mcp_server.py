@@ -1089,3 +1089,11 @@ def test_put_view_refuses_symlinks(remote_app, tmp_vault: Path, tmp_path: Path) 
     (tmp_vault / "views" / "work").symlink_to(outside)
     assert _put(remote_app, "/views/work/today").status_code == 400
     assert list(outside.iterdir()) == []
+
+
+def test_put_view_refuses_symlinked_views_root(remote_app, tmp_vault: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside2"
+    outside.mkdir()
+    (tmp_vault / "views").symlink_to(outside)
+    assert _put(remote_app, "/views/work/today").status_code == 400
+    assert list(outside.iterdir()) == []

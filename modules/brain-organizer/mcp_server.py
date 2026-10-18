@@ -512,19 +512,25 @@ def create_app(
         if not isinstance(data, dict) or not isinstance(data.get("content"), str) \
                 or not isinstance(data.get("expected_sha"), str):
             return _err("JSON body with 'content' and 'expected_sha' strings required", 400)
-        folder = Path(config["vault_path"]) / config["views_folder"] / category
+        vault = Path(config["vault_path"])
+        folder = vault / config["views_folder"] / category
         target = folder / f"{name}.md"
         with _RAW_LOCK:
             try:
-                for p in (target, folder, folder.parent):
+                for p in (target, *target.parents):  # every component below the vault
+                    if p == vault:
+                        break
                     if p.is_symlink():
                         return _err("Refusing symlinked view path", 400)
                 folder.mkdir(parents=True, exist_ok=True)
-                current = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else ""
-                if current != data["expected_sha"]:
-                    return _err("View changed since read", 409)
+                # Write+fsync the tmp first so compare->replace is as close as possible.
+                # ponytail: Obsidian/Syncthing don't take _RAW_LOCK, so a ms-wide race
+                # remains between the compare and os.replace; accepted (one user).
                 tmp = _write_tmp(folder, data["content"])
                 try:
+                    current = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else ""
+                    if current != data["expected_sha"]:
+                        return _err("View changed since read", 409)
                     os.replace(tmp, target)
                 finally:
                     tmp.unlink(missing_ok=True)

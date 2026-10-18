@@ -1268,7 +1268,7 @@ def setup_scheduler(briefing_time: str, timezone: str):
         logger.info(f"Obligations check enabled: daily at 09:15 {timezone}")
     if getattr(s, "capture_extract_enabled", True):
         cap_min = getattr(s, "capture_extract_interval_minutes", 15)
-        if not isinstance(cap_min, int) or cap_min < 1:  # tests hand in MagicMock settings
+        if type(cap_min) is not int or cap_min < 1:  # tests hand in MagicMock settings
             cap_min = 15
         scheduler.add_job(
             _capture_extract,
