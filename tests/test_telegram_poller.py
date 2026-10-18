@@ -854,6 +854,10 @@ def test_match_voice_command_with_args():
 def test_match_voice_command_non_command_text_returns_none():
     assert telegram_poller._match_voice_command("what's the weather today") is None
     assert telegram_poller._match_voice_command("turn off the garage light") is None
+    # "open"/"today"/"done" are excluded on purpose (common sentence openers);
+    # snooze/reopen still rewrite to their commands on purpose.
+    assert telegram_poller._match_voice_command("open the garage door") is None
+    assert telegram_poller._match_voice_command("snooze 5") == "/snooze 5"
 
 
 def test_match_voice_command_empty_returns_none():

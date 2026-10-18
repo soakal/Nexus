@@ -50,8 +50,8 @@ _message_tasks: set[asyncio.Task] = set()
 # goal/safety/flag ids are ActionLog/Goal/OutcomeFlag primary keys (int).
 # docker/vm ids are a container NAME and a Proxmox vmid string, respectively —
 # only the DB-keyed namespaces coerce to int.
-_INT_ID_NAMESPACES = frozenset({"goal", "safety", "flag"})
-_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved", "on"})
+_INT_ID_NAMESPACES = frozenset({"goal", "safety", "flag", "ct"})
+_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved", "on", "done", "snooze"})
 
 
 async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool, str]:
@@ -124,6 +124,13 @@ async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool,
             # external side effect) -- there is no transport-error case to
             # keep the buttons for, so every mapped outcome is definitive.
             return True, mapping.get(status, status)
+
+        if namespace == "ct":
+            from backend.agents import captures
+            status = {"done": "done", "snooze": "snoozed"}.get(verb)
+            if status is None:
+                return False, f"Unknown ct verb: {verb}"
+            return True, await captures.apply_status(obj_id, status, "telegram")
 
         if namespace == "mute":
             from backend.safety import governor
@@ -277,7 +284,8 @@ def _match_voice_command(text: str) -> str | None:
     parts = stripped.split(maxsplit=1)
     first = parts[0].lower().strip(".,!?")
     from backend.agents import telegram_commands
-    if first not in telegram_commands.COMMANDS:
+    # Common English sentence openers ("open the garage") must keep reaching chat().
+    if first not in telegram_commands.COMMANDS or first in {"open", "today", "done"}:
         return None
     rest = f" {parts[1]}" if len(parts) > 1 else ""
     return f"/{first}{rest}"
@@ -361,6 +369,17 @@ async def handle_callback(cq: dict) -> None:
             return
     else:
         obj_id = obj_id_str
+
+    if namespace == "ct" and verb == "open":
+        # Non-terminal info popup: keyboard stays, message is not edited.
+        from backend.agents import captures
+        try:
+            text = await captures.detail_text(obj_id)
+        except Exception as e:
+            logger.warning(f"ct:open detail failed: {type(e).__name__}")
+            text = "Could not load task."
+        await telegram.answer_callback_query(cq_id, text[:190], show_alert=True)
+        return
 
     definitive, result = await _dispatch(namespace, verb, obj_id)
 

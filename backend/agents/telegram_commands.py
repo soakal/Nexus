@@ -710,6 +710,55 @@ async def _cmd_twin(args: str, msg: dict) -> str:
     return await sonnet(prompt, system=system, label="twin")
 
 
+_CAPTURE_CATS = ("work", "personal")
+
+
+async def _capture_list(args: str, scope: str) -> str:
+    from backend.agents import captures
+    cat = args.strip().lower()
+    if cat and cat not in _CAPTURE_CATS:
+        return "Usage: /%s [work|personal]" % scope
+    items = [i for i in await captures.list_items(cat or None, scope=scope) if i["kind"] in ("task", "followup")]
+    if not items:
+        return "Nothing open."
+    # No cap: send_reply chunks long output.
+    return "\n".join(f"#{i['id']} [{i['category']}] {i['title']}" + (f" (due {i['due_at'][:10]})" if i["due_at"] else "")
+                     for i in items)
+
+
+async def _cmd_today(args: str, msg: dict) -> str:
+    return await _capture_list(args, "today")
+
+
+async def _cmd_open(args: str, msg: dict) -> str:
+    return await _capture_list(args, "open")
+
+
+async def _capture_set(args: str, status: str, usage: str) -> str:
+    from backend.agents import captures
+    parts = args.split()
+    if not parts or not parts[0].isdigit() or (status != "snoozed" and len(parts) > 1) or len(parts) > 2:
+        return usage
+    days = 1
+    if len(parts) == 2:
+        if not parts[1].isdigit() or not 1 <= int(parts[1]) <= 365:
+            return usage
+        days = int(parts[1])
+    return await captures.apply_status(int(parts[0]), status, "telegram", days)
+
+
+async def _cmd_done(args: str, msg: dict) -> str:
+    return await _capture_set(args, "done", "Usage: /done <id>")
+
+
+async def _cmd_snooze(args: str, msg: dict) -> str:
+    return await _capture_set(args, "snoozed", "Usage: /snooze <id> [days]")
+
+
+async def _cmd_reopen(args: str, msg: dict) -> str:
+    return await _capture_set(args, "open", "Usage: /reopen <id>")
+
+
 COMMANDS: dict[str, tuple[Handler, str]] = {
     "nx": (_cmd_chat, "Ask NEXUS anything"),
     "help": (_cmd_help, "List commands"),
@@ -739,6 +788,11 @@ COMMANDS: dict[str, tuple[Handler, str]] = {
     "flag": (_cmd_flag, "Log your own item into the outcome tracker"),
     "calibration": (_cmd_calibration, "Flag calibration status / suppress-unsuppress a rule"),
     "twin": (_cmd_twin, "Reply as Brian's own voice/judgment — /twin <anything>"),
+    "today": (_cmd_today, "Today's Quill tasks - /today [work|personal]"),
+    "open": (_cmd_open, "All open Quill tasks - /open [work|personal]"),
+    "done": (_cmd_done, "Complete a Quill task - /done <id>"),
+    "snooze": (_cmd_snooze, "Snooze a Quill task - /snooze <id> [days]"),
+    "reopen": (_cmd_reopen, "Reopen a Quill task - /reopen <id>"),
     "reminders": (_cmd_reminders, "List upcoming reminders, or /reminders cancel <id>"),
 }
 

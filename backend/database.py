@@ -2,7 +2,7 @@ import logging
 import pathlib
 from datetime import datetime
 
-from sqlalchemy import event, text
+from sqlalchemy import UniqueConstraint, event, text
 from sqlmodel import Field, Session, SQLModel, create_engine
 
 logger = logging.getLogger(__name__)
@@ -869,6 +869,43 @@ class Obligation(SQLModel, table=True):
     last_confirmed_at: datetime | None = None
     note: str | None = None
     active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Quill captures (backend/agents/captures.py): one row per archived capture
+# file, plus the items Haiku extracted from it. Item identity is
+# (capture_id, item_index) -- nothing status-dependent -- so an extraction
+# retry can never recreate a done item.
+class Capture(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    path: str = Field(unique=True)        # vault-relative, e.g. captures/work/Quill-....md
+    fingerprint: str = Field(unique=True, index=True)
+    category: str = Field(index=True)     # work | personal | unsorted (directory name)
+    request_id: str | None = None
+    captured_at: datetime | None = None
+    extracted_at: datetime | None = None
+    attempts: int = 0
+    error: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CaptureItem(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("capture_id", "item_index"),)
+    id: int | None = Field(default=None, primary_key=True)
+    capture_id: int = Field(index=True)
+    item_index: int
+    category: str = Field(index=True)
+    kind: str                             # task | followup | decision | idea
+    title: str
+    notes: str | None = None
+    due_at: datetime | None = None
+    status: str = Field(default="open", index=True)   # open | snoozed | done
+    snoozed_until: datetime | None = None
+    resurfaced_at: datetime | None = None   # set when an expired snooze returns to open
+    similar_to_id: int | None = None
+    done_at: datetime | None = None
+    done_by: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

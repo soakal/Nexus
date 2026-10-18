@@ -474,6 +474,16 @@ class Settings(BaseSettings):
     # above (record_flag_ex), not a parallel notification path.
     obligations_check_enabled: bool = True
 
+    # Quill capture extraction (backend/agents/captures.py) -- Haiku pulls
+    # explicit commitments out of captures/*/*.md into CaptureItem rows and
+    # re-renders views/{work,personal}/{today,master}.md.
+    capture_extract_enabled: bool = True
+    capture_extract_interval_minutes: int = 15
+    # Per-category Telegram task digests (HH:MM 24h, in briefing_timezone).
+    capture_digest_enabled: bool = True
+    capture_digest_work_time: str = "08:00"
+    capture_digest_personal_time: str = "18:00"
+
     # Calibration Loop (docs/calibration-loop-spec.md), rollout step 1 — the
     # schema/config foundation only; nothing computes and nothing suppresses
     # yet. Two master switches on purpose: calibration_enabled ships the
@@ -675,6 +685,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"Invalid briefing_time {self.briefing_time!r}; hour must be 0-23, minute 0-59"
             )
+
+        for name in ("capture_digest_work_time", "capture_digest_personal_time"):
+            v = getattr(self, name)
+            p = v.split(":")
+            if len(p) != 2 or not all(x.strip().isdigit() for x in p) or int(p[0]) > 23 or int(p[1]) > 59:
+                raise ValueError(f"Invalid {name} {v!r}; expected HH:MM 24h")
 
         # briefing_timezone — CronTrigger(timezone=...) would otherwise fail at job time.
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError

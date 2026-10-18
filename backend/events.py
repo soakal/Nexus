@@ -22,7 +22,7 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "anthropic_usage_limit_exceeded",
     "auth_burst", "auto_approved",
     "autonomy_alert", "autonomy_digest", "backup_failed", "budget_warn",
-    "calibration_suppress", "circuit_breaker", "contract_breach",
+    "calibration_suppress", "capture_digest", "circuit_breaker", "contract_breach",
     "council_postmortem", "dead_letter", "deploy_drift", "external_flag", "flag_followup",
     "goal_criteria_failed", "goal_failed", "goal_proposed", "homelab_array",
     "homelab_backup_failed", "homelab_digest", "homelab_disk_temp",
