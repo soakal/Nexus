@@ -35,6 +35,9 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "task_completed", "task_failed", "weekly_review",
 })
 
+# Kinds whose messages are not about Safety; the Safety deep-link is noise there.
+_NO_SAFETY_LINK_KINDS: frozenset[str] = frozenset({"capture_digest"})
+
 
 async def publish(event_type: str, payload: dict) -> None:
     try:
@@ -90,10 +93,12 @@ async def notify_phone(
         base = str(getattr(settings, "app_base_url", "") or "").strip().rstrip("/")
         parse_mode = None
         if base:
-            url = f"{base}/safety"
-            # HTML link so Telegram renders it clickable even for non-dotted hostnames
-            # (bare hostnames like nexus-lxc aren't auto-detected as URLs in plain text).
-            content = f"{content}\n<a href=\"{url}\">Open Safety</a>"
+            if kind not in _NO_SAFETY_LINK_KINDS:
+                url = f"{base}/safety"
+                # HTML link so Telegram renders it clickable even for non-dotted hostnames
+                # (bare hostnames like nexus-lxc aren't auto-detected as URLs in plain text).
+                content = f"{content}\n<a href=\"{url}\">Open Safety</a>"
+            # HTML mode either way: callers (e.g. capture digests) html.escape their text.
             parse_mode = "HTML"
         from datetime import datetime
         from backend.integrations import telegram
