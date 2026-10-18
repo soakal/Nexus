@@ -192,16 +192,30 @@ async def test_morning_selects_due_fresh_resurfaced_only(eng):
     now = datetime.utcnow()
     since = now - timedelta(hours=14)
     old = now - timedelta(days=10)
-    _p(eng, title="due today", created_at=old, due_at=now)
-    _p(eng, title="overdue", created_at=old, due_at=now - timedelta(days=3))
+    # selection compares due dates to the *local* calendar date, so derive fixtures from it (not utcnow)
+    local_today = datetime.combine(captures._local_now().date(), datetime.min.time()).replace(hour=12)
+    _p(eng, title="due today", created_at=old, due_at=local_today)
+    _p(eng, title="overdue", created_at=old, due_at=local_today - timedelta(days=3))
     _p(eng, title="fresh", created_at=old, capture_id=_cap(eng, since + timedelta(minutes=1)))
     _p(eng, title="resurfaced", created_at=old, resurfaced_at=since + timedelta(minutes=1))
     _p(eng, title="stale undated", created_at=old, capture_id=_cap(eng, now - timedelta(days=2)))
-    _p(eng, title="future due", created_at=old, due_at=now + timedelta(days=5),
+    _p(eng, title="future due", created_at=old, due_at=local_today + timedelta(days=5),
        capture_id=_cap(eng, now - timedelta(days=2)))
     out, np = await _morning(since)
     assert out["sent"] == 4
     assert np.await_args_list[0].args[0].startswith("Personal morning check: 4 matching")
+
+
+async def test_morning_due_today_at_utc_midnight_boundary(eng, monkeypatch):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    # 21:00 Detroit on the 18th is already 01:00Z on the 19th; local date is still the 18th
+    monkeypatch.setattr(captures, "_local_now", lambda: datetime(2026, 10, 18, 21, 0, tzinfo=ZoneInfo("America/Detroit")))
+    old = datetime(2026, 10, 1)
+    _p(eng, title="due today", created_at=old, due_at=datetime(2026, 10, 18, 12, 0))
+    _p(eng, title="due tomorrow", created_at=old, due_at=datetime(2026, 10, 19, 12, 0))
+    out, np = await _morning(datetime(2026, 10, 18, 11, 0))
+    assert out["sent"] == 1 and "due today" in np.await_args_list[1].args[0]
 
 
 async def test_morning_cutoff_equality_inclusive(eng):

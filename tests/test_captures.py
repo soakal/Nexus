@@ -28,11 +28,12 @@ def brain(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _capture(brain, name="Quill-1.md", category="work", body="I need to email Bob the invoice by Friday"):
+def _capture(brain, name="Quill-1.md", category="work", body="I need to email Bob the invoice by Friday", captured_at=None):
     d = brain / "captures" / category
     d.mkdir(parents=True, exist_ok=True)
     fp = hashlib.sha256((category + body + name).encode()).hexdigest()
-    (d / name).write_text(f'---\ncategory: "{category}"\nfingerprint: "{fp}"\n---\n\n{body}', encoding="utf-8")
+    ca = f'captured_at: "{captured_at}"\n' if captured_at else ""
+    (d / name).write_text(f'---\ncategory: "{category}"\n{ca}fingerprint: "{fp}"\n---\n\n{body}', encoding="utf-8")
     return fp
 
 
@@ -366,14 +367,17 @@ async def test_extract_anchors_today_to_recording_time(eng, brain, haiku, monkey
     from zoneinfo import ZoneInfo
     monkeypatch.setattr(captures, "refresh_views", AsyncMock(return_value=True))
     monkeypatch.setattr(captures, "_local_now", lambda: datetime(2026, 10, 18, 0, 10, tzinfo=ZoneInfo("America/Detroit")))
-    _capture(brain)
+    # recorded 23:50 EDT on the 17th (offset in frontmatter -> stored naive UTC), extracted at 00:10 on the 18th
+    _capture(brain, name="Q-rec.md", captured_at="2026-10-17T23:50:00-04:00")
+    _capture(brain, name="Q-nots.md", body="Call the plumber tomorrow")  # no captured_at -> falls back to extraction time
     captures._db_scan_new()
-    cap = captures._db_pending()[0]
-    # 2026-10-18 03:50Z == 2026-10-17 23:50 EDT (captured_at is stored naive UTC)
-    await captures.extract({**cap, "captured_at": "2026-10-18T03:50:00"})
+    caps = {c["path"].rsplit("/", 1)[-1]: c for c in captures._db_pending()}
+    assert caps["Q-rec.md"]["captured_at"] == "2026-10-18T03:50:00"
+    assert caps["Q-nots.md"]["captured_at"] is None
+    assert await captures.extract(caps["Q-rec.md"]) == 1
     assert "today is 2026-10-17" in haiku.await_args.args[0]
-    await captures.extract({**cap, "captured_at": None})
-    assert "2026-10-18" in haiku.await_args.args[0]
+    assert await captures.extract(caps["Q-nots.md"]) == 1
+    assert "today is 2026-10-18" in haiku.await_args.args[0]
 
 
 def test_list_items_captured_at_fallback(eng):
