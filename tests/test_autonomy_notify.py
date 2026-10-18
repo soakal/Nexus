@@ -927,3 +927,27 @@ def test_scheduler_digest_invalid_time_falls_back():
     assert "autonomy_digest" in ids_added, (
         f"'autonomy_digest' should still be registered after fallback; got: {ids_added}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,has_link", [("capture_digest", False), ("needs_confirm", True)])
+async def test_notify_phone_safety_link_skipped_for_capture_digest(kind, has_link):
+    """Task digests drop the Safety deep-link but keep HTML mode (their text is html-escaped);
+    every other kind still gets the link."""
+    telegram_notify_mock = AsyncMock(return_value=True)
+
+    with patch("backend.config.get_settings") as mock_settings, \
+         patch("backend.integrations.telegram.notify", telegram_notify_mock):
+        s = MagicMock()
+        s.phone_notifications_enabled = True
+        s.phone_suppressed_kinds = set()
+        s.app_base_url = "https://nexus.example"
+        mock_settings.return_value = s
+
+        from backend.events import notify_phone
+        result = await notify_phone("Tom &amp; Jerry", kind=kind)
+
+    assert result is True
+    payload = telegram_notify_mock.await_args[0][0]
+    assert ("Open Safety" in payload["content"]) is has_link
+    assert payload["parse_mode"] == "HTML"
