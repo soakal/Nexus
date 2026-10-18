@@ -19,13 +19,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
 import re
+import secrets
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +45,16 @@ from flask import Flask, jsonify, request
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
 _LOOPBACK_ADDRS = ("127.0.0.1", "::1")
+
+
+# One user, one process: serialize /raw so same-request_id retries can't race.
+_RAW_LOCK = threading.Lock()
+_CATEGORIES = ("work", "personal")
+_REQUEST_ID_PAT = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def _err(msg: str, code: int) -> tuple[Any, int]:
+    return jsonify({"status": "error", "error": msg}), code
 
 
 def _is_loopback(remote_addr: str | None) -> bool:
@@ -75,6 +88,52 @@ def _sanitize_filename(name: str) -> str:
     if not safe or not safe.strip("."):
         return ""
     return safe
+
+
+def _write_tmp(folder: Path, text: str) -> Path:
+    tmp = folder / f".tmp-{secrets.token_hex(8)}"
+    with open(tmp, "x", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    return tmp
+
+
+def _publish(folder: Path, name: str, text: str, exact: bool = False) -> Path:
+    """Publish text as folder/name without ever exposing a partial file.
+
+    Writes a dot-prefixed .tmp-<rand> (no .md/.txt, so the organizer scan skips
+    it), fsyncs, then exclusive-links it into place (counter suffix on
+    collision; exact=True raises FileExistsError instead) and drops the tmp.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = _write_tmp(folder, text)
+    try:
+        stem, suffix = Path(name).stem, Path(name).suffix
+        for n in range(1000):
+            final = folder / (name if n == 0 else f"{stem}_{n}{suffix}")
+            try:
+                os.link(tmp, final)
+                return final
+            except FileExistsError:
+                if exact:
+                    raise
+        raise FileExistsError(name)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _free_name(folder: Path, name: str) -> str:
+    stem, suffix = Path(name).stem, Path(name).suffix
+    for n in range(1000):
+        cand = name if n == 0 else f"{stem}_{n}{suffix}"
+        if not (folder / cand).exists():
+            return cand
+    raise FileExistsError(name)
+
+
+def _overlaps(a: Path, b: Path) -> bool:
+    return a == b or a in b.parents or b in a.parents
 
 
 def _normalize_wikilinks(content: str, index: dict[str, str]) -> tuple[str, list[str]]:
@@ -145,6 +204,22 @@ def create_app(
     logger = logging.getLogger("mcp_server")
     app = Flask(__name__)
 
+    # Archive roots must resolve inside the vault and stay disjoint from each
+    # other and from raw/wiki (symlinks and ".." resolved before comparing).
+    vault_r = Path(config["vault_path"]).resolve()
+    roots = {}
+    for key in ("captures_folder", "views_folder", "raw_folder", "wiki_folder"):
+        rel = Path(config[key])
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"{key} must be a relative path inside the vault")
+        roots[key] = (vault_r / rel).resolve()
+    for key in ("captures_folder", "views_folder"):
+        if vault_r not in roots[key].parents:
+            raise ValueError(f"{key} must resolve inside the vault")
+        for other in ("raw_folder", "wiki_folder") + (("captures_folder",) if key == "views_folder" else ()):
+            if _overlaps(roots[key], roots[other]):
+                raise ValueError(f"{key} overlaps {other}")
+
     def _wiki_folder() -> Path:
         return Path(config["vault_path"]) / config["wiki_folder"]
 
@@ -177,10 +252,10 @@ def create_app(
             return None
         token = _auth_token()
         if not token:
-            return jsonify({"error": "Remote access disabled (no token configured)"}), 403
+            return _err("Remote access disabled (no token configured)", 403)
         auth_header = request.headers.get("Authorization", "")
         if not hmac.compare_digest(auth_header, f"Bearer {token}"):
-            return jsonify({"error": "Unauthorized"}), 401
+            return _err("Unauthorized", 401)
         return None
 
     @app.before_request
@@ -223,7 +298,7 @@ def create_app(
             return auth_error
         q = request.args.get("q", "").lower().strip()
         if not q:
-            return jsonify({"error": "query parameter 'q' is required"}), 400
+            return _err("query parameter 'q' is required", 400)
 
         wf = _wiki_folder()
         if not wf.exists():
@@ -265,7 +340,7 @@ def create_app(
             return auth_error
         safe = sanitize_topic_name(topic)
         if (not safe) or (safe == "Uncategorized" and topic.strip() != "Uncategorized"):
-            return jsonify({"error": "Invalid topic name"}), 400
+            return _err("Invalid topic name", 400)
 
         wiki_file = _wiki_folder() / f"{safe}.md"
         if not wiki_file.exists():
@@ -275,13 +350,13 @@ def create_app(
             if daily_file.exists():
                 wiki_file = daily_file
             else:
-                return jsonify({"error": f"Topic '{safe}' not found"}), 404
+                return _err(f"Topic '{safe}' not found", 404)
 
         try:
             content = wiki_file.read_text(encoding="utf-8")
         except OSError as exc:
             logger.error("Failed to read wiki file %s: %s", wiki_file, exc)
-            return jsonify({"error": "Failed to read wiki file"}), 500
+            return _err("Failed to read wiki file", 500)
 
         return jsonify({"topic": safe, "content": content})
 
@@ -294,15 +369,29 @@ def create_app(
         auth_error = _check_auth()
         if auth_error is not None:
             return auth_error
+        with _RAW_LOCK:
+            return _ingest()
 
+    def _ingest() -> Any:
         data = request.get_json(silent=True)
         if not data or "content" not in data:
-            return jsonify({"error": "JSON body with 'content' field required"}), 400
+            return _err("JSON body with 'content' field required", 400)
 
         content = str(data["content"])
         if not content.strip():
             # Empty Quill captures were saved as 0-byte notes the organizer never processes.
-            return jsonify({"error": "content is empty"}), 400
+            return _err("content is empty", 400)
+
+        category = data.get("category")
+        if category is not None and category not in _CATEGORIES:
+            return _err("category must be 'work' or 'personal'", 400)
+        rid = data.get("request_id")
+        if rid is not None and not (isinstance(rid, str) and _REQUEST_ID_PAT.match(rid)):
+            return _err("request_id must match [A-Za-z0-9_-]{1,80}", 400)
+        # Archive rule: explicit category wins; remote no-category -> unsorted;
+        # loopback no-category (NEXUS itself) keeps the exact legacy raw-only path.
+        archive = category or (None if _is_loopback(request.remote_addr) else "unsorted")
+        fingerprint = hashlib.sha256(f"{archive or ''}\n{content}".encode()).hexdigest()
 
         broken_links: list[str] = []
         try:
@@ -321,28 +410,62 @@ def create_app(
             safe_name += ".md"
 
         rf = _raw_folder()
-        rf.mkdir(parents=True, exist_ok=True)
-        stem = Path(safe_name).stem
-        suffix = Path(safe_name).suffix
-        # Exclusive create: never overwrite an existing note, even when two
-        # saves land in the same second -- bump a counter until a name is free.
         try:
-            for n in range(1000):
-                target = rf / (safe_name if n == 0 else f"{stem}_{n}{suffix}")
-                try:
-                    with open(target, "x", encoding="utf-8") as fh:
-                        fh.write(content)
-                    break
-                except FileExistsError:
-                    continue
-            else:
-                return jsonify({"error": "Too many notes with this filename"}), 409
-        except OSError as exc:
-            logger.error("Failed to write raw file %s: %s", safe_name, exc)
-            return jsonify({"error": "Failed to write file"}), 500
+            if archive is None:
+                # Legacy path: byte-identical raw-only write.
+                target = _publish(rf, safe_name, content)
+                logger.info("Raw file created: %s", target.name)
+                return jsonify({"status": "ok", "file": target.name, "broken_links": broken_links}), 201
 
-        logger.info("Raw file created: %s", target.name)
-        return jsonify({"status": "ok", "file": target.name, "broken_links": broken_links}), 201
+            cap_dir = Path(config["vault_path"]) / config["captures_folder"] / archive
+            cap_rel = f"{config['captures_folder']}/{archive}"
+            # Names are picked up front and stored in the marker so a retry
+            # re-does only the missing writes instead of minting duplicates.
+            st = {"fingerprint": fingerprint, "state": "pending",
+                  "file": _free_name(cap_dir, Path(safe_name).stem + ".md"),
+                  "raw": _free_name(rf, safe_name)}
+            marker_dir = Path(config["vault_path"]) / config["meta_folder"] / "capture_ids"
+            marker = marker_dir / f"{rid}.json"
+            if rid:
+                try:  # reserve: exclusive create, so an existing marker is a replay
+                    _publish(marker_dir, marker.name, json.dumps(st), exact=True)
+                except FileExistsError:
+                    st = json.loads(marker.read_text(encoding="utf-8"))
+                    if st["fingerprint"] != fingerprint:
+                        return _err("request_id reused with different payload", 409)
+
+            def _body(deduped: bool) -> Any:
+                return jsonify({"status": "ok", "file": st["raw"], "category": archive,
+                                "capture_path": f"{cap_rel}/{st['file']}", "deduped": deduped,
+                                "broken_links": broken_links})
+
+            if st["state"] == "committed":
+                return _body(True), 200
+            if not (cap_dir / st["file"]).exists():
+                fm = {"category": archive, "source": str(data.get("source") or ""),
+                      "captured_at": str(data.get("captured_at") or ""),
+                      "request_id": rid, "fingerprint": fingerprint}
+                head = "---\n" + "".join(f"{k}: {json.dumps(v)}\n" for k, v in fm.items()) + "---\n\n"
+                st["file"] = _publish(cap_dir, st["file"], head + content).name
+            # ponytail: crash after this raw write but before the commit means a
+            # retry rewrites raw (organizer may fold it twice: one duplicate wiki mention).
+            if not (rf / st["raw"]).exists():
+                st["raw"] = _publish(rf, st["raw"], content).name
+            if rid:
+                st["state"] = "committed"
+                tmp = _write_tmp(marker_dir, json.dumps(st))
+                try:
+                    os.replace(tmp, marker)
+                finally:
+                    tmp.unlink(missing_ok=True)
+        except FileExistsError:
+            return _err("Too many notes with this filename", 409)
+        except (OSError, ValueError, KeyError) as exc:
+            logger.error("Failed to write raw file %s: %s", safe_name, exc)
+            return _err("Failed to write file", 500)
+
+        logger.info("Raw file created: %s", st["raw"])
+        return _body(False), 201
 
     return app
 

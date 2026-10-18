@@ -814,3 +814,184 @@ def test_raw_post_rejects_blank_content(wiki_app, tmp_vault: Path) -> None:
     resp = wiki_app.post("/raw", json={"content": "  \n"}, content_type="application/json")
     assert resp.status_code == 400
     assert not list((tmp_vault / "raw").glob("*.md")) if (tmp_vault / "raw").exists() else True
+
+
+# ---------------------------------------------------------------------------
+# POST /raw -- resilient ingest (captures archive + request_id idempotency)
+# ---------------------------------------------------------------------------
+
+REMOTE = {"REMOTE_ADDR": "203.0.113.9"}
+AUTH = {"Authorization": "Bearer secret123"}
+
+
+@pytest.fixture
+def remote_app(tmp_config: dict[str, Any]):
+    tmp_config["mcp_write_token"] = "secret123"
+    app = create_app(config=tmp_config)
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def _remote_post(client, body: dict[str, Any]):
+    return client.post("/raw", json=body, headers=AUTH, environ_overrides=REMOTE)
+
+
+def _files(folder: Path) -> list[str]:
+    """All entries (including dotfiles) so leaked .tmp-* files are visible."""
+    return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+
+
+def test_loopback_legacy_stays_raw_only(wiki_app, tmp_vault: Path) -> None:
+    resp = wiki_app.post("/raw", json={"content": "nexus note", "filename": "n.md"})
+    assert resp.status_code == 201
+    data = json.loads(resp.data)
+    assert data == {"status": "ok", "file": "n.md", "broken_links": []}
+    assert _files(tmp_vault / "captures") == []
+    assert _files(tmp_vault / "raw") == ["backups", "n.md"]
+
+
+def test_remote_no_category_goes_to_unsorted_and_raw(remote_app, tmp_vault: Path) -> None:
+    resp = _remote_post(remote_app, {"content": "hello", "filename": "q.txt"})
+    assert resp.status_code == 201
+    data = json.loads(resp.data)
+    assert data["category"] == "unsorted" and data["deduped"] is False
+    assert data["file"] == "q.txt"  # raw copy keeps the legacy extension
+    assert data["capture_path"] == "captures/unsorted/q.md"  # archive is always .md
+    assert (tmp_vault / "raw" / "q.txt").read_text(encoding="utf-8") == "hello"
+    cap = (tmp_vault / "captures" / "unsorted" / "q.md").read_text(encoding="utf-8")
+    assert cap.startswith("---\n") and 'category: "unsorted"' in cap and cap.endswith("\n\nhello")
+
+
+def test_category_writes_both_and_marker(remote_app, tmp_vault: Path) -> None:
+    resp = _remote_post(remote_app, {"content": "x", "filename": "w.md", "category": "work",
+                                     "request_id": "r-1", "source": "quill-ios"})
+    assert resp.status_code == 201
+    assert (tmp_vault / "captures" / "work" / "w.md").exists()
+    assert (tmp_vault / "raw" / "w.md").read_text(encoding="utf-8") == "x"
+    marker = json.loads((tmp_vault / "_meta" / "capture_ids" / "r-1.json").read_text(encoding="utf-8"))
+    assert marker["state"] == "committed"
+    assert not list(tmp_vault.rglob(".tmp-*"))
+
+
+def test_loopback_with_category_is_archived(wiki_app, tmp_vault: Path) -> None:
+    assert wiki_app.post("/raw", json={"content": "x", "category": "personal"}).status_code == 201
+    assert len(_files(tmp_vault / "captures" / "personal")) == 1
+
+
+@pytest.mark.parametrize("body", [
+    {"category": "other"}, {"category": 5}, {"request_id": "bad id!"}, {"request_id": "a" * 81},
+    {"request_id": 7}, {"request_id": ""},
+])
+def test_invalid_category_or_request_id_400(wiki_app, tmp_vault: Path, body: dict[str, Any]) -> None:
+    resp = wiki_app.post("/raw", json={"content": "x", **body})
+    assert resp.status_code == 400
+    data = json.loads(resp.data)
+    assert data["status"] == "error" and data["error"]
+    assert _files(tmp_vault / "captures") == []
+
+
+def test_error_bodies_use_status_error(wiki_app, tmp_config: dict[str, Any]) -> None:
+    assert json.loads(wiki_app.post("/raw", json={}).data)["status"] == "error"
+    assert json.loads(wiki_app.get("/wiki/search").data)["status"] == "error"
+
+
+def test_replay_same_request_id_dedupes(remote_app, tmp_vault: Path) -> None:
+    body = {"content": "same", "filename": "d.md", "category": "work", "request_id": "r-2"}
+    assert _remote_post(remote_app, body).status_code == 201
+    before = (_files(tmp_vault / "captures" / "work"), _files(tmp_vault / "raw"))
+    resp = _remote_post(remote_app, body)
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["deduped"] is True and data["file"] == "d.md"
+    assert (_files(tmp_vault / "captures" / "work"), _files(tmp_vault / "raw")) == before
+
+
+def test_replay_after_organizer_consumed_raw_does_not_rewrite(remote_app, tmp_vault: Path) -> None:
+    body = {"content": "same", "filename": "c.md", "category": "work", "request_id": "r-3"}
+    _remote_post(remote_app, body)
+    (tmp_vault / "raw" / "c.md").unlink()  # organizer folded + deleted it
+    assert _remote_post(remote_app, body).status_code == 200
+    assert not (tmp_vault / "raw" / "c.md").exists()
+
+
+def test_same_request_id_different_payload_409(remote_app, tmp_vault: Path) -> None:
+    body = {"content": "one", "filename": "e.md", "category": "work", "request_id": "r-4"}
+    assert _remote_post(remote_app, body).status_code == 201
+    for other in ({**body, "content": "two"}, {**body, "category": "personal"}):
+        resp = _remote_post(remote_app, other)
+        assert resp.status_code == 409
+        assert json.loads(resp.data) == {"status": "error", "error": "request_id reused with different payload"}
+    assert _files(tmp_vault / "captures" / "personal") == []
+
+
+def test_no_request_id_means_no_idempotency(remote_app, tmp_vault: Path) -> None:
+    body = {"content": "dup", "filename": "f.md", "category": "work"}
+    assert _remote_post(remote_app, body).status_code == 201
+    assert _remote_post(remote_app, body).status_code == 201
+    assert _files(tmp_vault / "captures" / "work") == ["f.md", "f_1.md"]
+
+
+def _fail_link_for(monkeypatch: pytest.MonkeyPatch, needle: str) -> dict[str, int]:
+    """os.link raises (once) when the destination path contains needle --
+    i.e. the process 'dies' after the tmp write and before the publish."""
+    import mcp_server
+    real = mcp_server.os.link
+    hits = {"n": 0}
+
+    def flaky(src, dst, *a, **kw):
+        if needle in str(dst) and hits["n"] == 0:
+            hits["n"] += 1
+            raise OSError("simulated interruption")
+        return real(src, dst, *a, **kw)
+
+    monkeypatch.setattr(mcp_server.os, "link", flaky)
+    return hits
+
+
+@pytest.mark.parametrize("needle", ["/captures/work/", "/raw/", "/capture_ids/"])
+def test_interrupted_publish_retries_without_duplicates(
+    remote_app, tmp_vault: Path, monkeypatch: pytest.MonkeyPatch, needle: str
+) -> None:
+    body = {"content": "resilient", "filename": "g.md", "category": "work", "request_id": "r-5"}
+    hits = _fail_link_for(monkeypatch, needle)
+    first = _remote_post(remote_app, body)
+    assert hits["n"] == 1
+    assert first.status_code == 500
+    assert json.loads(first.data)["status"] == "error"
+    assert not list(tmp_vault.rglob(".tmp-*"))
+    retry = _remote_post(remote_app, body)
+    assert retry.status_code in (200, 201)
+    assert _files(tmp_vault / "captures" / "work") == ["g.md"]
+    assert _files(tmp_vault / "raw") == ["backups", "g.md"]
+    marker = json.loads((tmp_vault / "_meta" / "capture_ids" / "r-5.json").read_text(encoding="utf-8"))
+    assert marker["state"] == "committed"
+    assert not list(tmp_vault.rglob(".tmp-*"))
+    assert _remote_post(remote_app, body).status_code == 200
+
+
+def test_interrupted_marker_commit_retries(
+    remote_app, tmp_vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Crash between raw write and commit: marker stays pending and a retry commits it."""
+    import mcp_server
+    body = {"content": "late", "filename": "h.md", "category": "work", "request_id": "r-6"}
+    real = mcp_server.os.replace
+    monkeypatch.setattr(mcp_server.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    assert _remote_post(remote_app, body).status_code == 500
+    monkeypatch.setattr(mcp_server.os, "replace", real)
+    marker_path = tmp_vault / "_meta" / "capture_ids" / "r-6.json"
+    assert json.loads(marker_path.read_text(encoding="utf-8"))["state"] == "pending"
+    assert _remote_post(remote_app, body).status_code == 201
+    assert json.loads(marker_path.read_text(encoding="utf-8"))["state"] == "committed"
+    assert _files(tmp_vault / "captures" / "work") == ["h.md"]
+    assert not list(tmp_vault.rglob(".tmp-*"))
+
+
+@pytest.mark.parametrize("captures,views", [
+    ("raw/captures", "views"), ("wiki", "views"), ("captures", "captures/views"),
+    ("../outside", "views"), ("/abs/path", "views"), ("captures", "wiki/daily"),
+])
+def test_create_app_rejects_bad_archive_paths(tmp_config: dict[str, Any], captures: str, views: str) -> None:
+    tmp_config.update(captures_folder=captures, views_folder=views)
+    with pytest.raises(ValueError):
+        create_app(config=tmp_config)
