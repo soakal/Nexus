@@ -666,10 +666,10 @@ async def _capture_extract():
         raise
 
 
-async def _capture_digest(category: str):
+async def _capture_digest(category: str, morning: bool = False):
     try:
         from backend.agents.captures import run_capture_digest
-        logger.info(f"Capture digest {category}: {await run_capture_digest(category)}")
+        logger.info(f"Capture digest {category}: {await run_capture_digest(category, morning=morning)}")
     except Exception as e:
         logger.error(f"Capture digest {category} job error: {e}")
         raise
@@ -681,6 +681,10 @@ async def _capture_digest_work():
 
 async def _capture_digest_personal():
     await _capture_digest("personal")
+
+
+async def _capture_digest_personal_morning():
+    await _capture_digest("personal", morning=True)
 
 
 async def _run_brain_organizer():
@@ -1296,7 +1300,8 @@ def setup_scheduler(briefing_time: str, timezone: str):
         logger.info("Capture extract enabled: every %s minutes", cap_min)
     if getattr(s, "capture_digest_enabled", True):
         for cat, job, default, fn in (("work", "capture_digest_work", "08:00", _capture_digest_work),
-                                      ("personal", "capture_digest_personal", "18:00", _capture_digest_personal)):
+                                      ("personal", "capture_digest_personal", "16:30", _capture_digest_personal),
+                                      ("personal_morning", "capture_digest_personal_morning", "07:00", _capture_digest_personal_morning)):
             cd_time = getattr(s, f"capture_digest_{cat}_time", default)
             try:
                 cdh, cdm = cd_time.split(":")
@@ -1306,8 +1311,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             except Exception:
                 logger.warning(f"Invalid capture_digest_{cat}_time {cd_time!r}; falling back to {default}")
                 cdh, cdm = int(default[:2]), int(default[3:])
-            scheduler.add_job(fn, CronTrigger(hour=cdh, minute=cdm, timezone=timezone), id=job, replace_existing=True)
-            logger.info(f"Capture digest ({cat}) enabled: daily at {cdh:02d}:{cdm:02d} {timezone}")
+            days = getattr(s, "capture_digest_work_days", "mon-fri") if cat == "work" else "*"
+            try:
+                trig = CronTrigger(day_of_week=days, hour=cdh, minute=cdm, timezone=timezone)
+            except ValueError:
+                logger.warning(f"Invalid capture_digest_work_days {days!r}; falling back to mon-fri")
+                trig = CronTrigger(day_of_week="mon-fri", hour=cdh, minute=cdm, timezone=timezone)
+            scheduler.add_job(fn, trig, id=job, replace_existing=True)
+            logger.info(f"Capture digest ({cat}) enabled: {days} at {cdh:02d}:{cdm:02d} {timezone}")
     if getattr(s, "facts_digest_enabled", False):
         digest_time = getattr(s, "facts_digest_time", "01:30")
         try:

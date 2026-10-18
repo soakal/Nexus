@@ -16,6 +16,7 @@ def eng(monkeypatch):
     SQLModel.metadata.create_all(e)
     monkeypatch.setattr("backend.database.engine", e)
     monkeypatch.setattr(captures, "schedule_refresh", MagicMock())
+    monkeypatch.setattr(captures, "refresh_views", AsyncMock(return_value=True))  # digest calls it; no Brain MCP in tests
     return e
 
 
@@ -160,3 +161,106 @@ async def test_schedule_refresh_runs_in_background_and_swallows_errors(monkeypat
     await asyncio.gather(*list(captures._refresh_tasks))  # must not raise
     await asyncio.sleep(0)  # let done-callbacks run
     assert not captures._refresh_tasks
+
+
+# --- morning check / digest modes --------------------------------------------------------------
+
+_cap_n = iter(range(1000, 100_000))
+
+
+def _cap(eng, captured_at, category="personal"):
+    n = next(_cap_n)
+    with Session(eng) as s:
+        s.add(backend.database.Capture(id=n, path=f"captures/{category}/Q-{n}.md", fingerprint=f"fp{n}",
+                                       category=category, captured_at=captured_at))
+        s.commit()
+    return n
+
+
+def _p(eng, **kw):
+    return _item(eng, category="personal", **kw)
+
+
+async def _morning(since):
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as np:
+        out = await captures.send_digest("personal", since=since, title="Personal morning check")
+    return out, np
+
+
+async def test_morning_selects_due_fresh_resurfaced_only(eng):
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    since = now - timedelta(hours=14)
+    old = now - timedelta(days=10)
+    _p(eng, title="due today", created_at=old, due_at=now)
+    _p(eng, title="overdue", created_at=old, due_at=now - timedelta(days=3))
+    _p(eng, title="fresh", created_at=old, capture_id=_cap(eng, since + timedelta(minutes=1)))
+    _p(eng, title="resurfaced", created_at=old, resurfaced_at=since + timedelta(minutes=1))
+    _p(eng, title="stale undated", created_at=old, capture_id=_cap(eng, now - timedelta(days=2)))
+    _p(eng, title="future due", created_at=old, due_at=now + timedelta(days=5),
+       capture_id=_cap(eng, now - timedelta(days=2)))
+    out, np = await _morning(since)
+    assert out["sent"] == 4
+    assert np.await_args_list[0].args[0].startswith("Personal morning check: 4 matching")
+
+
+async def test_morning_cutoff_equality_inclusive(eng):
+    from datetime import datetime, timedelta
+    since = datetime.utcnow() - timedelta(hours=14)
+    _p(eng, title="edge", capture_id=_cap(eng, since))
+    assert (await _morning(since))[0]["sent"] == 1
+    _p(eng, title="edge2", capture_id=_cap(eng, since - timedelta(seconds=1)))
+    out, _ = await _morning(since)
+    assert out["sent"] == 1  # only "edge"; "edge2" is one second too old
+
+
+async def test_morning_fresh_first_and_overflow(eng):
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    since = now - timedelta(hours=14)
+    for n in range(9):
+        _p(eng, title=f"overdue {n}", due_at=now - timedelta(days=1), created_at=now - timedelta(days=10))
+    _p(eng, title="the fresh one", capture_id=_cap(eng, now))
+    out, np = await _morning(since)
+    assert out == {"sent": 8, "more": 2}
+    assert "10 matching (showing 8" in np.await_args_list[0].args[0]
+    assert "the fresh one" in np.await_args_list[1].args[0]
+
+
+async def test_morning_snooze_expiry(eng):
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    old = now - timedelta(days=9)
+    _p(eng, title="expired", status="snoozed", snoozed_until=now - timedelta(hours=1), created_at=old)
+    _p(eng, title="still snoozed", status="snoozed", snoozed_until=now + timedelta(days=1), created_at=old)
+    out, np = await _morning(now - timedelta(hours=14))
+    assert out["sent"] == 1 and "expired" in np.await_args_list[1].args[0]
+
+
+async def test_digest_survives_refresh_exception(eng, monkeypatch):
+    monkeypatch.setattr(captures, "refresh_views", AsyncMock(side_effect=RuntimeError("mcp down")))
+    _item(eng)
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as np:
+        assert (await captures.send_digest("work"))["sent"] == 1
+    assert np.await_count == 2
+
+
+async def test_headers_by_mode(eng):
+    _item(eng)
+    _p(eng, title="P")
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as np:
+        await captures.run_capture_digest("work")
+        await captures.run_capture_digest("personal")
+        await captures.run_capture_digest("personal", morning=True)
+    heads = [c.args[0] for c in np.await_args_list if not c.kwargs.get("buttons")]
+    assert heads[0] == "Work tasks: 1 open"
+    assert heads[1] == "Personal afternoon review: 1 open"
+    assert heads[2].startswith("Personal morning check: ")
+
+
+async def test_morning_empty_skips_silently(eng):
+    from datetime import datetime, timedelta
+    _p(eng, title="stale", created_at=datetime.utcnow() - timedelta(days=5))
+    out, np = await _morning(datetime.utcnow() - timedelta(hours=14))
+    assert out == {"skipped": "nothing open"}
+    np.assert_not_awaited()

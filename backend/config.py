@@ -482,7 +482,9 @@ class Settings(BaseSettings):
     # Per-category Telegram task digests (HH:MM 24h, in briefing_timezone).
     capture_digest_enabled: bool = True
     capture_digest_work_time: str = "08:00"
-    capture_digest_personal_time: str = "18:00"
+    capture_digest_work_days: str = "mon-fri"  # APScheduler day_of_week expression
+    capture_digest_personal_time: str = "16:30"  # afternoon review
+    capture_digest_personal_morning_time: str = "07:00"  # morning check: due/overdue/new since yesterday's afternoon
 
     # Calibration Loop (docs/calibration-loop-spec.md), rollout step 1 — the
     # schema/config foundation only; nothing computes and nothing suppresses
@@ -686,7 +688,7 @@ class Settings(BaseSettings):
                 f"Invalid briefing_time {self.briefing_time!r}; hour must be 0-23, minute 0-59"
             )
 
-        for name in ("capture_digest_work_time", "capture_digest_personal_time"):
+        for name in ("capture_digest_work_time", "capture_digest_personal_time", "capture_digest_personal_morning_time"):
             v = getattr(self, name)
             p = v.split(":")
             if len(p) != 2 or not all(x.strip().isdigit() for x in p) or int(p[0]) > 23 or int(p[1]) > 59:

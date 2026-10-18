@@ -17,6 +17,13 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**Quill digest schedule (2026-10-18)** — new job `capture_digest_personal_morning` (07:00, "Personal morning check":
+open tasks due today/overdue OR captured/resurfaced since yesterday's scheduled afternoon digest, fresh first). Personal
+afternoon digest moved 18:00 -> 16:30 ("Personal afternoon review"); work digest is `capture_digest_work_days` (default mon-fri).
+New settings: `capture_digest_personal_morning_time`, `capture_digest_work_days`. "Captured since" uses `Capture.captured_at`
+(recording time, exposed as `captured_at` on items), not `CaptureItem.created_at` (extraction time); extraction also anchors
+"today" to recording time. `send_digest` now runs `refresh_views()` (best-effort) first so Obsidian `[x]` ticks are synced before selection.
+
 **Outcome-flag lifecycle hygiene — clear, dedup, escalate (2026-09-22)** — three small fixes to
 flags that were opening correctly but never closing. Found by querying the live DB: flag 431
 (`cron_heartbeat:failed:vault_signals_routine`) sat `open` for a week after the job resumed
