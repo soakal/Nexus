@@ -792,3 +792,25 @@ def test_create_app_raises_on_config_missing_required_key(tmp_config: dict[str, 
     del tmp_config["vault_path"]
     with pytest.raises(ValueError, match="vault_path"):
         create_app(config=tmp_config)
+
+
+def test_raw_post_never_overwrites_same_filename(wiki_app, tmp_vault: Path) -> None:
+    """Three saves with one filename (same second) must yield three files."""
+    names = []
+    for i in range(3):
+        resp = wiki_app.post(
+            "/raw",
+            json={"content": f"capture {i}", "filename": "Quill-2026-10-17_10-00-00.md"},
+            content_type="application/json",
+        )
+        assert resp.status_code == 201
+        names.append(json.loads(resp.data)["file"])
+    assert len(set(names)) == 3
+    contents = {(tmp_vault / "raw" / n).read_text(encoding="utf-8") for n in names}
+    assert contents == {"capture 0", "capture 1", "capture 2"}
+
+
+def test_raw_post_rejects_blank_content(wiki_app, tmp_vault: Path) -> None:
+    resp = wiki_app.post("/raw", json={"content": "  \n"}, content_type="application/json")
+    assert resp.status_code == 400
+    assert not list((tmp_vault / "raw").glob("*.md")) if (tmp_vault / "raw").exists() else True

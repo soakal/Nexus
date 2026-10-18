@@ -300,6 +300,9 @@ def create_app(
             return jsonify({"error": "JSON body with 'content' field required"}), 400
 
         content = str(data["content"])
+        if not content.strip():
+            # Empty Quill captures were saved as 0-byte notes the organizer never processes.
+            return jsonify({"error": "content is empty"}), 400
 
         broken_links: list[str] = []
         try:
@@ -319,18 +322,23 @@ def create_app(
 
         rf = _raw_folder()
         rf.mkdir(parents=True, exist_ok=True)
-        target = rf / safe_name
-
-        if target.exists():
-            stem = Path(safe_name).stem
-            suffix = Path(safe_name).suffix
-            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-            target = rf / f"{stem}_{ts}{suffix}"
-
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
+        # Exclusive create: never overwrite an existing note, even when two
+        # saves land in the same second -- bump a counter until a name is free.
         try:
-            target.write_text(content, encoding="utf-8")
+            for n in range(1000):
+                target = rf / (safe_name if n == 0 else f"{stem}_{n}{suffix}")
+                try:
+                    with open(target, "x", encoding="utf-8") as fh:
+                        fh.write(content)
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                return jsonify({"error": "Too many notes with this filename"}), 409
         except OSError as exc:
-            logger.error("Failed to write raw file %s: %s", target, exc)
+            logger.error("Failed to write raw file %s: %s", safe_name, exc)
             return jsonify({"error": "Failed to write file"}), 500
 
         logger.info("Raw file created: %s", target.name)
