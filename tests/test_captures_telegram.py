@@ -148,7 +148,6 @@ async def test_open_list_has_no_cap(eng):
 
 async def test_schedule_refresh_runs_in_background_and_swallows_errors(monkeypatch):
     import asyncio
-    real = captures.__dict__["schedule_refresh"]  # fixture-free: eng fixture not used here
     ran = asyncio.Event()
 
     async def boom():
@@ -156,7 +155,8 @@ async def test_schedule_refresh_runs_in_background_and_swallows_errors(monkeypat
         raise RuntimeError("x")
 
     monkeypatch.setattr(captures, "refresh_views", boom)
-    real()
+    captures.schedule_refresh()
     await asyncio.wait_for(ran.wait(), 2)
     await asyncio.gather(*list(captures._refresh_tasks))  # must not raise
+    await asyncio.sleep(0)  # let done-callbacks run
     assert not captures._refresh_tasks
