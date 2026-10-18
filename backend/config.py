@@ -474,6 +474,12 @@ class Settings(BaseSettings):
     # above (record_flag_ex), not a parallel notification path.
     obligations_check_enabled: bool = True
 
+    # Quill capture extraction (backend/agents/captures.py) -- Haiku pulls
+    # explicit commitments out of captures/*/*.md into CaptureItem rows and
+    # re-renders views/{work,personal}/{today,master}.md.
+    capture_extract_enabled: bool = True
+    capture_extract_interval_minutes: int = 15
+
     # Calibration Loop (docs/calibration-loop-spec.md), rollout step 1 — the
     # schema/config foundation only; nothing computes and nothing suppresses
     # yet. Two master switches on purpose: calibration_enabled ships the

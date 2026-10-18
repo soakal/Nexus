@@ -1035,3 +1035,57 @@ def test_retry_does_not_trust_foreign_file_at_reserved_name(
     replay = json.loads(_remote_post(remote_app, body).data)
     assert replay["deduped"] is True and replay["file"] == data["file"] and replay["capture_path"] == data["capture_path"]
     assert not list(tmp_vault.rglob(".tmp-*"))
+
+
+# ---------------------------------------------------------------------------
+# PUT /views/<category>/<name>
+# ---------------------------------------------------------------------------
+
+def _sha(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _put(client, path: str, content: str = "# v\n", sha: str = "", **kw):
+    return client.put(path, json={"content": content, "expected_sha": sha}, headers=AUTH, environ_overrides=REMOTE, **kw)
+
+
+def test_put_view_writes_and_replaces_atomically(remote_app, tmp_vault: Path) -> None:
+    assert _put(remote_app, "/views/work/today", "one").status_code == 200
+    target = tmp_vault / "views" / "work" / "today.md"
+    assert target.read_text() == "one"
+    assert _put(remote_app, "/views/work/today", "two", sha=_sha("one")).status_code == 200
+    assert target.read_text() == "two"
+    assert _files(target.parent) == ["today.md"]  # no .tmp-* left
+
+
+def test_put_view_stale_sha_is_409(remote_app, tmp_vault: Path) -> None:
+    _put(remote_app, "/views/personal/master", "one")
+    assert _put(remote_app, "/views/personal/master", "two", sha="").status_code == 409
+    assert _put(remote_app, "/views/personal/master", "two", sha=_sha("zzz")).status_code == 409
+    assert (tmp_vault / "views/personal/master.md").read_text() == "one"
+
+
+@pytest.mark.parametrize("path", ["/views/other/today", "/views/work/evil", "/views/work/today.md", "/views/../today"])
+def test_put_view_unknown_target_404(remote_app, path: str) -> None:
+    assert _put(remote_app, path).status_code == 404
+
+
+def test_put_view_requires_token_remotely(remote_app, tmp_vault: Path) -> None:
+    body = {"content": "x", "expected_sha": ""}
+    assert remote_app.put("/views/work/today", json=body, environ_overrides=REMOTE).status_code == 401
+    assert not (tmp_vault / "views").exists()
+
+
+def test_put_view_requires_sha_field(remote_app) -> None:
+    resp = remote_app.put("/views/work/today", json={"content": "x"}, headers=AUTH, environ_overrides=REMOTE)
+    assert resp.status_code == 400
+
+
+def test_put_view_refuses_symlinks(remote_app, tmp_vault: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_vault / "views").mkdir()
+    (tmp_vault / "views" / "work").symlink_to(outside)
+    assert _put(remote_app, "/views/work/today").status_code == 400
+    assert list(outside.iterdir()) == []

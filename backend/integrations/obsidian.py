@@ -316,6 +316,21 @@ async def _post_raw(content: str, filename: str, timeout: float = 10) -> None:
         resp.raise_for_status()
 
 
+async def put_view(category: str, name: str, content: str, expected_sha: str = "") -> bool:
+    """Replace views/<category>/<name>.md via the Brain MCP server. False on a
+    409 (file changed since expected_sha was read); other errors raise."""
+    async with httpx.AsyncClient(verify=SSL_CONTEXT, timeout=10) as client:
+        resp = await client.put(
+            f"{_mcp_url()}/views/{category}/{name}",
+            json={"content": content, "expected_sha": expected_sha},
+            headers=_mcp_headers(),
+        )
+        if resp.status_code == 409:
+            return False
+        resp.raise_for_status()
+        return True
+
+
 def _format_event(
     event_type: str, title: str, body: str, when: datetime | None = None
 ) -> tuple[str, str]:

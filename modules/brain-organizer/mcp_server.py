@@ -495,6 +495,44 @@ def create_app(
         logger.info("Raw file created: %s", st["raw"])
         return _body(False), 201
 
+    # ------------------------------------------------------------------
+    # PUT /views/<category>/<name>  — NEXUS-rendered task views
+    # Body {content, expected_sha}: sha256 of the file's current bytes ("" if
+    # absent). Mismatch -> 409 so a checkbox tick made in Obsidian since the
+    # caller last read the file is never overwritten.
+    # ------------------------------------------------------------------
+    @app.route("/views/<category>/<name>", methods=["PUT"])
+    def put_view(category: str, name: str) -> Any:
+        auth_error = _check_auth()
+        if auth_error is not None:
+            return auth_error
+        if category not in _CATEGORIES or name not in ("today", "master"):
+            return _err("Not found", 404)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not isinstance(data.get("content"), str) \
+                or not isinstance(data.get("expected_sha"), str):
+            return _err("JSON body with 'content' and 'expected_sha' strings required", 400)
+        folder = Path(config["vault_path"]) / config["views_folder"] / category
+        target = folder / f"{name}.md"
+        with _RAW_LOCK:
+            try:
+                for p in (target, folder, folder.parent):
+                    if p.is_symlink():
+                        return _err("Refusing symlinked view path", 400)
+                folder.mkdir(parents=True, exist_ok=True)
+                current = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else ""
+                if current != data["expected_sha"]:
+                    return _err("View changed since read", 409)
+                tmp = _write_tmp(folder, data["content"])
+                try:
+                    os.replace(tmp, target)
+                finally:
+                    tmp.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.error("Failed to write view %s/%s: %s", category, name, exc)
+                return _err("Failed to write file", 500)
+        return jsonify({"status": "ok"})
+
     return app
 
 

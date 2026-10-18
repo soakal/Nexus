@@ -656,6 +656,16 @@ async def _obligations_check():
         raise
 
 
+async def _capture_extract():
+    try:
+        from backend.agents.captures import run_capture_extract
+        result = await run_capture_extract()
+        logger.info(f"Capture extract: {result}")
+    except Exception as e:
+        logger.error(f"Capture extract job error: {e}")
+        raise
+
+
 async def _run_brain_organizer():
     try:
         import asyncio
@@ -1256,6 +1266,14 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info(f"Obligations check enabled: daily at 09:15 {timezone}")
+    if getattr(s, "capture_extract_enabled", True):
+        scheduler.add_job(
+            _capture_extract,
+            IntervalTrigger(minutes=getattr(s, "capture_extract_interval_minutes", 15)),
+            id="capture_extract",
+            replace_existing=True,
+        )
+        logger.info("Capture extract enabled: every %s minutes", getattr(s, "capture_extract_interval_minutes", 15))
     if getattr(s, "facts_digest_enabled", False):
         digest_time = getattr(s, "facts_digest_time", "01:30")
         try:

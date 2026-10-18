@@ -212,8 +212,8 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # self-heal for the Brain MCP subprocess) = 35. +1 "secret_drift_check"
     # (daily vault<->Infisical compare) +1 "telegram_poller_ensure" (5-min
     # poller start retry; registered because telegram_poll_enabled defaults
-    # True) = 37.
-    expected_count = 37
+    # True) = 37. +1 "capture_extract" (Quill capture extraction) = 38.
+    expected_count = 38
     assert mock_add.call_count == expected_count
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -244,6 +244,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "spend_report",
         "goal_recurrence",
         "obligations_check",
+        "capture_extract",
         "brain_organizer",
         "wiki_fragmentation_report",
         "infisical_soak_reminder",
@@ -290,8 +291,8 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     # nets against +1 proton_bridge_vault_backup (2026-09-06) to leave this
     # unchanged in total even though neither job is mentioned by name here.
     # +1 brain_mcp_token_check, +1 secret_drift_check, +1
-    # telegram_poller_ensure (2026-09-28) = 37.
-    assert mock_add.call_count == 37
+    # telegram_poller_ensure (2026-09-28) = 37, +1 capture_extract = 38.
+    assert mock_add.call_count == 38
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):
@@ -312,8 +313,8 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "morning_briefing" not in ids_set
     assert "homelab_digest" in ids_set
-    # See test_auth_burst_check_adds_no_scheduler_job for the 37 baseline.
-    expected_count = 37 - 1
+    # See test_auth_burst_check_adds_no_scheduler_job for the 38 baseline.
+    expected_count = 38 - 1
     assert mock_add.call_count == expected_count
 
 
