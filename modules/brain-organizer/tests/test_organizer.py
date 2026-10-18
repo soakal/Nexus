@@ -549,27 +549,102 @@ def test_route_topics_dedups_two_routes_naming_same_page(
     assert is_new is False
 
 
-def test_route_topics_hallucinated_existing_title_logs_warning_and_falls_through_to_new(
+def test_route_topics_hallucinated_existing_title_is_rejected_not_created(
     tmp_config: dict[str, Any], caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """spec #2 crit 40: a "match":"existing" route naming a title that is
-    NOT present anywhere in the catalog must log the hallucination warning
-    and fall through to the "new" path (re-checked via the near-dup guard),
-    not be silently dropped or raise."""
+    """A "match":"existing" title not in the catalog (and not a near-dup of
+    any page) is dropped and reported -- never demoted to a NEW page, which
+    is how the "<Title>-Covers-<headers>" shadow pages were created. With no
+    route left, the Uncategorized fallback catches the note."""
     catalog = [_catalog_entry("Real Page", "Real-Page")]
     client = MagicMock()
     client.messages.create.return_value = make_message(
         json.dumps({"routes": [{"match": "existing", "title": "Ghost Page"}]})
     )
+    rejected: list[str] = []
 
     with caplog.at_level(logging.WARNING):
-        routes = bo.route_topics("some content", catalog, tmp_config, client)
+        routes = bo.route_topics("some content", catalog, tmp_config, client, rejected=rejected)
 
-    assert "hallucinated" in caplog.text
-    assert len(routes) == 1
-    title, path, is_new = routes[0]
-    assert title == "Ghost Page"
-    assert is_new is True
+    assert "rejected hallucinated existing title" in caplog.text
+    assert rejected == ["Ghost Page"]
+    assert [(t, n) for t, _p, n in routes] == [("Uncategorized", True)]
+
+
+def test_route_topics_covers_echo_resolves_to_real_page(
+    tmp_config: dict[str, Any],
+) -> None:
+    """Haiku echoing the whole catalog line back as the title (seen live:
+    "Goals — Covers: Overview | Lifecycle ...") resolves to the real page."""
+    catalog = [_catalog_entry("Goals", "Goals")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(json.dumps({"routes": [
+        {"match": "existing", "title": "Goals — Covers: Overview | Lifecycle | Failure Reasons"},
+    ]}))
+    rejected: list[str] = []
+
+    routes = bo.route_topics("some content", catalog, tmp_config, client, rejected=rejected)
+
+    assert routes == [("Goals", Path(catalog[0]["path_str"]), False)]
+    assert rejected == []
+
+
+@pytest.mark.parametrize("bad_title", [
+    "Goals Covers: Overview Lifecycle",
+    "AdGuard | Overview",
+])
+def test_route_topics_rejects_malformed_new_title(
+    tmp_config: dict[str, Any], bad_title: str,
+) -> None:
+    catalog = [_catalog_entry("Real Page", "Real-Page")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(
+        json.dumps({"routes": [{"match": "new", "title": bad_title}]})
+    )
+    rejected: list[str] = []
+
+    routes = bo.route_topics("some content", catalog, tmp_config, client, rejected=rejected)
+
+    assert rejected == [bad_title]
+    assert [(t, n) for t, _p, n in routes] == [("Uncategorized", True)]
+
+
+def test_route_topics_unresolved_existing_near_dup_maps_to_existing_page(
+    tmp_config: dict[str, Any],
+) -> None:
+    """An unresolved "existing" title that is a near-duplicate of a real page
+    maps onto that page (never a new one), is not reported as rejected, and
+    de-duplicates against the canonical route returned alongside it."""
+    catalog = [_catalog_entry("Financial Forecast", "Financial-Forecast")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(json.dumps({"routes": [
+        {"match": "existing", "title": "Financial Forecasting"},
+        {"match": "existing", "title": "Financial Forecast"},
+    ]}))
+    rejected: list[str] = []
+
+    routes = bo.route_topics("some content", catalog, tmp_config, client, rejected=rejected)
+
+    assert routes == [("Financial Forecast", Path(catalog[0]["path_str"]), False)]
+    assert rejected == []
+
+
+def test_route_topics_one_rejected_one_accepted(
+    tmp_config: dict[str, Any],
+) -> None:
+    """A partial rejection keeps the good route and still reports the bad one."""
+    catalog = [_catalog_entry("NEXUS", "NEXUS")]
+    client = MagicMock()
+    client.messages.create.return_value = make_message(json.dumps({"routes": [
+        {"match": "existing", "title": "NEXUS"},
+        {"match": "existing", "title": "Zzqx Phantom"},
+    ]}))
+    rejected: list[str] = []
+
+    routes = bo.route_topics("some content", catalog, tmp_config, client, rejected=rejected)
+
+    assert [(t, n) for t, _p, n in routes] == [("NEXUS", False)]
+    assert rejected == ["Zzqx Phantom"]
 
 
 def test_daily_note_route_creates_canonical_date_page(tmp_path: Path) -> None:
@@ -2397,7 +2472,7 @@ def test_run_two_files_same_page_batch_mode_second_wave_sees_first_waves_write(
     write_raw(tmp_vault, "note1.md", "First addition content")
     write_raw(tmp_vault, "note2.md", "Second addition content")
 
-    def fake_route_topics(content, catalog, config, client):
+    def fake_route_topics(content, catalog, config, client, rejected=None):
         return [("Shared", wiki_file, False)]
 
     monkeypatch.setattr(bo, "route_topics", fake_route_topics)
@@ -2639,7 +2714,7 @@ def test_run_summary_counts_created_merged_uncategorized_catalog_for_real_run(
     write_raw(tmp_vault, "existing-note.md", "content about an existing topic")
     write_raw(tmp_vault, "vague-note.md", "content nobody can classify")
 
-    def fake_route_topics(content, catalog, config, client):
+    def fake_route_topics(content, catalog, config, client, rejected=None):
         if "brand new topic" in content:
             return [("NewTopic", wiki_folder / "NewTopic.md", True)]
         if "existing topic" in content:
@@ -2685,7 +2760,7 @@ def test_run_summary_reports_links_rewritten_and_backticked_counts(
     (wiki_folder / "Bug-Fixes.md").write_text("# Bug Fixes\n\nKnown issues.", encoding="utf-8")
     write_raw(tmp_vault, "note.md", "content about a new topic")
 
-    def fake_route_topics(content, catalog, config, client):
+    def fake_route_topics(content, catalog, config, client, rejected=None):
         return [("NewTopic", wiki_folder / "NewTopic.md", True)]
 
     monkeypatch.setattr(bo, "route_topics", fake_route_topics)
@@ -2739,7 +2814,7 @@ def test_run_summary_reports_tags_added_and_tags_new_vocabulary_counts(
     )
     write_raw(tmp_vault, "note.md", "content about a new topic")
 
-    def fake_route_topics(content, catalog, config, client):
+    def fake_route_topics(content, catalog, config, client, rejected=None):
         return [("NewTopic", wiki_folder / "NewTopic.md", True)]
 
     monkeypatch.setattr(bo, "route_topics", fake_route_topics)
@@ -2760,7 +2835,40 @@ def test_run_summary_reports_tags_added_and_tags_new_vocabulary_counts(
 
     mock_telegram.assert_called_once()
     summary = mock_telegram.call_args[0][1]
-    assert "tags_added=2 tags_new_vocabulary=1" in summary
+    assert "tags_added=2 tags_new_vocabulary=1 rejected=0" in summary
+
+
+def test_run_partial_rejection_names_raw_file_and_counts_in_summary(
+    tmp_vault: Path, tmp_config: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route dropped by route_topics' guards must surface end to end: the
+    warning names the raw file and the title, the accepted route is still
+    written, and the Telegram summary reports rejected=1."""
+    wiki_folder = tmp_vault / "wiki"
+    write_raw(tmp_vault, "voice-note.md", "content about a new topic")
+
+    def fake_route_topics(content, catalog, config, client, rejected=None):
+        rejected.append("Ghost Page")
+        return [("NewTopic", wiki_folder / "NewTopic.md", True)]
+
+    monkeypatch.setattr(bo, "route_topics", fake_route_topics)
+    client = MagicMock()
+    client.messages.create.side_effect = [
+        make_message('{"tags": []}'),
+        make_message("# NewTopic\n\nSynthesized body about a new topic."),
+    ]
+    mock_telegram = MagicMock()
+    monkeypatch.setattr(bo, "send_telegram_notification", mock_telegram)
+
+    result = bo.run(_client=client, _config=tmp_config)
+
+    assert result == 0
+    assert (wiki_folder / "NewTopic.md").exists()
+    # run() reconfigures logging (basicConfig force=True), so read its log file.
+    log = (Path(tmp_config["logs_folder"]) / "organizer.log").read_text(encoding="utf-8")
+    assert "Rejected route(s) for voice-note.md: ['Ghost Page']" in log
+    summary = mock_telegram.call_args[0][1]
+    assert "rejected=1" in summary
 
 
 def test_group_files_by_shared_pages_unions_on_any_shared_route() -> None:
@@ -3060,7 +3168,7 @@ def test_route_topics_signature_has_no_registry_param(tmp_config: dict[str, Any]
     import inspect
     params = list(inspect.signature(bo.route_topics).parameters)
     assert "existing_registry" not in params
-    assert params == ["content", "catalog", "config", "client"]
+    assert params == ["content", "catalog", "config", "client", "rejected"]
 
 
 # ---------------------------------------------------------------------------
