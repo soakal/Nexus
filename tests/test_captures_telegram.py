@@ -56,7 +56,7 @@ async def test_done_edits_then_second_tap_already_done(eng):
 async def test_snooze_then_already_snoozed_with_deadline(eng):
     i = _item(eng)
     _, edit = await _tap(f"ct:snooze:{i}")
-    assert "Snoozed 1 day." in edit.await_args.args[2]
+    assert "✓ Snoozed 1 day." in edit.await_args.args[2]
     _, edit = await _tap(f"ct:snooze:{i}")
     assert "Already snoozed until" in edit.await_args.args[2]
 
@@ -137,3 +137,26 @@ async def test_digest_disabled_flag(eng, monkeypatch):
 def test_capture_digest_is_registered_notify_kind():
     from backend.events import NOTIFY_KINDS
     assert "capture_digest" in NOTIFY_KINDS
+
+
+async def test_open_list_has_no_cap(eng):
+    for n in range(35):
+        _item(eng, title=f"task-{n}")
+    out = await telegram_commands._cmd_open("work", {})
+    assert all(f"task-{n}" in out for n in range(35))
+
+
+async def test_schedule_refresh_runs_in_background_and_swallows_errors(monkeypatch):
+    import asyncio
+    real = captures.__dict__["schedule_refresh"]  # fixture-free: eng fixture not used here
+    ran = asyncio.Event()
+
+    async def boom():
+        ran.set()
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(captures, "refresh_views", boom)
+    real()
+    await asyncio.wait_for(ran.wait(), 2)
+    await asyncio.gather(*list(captures._refresh_tasks))  # must not raise
+    assert not captures._refresh_tasks

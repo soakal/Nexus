@@ -721,9 +721,9 @@ async def _capture_list(args: str, scope: str) -> str:
     items = [i for i in await captures.list_items(cat or None, scope=scope) if i["kind"] in ("task", "followup")]
     if not items:
         return "Nothing open."
-    lines = [f"#{i['id']} [{i['category']}] {i['title']}" + (f" (due {i['due_at'][:10]})" if i["due_at"] else "")
-             for i in items[:30]]
-    return "\n".join(lines) + (f"\n... and {len(items) - 30} more" if len(items) > 30 else "")
+    # No cap: send_reply chunks long output.
+    return "\n".join(f"#{i['id']} [{i['category']}] {i['title']}" + (f" (due {i['due_at'][:10]})" if i["due_at"] else "")
+                     for i in items)
 
 
 async def _cmd_today(args: str, msg: dict) -> str:

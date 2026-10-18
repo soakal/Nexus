@@ -51,7 +51,7 @@ _message_tasks: set[asyncio.Task] = set()
 # docker/vm ids are a container NAME and a Proxmox vmid string, respectively —
 # only the DB-keyed namespaces coerce to int.
 _INT_ID_NAMESPACES = frozenset({"goal", "safety", "flag", "ct"})
-_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved", "on", "done"})
+_AFFIRMATIVE_VERBS = frozenset({"approve", "confirm", "start", "restart", "resolved", "on", "done", "snooze"})
 
 
 async def _dispatch(namespace: str, verb: str, obj_id: int | str) -> tuple[bool, str]:
