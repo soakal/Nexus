@@ -14,6 +14,7 @@ asyncio.to_thread.
 """
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import re
@@ -375,6 +376,96 @@ async def refresh_views() -> bool:
 async def set_status(item_id: int, status: str, by: str, days: int = 1) -> str:
     """-> ok | not_found | already_done | already_open | already_snoozed."""
     return await asyncio.to_thread(_db_set_status, item_id, status, by, days)
+
+
+async def get_item(item_id: int) -> dict | None:
+    return next((i for i in await asyncio.to_thread(_db_items) if i["id"] == item_id), None)
+
+
+def _local_str(iso: str) -> str:
+    """Naive-UTC isoformat -> 'Mon Oct 19 08:00' in the scheduler timezone."""
+    return datetime.fromisoformat(iso).replace(tzinfo=UTC).astimezone(_local_now().tzinfo).strftime("%a %b %d %H:%M")
+
+
+async def detail_text(item_id: int) -> str:
+    """Popup text for the Open button (Telegram alert caps ~200 chars)."""
+    i = await get_item(item_id)
+    if i is None:
+        return "Task not found."
+    bits = [i["title"], f"{i['category']} {i['kind']} - {i['status']}"]
+    if i["due_at"]:
+        bits.append(f"due {i['due_at'][:10]}")
+    if i["snoozed_until"]:
+        bits.append(f"snoozed until {_local_str(i['snoozed_until'])}")
+    if i["notes"]:
+        bits.append(i["notes"])
+    return "\n".join(bits)[:190]
+
+
+_refresh_tasks: set = set()
+
+
+async def _refresh_quiet() -> None:
+    try:
+        await refresh_views()
+    except Exception as e:
+        logger.warning("capture view refresh failed: %s", type(e).__name__)
+
+
+def schedule_refresh() -> None:
+    """Fire-and-forget refresh_views() (strong ref held; never raises, never blocks the caller)."""
+    try:
+        t = asyncio.get_running_loop().create_task(_refresh_quiet())
+        _refresh_tasks.add(t)
+        t.add_done_callback(_refresh_tasks.discard)
+    except Exception as e:
+        logger.warning("capture view refresh not scheduled: %s", type(e).__name__)
+
+
+async def apply_status(item_id: int, status: str, by: str, days: int = 1) -> str:
+    """set_status + human reply text + best-effort view refresh. Shared by Telegram buttons and commands."""
+    r = await set_status(item_id, status, by, days)
+    if r == "ok":
+        schedule_refresh()
+        return {"done": "Done.", "open": "Reopened.", "snoozed": f"Snoozed {days} day{'s' if days != 1 else ''}."}[status]
+    if r == "already_snoozed":
+        i = await get_item(item_id)
+        return f"Already snoozed until {_local_str(i['snoozed_until'])}." if i and i["snoozed_until"] else "Already snoozed."
+    return "Task not found." if r == "not_found" else f"Already {r.removeprefix('already_')}."
+
+
+async def send_digest(category: str) -> dict:
+    """Header + up to MAX_ITEMS one-message-per-task pushes with Complete/Snooze/Open buttons.
+    Skips (sends nothing) when no task is open -- an empty digest is noise."""
+    from backend.events import notify_phone
+    await asyncio.to_thread(_db_unsnooze)
+    tasks = [i for i in await list_items(category, "open") if i["kind"] in ("task", "followup")]
+    if not tasks:
+        return {"skipped": "nothing open"}
+    tasks.sort(key=lambda i: (i["due_at"] is None, i["due_at"] or "", i["id"]))
+    shown = tasks[:MAX_ITEMS]
+    more = len(tasks) - len(shown)
+    head = f"{category.title()} tasks: {len(tasks)} open" + (f" (showing {len(shown)}, /open {category} for the rest)" if more else "")
+    await notify_phone(head, kind="capture_digest")
+    for i in shown:
+        due = f" (due {i['due_at'][:10]})" if i["due_at"] else ""
+        await notify_phone(f"{html.escape(i['title'])}{due}", kind="capture_digest", buttons=[
+            {"text": "\u2713 Complete", "callback_data": f"ct:done:{i['id']}"},
+            {"text": "\u23f0 Snooze", "callback_data": f"ct:snooze:{i['id']}"},
+            {"text": "\u2139 Open", "callback_data": f"ct:open:{i['id']}"}])
+    return {"sent": len(shown), "more": more}
+
+
+async def run_capture_digest(category: str) -> dict:
+    """Scheduler entry. Never raises."""
+    from backend.config import get_settings
+    if not getattr(get_settings(), "capture_digest_enabled", True):
+        return {"skipped": "disabled"}
+    try:
+        return await send_digest(category)
+    except Exception as e:
+        logger.error("capture digest error: %s", type(e).__name__)
+        return {"error": type(e).__name__}
 
 
 async def list_items(category: str | None = None, status: str | None = None, scope: str | None = None) -> list[dict]:

@@ -666,6 +666,23 @@ async def _capture_extract():
         raise
 
 
+async def _capture_digest(category: str):
+    try:
+        from backend.agents.captures import run_capture_digest
+        logger.info(f"Capture digest {category}: {await run_capture_digest(category)}")
+    except Exception as e:
+        logger.error(f"Capture digest {category} job error: {e}")
+        raise
+
+
+async def _capture_digest_work():
+    await _capture_digest("work")
+
+
+async def _capture_digest_personal():
+    await _capture_digest("personal")
+
+
 async def _run_brain_organizer():
     try:
         import asyncio
@@ -1277,6 +1294,20 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Capture extract enabled: every %s minutes", cap_min)
+    if getattr(s, "capture_digest_enabled", True):
+        for cat, job, default, fn in (("work", "capture_digest_work", "08:00", _capture_digest_work),
+                                      ("personal", "capture_digest_personal", "18:00", _capture_digest_personal)):
+            cd_time = getattr(s, f"capture_digest_{cat}_time", default)
+            try:
+                cdh, cdm = cd_time.split(":")
+                cdh, cdm = int(cdh), int(cdm)
+                if not (0 <= cdh <= 23 and 0 <= cdm <= 59):
+                    raise ValueError(cd_time)
+            except Exception:
+                logger.warning(f"Invalid capture_digest_{cat}_time {cd_time!r}; falling back to {default}")
+                cdh, cdm = int(default[:2]), int(default[3:])
+            scheduler.add_job(fn, CronTrigger(hour=cdh, minute=cdm, timezone=timezone), id=job, replace_existing=True)
+            logger.info(f"Capture digest ({cat}) enabled: daily at {cdh:02d}:{cdm:02d} {timezone}")
     if getattr(s, "facts_digest_enabled", False):
         digest_time = getattr(s, "facts_digest_time", "01:30")
         try:
