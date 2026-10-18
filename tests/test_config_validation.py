@@ -143,3 +143,13 @@ def test_mail_autodraft_settings_env_overridable(monkeypatch):
     s = _settings()
     assert s.mail_autodraft_enabled is False
     assert s.mail_autodraft_interval_minutes == 45
+
+
+@pytest.mark.parametrize("value", ["7", "24:00", "07:60", "ab:cd"])
+def test_capture_digest_personal_morning_time_invalid(value):
+    with pytest.raises(ValueError, match="capture_digest_personal_morning_time"):
+        _settings(capture_digest_personal_morning_time=value).validate()
+
+
+def test_capture_digest_personal_morning_time_valid():
+    _settings(capture_digest_personal_morning_time="07:00").validate()

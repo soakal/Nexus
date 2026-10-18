@@ -213,7 +213,8 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
     # (daily vault<->Infisical compare) +1 "telegram_poller_ensure" (5-min
     # poller start retry; registered because telegram_poll_enabled defaults
     # True) = 37. +1 "capture_extract" (Quill capture extraction) = 38. +2 "capture_digest_work"/"capture_digest_personal" = 40.
-    expected_count = 40
+    # +1 "capture_digest_personal_morning" = 41.
+    expected_count = 41
     assert mock_add.call_count == expected_count
     ids_set = set()
     for c in mock_add.call_args_list:
@@ -247,6 +248,7 @@ def test_setup_scheduler_adds_jobs(monkeypatch):
         "capture_extract",
         "capture_digest_work",
         "capture_digest_personal",
+        "capture_digest_personal_morning",
         "brain_organizer",
         "wiki_fragmentation_report",
         "infisical_soak_reminder",
@@ -294,8 +296,8 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     # unchanged in total even though neither job is mentioned by name here.
     # +1 brain_mcp_token_check, +1 secret_drift_check, +1
     # telegram_poller_ensure (2026-09-28) = 37, +1 capture_extract = 38,
-    # +2 capture_digest_* = 40.
-    assert mock_add.call_count == 40
+    # +2 capture_digest_* = 40, +1 capture_digest_personal_morning = 41.
+    assert mock_add.call_count == 41
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):
@@ -316,8 +318,8 @@ def test_morning_briefing_disabled_skips_job(monkeypatch):
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert "morning_briefing" not in ids_set
     assert "homelab_digest" in ids_set
-    # See test_auth_burst_check_adds_no_scheduler_job for the 40 baseline.
-    expected_count = 40 - 1
+    # See test_auth_burst_check_adds_no_scheduler_job for the 41 baseline.
+    expected_count = 41 - 1
     assert mock_add.call_count == expected_count
 
 
@@ -334,9 +336,9 @@ def test_capture_digest_disabled_skips_only_its_jobs(monkeypatch):
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
-    assert not ids_set & {"capture_digest_work", "capture_digest_personal"}
+    assert not ids_set & {"capture_digest_work", "capture_digest_personal", "capture_digest_personal_morning"}
     assert "capture_extract" in ids_set
-    assert mock_add.call_count == 40 - 2
+    assert mock_add.call_count == 41 - 3
 
 
 def test_capture_digest_invalid_time_falls_back_with_warning(monkeypatch, caplog):
@@ -353,6 +355,43 @@ def test_capture_digest_invalid_time_falls_back_with_warning(monkeypatch, caplog
     assert "Invalid capture_digest_work_time" in caplog.text
     job = next(c for c in mock_add.call_args_list if c.kwargs.get("id") == "capture_digest_work")
     assert "hour='8'" in str(job.args[1]) and "minute='0'" in str(job.args[1])
+
+
+def _digest_jobs(monkeypatch, **env):
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    _pretend_brain_organizer_venv(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    return {c.kwargs.get("id"): str(c.args[1]) for c in mock_add.call_args_list if str(c.kwargs.get("id", "")).startswith("capture_digest")}
+
+
+def test_capture_digest_work_is_weekdays(monkeypatch):
+    jobs = _digest_jobs(monkeypatch)
+    assert "day_of_week='mon-fri'" in jobs["capture_digest_work"]
+    assert "day_of_week='*'" in jobs["capture_digest_personal"]
+    assert "hour='16'" in jobs["capture_digest_personal"] and "minute='30'" in jobs["capture_digest_personal"]
+    assert "hour='7'" in jobs["capture_digest_personal_morning"]
+
+
+def test_capture_digest_invalid_days_falls_back(monkeypatch, caplog):
+    with caplog.at_level("WARNING"):
+        jobs = _digest_jobs(monkeypatch, CAPTURE_DIGEST_WORK_DAYS="funday")
+    assert "Invalid capture_digest_work_days" in caplog.text
+    assert "day_of_week='mon-fri'" in jobs["capture_digest_work"]
+
+
+def test_capture_digest_morning_invalid_time_falls_back(monkeypatch, caplog):
+    with caplog.at_level("WARNING"):
+        jobs = _digest_jobs(monkeypatch, CAPTURE_DIGEST_PERSONAL_MORNING_TIME="25:99")
+    assert "Invalid capture_digest_personal_morning_time" in caplog.text
+    assert "hour='7'" in jobs["capture_digest_personal_morning"]
 
 
 def test_morning_briefing_enabled_default_is_true():

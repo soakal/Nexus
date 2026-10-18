@@ -28,11 +28,12 @@ def brain(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _capture(brain, name="Quill-1.md", category="work", body="I need to email Bob the invoice by Friday"):
+def _capture(brain, name="Quill-1.md", category="work", body="I need to email Bob the invoice by Friday", captured_at=None):
     d = brain / "captures" / category
     d.mkdir(parents=True, exist_ok=True)
     fp = hashlib.sha256((category + body + name).encode()).hexdigest()
-    (d / name).write_text(f'---\ncategory: "{category}"\nfingerprint: "{fp}"\n---\n\n{body}', encoding="utf-8")
+    ca = f'captured_at: "{captured_at}"\n' if captured_at else ""
+    (d / name).write_text(f'---\ncategory: "{category}"\n{ca}fingerprint: "{fp}"\n---\n\n{body}', encoding="utf-8")
     return fp
 
 
@@ -303,3 +304,89 @@ def test_api_patch_and_snooze(client, eng, auth_headers):
     assert client.patch(f"/api/captures/items/{i}", json={"kind": "bogus"}, headers=auth_headers).status_code == 422
     assert client.post(f"/api/captures/items/{i}/snooze", json={"days": 2}, headers=auth_headers).status_code == 200
     assert client.post(f"/api/captures/items/{i}/snooze", headers=auth_headers).status_code == 409
+
+
+# --- morning digest: sync-before-send, cutoff, recording-time anchor ----------------------------
+
+async def test_digest_syncs_tick_landing_before_put(eng, brain, monkeypatch):
+    from unittest.mock import patch
+    a = _item(eng, title="Alpha tick", category="personal", item_index=0)
+    _item(eng, title="Bravo open", category="personal", item_index=1)
+    f = brain / "views/personal/master.md"
+    f.parent.mkdir(parents=True)
+    f.write_text(f"- [ ] Alpha tick %%nx:{a}%%\n")
+    seen = {"n": 0}
+
+    async def put(c, n, text, sha=""):
+        file = brain / "views" / c / f"{n}.md"
+        if (c, n) == ("personal", "master"):
+            seen["n"] += 1
+            if seen["n"] == 1:  # tick lands after the sync read, before the PUT -> 409
+                file.write_text(file.read_text().replace("- [ ] Alpha", "- [x] Alpha"))
+        cur = hashlib.sha256(file.read_bytes()).hexdigest() if file.exists() else ""
+        if cur != sha:
+            return False
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(text)
+        return True
+    monkeypatch.setattr("backend.integrations.obsidian.put_view", put)
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as np:
+        assert await captures.send_digest("personal") == {"sent": 1, "more": 0}
+    with Session(eng) as s:
+        assert s.get(backend.database.CaptureItem, a).status == "done"
+    assert not any("Alpha tick" in c.args[0] for c in np.await_args_list)
+    assert np.await_count == 2  # header + Bravo
+
+
+async def test_digest_sends_when_refresh_exhausts_retry(eng, brain, monkeypatch):
+    from unittest.mock import patch
+    _item(eng, category="personal")
+    put = AsyncMock(return_value=False)  # two conflicts -> refresh gives up
+    monkeypatch.setattr("backend.integrations.obsidian.put_view", put)
+    with patch("backend.events.notify_phone", new_callable=AsyncMock) as np:
+        out = await captures.send_digest("personal")
+    assert out["sent"] == 1 and np.await_count == 2
+
+
+def test_morning_cutoff_dst(monkeypatch):
+    from zoneinfo import ZoneInfo
+    from backend.config import get_settings
+    monkeypatch.setattr(get_settings(), "capture_digest_personal_time", "16:30")
+    tz = ZoneInfo("America/Detroit")
+    for now, want in [
+        (datetime(2026, 3, 9, 7, 0), datetime(2026, 3, 8, 20, 30)),    # yesterday 16:30 EDT
+        (datetime(2026, 3, 8, 7, 0), datetime(2026, 3, 7, 21, 30)),    # spring-forward day; yesterday EST
+        (datetime(2026, 11, 2, 7, 0), datetime(2026, 11, 1, 21, 30)),  # yesterday EST
+        (datetime(2026, 11, 1, 7, 0), datetime(2026, 10, 31, 20, 30)), # fall-back day; yesterday EDT
+        (datetime(2026, 10, 18, 7, 0), datetime(2026, 10, 17, 20, 30)),
+    ]:
+        assert captures._morning_cutoff(now.replace(tzinfo=tz)) == want
+
+
+async def test_extract_anchors_today_to_recording_time(eng, brain, haiku, monkeypatch):
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(captures, "refresh_views", AsyncMock(return_value=True))
+    monkeypatch.setattr(captures, "_local_now", lambda: datetime(2026, 10, 18, 0, 10, tzinfo=ZoneInfo("America/Detroit")))
+    # recorded 23:50 EDT on the 17th (offset in frontmatter -> stored naive UTC), extracted at 00:10 on the 18th
+    _capture(brain, name="Q-rec.md", captured_at="2026-10-17T23:50:00-04:00")
+    _capture(brain, name="Q-nots.md", body="Call the plumber tomorrow")  # no captured_at -> falls back to extraction time
+    captures._db_scan_new()
+    caps = {c["path"].rsplit("/", 1)[-1]: c for c in captures._db_pending()}
+    assert caps["Q-rec.md"]["captured_at"] == "2026-10-18T03:50:00"
+    assert caps["Q-nots.md"]["captured_at"] is None
+    assert await captures.extract(caps["Q-rec.md"]) == 1
+    assert "today is 2026-10-17" in haiku.await_args.args[0]
+    assert await captures.extract(caps["Q-nots.md"]) == 1
+    assert "today is 2026-10-18" in haiku.await_args.args[0]
+
+
+def test_list_items_captured_at_fallback(eng):
+    ca = datetime(2026, 10, 17, 23, 50)
+    with Session(eng) as s:
+        s.add(backend.database.Capture(id=500, path="captures/work/x.md", fingerprint="fx", category="work", captured_at=ca))
+        s.commit()
+    a = _item(eng, capture_id=500, item_index=0)
+    b = _item(eng, capture_id=999, item_index=1)
+    got = {i["id"]: i for i in captures._db_items()}
+    assert got[a]["captured_at"] == ca.isoformat()
+    assert got[b]["captured_at"] == got[b]["created_at"]

@@ -70,13 +70,14 @@ def _local_now() -> datetime:
     return datetime.now(ZoneInfo(get_settings().briefing_timezone))
 
 
-def _item_dict(i, path: str | None = None) -> dict:
+def _item_dict(i, path: str | None = None, captured_at: datetime | None = None) -> dict:
     iso = lambda d: d.isoformat() if d else None  # noqa: E731
     return {
         "id": i.id, "capture_id": i.capture_id, "category": i.category, "kind": i.kind,
         "title": i.title, "notes": i.notes, "due_at": iso(i.due_at), "status": i.status,
         "snoozed_until": iso(i.snoozed_until), "resurfaced_at": iso(i.resurfaced_at), "similar_to_id": i.similar_to_id,
         "done_at": iso(i.done_at), "done_by": i.done_by, "created_at": iso(i.created_at),
+        "captured_at": iso(captured_at or i.created_at),  # recording time; falls back to extraction time
         "source_path": path,
     }
 
@@ -142,7 +143,8 @@ def _db_pending() -> list[dict]:
             .where(Capture.extracted_at.is_(None), Capture.attempts < MAX_ATTEMPTS)  # type: ignore[union-attr]
             .order_by(Capture.id).limit(_BATCH)
         ).all()
-        return [{"id": c.id, "path": c.path, "category": c.category} for c in rows]
+        return [{"id": c.id, "path": c.path, "category": c.category,
+                 "captured_at": c.captured_at.isoformat() if c.captured_at else None} for c in rows]
 
 
 def _db_fail(capture_id: int, error: str) -> None:
@@ -186,12 +188,12 @@ def _db_items(category: str | None = None, status: str | None = None) -> list[di
     from backend.database import Capture, CaptureItem, engine
 
     with Session(engine) as s:
-        q = select(CaptureItem, Capture.path).join(Capture, Capture.id == CaptureItem.capture_id, isouter=True)  # type: ignore[arg-type]
+        q = select(CaptureItem, Capture.path, Capture.captured_at).join(Capture, Capture.id == CaptureItem.capture_id, isouter=True)  # type: ignore[arg-type]
         if category:
             q = q.where(CaptureItem.category == category)
         if status:
             q = q.where(CaptureItem.status == status)
-        return [_item_dict(i, p) for i, p in s.exec(q.order_by(CaptureItem.id)).all()]  # type: ignore[arg-type]
+        return [_item_dict(i, p, ca) for i, p, ca in s.exec(q.order_by(CaptureItem.id)).all()]  # type: ignore[arg-type]
 
 
 def _db_unsnooze() -> None:
@@ -276,7 +278,9 @@ async def extract(capture: dict) -> int | None:
     try:
         text = await asyncio.to_thread((_brain() / capture["path"]).read_text, "utf-8")
         body = text.split("\n---\n", 1)[-1][:20000]
-        today = _local_now().strftime("%Y-%m-%d (%A)")
+        ca = capture.get("captured_at")  # anchor "today" to recording time, not extraction time
+        anchor = datetime.fromisoformat(ca).replace(tzinfo=UTC).astimezone(_local_now().tzinfo) if ca else _local_now()
+        today = anchor.strftime("%Y-%m-%d (%A)")
         prompt = (
             "Extract ONLY explicit commitments from this voice-note transcript: things the speaker "
             "clearly said they will do, must do, or are waiting on someone for. Do NOT infer tasks, "
@@ -434,18 +438,39 @@ async def apply_status(item_id: int, status: str, by: str, days: int = 1) -> str
     return "Task not found." if r == "not_found" else f"Already {r.removeprefix('already_')}."
 
 
-async def send_digest(category: str) -> dict:
+def _morning_cutoff(now_local: datetime) -> datetime:
+    """Yesterday's *scheduled* personal afternoon digest time, as naive UTC.
+    Wall-clock arithmetic first, then one astimezone(): correct across DST."""
+    from backend.config import get_settings
+    h, m = (int(x) for x in get_settings().capture_digest_personal_time.split(":"))
+    local = (now_local - timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
+    return local.astimezone(UTC).replace(tzinfo=None)
+
+
+async def send_digest(category: str, *, since: datetime | None = None, title: str | None = None) -> dict:
     """Header + up to MAX_ITEMS one-message-per-task pushes with Complete/Snooze/Open buttons.
-    Skips (sends nothing) when no task is open -- an empty digest is noise."""
+    since=None -> every open task. since=<naive UTC> -> morning check: due today/overdue OR
+    captured since OR resurfaced-from-snooze since. Skips (sends nothing) when nothing matches."""
     from backend.events import notify_phone
-    await asyncio.to_thread(_db_unsnooze)
+    await _refresh_quiet()  # unsnooze + sync [x] ticks + render under _VIEWS_LOCK; never raises
+    await asyncio.to_thread(_db_unsnooze)  # belt-and-braces if the refresh failed before unsnoozing
     tasks = [i for i in await list_items(category, "open") if i["kind"] in ("task", "followup")]
+    if since is not None:
+        today = _local_now().date()
+        fresh = lambda i: datetime.fromisoformat(i["captured_at"]) >= since or (  # noqa: E731
+            i["resurfaced_at"] and datetime.fromisoformat(i["resurfaced_at"]) >= since)
+        due = lambda i: i["due_at"] and datetime.fromisoformat(i["due_at"]).date() <= today  # noqa: E731
+        tasks = [i for i in tasks if fresh(i) or due(i)]
+        tasks.sort(key=lambda i: (not fresh(i), i["due_at"] is None, i["due_at"] or "", i["id"]))  # new first, backlog last
+    else:
+        tasks.sort(key=lambda i: (i["due_at"] is None, i["due_at"] or "", i["id"]))
     if not tasks:
         return {"skipped": "nothing open"}
-    tasks.sort(key=lambda i: (i["due_at"] is None, i["due_at"] or "", i["id"]))
     shown = tasks[:MAX_ITEMS]
     more = len(tasks) - len(shown)
-    head = f"{category.title()} tasks: {len(tasks)} open" + (f" (showing {len(shown)}, /open {category} for the rest)" if more else "")
+    label = title or f"{category.title()} tasks"
+    head = f"{label}: {len(tasks)} {'matching' if since else 'open'}" + (
+        f" (showing {len(shown)}, /open {category} for the rest)" if more else "")
     await notify_phone(head, kind="capture_digest")
     for i in shown:
         due = f" (due {i['due_at'][:10]})" if i["due_at"] else ""
@@ -456,13 +481,15 @@ async def send_digest(category: str) -> dict:
     return {"sent": len(shown), "more": more}
 
 
-async def run_capture_digest(category: str) -> dict:
+async def run_capture_digest(category: str, *, morning: bool = False) -> dict:
     """Scheduler entry. Never raises."""
     from backend.config import get_settings
     if not getattr(get_settings(), "capture_digest_enabled", True):
         return {"skipped": "disabled"}
     try:
-        return await send_digest(category)
+        if morning:
+            return await send_digest(category, since=_morning_cutoff(_local_now()), title="Personal morning check")
+        return await send_digest(category, title="Personal afternoon review" if category == "personal" else None)
     except Exception as e:
         logger.error("capture digest error: %s", type(e).__name__)
         return {"error": type(e).__name__}
