@@ -199,7 +199,7 @@ SONNET_MODEL = "claude-sonnet-5"
 # Haiku 5.5 thinks by default (effort default "medium", and thinking shares
 # max_tokens), so haiku() sends effort="low" -- see _EFFORT_MODELS.
 HAIKU_MODEL = "claude-haiku-5-5"
-# Still the configured default for action_judge_model / orchestrator_verifier_model /
+# Still the configured default for orchestrator_verifier_model /
 # council_postmortem_model (backend/config.py) -- kept priced and schema-capable
 # so those calls keep metering and structured outputs. Rejects `effort` (400).
 HAIKU_4_5_MODEL = "claude-haiku-4-5-20251001"
