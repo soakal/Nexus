@@ -186,7 +186,12 @@ class TaskAborted(Exception):
         self.reason = reason
         super().__init__(f"task aborted: {reason}")
 
-OPUS_MODEL = "claude-opus-5"
+# Migrated 2026-10-20: claude-opus-5 ($5/$25) -> claude-opus-5-5 ($4/$20).
+# Opus 5.5 can't disable thinking and defaults effort to "medium" (Opus 5:
+# "high"), so opus() pins effort="high" to keep behavior unchanged.
+OPUS_MODEL = "claude-opus-5-5"
+# Kept for a manual .env rollback and historical SpendLog rows.
+OPUS_5_MODEL = "claude-opus-5"
 # Migrated 2026-08-28: claude-sonnet-4-6 -> claude-sonnet-5. Confirmed live
 # against Anthropic's pricing page that Sonnet 5's $2/$10-per-MTok rate is
 # the permanent standard price (see _PRICE_PER_MTOK below), not a promo, and
@@ -234,7 +239,8 @@ def metering_counters() -> dict:
 # against Anthropic's pricing page, as the PERMANENT standard price -- the
 # scheduled 2026-08-31 reversion to $3/$15 was cancelled and will not occur.
 _PRICE_PER_MTOK = {
-    OPUS_MODEL: {"input": 5.0, "output": 25.0},
+    OPUS_MODEL: {"input": 4.0, "output": 20.0},
+    OPUS_5_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 2.0, "output": 10.0},
     SONNET_5_MODEL: {"input": 2.0, "output": 10.0},
     # ponytail: flat rate -- Haiku 5.5 bills $0.50/$2.50 above 100K-token
@@ -281,6 +287,7 @@ _PRICE_PER_MTOK = {
 # _maybe_openrouter_fallback's early return.
 _OPENROUTER_FALLBACK_MODEL = {
     OPUS_MODEL: "anthropic/claude-opus-4.8",
+    OPUS_5_MODEL: "anthropic/claude-opus-4.8",
     # ponytail: Sonnet 5.5 falls back to OpenRouter's Sonnet 5 (same price);
     # point at anthropic/claude-sonnet-5.5 once OpenRouter lists it.
     SONNET_MODEL: "anthropic/claude-sonnet-5",
@@ -555,10 +562,10 @@ _WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_us
 # (it attached output_config.format unconditionally, including to
 # _opus_plan/_opus_debug's then-default claude-sonnet-4-6, which doesn't
 # support it at all).
-_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, SONNET_MODEL, SONNET_5_MODEL, HAIKU_MODEL, HAIKU_4_5_MODEL}
+_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, OPUS_5_MODEL, SONNET_MODEL, SONNET_5_MODEL, HAIKU_MODEL, HAIKU_4_5_MODEL}
 # Narrower than the set above: Haiku 4.5 supports structured outputs but
 # rejects `effort` outright (400), so it is never in here.
-_EFFORT_MODELS = {OPUS_MODEL, SONNET_MODEL, SONNET_5_MODEL, HAIKU_MODEL}
+_EFFORT_MODELS = {OPUS_MODEL, OPUS_5_MODEL, SONNET_MODEL, SONNET_5_MODEL, HAIKU_MODEL}
 
 
 def _build_output_config(model: str, response_schema: dict | None, effort: str | None) -> dict | None:
@@ -1188,7 +1195,7 @@ async def stream_sonnet(prompt: str, system: str = "", web_search: bool = False)
 
 
 async def opus(prompt: str, system: str = "", web_search: bool = False, label: str = "") -> str:
-    return await _run(OPUS_MODEL, 8192, prompt, system, web_search, label)
+    return await _run(OPUS_MODEL, 8192, prompt, system, web_search, label, effort="high")
 
 
 async def sonnet(prompt: str, system: str = "", web_search: bool = False, label: str = "", *, response_schema: dict | None = None, effort: str | None = None) -> str:
