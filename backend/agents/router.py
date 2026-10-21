@@ -194,7 +194,12 @@ OPUS_MODEL = "claude-opus-5"
 # on Sonnet 5 but NOT Sonnet 4.6. Sonnet 5 runs adaptive thinking by default
 # (4.6 ran thinking-off) -- see the max_tokens bumps at stream_sonnet(),
 # sonnet(), and orchestrator._sonnet_execute for why that matters.
-SONNET_MODEL = "claude-sonnet-5"
+# Migrated 2026-10-20: claude-sonnet-5 -> claude-sonnet-5-5 (same $2/$10,
+# released 2026-09-28). NEXUS sends none of what 5.5 rejects (thinking
+# "disabled", forced tool_choice, sampling params, prefill).
+SONNET_MODEL = "claude-sonnet-5-5"
+# Kept for a manual .env rollback of orchestrator_*_model and historical rows.
+SONNET_5_MODEL = "claude-sonnet-5"
 # Migrated 2026-10-11: claude-haiku-4-5 ($1/$5) -> claude-haiku-5-5 ($0.10/$0.50).
 # Haiku 5.5 thinks by default (effort default "medium", and thinking shares
 # max_tokens), so haiku() sends effort="low" -- see _EFFORT_MODELS.
@@ -231,6 +236,7 @@ def metering_counters() -> dict:
 _PRICE_PER_MTOK = {
     OPUS_MODEL: {"input": 5.0, "output": 25.0},
     SONNET_MODEL: {"input": 2.0, "output": 10.0},
+    SONNET_5_MODEL: {"input": 2.0, "output": 10.0},
     # ponytail: flat rate -- Haiku 5.5 bills $0.50/$2.50 above 100K-token
     # prompts; every NEXUS Haiku prompt is far below that, tier it if one isn't.
     HAIKU_MODEL: {"input": 0.10, "output": 0.50},
@@ -275,7 +281,10 @@ _PRICE_PER_MTOK = {
 # _maybe_openrouter_fallback's early return.
 _OPENROUTER_FALLBACK_MODEL = {
     OPUS_MODEL: "anthropic/claude-opus-4.8",
+    # ponytail: Sonnet 5.5 falls back to OpenRouter's Sonnet 5 (same price);
+    # point at anthropic/claude-sonnet-5.5 once OpenRouter lists it.
     SONNET_MODEL: "anthropic/claude-sonnet-5",
+    SONNET_5_MODEL: "anthropic/claude-sonnet-5",
     HAIKU_MODEL: "anthropic/claude-haiku-4.5",
     HAIKU_4_5_MODEL: "anthropic/claude-haiku-4.5",
     # Kept only for a manual .env rollback of orchestrator_executor_model to
@@ -546,10 +555,10 @@ _WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_us
 # (it attached output_config.format unconditionally, including to
 # _opus_plan/_opus_debug's then-default claude-sonnet-4-6, which doesn't
 # support it at all).
-_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL, HAIKU_4_5_MODEL}
+_STRUCTURED_OUTPUT_MODELS = {OPUS_MODEL, SONNET_MODEL, SONNET_5_MODEL, HAIKU_MODEL, HAIKU_4_5_MODEL}
 # Narrower than the set above: Haiku 4.5 supports structured outputs but
 # rejects `effort` outright (400), so it is never in here.
-_EFFORT_MODELS = {OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL}
+_EFFORT_MODELS = {OPUS_MODEL, SONNET_MODEL, SONNET_5_MODEL, HAIKU_MODEL}
 
 
 def _build_output_config(model: str, response_schema: dict | None, effort: str | None) -> dict | None:

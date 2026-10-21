@@ -136,8 +136,8 @@ class Settings(BaseSettings):
     # covered, see router._PRICE_PER_MTOK/_OPENROUTER_FALLBACK_MODEL) but loses
     # structured-output support at the plan/debug call sites, which require
     # Sonnet 5 or Haiku 4.5 and are NOT supported on Sonnet 4.6.
-    orchestrator_planner_model: str = "claude-sonnet-5"
-    orchestrator_executor_model: str = "claude-sonnet-5"
+    orchestrator_planner_model: str = "claude-sonnet-5-5"
+    orchestrator_executor_model: str = "claude-sonnet-5-5"
     orchestrator_verifier_model: str = "claude-haiku-4-5-20251001"
 
     # Deep-link base URL appended to every phone alert so Brian can tap straight
