@@ -226,14 +226,24 @@ def test_build_output_config_keeps_schema_but_drops_effort_for_haiku_4_5():
 
 
 def test_haiku_4_5_still_priced_for_configured_judge_and_verifier():
-    """action_judge/orchestrator_verifier/council_postmortem still default to
+    """orchestrator_verifier/council_postmortem still default to
     Haiku 4.5; an unpriced model meters $0 and blinds the budget brake."""
     from backend.agents import router
     from backend.config import Settings
-    for field in ("action_judge_model", "orchestrator_verifier_model", "council_postmortem_model"):
+    for field in ("orchestrator_verifier_model", "council_postmortem_model"):
         model = Settings.model_fields[field].default
         assert model in router._PRICE_PER_MTOK, field
         assert model not in router._EFFORT_MODELS, field
+
+
+def test_action_judge_on_haiku_5_5_with_effort():
+    """action_judge moved to Haiku 5.5 (2026-10-18): priced, and effort-capable
+    so judge.py's effort="low" keeps it inside action_judge_timeout_s."""
+    from backend.agents import router
+    from backend.config import Settings
+    model = Settings.model_fields["action_judge_model"].default
+    assert model == router.HAIKU_MODEL
+    assert model in router._PRICE_PER_MTOK and model in router._EFFORT_MODELS
 
 
 @pytest.mark.asyncio
