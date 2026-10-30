@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     # never sent to the judge (fast-path allow). Override in .env as
     # comma-separated: ACTION_JUDGE_EXEMPT_KINDS=send_notification,other_kind
     action_judge_exempt_kinds: set[str] = {"send_notification"}
-    action_judge_model: str = "claude-haiku-4-5-20251001"
+    action_judge_model: str = "claude-haiku-5-5"
     action_judge_timeout_s: int = 20
     action_judge_mode: str = "shadow"
 
