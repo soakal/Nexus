@@ -355,6 +355,7 @@ from backend.api import (
     deliveries,
     facts,
     goals,
+    graph,
     homeassistant,
     persona,
     protonmail,
@@ -398,6 +399,7 @@ app.include_router(today.router, prefix="/api/today", tags=["today"])
 app.include_router(safety.router, prefix="/api/safety", tags=["safety"])
 app.include_router(traces.router, prefix="/api/traces", tags=["traces"])
 app.include_router(vault.router, prefix="/api/vault", tags=["vault"])
+app.include_router(graph.router, prefix="/api/graph", tags=["graph"])
 app.include_router(persona.router, prefix="/api/persona", tags=["persona"])
 app.include_router(trigger_router, tags=["trigger"])
 

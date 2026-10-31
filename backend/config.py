@@ -399,6 +399,12 @@ class Settings(BaseSettings):
     # their own idempotency already covers replay.
     telegram_command_max_age_s: int = 300
 
+    # Knowledge graph (plan-v3). Ships OFF: production flips GRAPH_ENABLED=true in /var/lib/nexus/.env at deploy.
+    # Default False keeps tests' class-default scheduler job count (41) and makes an un-flagged test run graph-free.
+    graph_enabled: bool = False
+    graph_vault_index_minutes: int = 15
+    graph_collect_minutes: int = 60
+
     # Homelab watcher (backend/agents/homelab_watch.py) — 60s edge-alert loop.
     # Interval is hardcoded at 60s in scheduler.py (matches retry_deliveries/
     # record_uptime); only thresholds are tunable here. Explicitly NOT built:

@@ -153,3 +153,9 @@ def test_capture_digest_personal_morning_time_invalid(value):
 
 def test_capture_digest_personal_morning_time_valid():
     _settings(capture_digest_personal_morning_time="07:00").validate()
+
+
+def test_graph_enabled_defaults_off():
+    from backend.config import Settings
+
+    assert Settings.model_fields["graph_enabled"].default is False
