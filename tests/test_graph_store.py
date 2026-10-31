@@ -51,10 +51,10 @@ def test_tables_and_pk(eng):
 
 
 def test_upsert_nodes_merge_and_first_seen(eng):
-    store.upsert_nodes([N("guest:1", attrs={"ip": "x"}, source="manual")], T)
+    store.upsert_nodes([N("guest:1", attrs={"ip": "x", "owner": "manual"}, source="manual")], T)
     store.upsert_nodes([N("guest:1", attrs={"status": "up", "ip": "y"}, source="proxmox_api")], T2, gen=3)
     n = store.get_node("guest:1")
-    assert n["attrs"] == {"ip": "y", "status": "up"}
+    assert n["attrs"] == {"ip": "y", "owner": "manual", "status": "up"}
     assert n["source"] == "manual"
     with eng.connect() as c:
         r = c.execute(text("SELECT first_seen, last_seen, gen FROM graphnode")).one()
@@ -119,10 +119,11 @@ def test_generation_and_mark_stale(eng):
     store.upsert_nodes([N("g:2", source="proxmox_api")], T, gen=3)
     store.upsert_nodes([N("g:3", source="manual")], T)
     store.upsert_nodes([N("g:4", source="unraid_api")], T, gen=1)
+    store.upsert_nodes([N("g:5", source="proxmox_api")], T, gen=None)  # NULL gen never flips
     store.upsert_edges([E("g:1", "g:2")], T, gen=2)
     assert store.mark_stale("proxmox_api", 2) == (1, 1)
     assert {n["id"]: n["status"] for n in store.list_nodes()} == {
-        "g:1": "stale", "g:2": "active", "g:3": "active", "g:4": "active"}
+        "g:1": "stale", "g:2": "active", "g:3": "active", "g:4": "active", "g:5": "active"}
     assert store.stale_counts() == {"nodes": 1, "edges": 1}
 
 
