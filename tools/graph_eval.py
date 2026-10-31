@@ -16,6 +16,7 @@ INVALID instead of quietly counting as a miss.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -114,8 +115,10 @@ class Carl:
             "name": "vault_search_notes", "arguments": {"query": q, "limit": TOP}}}, self.auth)
         if "error" in resp:
             raise RuntimeError(f"carl rpc error: {resp['error']}")
-        result = resp.get("result") or {}
-        text = "".join(c.get("text", "") for c in result.get("content", []))
+        result = resp.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+            raise RuntimeError(f"carl malformed response: {str(resp)[:200]}")  # never a silent empty result
+        text = "".join(c.get("text", "") for c in result["content"])
         if result.get("isError"):
             raise RuntimeError(f"carl tool error: {text[:200]}")
         return parse_results(text)
@@ -167,6 +170,15 @@ def report(questions: list[dict], rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _manifest(vault: Path) -> str:
+    """Hash of every note's path, size and mtime: tells two runs apart if the corpus changed."""
+    h = hashlib.sha256()
+    for p in sorted(vault.rglob("*.md")):
+        st = p.stat()
+        h.update(f"{p.relative_to(vault)}\0{st.st_size}\0{int(st.st_mtime)}\n".encode())
+    return h.hexdigest()
+
+
 def validate(questions: list[dict], vault: Path | None = None) -> None:
     ids = [q["id"] for q in questions]
     assert len(ids) == len(set(ids)), "duplicate ids"
@@ -177,7 +189,7 @@ def validate(questions: list[dict], vault: Path | None = None) -> None:
         else:
             assert q.get("exclusion_reason"), f"Q{q['id']}: unscored without a reason"
         if q["kind"] == "multihop" and q["scored"]:
-            assert all(len(g) >= 2 for g in q["gold_sets"]), f"Q{q['id']}: multihop needs joint sets"
+            assert all(len(set(g)) >= 2 for g in q["gold_sets"]), f"Q{q['id']}: multihop needs two different notes"
         if vault:
             missing = [g for s in q["gold_sets"] for g in s if not (vault / f"{g}.md").exists()]
             assert not missing, f"Q{q['id']}: gold not in vault: {missing}"
@@ -201,6 +213,26 @@ def _selftest() -> None:
                {"boom": (lambda q: (_ for _ in ()).throw(RuntimeError("down")), False)})
     assert "error" in rows[0] and "complete@5" not in rows[0]
     assert report([{"id": 1, "q": "x", "kind": "lookup", "scored": True}], rows).startswith("**Run INVALID**")
+    carl = Carl.__new__(Carl)
+    carl.n, carl.auth = 1, {}
+    for bad in ({}, {"result": {}}, {"result": {"isError": True, "content": [{"text": "no"}]}}):
+        globals()["_post"], real = (lambda *a, b=bad: (b, {})), _post
+        try:
+            carl.search("x")
+            raise AssertionError(f"accepted {bad}")
+        except RuntimeError:
+            pass
+        finally:
+            globals()["_post"] = real
+    excl = [{"id": 1, "q": "x", "kind": "bad_today", "gold_sets": [], "scored": False, "source": "t"}]
+    assert "complete@5" not in run(excl, {"ok": (lambda q: ["wiki/A"], False)})[0]
+    mh = [{"id": i, "q": "x", "kind": "multihop", "gold_sets": [["wiki/A", "wiki/A"]], "scored": True, "source": "t"}
+          for i in range(8)]
+    try:
+        validate(mh)
+        raise AssertionError("accepted a joint set with one repeated note")
+    except AssertionError as e:
+        assert "two different notes" in str(e), e
     qs = json.loads(QUESTIONS.read_text())
     brain = Path.home() / "Brain"
     validate(qs, brain if brain.is_dir() else None)
@@ -215,8 +247,12 @@ def main() -> None:
     args = ap.parse_args()
     if args.selftest:
         return _selftest()
-    questions = json.loads(QUESTIONS.read_text())
-    validate(questions)
+    raw = QUESTIONS.read_bytes()
+    questions = json.loads(raw)
+    vault = Path(os.environ.get("GRAPH_EVAL_VAULT", "~/Brain")).expanduser()
+    validate(questions, vault if vault.is_dir() else None)
+    snapshot = {"questions_sha256": hashlib.sha256(raw).hexdigest(), "vault": str(vault),
+                "vault_manifest_sha256": _manifest(vault) if vault.is_dir() else None}
     backends = {}
     if args.backend in ("nexus", "all"):
         backends |= {"nexus": (nexus_search, False), "nexus-kw": (nexus_search, True)}
@@ -231,7 +267,8 @@ def main() -> None:
         ts = time.strftime("%Y%m%d-%H%M%S")
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / f"results-{ts}.json").write_text(json.dumps(
-            {"started": started, "nexus_url": NEXUS_URL, "carl_url": CARL_URL, "top": TOP, "rows": rows}, indent=1))
+            {"started": started, "nexus_url": NEXUS_URL, "carl_url": CARL_URL, "top": TOP, **snapshot,
+             "questions": questions, "rows": rows}, indent=1))
         (args.out / f"report-{ts}.md").write_text(text + "\n")
     sys.exit(1 if any("error" in r for r in rows) else 0)
 
