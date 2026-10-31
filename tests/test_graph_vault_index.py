@@ -247,7 +247,7 @@ def test_unchanged_unreadable_source_retried_after_target_rename(eng, brain, mon
 
 
 def test_root_level_stem_matches_in_incremental_run(eng, brain):
-    put(brain, "_Index.md", "root\n")
+    put(brain, "_Index.md", "---\ntitle: Zed\n---\nroot\n")
     put(brain, "B.md", "body\n")
     refresh()
     put(brain, "B.md", "[[_index]]\n")
