@@ -173,6 +173,8 @@ def refresh(full: bool = False) -> dict:
 
 
 def _refresh(full: bool, seen_at: str, t0: float) -> dict:
+    # a prior run that skipped an unreadable note may have left stale edges (unchanged fingerprint): redo a full pass
+    full = full or bool(((store.jobs().get("vault_index") or {}).get("stats") or {}).get("unreadable"))
     root = _brain_root()
     sc = scan(root)
     stored = {n["id"]: n["attrs"] or {} for n in store.list_nodes(types=("note",))}
@@ -212,9 +214,9 @@ def _refresh(full: bool, seen_at: str, t0: float) -> dict:
         if i in parsed:
             table[i] = {**parsed[i]["attrs"], "stem": parsed[i]["stem"]}
         elif i in stored:  # unreadable or unchanged-and-not-re-read: stored title/aliases keep links to it resolving
-            table[i] = {**stored[i], "stem": i.rsplit("/", 1)[-1]}
+            table[i] = {**stored[i], "stem": i[5:].rsplit("/", 1)[-1]}
     for i in unreadable & stored.keys() - table.keys():
-        table[i] = {**stored[i], "stem": i.rsplit("/", 1)[-1]}
+        table[i] = {**stored[i], "stem": i[5:].rsplit("/", 1)[-1]}
     resolver = Resolver(table)
 
     nodes, tag_nodes, edges = [], {}, []

@@ -160,7 +160,7 @@ def test_unreadable_note_left_alone_then_recovers(eng, brain, monkeypatch):
     assert r["unreadable"] == 1 and (edges(eng), store.get_node("note:A")) == snap
     assert store.jobs()["vault_index"]["last_error"] is None
     r = refresh()
-    assert r["unreadable"] == 0 and r["changed"] == 1
+    assert r["unreadable"] == 0 and r["changed"] >= 1 and store.get_node("note:A")["attrs"]["mtime_ns"] == a.stat().st_mtime_ns
 
 
 def test_listing_failures_raise_and_keep_graph(eng, vault, monkeypatch):
@@ -220,3 +220,38 @@ def test_speed_sanity(eng, brain):
     t = time.monotonic()
     assert refresh(full=True)["links"] == 60
     assert time.monotonic() - t < 5
+
+
+def test_unchanged_unreadable_source_retried_after_target_rename(eng, brain, monkeypatch):
+    b = put(brain, "B.md", "[[Old Title]]\n")
+    a = put(brain, "A.md", "---\ntitle: Old Title\n---\nbody\n")
+    refresh()
+    assert ("note:B", "note:A") in [e[:2] for e in edges(eng, "links_to")]
+    put(brain, "A.md", "---\ntitle: New Title\n---\nbody\n")  # forces a full re-resolve
+    orig = Path.read_bytes
+
+    def fake(self):
+        if self.name == "B.md":
+            raise PermissionError("nope")
+        return orig(self)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "read_bytes", fake)
+        r = refresh()
+    assert r["unreadable"] == 1
+    assert ("note:B", "note:A") in [e[:2] for e in edges(eng, "links_to")]  # stale edge kept while B unreadable
+    r = refresh()  # B unchanged on disk, now readable
+    assert r["unreadable"] == 0
+    assert ("note:B", "note:A") not in [e[:2] for e in edges(eng, "links_to")]
+    assert store.get_node("note:B")["attrs"]["unresolved"] == 1
+
+
+def test_root_level_stem_matches_in_incremental_run(eng, brain):
+    put(brain, "_Index.md", "root\n")
+    put(brain, "B.md", "body\n")
+    refresh()
+    put(brain, "B.md", "[[_index]]\n")
+    refresh()
+    inc = edges(eng)
+    refresh(full=True)
+    assert inc == edges(eng) and inc
