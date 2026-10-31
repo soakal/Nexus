@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 
 from backend.graph import now_iso
 
+_RESOLVED_MIN_PCT = 85  # real vault measures 89% (targets in excluded _meta/backups dirs count as unresolved)
+
 
 def _err(msg: str) -> None:
     print(msg, file=sys.stderr)
@@ -86,7 +88,7 @@ def _doctor() -> int:
         line(True, "links resolved n/a (no links indexed)")
     else:
         pct = 100 * h["edges"].get("links_to", 0) / total
-        line(pct >= 90, f"links resolved {pct:.0f}% ({extra})")
+        line(pct >= _RESOLVED_MIN_PCT, f"links resolved {pct:.0f}% ({extra})")
     return 1 if bad else 0
 
 
@@ -108,11 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     import backend.database as bd
     from backend.graph import store
 
+    if a.cmd == "drop" and not a.yes:  # refuse before create_all touches the schema
+        _err("refusing: pass --yes")
+        return 2
     SQLModel.metadata.create_all(bd.engine)
     if a.cmd == "drop":
-        if not a.yes:
-            _err("refusing: pass --yes")
-            return 2
         store.drop_tables()
         _err("stop nexus-backend first or set GRAPH_ENABLED=false — create_all recreates empty tables at next boot")
         return 0

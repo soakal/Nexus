@@ -9,6 +9,7 @@ from sqlalchemy import event, text
 from sqlmodel import SQLModel, create_engine
 
 from backend.graph import store
+from backend.graph.store import Edge, Node
 
 
 @pytest.fixture
@@ -114,3 +115,19 @@ def test_doctor_freshness(file_eng, capsys, age, mark):
     store.record_job("vault_index", ok=True, stats={}, at=_ago(age))
     run("doctor")
     assert f"{mark} vault index fresh" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("unresolved,mark", [(1, "✓"), (9, "✗")])  # 10 resolved: 91% vs 53%
+def test_doctor_links_resolved_threshold(file_eng, capsys, unresolved, mark):
+    store.upsert_nodes([Node("note:a", "note", "a", attrs={"unresolved": unresolved})], _ago(0))
+    store.upsert_nodes([Node(f"note:t{i}", "note", f"t{i}") for i in range(10)], _ago(0))
+    store.upsert_edges([Edge("note:a", f"note:t{i}", "links_to", "wikilink") for i in range(10)], _ago(0))
+    run("doctor")
+    assert f"{mark} links resolved" in capsys.readouterr().out
+
+
+def test_drop_unconfirmed_leaves_schema_alone(file_eng):
+    store.drop_tables()
+    assert run("drop") == 2
+    with file_eng.connect() as c:
+        assert c.execute(text("SELECT name FROM sqlite_master WHERE name LIKE 'graph%'")).first() is None
