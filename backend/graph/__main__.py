@@ -108,6 +108,16 @@ def _doctor() -> int:
     line(not (st["nodes"] or st["edges"]), f"stale: nodes={st['nodes']} edges={st['edges']}")
     dang = store.dangling_edges() if h["dangling_edges"] else []
     line(not dang, "dangling edges: " + (f"{h['dangling_edges']} (e.g. {'; '.join(dang)})" if dang else "0"))
+    try:
+        import asyncio
+
+        from backend.graph import topology
+
+        res = asyncio.run(topology.audit(5))
+        okn = sum(1 for _, ok, _ in res if ok)
+        line(okn == len(res), f"audit {okn}/{len(res)}")
+    except Exception as e:
+        line(False, f"audit failed: {e}")
     return 1 if bad else 0
 
 
@@ -121,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("drop").add_argument("--yes", action="store_true")
     sub.add_parser("rebuild")
     sub.add_parser("collect")
+    sub.add_parser("audit").add_argument("--sample", type=int, default=5)
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
@@ -145,6 +156,23 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "doctor":
         return _doctor()
     from backend.graph import vault_index
+
+    if a.cmd == "audit":
+        import asyncio
+
+        from backend.graph import topology
+
+        try:
+            res = asyncio.run(topology.audit(a.sample))
+        except Exception as e:
+            _err(f"audit failed: {e}")
+            return 1
+        for label, ok, detail in res:
+            if detail.startswith("source unavailable"):
+                print(f"? {label} ({detail})")
+            else:
+                print(("\u2713 " if ok else "\u2717 ") + label + ("" if ok else f" (live: {detail})"))
+        return 0 if all(ok for _, ok, _ in res) else 1
 
     if a.cmd in ("rebuild", "collect"):
         import asyncio

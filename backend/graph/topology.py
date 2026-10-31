@@ -214,3 +214,115 @@ async def collect() -> dict:
         "nodes": stats["nodes"], "edges": stats["edges"], "stale": stale,
         "pruned_manual": stats["pruned_manual"], "seconds": round(time.monotonic() - t0, 3),
     }
+
+
+_MAX_NODES = 200
+_FLAG_CAP = 1000
+
+
+async def describe(node_id: str, direction: str, depth: int) -> dict:
+    """Shared by the chat tool and GET /api/graph/topology (plan-v3 §4.6)."""
+    from backend.agents import outcomes
+    from backend.graph import correlate
+
+    depth = max(1, min(3, int(depth)))
+    focal = await asyncio.to_thread(store.get_node, node_id)
+    if focal is None:
+        raise KeyError(node_id)
+    edges = await asyncio.to_thread(store.edges_of, node_id)
+    rows: list[tuple[str, int, str]] = []
+    if direction in ("up", "both"):
+        rows += [(i, d, "up") for i, d in await asyncio.to_thread(store.ancestors, node_id, depth)]
+    if direction in ("down", "both"):
+        rows += [(i, d, "down") for i, d in await asyncio.to_thread(store.descendants, node_id, depth)]
+    rows.sort(key=lambda r: (r[2] != "up", r[1], r[0]))  # up before down, then (depth, id)
+    truncated = len(rows) > _MAX_NODES
+    rows = rows[:_MAX_NODES]
+    ids = [node_id] + [r[0] for r in rows]
+    flags_all = await outcomes.open_flags(limit=_FLAG_CAP)
+    by_node = correlate.flags_by_node(flags_all)
+    docs = await asyncio.to_thread(store.documents_for, ids)
+    jobs = await asyncio.to_thread(store.jobs)
+
+    def view(n: dict) -> dict:
+        return {
+            "flags": [{"id": f.get("id"), "severity": f.get("severity"), "summary": f.get("summary")} for f in by_node.get(n["id"], [])],
+            "notes": docs.get(n["id"], []),
+        }
+
+    def brief(i: str, d: int) -> dict:
+        n = store.get_node(i) or {"id": i, "type": "?", "name": i, "status": "?", "source": "?"}
+        return {"id": i, "type": n["type"], "name": n["name"], "depth": d, "status": n["status"], "source": n["source"], **view(n)}
+
+    out_rows = await asyncio.to_thread(lambda: {"up": [brief(i, d) for i, d, k in rows if k == "up"], "down": [brief(i, d) for i, d, k in rows if k == "down"]})
+    warnings = [
+        f"source {name.split(':', 1)[1]} unavailable since {j.get('last_error_at') or j.get('last_attempt') or '?'}: {j['last_error']}"
+        for name, j in sorted(jobs.items()) if name.startswith("source:") and j.get("last_error")
+    ]
+    stale = sum(1 for n in [focal, *out_rows["up"], *out_rows["down"]] if n.get("status") == "stale")
+    if stale:
+        warnings.append(f"{stale} stale rows in this view")
+    return {
+        "node": {"id": focal["id"], "type": focal["type"], "name": focal["name"], "status": focal["status"], "source": focal["source"],
+                 "attrs": focal.get("attrs"), **view(focal)},
+        "edges": edges, **out_rows, "warnings": warnings,
+        "truncated": truncated, "flags_truncated": len(flags_all) >= _FLAG_CAP,
+    }
+
+
+_AUDITED = ("proxmox_api", "unraid_api")
+
+
+async def audit(sample: int = 5) -> list[tuple[str, bool, str]]:
+    """Re-read live and check random proxmox/unraid-owned edges. detail 'source unavailable…' = could not audit."""
+    from backend.integrations import proxmox, unraid
+
+    picked = await asyncio.to_thread(store.sample_edges, _AUDITED, sample)
+    if not picked:
+        return []  # no network call at all on a graph with nothing to audit
+    for f in (proxmox.fetch, proxmox.fetch_guest_configs, proxmox.fetch_storages, proxmox.fetch_backup_jobs, unraid.fetch_containers):
+        getattr(f, "invalidate", lambda: None)()
+    live: dict = {}
+
+    async def get(key, fn):
+        if key not in live:
+            live[key] = await fn()
+        return live[key]
+
+    out: list[tuple[str, bool, str]] = []
+    for e in picked:
+        label = f"{e['src']} {e['type']} {e['dst']}"
+        try:
+            ok, detail = await _check(e, get, proxmox, unraid)
+        except Exception as ex:
+            out.append((label, False, f"source unavailable: {ex}"))
+            continue
+        out.append((label, ok, detail))
+    return out
+
+
+async def _check(e: dict, get, proxmox, unraid) -> tuple[bool, str]:
+    src, dst, typ = e["src"], e["dst"], e["type"]
+    if src.startswith("guest:"):
+        vmid = int(src.split(":", 1)[1])
+        if typ == "runs_on":
+            vms = {int(v["vmid"]) for v in (await get("prox", proxmox.fetch)).vms}
+            return vmid in vms, f"live vmids: {len(vms)}"
+        sid = dst.split(":", 1)[1]
+        if typ == "depends_on":
+            sids = {s["storage"] for s in await get("stor", proxmox.fetch_storages)}
+            cfg = (await get("cfg", proxmox.fetch_guest_configs)).get(vmid, {})
+            live_ids = {storage_for_volume(v["volume"], sids) for v in cfg.get("volumes", [])}
+            return sid in live_ids, f"live: {sorted(x for x in live_ids if x)}"
+        if typ == "backs_up_to":
+            jobs = await get("jobs", proxmox.fetch_backup_jobs)
+            return any(j.get("storage") == sid and vmid in j.get("vmids", []) for j in jobs), "no live job covers it"
+    elif src.startswith("storage:") and typ == "depends_on":
+        row = next((s for s in await get("stor", proxmox.fetch_storages) if s["storage"] == src.split(":", 1)[1]), None)
+        host = await asyncio.to_thread(store.get_node, dst)
+        ip = ((host or {}).get("attrs") or {}).get("ip")
+        return bool(row) and row.get("server") == ip, f"live server: {row.get('server') if row else 'storage missing'}"
+    elif src.startswith("container:") and typ == "runs_on":
+        names = {c["name"] for c in await get("ctr", unraid.fetch_containers)}
+        return src.split(":", 1)[1] in names, f"live containers: {len(names)}"
+    return False, "unsupported edge shape"

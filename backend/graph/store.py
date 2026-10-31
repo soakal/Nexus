@@ -514,3 +514,12 @@ def dangling_edges(limit: int = 5) -> list[str]:
             {"n": limit},
         ).all()
     return [f"{r.src} -{r.type}-> {r.dst}" for r in rows]
+
+
+def sample_edges(sources: tuple[str, ...], n: int) -> list[dict]:
+    """Random active edges owned by the given sources (live spot-check input)."""
+    stmt = text(
+        "SELECT src, dst, type, source FROM graphedge WHERE status = 'active' AND source IN :s ORDER BY RANDOM() LIMIT :n"
+    ).bindparams(bindparam("s", expanding=True))
+    with _read() as c:
+        return [dict(r._mapping) for r in c.execute(stmt, {"s": list(sources), "n": n}).all()]

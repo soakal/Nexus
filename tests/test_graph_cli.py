@@ -219,3 +219,40 @@ def test_rebuild_clears_and_repopulates(file_eng, capsys, tmp_path, monkeypatch)
     body = json.loads(capsys.readouterr().out)
     assert body["index"]["scanned"] == 1 and "collect" in body
     assert store.get_node("note:old") is None and store.get_node("note:A")
+
+
+def test_audit_unavailable_exits_1(file_eng, capsys):
+    from unittest.mock import AsyncMock, patch
+
+    store.upsert_nodes([Node("guest:5", "guest", "g", source="proxmox_api"), Node("host:pve", "host", "pve")], _ago(0))
+    store.upsert_edges([Edge("guest:5", "host:pve", "runs_on", "proxmox_api")], _ago(0))
+    boom = AsyncMock(side_effect=RuntimeError("pve down"))
+    with patch("backend.integrations.proxmox.fetch", boom):
+        assert run("audit") == 1
+    assert "? guest:5 runs_on host:pve (source unavailable: pve down)" in capsys.readouterr().out
+
+
+def test_audit_confirms_live(file_eng, capsys):
+    from unittest.mock import AsyncMock, patch
+
+    from backend.integrations.proxmox import ProxmoxData
+
+    store.upsert_nodes([Node("guest:5", "guest", "g", source="proxmox_api"), Node("host:pve", "host", "pve")], _ago(0))
+    store.upsert_edges([Edge("guest:5", "host:pve", "runs_on", "proxmox_api")], _ago(0))
+    ok = AsyncMock(return_value=ProxmoxData(vms=[{"vmid": 5}]))
+    with patch("backend.integrations.proxmox.fetch", ok):
+        assert run("audit") == 0
+    assert "\u2713 guest:5 runs_on host:pve" in capsys.readouterr().out
+    with patch("backend.integrations.proxmox.fetch", AsyncMock(return_value=ProxmoxData(vms=[]))):
+        assert run("audit") == 1
+
+
+def test_audit_empty_graph_no_network(file_eng, capsys):
+    from unittest.mock import AsyncMock, patch
+
+    m = AsyncMock()
+    with patch("backend.integrations.proxmox.fetch", m), patch("backend.integrations.unraid.fetch_containers", m):
+        assert run("audit") == 0
+        run("doctor")
+    assert not m.called
+    assert "\u2713 audit 0/0" in capsys.readouterr().out
