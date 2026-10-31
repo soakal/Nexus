@@ -284,7 +284,8 @@ def _parse_guest_config(vm_type: str, cfg: dict) -> dict:
                 continue
             volumes.append({
                 "key": key, "volume": vol, "mp": kv.get("mp"),
-                "backup": kv.get("backup", "1") not in ("0", "no", "off", "false"),
+                # PVE default: backed up for qemu drives and rootfs; an LXC mp<N> needs explicit backup=1
+                "backup": kv.get("backup", "1" if vm_type == "qemu" or key == "rootfs" else "0") not in ("0", "no", "off", "false"),
             })
         elif _NET_KEY.match(key):
             _, kv = _parse_pve_kv(cfg[key])

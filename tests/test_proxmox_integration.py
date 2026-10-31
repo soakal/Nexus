@@ -437,9 +437,11 @@ async def test_fetch_guest_configs_parses_both_types():
     assert out[103]["name"] == "jelly" and out[103]["tags"] == ["a", "b"] and out[103]["cores"] == 2
     assert [v["volume"] for v in out[103]["volumes"]] == ["/mnt/pve/Movies", "VM:subvol-103-disk-0"]
     assert out[103]["volumes"][0]["mp"] == "/movies"
+    assert out[103]["volumes"][0]["backup"] is False and out[103]["volumes"][1]["backup"] is True  # mp0 bind vs rootfs
     assert out[103]["net"] == [{"key": "net0", "ip": "192.168.1.62/24", "bridge": "vmbr0", "hwaddr": "BC:24:11:AA:BB:CC"}]
     assert out[109]["type"] == "qemu" and out[109]["cores"] is None
     assert [v["key"] for v in out[109]["volumes"]] == ["ide2", "scsi0"]  # ide0: none skipped
+    assert all(v["backup"] for v in out[109]["volumes"])
     assert out[109]["net"][0]["hwaddr"] == "BC:24:11:AA:BB:DD" and out[109]["net"][0]["ip"] is None
 
 
