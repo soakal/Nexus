@@ -81,7 +81,7 @@ def prox_with(*vms):
 
 
 async def collect(tmp_path, *, prox=PROX, configs=CONFIGS, storages=STORAGES, jobs=JOBS, containers=CONTAINERS,
-                  toml=TOML, flag=None):
+                  toml=TOML, flag=None, load=None, clr_exc=None):
     """One collect() run; a value that is an Exception instance makes that fetcher raise."""
     def mock(v):
         return AsyncMock(side_effect=v) if isinstance(v, Exception) else AsyncMock(return_value=v)
@@ -94,9 +94,9 @@ async def collect(tmp_path, *, prox=PROX, configs=CONFIGS, storages=STORAGES, jo
         st.enter_context(patch("backend.integrations.proxmox.fetch_backup_jobs", mock(jobs)))
         st.enter_context(patch("backend.integrations.unraid.fetch_containers", mock(containers)))
         st.enter_context(patch("backend.scheduler._parse_uptime_targets", return_value=[]))
-        st.enter_context(patch("backend.graph.topology.load_manual", return_value=manual(tmp_path, toml)))
+        st.enter_context(patch("backend.graph.topology.load_manual", load or (lambda m=manual(tmp_path, toml): m)))
         flag["rec"] = st.enter_context(patch("backend.agents.outcomes.record_flag_ex", new_callable=AsyncMock))
-        flag["clr"] = st.enter_context(patch("backend.agents.outcomes.clear_flag", new_callable=AsyncMock))
+        flag["clr"] = st.enter_context(patch("backend.agents.outcomes.clear_flag", AsyncMock(side_effect=clr_exc)))
         return await topology.collect()
 
 
@@ -298,3 +298,30 @@ async def test_collect_rollback_leaves_graph_untouched(file_eng, tmp_path, monke
     j = store.jobs()
     assert j["collect"]["last_error"] == "write failed"
     assert "source:proxmox_api" not in j
+
+
+async def test_reconcile_root_level_note_uses_filename_stem(file_eng):
+    store.upsert_nodes([Node("note:Immich", "note", "Immich", (), {"title": "Some Other Title"}, "vault"),
+                        Node("service:immich", "service", "Immich", ("immich",), None, "manual")], "2026-01-01T00:00:00")
+    with store.batch() as c:
+        assert vault_index.reconcile_documents("2026-01-01T00:00:00", c) == 1
+    assert edge_set(type="documents") == {("note:Immich", "service:immich", "documents")}
+
+
+async def test_collect_loads_manual_off_the_loop(file_eng, tmp_path):
+    import threading
+    seen = []
+    loaded = manual(tmp_path)
+
+    def spy(*a, **k):
+        seen.append(threading.current_thread())
+        return loaded
+
+    await collect(tmp_path, load=spy)
+    assert seen and seen[0] is not threading.current_thread()
+
+
+async def test_flag_failure_does_not_fail_collect(file_eng, tmp_path):
+    r = await collect(tmp_path, clr_exc=RuntimeError("db locked"))
+    assert set(r["sources"].values()) == {"ok"} and r["nodes"] > 0
+    assert len(edge_set(type="backs_up_to")) == 2

@@ -280,7 +280,7 @@ def reconcile_documents(seen_at: str, conn) -> int:
     derived: set[tuple] = set()
     for note in store.list_nodes(types=("note",), conn=conn):
         at = note["attrs"] or {}
-        keys = {note["id"].rsplit("/", 1)[-1].lower(), (at.get("title") or "").lower()} - {""}
+        keys = {note["id"].removeprefix("note:").rsplit("/", 1)[-1].lower(), (at.get("title") or "").lower()} - {""}
         hits: set[str] = set()
         for k in keys:
             hits |= any_alias.get(k, set())

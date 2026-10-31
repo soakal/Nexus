@@ -162,7 +162,7 @@ async def collect() -> dict:
     from backend.integrations import proxmox, unraid
 
     t0 = time.monotonic()
-    manual = load_manual()  # raises -> whole run fails (the TOML is code)
+    manual = await asyncio.to_thread(load_manual)  # file I/O off the loop; raises -> whole run fails (the TOML is code)
     failed: dict[str, str] = {}
     prox = configs = storages = jobs = containers = targets = None
     try:
@@ -197,14 +197,18 @@ async def collect() -> dict:
         raise
 
     stale = await asyncio.to_thread(store.stale_counts)
-    if stale["edges"] > 0:
-        await outcomes.record_flag_ex(
-            "graph", "stale_edges",
-            f"{stale['edges']} infra edges not re-observed for 2 collection cycles — run `python -m backend.graph doctor`",
-            severity="low",
-        )
-    else:
-        await outcomes.clear_flag("graph", "stale_edges")
+    # the batch is already committed: a flag hiccup must not turn a populated graph into "collect failed"
+    try:
+        if stale["edges"] > 0:
+            await outcomes.record_flag_ex(
+                "graph", "stale_edges",
+                f"{stale['edges']} infra edges not re-observed for 2 collection cycles — run `python -m backend.graph doctor`",
+                severity="low",
+            )
+        else:
+            await outcomes.clear_flag("graph", "stale_edges")
+    except Exception as e:
+        logger.warning("graph collect: stale_edges flag update failed: %s", e)
     return {
         "sources": {s: ("ok" if s not in failed else f"skipped: {failed[s]}") for s in _SOURCES},
         "nodes": stats["nodes"], "edges": stats["edges"], "stale": stale,
