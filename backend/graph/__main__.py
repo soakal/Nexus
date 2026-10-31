@@ -89,6 +89,25 @@ def _doctor() -> int:
     else:
         pct = 100 * h["edges"].get("links_to", 0) / total
         line(pct >= _RESOLVED_MIN_PCT, f"links resolved {pct:.0f}% ({extra})")
+    cj = jobs.get("collect")
+    ok, msg = _fresh(cj, max(15, s.graph_collect_minutes))
+    line(ok, f"topology fresh: {msg}" if ok or cj else "topology fresh: collect never ran")
+    parts, sources_ok = [], True
+    for name in ("proxmox_api", "unraid_api", "uptime_targets"):
+        j = jobs.get(f"source:{name}") or {}
+        if j.get("last_error"):
+            parts.append(f"{name} error: {j['last_error']}")
+            sources_ok = False
+        elif not j.get("last_success"):
+            parts.append(f"{name} never ran")
+            sources_ok = False
+        else:
+            parts.append(f"{name} ok")
+    line(sources_ok, "sources: " + " · ".join(parts))
+    st = h["stale"]
+    line(not (st["nodes"] or st["edges"]), f"stale: nodes={st['nodes']} edges={st['edges']}")
+    dang = store.dangling_edges() if h["dangling_edges"] else []
+    line(not dang, "dangling edges: " + (f"{h['dangling_edges']} (e.g. {'; '.join(dang)})" if dang else "0"))
     return 1 if bad else 0
 
 
@@ -100,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("health")
     sub.add_parser("doctor")
     sub.add_parser("drop").add_argument("--yes", action="store_true")
+    sub.add_parser("rebuild")
+    sub.add_parser("collect")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
@@ -124,6 +145,23 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "doctor":
         return _doctor()
     from backend.graph import vault_index
+
+    if a.cmd in ("rebuild", "collect"):
+        import asyncio
+
+        from backend.graph import topology
+
+        try:
+            out: dict = {}
+            if a.cmd == "rebuild":
+                store.drop_all()
+                out["index"] = vault_index.refresh(full=True)
+            out["collect"] = asyncio.run(topology.collect())
+        except Exception as e:
+            _err(f"{a.cmd} failed: {e}")
+            return 1
+        print(json.dumps(out if a.cmd == "rebuild" else out["collect"], indent=2))
+        return 1 if any(v != "ok" for v in out["collect"]["sources"].values()) else 0
 
     try:
         print(json.dumps(vault_index.refresh(full=a.full), indent=2))

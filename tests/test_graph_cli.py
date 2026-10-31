@@ -131,3 +131,91 @@ def test_drop_unconfirmed_leaves_schema_alone(file_eng):
     assert run("drop") == 2
     with file_eng.connect() as c:
         assert c.execute(text("SELECT name FROM sqlite_master WHERE name LIKE 'graph%'")).first() is None
+
+
+def _seed_fresh(generation=1):
+    for n in ("vault_index", "collect", "source:proxmox_api", "source:unraid_api", "source:uptime_targets"):
+        store.record_job(n, ok=True, stats={}, at=_ago(1))
+    with store.batch() as c:
+        c.execute(text("UPDATE graphjob SET generation = :g WHERE name LIKE 'source:%'"), {"g": generation})
+
+
+def test_doctor_topology_lines_never_ran(file_eng, capsys):
+    run("doctor")
+    out = capsys.readouterr().out
+    assert "✗ topology fresh: collect never ran" in out
+    assert "✗ sources: proxmox_api never ran · unraid_api never ran · uptime_targets never ran" in out
+    assert "✓ dangling edges: 0" in out
+
+
+def test_doctor_exit_zero(file_eng, capsys, monkeypatch):
+    import backend.config as config_mod
+
+    monkeypatch.setenv("GRAPH_ENABLED", "true")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    _seed_fresh()
+    store.upsert_nodes([Node("note:a", "note", "a"), Node("note:b", "note", "b")], _ago(0))
+    store.upsert_edges([Edge("note:a", "note:b", "links_to", "wikilink")], _ago(0))
+    assert run("doctor") == 0
+    out = capsys.readouterr().out
+    assert "✗" not in out and "✓ sources: proxmox_api ok" in out
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+
+
+def test_doctor_flags_error_stale_and_dangling(file_eng, capsys):
+    _seed_fresh()
+    store.record_job("source:proxmox_api", ok=False, error="pve down", at=_ago(0))
+    store.upsert_nodes([Node("guest:1", "guest", "g", source="proxmox_api")], _ago(0))
+    store.upsert_edges([Edge("guest:1", "host:pve", "runs_on", "proxmox_api")], _ago(0))
+    with store.batch() as c:
+        c.execute(text("UPDATE graphnode SET status='stale'"))
+    run("doctor")
+    out = capsys.readouterr().out
+    assert "✗ sources: proxmox_api error: pve down" in out
+    assert "✗ stale: nodes=1 edges=0" in out
+    assert "✗ dangling edges: 1 (e.g. guest:1 -runs_on-> host:pve)" in out
+
+
+def _patch_fetchers(proxmox_error=None):
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, patch
+
+    from backend.integrations.proxmox import ProxmoxData
+
+    st = ExitStack()
+    prox = AsyncMock(side_effect=proxmox_error) if proxmox_error else AsyncMock(return_value=ProxmoxData(node="pve", node_status="online"))
+    st.enter_context(patch("backend.integrations.proxmox.fetch", prox))
+    st.enter_context(patch("backend.integrations.proxmox.fetch_guest_configs", AsyncMock(return_value={})))
+    st.enter_context(patch("backend.integrations.proxmox.fetch_storages", AsyncMock(return_value=[{"storage": "local"}])))
+    st.enter_context(patch("backend.integrations.proxmox.fetch_backup_jobs", AsyncMock(return_value=[])))
+    st.enter_context(patch("backend.integrations.unraid.fetch_containers", AsyncMock(return_value=[])))
+    st.enter_context(patch("backend.scheduler._parse_uptime_targets", return_value=[]))
+    st.enter_context(patch("backend.agents.outcomes.clear_flag", AsyncMock()))
+    return st
+
+
+def test_collect_stdout_json_and_exit(file_eng, capsys):
+    with _patch_fetchers():
+        assert run("collect") == 0
+    body = json.loads(capsys.readouterr().out)
+    assert set(body["sources"].values()) == {"ok"}
+
+
+def test_collect_skipped_source_exits_1(file_eng, capsys):
+    with _patch_fetchers(RuntimeError("pve down")):
+        assert run("collect") == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["sources"]["proxmox_api"].startswith("skipped:")
+
+
+def test_rebuild_clears_and_repopulates(file_eng, capsys, tmp_path, monkeypatch):
+    brain = tmp_path / "Brain"
+    brain.mkdir()
+    (brain / "A.md").write_text("hi")
+    monkeypatch.setattr("backend.api.vault._brain_root", lambda: brain)
+    store.upsert_nodes([Node("note:old", "note", "old")], _ago(0))
+    with _patch_fetchers():
+        assert run("rebuild") == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["index"]["scanned"] == 1 and "collect" in body
+    assert store.get_node("note:old") is None and store.get_node("note:A")

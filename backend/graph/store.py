@@ -501,3 +501,16 @@ def health() -> dict:
         },
         "dangling_edges": dangling,
     }
+
+
+def dangling_edges(limit: int = 5) -> list[str]:
+    """'src -type-> dst' for edges whose src or dst has no node row."""
+    with _read() as c:
+        rows = c.execute(
+            text(
+                "SELECT src, type, dst FROM graphedge e WHERE NOT EXISTS (SELECT 1 FROM graphnode WHERE id = e.src) "
+                "OR NOT EXISTS (SELECT 1 FROM graphnode WHERE id = e.dst) ORDER BY src, dst LIMIT :n"
+            ),
+            {"n": limit},
+        ).all()
+    return [f"{r.src} -{r.type}-> {r.dst}" for r in rows]

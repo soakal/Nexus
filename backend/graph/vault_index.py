@@ -257,3 +257,40 @@ def _refresh(full: bool, seen_at: str, t0: float) -> dict:
         result["seconds"] = round(time.monotonic() - t0, 3)
         store.record_job("vault_index", ok=True, stats=result, at=seen_at, conn=conn)
     return result
+
+
+def reconcile_documents(seen_at: str, conn) -> int:
+    """Single owner of `documents` edges (source='vault'): exact (ci) name/alias/frontmatter matches only."""
+    from backend.graph import INFRA_TYPES
+
+    any_alias: dict[str, set[str]] = {}
+    host_alias: dict[str, set[str]] = {}
+    svc_alias: dict[str, set[str]] = {}
+    by_vmid: dict[str, set[str]] = {}
+    for n in store.list_nodes(types=INFRA_TYPES, status="active", conn=conn):
+        names = {n["name"], *n["aliases"], *([n["attrs"]["name"]] if n["type"] == "guest" and n["attrs"] and n["attrs"].get("name") else [])}
+        for a in names:
+            any_alias.setdefault(a.lower(), set()).add(n["id"])
+            if n["type"] == "host":
+                host_alias.setdefault(a.lower(), set()).add(n["id"])
+            if n["type"] == "service":
+                svc_alias.setdefault(a.lower(), set()).add(n["id"])
+        if n["type"] == "guest" and n["id"].startswith("guest:"):
+            by_vmid.setdefault(n["id"][6:], set()).add(n["id"])
+    derived: set[tuple] = set()
+    for note in store.list_nodes(types=("note",), conn=conn):
+        at = note["attrs"] or {}
+        keys = {note["id"].rsplit("/", 1)[-1].lower(), (at.get("title") or "").lower()} - {""}
+        hits: set[str] = set()
+        for k in keys:
+            hits |= any_alias.get(k, set())
+        if at.get("host"):
+            hits |= host_alias.get(at["host"].lower(), set())
+        if at.get("vmid"):
+            hits |= by_vmid.get(str(at["vmid"]).strip(), set())
+        if at.get("service"):
+            hits |= svc_alias.get(at["service"].lower(), set())
+        derived |= {(note["id"], h, "documents") for h in hits}
+    store.delete_edges(source="vault", type="documents", not_in=derived, conn=conn)
+    store.upsert_edges([Edge(s, d, t, "vault") for s, d, t in sorted(derived)], seen_at, conn)
+    return len(derived)

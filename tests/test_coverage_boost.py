@@ -301,7 +301,7 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
 
 
 def test_graph_enabled_registers_vault_index_job(monkeypatch):
-    """GRAPH_ENABLED=true adds exactly graph_vault_index (41 -> 42)."""
+    """GRAPH_ENABLED=true adds exactly graph_vault_index + graph_collect (41 -> 43)."""
     from datetime import datetime
     import backend.config as config_mod
     import backend.scheduler as sched_mod
@@ -314,8 +314,8 @@ def test_graph_enabled_registers_vault_index_job(monkeypatch):
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
-    assert "graph_vault_index" in ids_set
-    assert mock_add.call_count == 42
+    assert {"graph_vault_index", "graph_collect"} <= ids_set
+    assert mock_add.call_count == 43
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):

@@ -1,0 +1,120 @@
+# Hand-declared topology the APIs cannot see. Infra names/IPs only — never people, logins, health or secrets.
+# Only [[node]] and [[edge]] tables are allowed (load_manual rejects anything else). vzdump backs_up_to edges come from /cluster/backup, not from here.
+
+[[node]]
+id = "host:pve"
+type = "host"
+name = "pve"
+aliases = ["proxmox", "pve"]
+attrs = { ip = "192.168.1.60" }
+
+[[node]]
+id = "host:unraid"
+type = "host"
+name = "Unraid"
+aliases = ["unraid", "tower"]
+attrs = { ip = "192.168.1.50" }
+
+[[node]]
+id = "service:nexus"
+type = "service"
+name = "NEXUS"
+aliases = ["nexus", "nexus-lxc"]
+
+[[node]]
+id = "service:carl"
+type = "service"
+name = "Carl"
+aliases = ["carl", "mcp-obsidian"]
+
+[[node]]
+id = "service:immich"
+type = "service"
+name = "Immich"
+aliases = ["immich"]
+
+[[node]]
+id = "service:nightshift"
+type = "service"
+name = "NightShift"
+aliases = ["nightshift"]
+
+[[node]]
+id = "service:mail-bridge"
+type = "service"
+name = "Proton Mail Bridge"
+aliases = ["proton-bridge", "mail bridge"]
+
+[[node]]
+id = "service:adguard"
+type = "service"
+name = "AdGuard Home (primary)"
+aliases = ["adguard", "adguard home"]
+
+[[node]]
+id = "service:adguard2"
+type = "service"
+name = "AdGuard Home (replica)"
+aliases = ["adguard2"]
+
+[[node]]
+id = "service:uptime-kuma"
+type = "service"
+name = "Uptime Kuma"
+aliases = ["uptime-kuma", "kuma"]
+
+[[node]]
+id = "service:infisical"
+type = "service"
+name = "Infisical"
+aliases = ["infisical"]
+
+[[edge]]
+src = "service:nexus"
+dst = "guest:207"
+type = "runs_on"
+
+[[edge]]
+src = "service:carl"
+dst = "guest:207"
+type = "runs_on"
+
+[[edge]]
+src = "service:immich"
+dst = "guest:209"
+type = "runs_on"
+
+[[edge]]
+src = "guest:209"
+dst = "host:unraid"
+type = "depends_on"            # mp1 is a cifs bind mount of //192.168.1.50/immich (not a PVE storage)
+
+[[edge]]
+src = "service:nightshift"
+dst = "guest:210"
+type = "runs_on"
+
+[[edge]]
+src = "service:mail-bridge"
+dst = "guest:204"
+type = "runs_on"
+
+[[edge]]
+src = "service:adguard"
+dst = "guest:108"
+type = "runs_on"
+
+[[edge]]
+src = "service:adguard2"
+dst = "container:AdGuard-Home"
+type = "runs_on"
+
+[[edge]]
+src = "service:uptime-kuma"
+dst = "guest:206"
+type = "runs_on"
+
+[[edge]]
+src = "service:infisical"
+dst = "guest:205"
+type = "runs_on"
