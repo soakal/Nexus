@@ -179,7 +179,7 @@ def _manifest(vault: Path) -> str:
     return h.hexdigest()
 
 
-def validate(questions: list[dict], vault: Path | None = None) -> None:
+def validate(questions: list[dict], vault: Path | None = None, min_multihop: int = 8) -> None:
     ids = [q["id"] for q in questions]
     assert len(ids) == len(set(ids)), "duplicate ids"
     for q in questions:
@@ -194,7 +194,7 @@ def validate(questions: list[dict], vault: Path | None = None) -> None:
             missing = [g for s in q["gold_sets"] for g in s if not (vault / f"{g}.md").exists()]
             assert not missing, f"Q{q['id']}: gold not in vault: {missing}"
     scored = [q for q in questions if q["scored"]]
-    assert sum(q["kind"] == "multihop" for q in scored) >= 8, "need >= 8 scored multihop"
+    assert sum(q["kind"] == "multihop" for q in scored) >= min_multihop, f"need >= {min_multihop} scored multihop"
 
 
 def _selftest() -> None:
@@ -243,6 +243,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--backend", choices=["nexus", "carl", "all"], default="all")
     ap.add_argument("--out", type=Path, help="directory for results-<ts>.json and report-<ts>.md")
+    ap.add_argument("--min-multihop", type=int, default=8, help="quota check; 0 for a holdout set")
     ap.add_argument("--selftest", action="store_true", help="check parsing/scoring/questions, no network")
     args = ap.parse_args()
     if args.selftest:
@@ -250,7 +251,7 @@ def main() -> None:
     raw = QUESTIONS.read_bytes()
     questions = json.loads(raw)
     vault = Path(os.environ.get("GRAPH_EVAL_VAULT", "~/Brain")).expanduser()
-    validate(questions, vault if vault.is_dir() else None)
+    validate(questions, vault if vault.is_dir() else None, args.min_multihop)
     snapshot = {"questions_sha256": hashlib.sha256(raw).hexdigest(), "vault": str(vault),
                 "vault_manifest_sha256": _manifest(vault) if vault.is_dir() else None}
     backends = {}
