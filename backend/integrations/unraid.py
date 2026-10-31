@@ -145,6 +145,44 @@ async def fetch() -> UnraidData:
     return data
 
 
+@async_ttl_cache(600, falsy_ttl=60)
+async def fetch_containers() -> list[dict]:
+    """Strict container list for the graph. Unlike fetch(), a missing docker
+    section or a GraphQL `errors` reply RAISES (it would read as 'every container
+    vanished'); only an explicit empty list from the server returns []."""
+    from backend.config import get_settings
+    settings = get_settings()
+    try:
+        api_key = settings.unraid_api_key
+    except Exception:
+        raise RuntimeError("Unraid unavailable: UNRAID_API_KEY not configured")
+
+    url = f"https://{settings.unraid_host}/graphql"
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
+    query = "{ docker { containers { id names state status } } }"
+    try:
+        async with httpx.AsyncClient(timeout=5, transport=build_transport()) as client:
+            resp = await client.post(url, json={"query": query}, headers=headers)
+            resp.raise_for_status()
+            body = resp.json()
+        if body.get("errors"):
+            first = body["errors"][0]
+            raise RuntimeError(first.get("message", str(first)) if isinstance(first, dict) else str(first))
+        try:
+            containers = body["data"]["docker"]["containers"]
+            if not isinstance(containers, list):
+                raise TypeError("containers is not a list")
+            return [
+                {"id": c["id"], "name": c["names"][0].lstrip("/"), "status": c["status"], "state": c["state"]}
+                for c in containers
+            ]
+        except (KeyError, TypeError, IndexError, AttributeError) as e:
+            raise RuntimeError("incomplete docker section") from e
+    except Exception as e:
+        logger.warning(f"Unraid fetch_containers failed (reporting unavailable): {e}")
+        raise RuntimeError(f"Unraid unavailable: {e}") from e
+
+
 @async_ttl_cache(30)
 async def health_check() -> bool:
     try:

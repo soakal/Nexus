@@ -388,3 +388,173 @@ async def test_set_vm_power_no_token_raises(_token_configured):
         with pytest.raises(RuntimeError, match="PROXMOX_TOKEN"):
             await set_vm_power(101, "start")
         mock_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Graph topology readers
+# ---------------------------------------------------------------------------
+
+def _multi_client(*resps):
+    client = AsyncMock()
+    client.__aenter__.return_value.get = AsyncMock(side_effect=list(resps))
+    return client
+
+
+def _rows():
+    from backend.integrations.proxmox import ProxmoxData
+    return ProxmoxData(node="pve", vms=[
+        {"vmid": 103, "name": "a", "type": "lxc", "node": "pve"},
+        {"vmid": 109, "name": "b", "type": "qemu", "node": "pve"},
+    ])
+
+
+def test_parse_pve_kv_and_nic_hwaddr():
+    from backend.integrations.proxmox import _nic_hwaddr, _parse_pve_kv
+    assert _parse_pve_kv("VM:subvol-103-disk-0,size=10G") == ("VM:subvol-103-disk-0", {"size": "10G"})
+    assert _parse_pve_kv("name=eth0,bridge=vmbr0") == (None, {"name": "eth0", "bridge": "vmbr0"})
+    assert _parse_pve_kv("/mnt/pve/Movies,mp=/movies")[1] == {"mp": "/movies"}
+    assert _nic_hwaddr(_parse_pve_kv("virtio=bc:24:11:aa:bb:cc,bridge=vmbr0")[1]) == "BC:24:11:AA:BB:CC"
+    assert _nic_hwaddr(_parse_pve_kv("e1000=BC:24:11:AA:BB:CD,bridge=vmbr0")[1]) == "BC:24:11:AA:BB:CD"
+    assert _nic_hwaddr(_parse_pve_kv("name=eth0,hwaddr=BC:24:11:AA:BB:CE,ip=dhcp")[1]) == "BC:24:11:AA:BB:CE"
+    assert _nic_hwaddr({"bridge": "vmbr0"}) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_guest_configs_parses_both_types():
+    lxc = {"hostname": "jelly", "onboot": 1, "cores": 2, "memory": 2048, "tags": "a;b",
+           "rootfs": "VM:subvol-103-disk-0,size=10G", "mp0": "/mnt/pve/Movies,mp=/movies",
+           "net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:AA:BB:CC,ip=192.168.1.62/24"}
+    qemu = {"name": "devbox", "scsi0": "VM:vm-109-disk-0,size=50G", "ide0": "none,media=cdrom",
+            "ide2": "VM:vm-109-cloudinit,media=cdrom", "net0": "virtio=BC:24:11:AA:BB:DD,bridge=vmbr0,firewall=1"}
+    client = _multi_client(_get_response(lxc), _get_response(qemu))
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=_rows()), \
+         patch("httpx.AsyncClient", return_value=client):
+        from backend.integrations.proxmox import fetch_guest_configs
+        out = await fetch_guest_configs()
+    urls = [c.args[0] for c in client.__aenter__.return_value.get.call_args_list]
+    assert urls == ["https://192.168.1.60:8006/api2/json/nodes/pve/lxc/103/config",
+                    "https://192.168.1.60:8006/api2/json/nodes/pve/qemu/109/config"]
+    assert out[103]["name"] == "jelly" and out[103]["tags"] == ["a", "b"] and out[103]["cores"] == 2
+    assert [v["volume"] for v in out[103]["volumes"]] == ["/mnt/pve/Movies", "VM:subvol-103-disk-0"]
+    assert out[103]["volumes"][0]["mp"] == "/movies"
+    assert out[103]["net"] == [{"key": "net0", "ip": "192.168.1.62/24", "bridge": "vmbr0", "hwaddr": "BC:24:11:AA:BB:CC"}]
+    assert out[109]["type"] == "qemu" and out[109]["cores"] is None
+    assert [v["key"] for v in out[109]["volumes"]] == ["ide2", "scsi0"]  # ide0: none skipped
+    assert out[109]["net"][0]["hwaddr"] == "BC:24:11:AA:BB:DD" and out[109]["net"][0]["ip"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["http500", "empty"])
+async def test_fetch_guest_configs_raises_never_partial(bad):
+    ok = _get_response({"hostname": "x", "rootfs": "VM:v,size=1G"})
+    if bad == "http500":
+        broken = _get_response(None, status_code=500)
+        broken.raise_for_status.side_effect = Exception("HTTP 500")
+    else:
+        broken = _get_response({})
+    with patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, return_value=_rows()), \
+         patch("httpx.AsyncClient", return_value=_multi_client(ok, broken)):
+        from backend.integrations.proxmox import fetch_guest_configs
+        with pytest.raises(RuntimeError):
+            await fetch_guest_configs()
+
+
+@pytest.mark.asyncio
+async def test_fetch_guest_configs_no_token_raises(_token_configured):
+    _token_configured.proxmox_token = ""
+    from backend.integrations.proxmox import fetch_guest_configs
+    with pytest.raises(RuntimeError, match="PROXMOX_TOKEN"):
+        await fetch_guest_configs()
+
+
+@pytest.mark.asyncio
+async def test_fetch_storages_parses_disable_and_has_no_status():
+    rows = [{"storage": "local", "type": "dir", "content": "iso"},
+            {"storage": "VM_BU", "type": "cifs", "server": "192.168.1.50", "share": "Vm_Backup", "disable": 1},
+            {"storage": "VM_BU_NFS", "type": "nfs", "server": "192.168.1.50", "export": "/mnt/user/Vm_Backup"}]
+    with patch("httpx.AsyncClient", return_value=_get_client(_get_response(rows))):
+        from backend.integrations.proxmox import fetch_storages
+        out = await fetch_storages()
+    assert [s["storage"] for s in out] == ["local", "VM_BU", "VM_BU_NFS"]
+    assert [s["disabled"] for s in out] == [False, True, False]
+    assert out[1]["export"] == "Vm_Backup" and out[2]["export"] == "/mnt/user/Vm_Backup"
+    assert out[0]["server"] is None
+    assert all("status" not in s for s in out)
+
+
+@pytest.mark.asyncio
+async def test_fetch_storages_empty_raises():
+    with patch("httpx.AsyncClient", return_value=_get_client(_get_response([]))):
+        from backend.integrations.proxmox import fetch_storages
+        with pytest.raises(RuntimeError):
+            await fetch_storages()
+
+
+def _children(*ids):
+    return _get_response({"children": [{"id": i, "type": "lxc"} for i in ids]})
+
+
+@pytest.mark.asyncio
+async def test_fetch_backup_jobs_enabled_job_and_urls():
+    job = {"id": "backup-1", "type": "vzdump", "enabled": 1, "all": 1, "storage": "VM_BU_NFS", "schedule": "21:00"}
+    client = _multi_client(_get_response([job]), _children(101, 102, 103))
+    with patch("httpx.AsyncClient", return_value=client):
+        from backend.integrations.proxmox import fetch_backup_jobs
+        out = await fetch_backup_jobs()
+    assert out == [{"id": "backup-1", "storage": "VM_BU_NFS", "schedule": "21:00", "all": True, "vmids": [101, 102, 103]}]
+    urls = [c.args[0] for c in client.__aenter__.return_value.get.call_args_list]
+    assert urls == ["https://192.168.1.60:8006/api2/json/cluster/backup",
+                    "https://192.168.1.60:8006/api2/json/cluster/backup/backup-1/included_volumes"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_backup_jobs_disabled_skipped_and_missing_enabled_means_on():
+    off = {"id": "off", "type": "vzdump", "enabled": 0, "storage": "S"}
+    client = _multi_client(_get_response([off]))
+    with patch("httpx.AsyncClient", return_value=client):
+        from backend.integrations.proxmox import fetch_backup_jobs
+        assert await fetch_backup_jobs() == []
+    assert client.__aenter__.return_value.get.await_count == 1
+
+    from backend.cache import reset_all_caches
+    reset_all_caches()
+    on = {"id": "on", "type": "vzdump", "storage": "S"}  # no 'enabled' key
+    with patch("httpx.AsyncClient", return_value=_multi_client(_get_response([on]), _children(7))):
+        out = await fetch_backup_jobs()
+    assert out[0]["vmids"] == [7] and out[0]["all"] is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_backup_jobs_empty_list_is_valid():
+    with patch("httpx.AsyncClient", return_value=_multi_client(_get_response([]))):
+        from backend.integrations.proxmox import fetch_backup_jobs
+        assert await fetch_backup_jobs() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["no_data", "http500_list", "http500_inc", "no_children"])
+async def test_fetch_backup_jobs_malformed_raises(case):
+    job = {"id": "j", "type": "vzdump", "storage": "S"}
+    bad500 = _get_response(None, status_code=500)
+    bad500.raise_for_status.side_effect = Exception("HTTP 500")
+    nodata = MagicMock(status_code=200)
+    nodata.raise_for_status = MagicMock()
+    nodata.json.return_value = {}
+    resps = {
+        "no_data": [nodata],
+        "http500_list": [bad500],
+        "http500_inc": [_get_response([job]), bad500],
+        "no_children": [_get_response([job]), _get_response({})],
+    }[case]
+    with patch("httpx.AsyncClient", return_value=_multi_client(*resps)):
+        from backend.integrations.proxmox import fetch_backup_jobs
+        with pytest.raises(RuntimeError):
+            await fetch_backup_jobs()
+
+
+@pytest.mark.asyncio
+async def test_fetch_backup_jobs_no_token_raises(_token_configured):
+    _token_configured.proxmox_token = ""
+    from backend.integrations.proxmox import fetch_backup_jobs
+    with pytest.raises(RuntimeError, match="PROXMOX_TOKEN"):
+        await fetch_backup_jobs()
