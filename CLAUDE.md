@@ -1554,8 +1554,8 @@ one thing no log stream shows.
 - **CLI** (from `/var/lib/nexus`, `PYTHONPATH=/opt/nexus`, venv python): `python -m backend.graph`
   `index [--full] | health | doctor | audit [--sample N] | rebuild | collect | drop --yes`. stdout = payload only
   (JSON or check lines); diagnostics go to stderr. Refuses a DB under 1 MB or without `outcomeflag` (exit 2, file untouched).
-- **Exit codes**: 0 ok; 1 any failed check (`doctor`/`audit`), unavailable audit source, or a skipped source in
-  `rebuild`/`collect`; 2 usage/refused DB/failed run.
+- **Exit codes**: 0 ok; 1 any failed check (`doctor`/`audit`), unavailable audit source, skipped source, or raised
+  error in `index`/`rebuild`/`collect`/`audit`; 2 usage, refused DB, `drop` without `--yes`.
 - **Rollback** (in order): set `GRAPH_ENABLED=false` in `/var/lib/nexus/.env` + restart `nexus-backend`; then
   `python -m backend.graph drop --yes` (health then reports `tables_missing`; next boot recreates them empty);
   then `git revert` the merge. Tables outlive a revert as unused. Last resort: pve snapshot rollback of CT 207 (loses DB writes since).
