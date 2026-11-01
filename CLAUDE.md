@@ -1561,3 +1561,6 @@ one thing no log stream shows.
   then `git revert` the merge. Tables outlive a revert as unused. Last resort: pve snapshot rollback of CT 207 (loses DB writes since).
 - **Gotchas**: `backs_up_to` edges come live from Proxmox `/cluster/backup`, not the TOML (a `[backup]` table is rejected).
   Public repo: `manual_edges.toml` holds no secrets or personal data.
+- **External reader — Carl** (`soakal/MCP_Obsidian`, `/opt/mcp-obsidian`, tool `vault_neighbors`) reads `graphnode(id,type,name,aliases,status)`,
+  `graphedge(src,dst,type,status)`, `graphjob(name,last_success,last_error,last_error_at)` read-only. Renaming/dropping these
+  columns or tables breaks it softly ("graph unavailable"), so update Carl's `src/graph.ts` in the same change.
