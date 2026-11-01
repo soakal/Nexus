@@ -1536,3 +1536,28 @@ one thing no log stream shows.
   fix work in isolation" check can miss, which is why this follow-up pass was scoped to specifically
   scrutinize fix #2 × fix #4's interaction rather than re-deriving the whole feature. Full suite
   re-run green a third time after this fix; frontend unaffected (backend-only change).
+
+## Knowledge graph — link + topology index (2026-10-31)
+
+- **What**: a small SQLite graph in `nexus.db` (tables `graphnode`, `graphedge`, `graphchange`, `graphjob`; code in
+  `backend/graph/`). Two writers: `vault_index` (wikilinks/frontmatter/tags of the Brain vault, every
+  `GRAPH_VAULT_INDEX_MINUTES`=15) and `topology` (Proxmox guests/storages/backup jobs, Unraid containers, uptime
+  targets, plus hand-declared rows in `backend/graph/manual_edges.toml`, every `GRAPH_COLLECT_MINUTES`=60).
+  Why: answer "what runs on / depends on / is backed up by X" and "which notes document X" without an LLM
+  guessing; no GraphRAG. All writes go through `store.py` (`store.batch()` = one transaction per run).
+- **Flag**: `GRAPH_ENABLED` (default false; ships off). Off = no scheduler jobs (enabled job count 41), tool answers
+  "graph disabled", `/api/graph/topology` 503, `/api/graph/health` 200 with `enabled:false`. On = 43 jobs.
+- **Staleness**: counted in successful snapshots, not time (`graphjob.generation` per `source:*`). A row missing from
+  2 successful snapshots goes `stale`, never deleted; an unreachable source is skipped and nothing is staled.
+  `graph:stale_edges` flag (low) is raised/cleared by `collect`.
+- **Surfaces**: tool `graph_topology` (node, direction, depth), `GET /api/graph/health`, `GET /api/graph/topology`.
+- **CLI** (from `/var/lib/nexus`, `PYTHONPATH=/opt/nexus`, venv python): `python -m backend.graph`
+  `index [--full] | health | doctor | audit [--sample N] | rebuild | collect | drop --yes`. stdout = payload only
+  (JSON or check lines); diagnostics go to stderr. Refuses a DB under 1 MB or without `outcomeflag` (exit 2, file untouched).
+- **Exit codes**: 0 ok; 1 any failed check (`doctor`/`audit`), unavailable audit source, or a skipped source in
+  `rebuild`/`collect`; 2 usage/refused DB/failed run.
+- **Rollback** (in order): set `GRAPH_ENABLED=false` in `/var/lib/nexus/.env` + restart `nexus-backend`; then
+  `python -m backend.graph drop --yes` (health then reports `tables_missing`; next boot recreates them empty);
+  then `git revert` the merge. Tables outlive a revert as unused. Last resort: pve snapshot rollback of CT 207 (loses DB writes since).
+- **Gotchas**: `backs_up_to` edges come live from Proxmox `/cluster/backup`, not the TOML (a `[backup]` table is rejected).
+  Public repo: `manual_edges.toml` holds no secrets or personal data.
