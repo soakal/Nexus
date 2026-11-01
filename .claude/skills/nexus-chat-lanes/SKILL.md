@@ -7,7 +7,7 @@ description: Chat is Haiku-routed intent lanes (CHAT/MAIL/CALENDAR/VAULT/...), n
 
 `backend/agents/chat.py::chat()` is not one conversational loop — every message is
 Haiku-classified into an intent (`HOME_CONTROL | TASK | CHAT | NOTE | STATUS | MAIL |
-MAIL_SEND | CALENDAR | VAULT`, the classifier prompt around `chat.py:425-441`), then
+MAIL_SEND | CALENDAR | VAULT | TOPOLOGY`, the classifier prompt around `chat.py:425-441`), then
 dispatched to a dedicated `elif intent == "X":` branch. Getting this wrong was a real
 mistake made mid-project: a feature request assumed CHAT already ran a multi-step
 tool loop with `vault_search`. It doesn't, and the actual architecture below is why.
@@ -47,12 +47,15 @@ callers, for reference when adding a new one:
 - `chat.py`'s VAULT branch — the newest caller, scoped to exactly two tools
   (`vault_search`, `vault_read_note`) rather than the full registry, so a vault
   question can't wander into unrelated tool calls.
+- `chat.py`'s TOPOLOGY branch (2026-10-31, PR #183) — same shape as VAULT, scoped to
+  `graph_topology` + `vault_search` + `vault_read_note`, label `chat_topology`, for
+  "what runs on / depends on / is X backed up" questions.
 
 Adding a new lane that needs tools = add the intent to the classifier prompt
 (`chat.py:425-441`) and the whitelist (`chat.py:467`), add an `elif intent == "X":`
 branch that calls `run_with_tools` with a scoped tool subset, and — if it's a
 conversational (not imperative/status) intent — add it to the fact-extraction gate
-(`chat.py:1042`, currently `("CHAT", "TASK", "NOTE", "VAULT")`).
+(`chat.py:1042`, currently `("CHAT", "TASK", "NOTE", "VAULT", "TOPOLOGY")`).
 
 ## Three vault path namespaces, and where title resolution lives
 
