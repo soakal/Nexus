@@ -62,10 +62,6 @@ def storage_for_volume(volume: str, storages: set[str]) -> str | None:
     return sid if sid in storages else None
 
 
-def _clean(d: dict) -> dict:
-    return {k: v for k, v in d.items() if v is not None}
-
-
 def build(prox, configs, storages, backup_jobs, containers, targets, manual) -> tuple[list[Node], list[Edge]]:
     man_nodes, man_edges = manual
     nodes: dict[str, Node] = {}
@@ -86,20 +82,21 @@ def build(prox, configs, storages, backup_jobs, containers, targets, manual) -> 
             name = vm.get("name") or cfg.get("name") or str(vmid)
             kind = "CT" if vm.get("type") == "lxc" else "VM"
             gid = f"guest:{vmid}"
-            attrs = _clean({
+            # None values are kept on purpose: store.upsert_nodes uses them to delete keys PVE stopped reporting
+            attrs = {
                 "vmid": vmid, "type": vm.get("type"), "name": name, "status": vm.get("status"),
                 **{k: cfg.get(k) for k in ("onboot", "cores", "memory", "tags", "hookscript", "volumes", "net")},
-            })
+            }
             nodes[gid] = Node(gid, "guest", name, (name, f"{kind} {vmid}", str(vmid)), attrs, "proxmox_api")
             edges.append(Edge(gid, "host:pve", "runs_on", "proxmox_api"))
             for sid in sorted({storage_for_volume(v["volume"], sids) for v in cfg.get("volumes", [])} - {None}):
                 edges.append(Edge(gid, f"storage:{sid}", "depends_on", "proxmox_api"))
         for s in storages:
             sid = f"storage:{s['storage']}"
-            nodes[sid] = Node(sid, "storage", s["storage"], (), _clean({
+            nodes[sid] = Node(sid, "storage", s["storage"], (), {
                 "plugintype": s.get("type"), "server": s.get("server"), "export": s.get("export"),
                 "content": s.get("content"), "disabled": bool(s.get("disabled")),
-            }), "proxmox_api")
+            }, "proxmox_api")
             server = s.get("server")
             if server:
                 host = host_ips.get(server)
@@ -117,7 +114,7 @@ def build(prox, configs, storages, backup_jobs, containers, targets, manual) -> 
 
     for c in containers or []:
         cid = f"container:{c['name']}"
-        nodes[cid] = Node(cid, "container", c["name"], (), _clean({"state": c.get("state"), "status": c.get("status"), "id": c.get("id")}), "unraid_api")
+        nodes[cid] = Node(cid, "container", c["name"], (), {"state": c.get("state"), "status": c.get("status"), "id": c.get("id")}, "unraid_api")
         edges.append(Edge(cid, "host:unraid", "runs_on", "unraid_api"))
 
     svc_alias = {a.lower(): n.id for n in man_nodes if n.type == "service" for a in n.aliases}
@@ -162,7 +159,11 @@ async def collect() -> dict:
     from backend.integrations import proxmox, unraid
 
     t0 = time.monotonic()
-    manual = await asyncio.to_thread(load_manual)  # file I/O off the loop; raises -> whole run fails (the TOML is code)
+    try:
+        manual = await asyncio.to_thread(load_manual)  # file I/O off the loop; raises -> whole run fails (the TOML is code)
+    except Exception as e:
+        await asyncio.to_thread(store.record_job, "collect", ok=False, error=f"manual_edges: {e}", at=now_iso())
+        raise
     failed: dict[str, str] = {}
     prox = configs = storages = jobs = containers = targets = None
     try:
@@ -188,9 +189,9 @@ async def collect() -> dict:
         logger.warning("graph collect: source %s skipped: %s", s, err)
 
     seen_at = now_iso()
-    nodes, edges = build(prox, configs, storages, jobs, containers, targets, manual)
     ok_sources = [s for s in _SOURCES if s not in failed]
     try:
+        nodes, edges = build(prox, configs, storages, jobs, containers, targets, manual)
         stats = await asyncio.to_thread(_db_write, manual, nodes, edges, ok_sources, failed, not failed, seen_at, t0)
     except Exception as e:
         await asyncio.to_thread(store.record_job, "collect", ok=False, error=str(e), at=now_iso())

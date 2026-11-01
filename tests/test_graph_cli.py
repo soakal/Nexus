@@ -360,3 +360,10 @@ def test_audit_source_unavailable_per_shape(file_eng, capsys, fail, edge):
         assert run("audit", "--sample", "10") == 1
     out = capsys.readouterr().out
     assert f"? {edge} (source unavailable: down)" in out, out
+
+
+def test_doctor_fails_on_collect_error(file_eng, capsys):
+    _seed_fresh()
+    store.record_job("collect", ok=False, error="manual_edges: bad toml", at=_ago(0))
+    run("doctor")
+    assert "✗ collect last_error: manual_edges: bad toml" in capsys.readouterr().out

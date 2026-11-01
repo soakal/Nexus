@@ -93,7 +93,8 @@ _NODE_COLS = "id, type, name, aliases, attrs, source, status"
 
 # --------------------------------------------------------------------------- writes
 
-_MERGE_ATTRS = "json_patch(COALESCE(graphnode.attrs, '{}'), COALESCE(excluded.attrs, '{}'))"
+# :patch keeps explicit None so json_patch deletes keys the source no longer reports; :attrs (insert) drops them
+_MERGE_ATTRS = "json_patch(COALESCE(graphnode.attrs, '{}'), COALESCE(:patch, '{}'))"
 
 
 def upsert_nodes(
@@ -110,7 +111,8 @@ def upsert_nodes(
             "type": n.type,
             "name": n.name,
             "aliases": json.dumps(list(n.aliases)) if n.aliases else None,
-            "attrs": json.dumps(n.attrs, sort_keys=True) if n.attrs is not None else None,
+            "attrs": json.dumps({k: v for k, v in n.attrs.items() if v is not None}, sort_keys=True) if n.attrs is not None else None,
+            "patch": json.dumps(n.attrs, sort_keys=True) if n.attrs is not None else None,
             "source": n.source,
             "ts": seen_at,
             "gen": gen,

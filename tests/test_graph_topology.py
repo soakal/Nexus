@@ -325,3 +325,27 @@ async def test_flag_failure_does_not_fail_collect(file_eng, tmp_path):
     r = await collect(tmp_path, clr_exc=RuntimeError("db locked"))
     assert set(r["sources"].values()) == {"ok"} and r["nodes"] > 0
     assert len(edge_set(type="backs_up_to")) == 2
+
+
+async def test_removed_collector_attrs_disappear(file_eng, tmp_path):
+    await collect(tmp_path)
+    assert store.get_node("storage:VM_BU_NFS")["attrs"]["export"] == "/x"
+    gone = [dict(s, export=None) if s["storage"] == "VM_BU_NFS" else s for s in STORAGES]
+    await collect(tmp_path, storages=gone)
+    a = store.get_node("storage:VM_BU_NFS")["attrs"]
+    assert "export" not in a and a["server"] == "192.168.1.50"
+
+
+async def test_broken_manual_toml_is_recorded_then_cleared(file_eng, tmp_path):
+    await collect(tmp_path)
+    before = edge_set()
+
+    def bad(*a, **k):
+        raise ValueError("bad toml")
+
+    with pytest.raises(ValueError):
+        await collect(tmp_path, load=bad)
+    assert store.jobs()["collect"]["last_error"] == "manual_edges: bad toml"
+    assert edge_set() == before
+    await collect(tmp_path)
+    assert store.jobs()["collect"]["last_error"] is None

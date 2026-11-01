@@ -92,6 +92,8 @@ def _doctor() -> int:
     cj = jobs.get("collect")
     ok, msg = _fresh(cj, max(15, s.graph_collect_minutes))
     line(ok, f"topology fresh: {msg}" if ok or cj else "topology fresh: collect never ran")
+    cerr = (cj or {}).get("last_error")
+    line(not cerr, f"collect last_error: {cerr or 'none'}")
     parts, sources_ok = [], True
     for name in ("proxmox_api", "unraid_api", "uptime_targets"):
         j = jobs.get(f"source:{name}") or {}

@@ -207,3 +207,11 @@ def test_health_and_drop(eng):
     store.drop_tables()
     assert store.health()["tables_missing"] is True
     assert store.jobs() == {}
+
+
+def test_upsert_none_attr_deletes_key_and_is_never_stored(eng):
+    store.upsert_nodes([Node("s:1", "storage", "s", attrs={"server": "x", "export": "/e", "x": None})], "2026-01-01T00:00:00")
+    assert store.get_node("s:1")["attrs"] == {"export": "/e", "server": "x"}
+    store.upsert_nodes([Node("s:1", "storage", "s", attrs={"owner": "manual"})], "2026-01-01T00:00:01")
+    store.upsert_nodes([Node("s:1", "storage", "s", attrs={"server": "x", "export": None})], "2026-01-01T00:00:02")
+    assert store.get_node("s:1")["attrs"] == {"owner": "manual", "server": "x"}
