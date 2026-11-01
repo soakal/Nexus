@@ -300,6 +300,24 @@ def test_auth_burst_check_adds_no_scheduler_job(monkeypatch):
     assert mock_add.call_count == 41
 
 
+def test_graph_enabled_registers_vault_index_job(monkeypatch):
+    """GRAPH_ENABLED=true adds exactly graph_vault_index + graph_collect (41 -> 43)."""
+    from datetime import datetime
+    import backend.config as config_mod
+    import backend.scheduler as sched_mod
+    from backend.scheduler import setup_scheduler, scheduler
+    monkeypatch.setattr(sched_mod, "INFISICAL_SOAK_REMINDER_AT", datetime(2099, 1, 1, 9, 0))
+    _pretend_brain_organizer_venv(monkeypatch)
+    monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
+    monkeypatch.setenv("GRAPH_ENABLED", "true")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    with patch.object(scheduler, "add_job") as mock_add:
+        setup_scheduler("07:30", "America/New_York")
+    ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
+    assert {"graph_vault_index", "graph_collect"} <= ids_set
+    assert mock_add.call_count == 43
+
+
 def test_morning_briefing_disabled_skips_job(monkeypatch):
     """MORNING_BRIEFING_ENABLED=false must skip only that one job -- the
     hour/minute parse it shares with homelab_digest's briefing_time+5

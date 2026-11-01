@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -579,6 +579,27 @@ async def _watchdog():
     except Exception as e:
         logger.error(f"Watchdog job error: {e}")
         raise
+
+
+async def _graph_vault_index():
+    try:
+        import asyncio
+
+        from backend.graph import vault_index
+
+        r = await asyncio.to_thread(vault_index.refresh)
+        logger.info(f"graph_vault_index: {r}")
+    except Exception as e:
+        logger.warning(f"graph_vault_index failed: {e}")  # never raises out of the job; never pages
+
+
+async def _graph_collect():
+    try:
+        from backend.graph import topology
+        r = await topology.collect()
+        logger.info(f"graph_collect: {r}")
+    except Exception as e:
+        logger.warning(f"graph_collect failed: {e}")
 
 
 async def _homelab_watch():
@@ -1214,6 +1235,25 @@ def setup_scheduler(briefing_time: str, timezone: str):
             replace_existing=True,
         )
         logger.info("Homelab watcher enabled: runs every 60 seconds")
+    if getattr(s, "graph_enabled", False) is True:  # `is True`: MagicMock settings in older tests are truthy
+        scheduler.add_job(
+            _graph_vault_index,
+            IntervalTrigger(minutes=max(5, s.graph_vault_index_minutes)),
+            id="graph_vault_index",
+            replace_existing=True,
+            next_run_time=datetime.now(scheduler.timezone) + timedelta(seconds=45),
+        )
+        scheduler.add_job(
+            _graph_collect,
+            IntervalTrigger(minutes=max(15, s.graph_collect_minutes)),
+            id="graph_collect",
+            replace_existing=True,
+            next_run_time=datetime.now(scheduler.timezone) + timedelta(seconds=90),
+        )
+        logger.info(
+            "Knowledge graph enabled: vault index every %s min, topology every %s min",
+            max(5, s.graph_vault_index_minutes), max(15, s.graph_collect_minutes),
+        )
     if getattr(s, "homelab_digest_enabled", True):
         # briefing_time + 5 minutes, wrapping hour if needed.
         total_minutes = (int(hour) * 60 + int(minute) + 5) % (24 * 60)

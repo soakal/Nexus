@@ -432,6 +432,64 @@ async def _web_search(input: dict) -> str:
         return _truncate(f"web_search unavailable: {e}")
 
 
+_GRAPH_TOPOLOGY_SCHEMA = {"type": "object", "properties": {
+    "node": {"type": "string", "description": "graph node id ('guest:209', 'storage:VM_BU_NFS', 'service:immich') or a name/alias ('immich', 'CT 209')"},
+    "direction": {"type": "string", "enum": ["up", "down", "both"], "description": "up = what this depends on; down = what depends on it (default both)"},
+    "depth": {"type": "integer", "description": "1-3 hops (default 3)"}}, "required": ["node"]}
+
+
+def _render_topology(d: dict) -> str:
+    n = d["node"]
+    lines = [f"{n['id']} ({n['name']}) [{n['status']}] source={n['source']}"]
+    lines += [f"! {w}" for w in d["warnings"]]
+    for e in d["edges"]:
+        arrow = "\u2192" if e["direction"] == "out" else "\u2190"
+        lines.append(f"\u2014 {e['type']} {arrow} {e['other']} [{e['source']}]")
+
+    def extra(x: dict) -> str:
+        s = ""
+        if x["flags"]:
+            s += " \u2014 flags: " + ", ".join(f"#{f['id']} {f['severity']}" for f in x["flags"])
+        if x["notes"]:
+            s += " \u00b7 notes: " + ", ".join(x["notes"])
+        return s
+
+    lines[0] += extra(n)
+    for mark, key in (("\u2191", "up"), ("\u2193", "down")):
+        for x in d[key]:
+            lines.append(f"{mark} {x['depth']}\u00b7{x['id']} ({x['name']}) [{x['status']}] source={x['source']}{extra(x)}")
+    if d["truncated"]:
+        lines.append("(truncated)")
+    if d["flags_truncated"]:
+        lines.append("(flags truncated)")
+    return _truncate("\n".join(lines))
+
+
+async def _graph_topology(input: dict) -> str:
+    try:
+        node = str((input or {}).get("node") or "").strip()
+        if not node:
+            return "graph_topology unavailable: missing 'node'"
+        direction = (input or {}).get("direction") or "both"
+        if direction not in ("up", "down", "both"):
+            return "graph_topology unavailable: bad direction"
+        from backend.graph import enabled, store, topology
+        if not enabled():
+            return "graph_topology unavailable: graph disabled"
+        try:
+            depth = max(1, min(3, int((input or {}).get("depth") or 3)))
+        except (TypeError, ValueError):
+            depth = 3
+        found = await asyncio.to_thread(store.resolve_node, node)
+        if not found:
+            return "graph_topology unavailable: unknown node"
+        if len(found) > 1:
+            return "graph_topology unavailable: ambiguous \u2014 " + "; ".join(n["id"] for n in found)
+        return _render_topology(await topology.describe(found[0]["id"], direction, depth))
+    except Exception as e:
+        return _truncate(f"graph_topology unavailable: {e}")
+
+
 READ_TOOLS: list[ReadTool] = [
     ReadTool(
         name="homeassistant_status",
@@ -528,6 +586,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Read currently open outcome flags (unresolved alerts/issues already raised to the user): id, severity, source:check, summary. READ ONLY — no tool exists here to resolve/close a flag.",
         input_schema=_NO_ARGS_SCHEMA,
         dispatch=_open_flags,
+    ),
+    ReadTool(
+        name="graph_topology",
+        description="Homelab dependency map from the knowledge graph: what a VM/LXC/container/service/storage runs on and depends on, what depends on it, open flags on each, and runbook notes that document it. Prefer an id ('guest:209') or 'CT 209' over a bare name \u2014 'immich' matches both the service and the guest. READ ONLY.",
+        input_schema=_GRAPH_TOPOLOGY_SCHEMA,
+        dispatch=_graph_topology,
     ),
     ReadTool(
         # Renamed from "web_search" to avoid colliding with Anthropic's HOSTED

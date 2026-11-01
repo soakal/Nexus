@@ -510,7 +510,7 @@ def test_dispatcher_map_keys_match_registry():
         "adguard_status", "channels_status", "weather", "github_status",
         "proxmox_updates", "proxmox_backups", "vault_search", "vault_read_note", "ddg_search",
         "protonmail_inbox", "protonmail_read_email", "protonmail_status",
-        "open_flags",
+        "open_flags", "graph_topology",
     }
     assert set(dmap.keys()) == expected
     # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the
@@ -816,3 +816,88 @@ async def test_channels_status_reports_rules_and_last_recording():
                new=AsyncMock(return_value=ChannelsData(storage_total_gb=2.0))):
         out = await tools._channels_status({})
     assert "rules=unavailable" in out and "last_recording=unavailable" in out
+
+
+# ---------------------------------------------------------------------------
+# graph_topology (plan-v3 commit 6)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def graph_db(tmp_path, monkeypatch):
+    from sqlalchemy import event
+    from sqlmodel import SQLModel, create_engine
+
+    import backend.config as config_mod
+    import backend.database as bd
+
+    e = create_engine(f"sqlite:///{tmp_path / 'g.db'}", connect_args={"check_same_thread": False, "timeout": 30})
+    event.listen(e, "connect", bd._set_sqlite_pragmas)
+    monkeypatch.setattr(bd, "engine", e)
+    SQLModel.metadata.create_all(e)
+    monkeypatch.setenv("GRAPH_ENABLED", "true")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    yield e
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+
+
+def _seed_graph():
+    from backend.graph import now_iso, store
+    from backend.graph.store import Edge, Node
+
+    at = now_iso()
+    store.upsert_nodes([
+        Node("host:pve", "host", "pve", ("proxmox",)),
+        Node("guest:207", "guest", "nexus", ("CT 207", "207"), source="proxmox_api"),
+        Node("service:nexus", "service", "nexus"),
+        Node("storage:BU", "storage", "BU", source="proxmox_api"),
+        Node("note:wiki/Nexus", "note", "Nexus"),
+    ], at)
+    store.upsert_edges([
+        Edge("service:nexus", "guest:207", "runs_on", "manual"),
+        Edge("guest:207", "host:pve", "runs_on", "proxmox_api"),
+        Edge("guest:207", "storage:BU", "backs_up_to", "proxmox_api"),
+        Edge("note:wiki/Nexus", "service:nexus", "documents", "vault"),
+    ], at)
+    store.record_job("source:proxmox_api", ok=False, error="pve down", at=at)
+
+
+def test_graph_topology_in_read_tools():
+    from backend.agents.tools import READ_TOOLS, planner_tool_block
+
+    assert "graph_topology" in {t.name for t in READ_TOOLS}
+    assert "graph_topology" in planner_tool_block()
+
+
+async def test_graph_topology_input_errors(graph_db):
+    from backend.agents.tools import dispatcher_map
+
+    f = dispatcher_map()["graph_topology"]
+    assert "unavailable: missing 'node'" in await f({})
+    assert "unavailable: bad direction" in await f({"node": "x", "direction": "sideways"})
+    assert "unavailable: unknown node" in await f({"node": "nope"})
+
+
+async def test_graph_topology_disabled(graph_db, monkeypatch):
+    import backend.config as config_mod
+    from backend.agents.tools import dispatcher_map
+
+    monkeypatch.setenv("GRAPH_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    assert "unavailable: graph disabled" in await dispatcher_map()["graph_topology"]({"node": "x"})
+
+
+async def test_graph_topology_renders(graph_db):
+    from backend.agents.tools import dispatcher_map
+
+    _seed_graph()
+    flag = [{"id": 9, "severity": "high", "summary": "s", "source": "homelab_watch", "check": "lxc:207"}]
+    with patch("backend.agents.outcomes.open_flags", new=AsyncMock(return_value=flag)):
+        out = await dispatcher_map()["graph_topology"]({"node": "CT 207"})
+    assert out.startswith("guest:207 (nexus) [active] source=proxmox_api")
+    assert "flags: #9 high" in out
+    assert "runs_on \u2192 host:pve [proxmox_api]" in out
+    assert "runs_on \u2190 service:nexus [manual]" in out
+    assert "backs_up_to \u2192 storage:BU [proxmox_api]" in out
+    assert "! source proxmox_api unavailable" in out
+    assert "\u2191 1\u00b7host:pve" in out and "\u2193 1\u00b7service:nexus" in out
+    assert "notes: note:wiki/Nexus" in out

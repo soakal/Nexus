@@ -2,7 +2,7 @@ import logging
 import pathlib
 from datetime import datetime
 
-from sqlalchemy import UniqueConstraint, event, text
+from sqlalchemy import CheckConstraint, Index, UniqueConstraint, event, text
 from sqlmodel import Field, Session, SQLModel, create_engine
 
 logger = logging.getLogger(__name__)
@@ -992,3 +992,73 @@ def create_db_and_tables():
 def get_session():
     with Session(engine) as session:
         yield session
+
+
+# --- Knowledge graph (plan-v3). Written only by backend/graph/store.py. ---
+# Timestamps are ISO strings on purpose (lexical compare in the recursive CTE).
+# SQLModel defaults are Python-side: store.py raw INSERTs list status/first_seen/etc.
+
+class GraphNode(SQLModel, table=True):
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('note','tag','host','guest','container','service','endpoint','storage','external')",
+            name="ck_graphnode_type",
+        ),
+        CheckConstraint("status IN ('active','stale')", name="ck_graphnode_status"),
+        Index("ix_graphnode_type", "type"),
+        Index("ix_graphnode_source_seen", "source", "last_seen"),
+    )
+    id: str = Field(primary_key=True)
+    type: str
+    name: str
+    aliases: str | None = None
+    attrs: str | None = None
+    source: str
+    status: str = "active"
+    first_seen: str
+    last_seen: str
+    gen: int | None = None
+
+
+class GraphEdge(SQLModel, table=True):
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('links_to','tagged','runs_on','depends_on','backs_up_to','resolves_via','documents','mentions')",
+            name="ck_graphedge_type",
+        ),
+        CheckConstraint("status IN ('active','proposed','stale')", name="ck_graphedge_status"),
+        Index("ix_graphedge_dst", "dst", "type"),
+        Index("ix_graphedge_src", "src", "type"),
+        Index("ix_graphedge_source_seen", "source", "last_seen"),
+    )
+    src: str = Field(primary_key=True)
+    dst: str = Field(primary_key=True)
+    type: str = Field(primary_key=True)
+    source: str = Field(primary_key=True)
+    status: str = "active"
+    confidence: float | None = None
+    source_hash: str | None = None
+    first_seen: str
+    last_seen: str
+    gen: int | None = None
+    valid_to: str | None = None
+
+
+class GraphChange(SQLModel, table=True):
+    __table_args__ = (Index("ix_graphchange_node_ts", "node_id", "ts"),)
+    id: int | None = Field(default=None, primary_key=True)
+    ts: str
+    node_id: str
+    field: str
+    old: str | None = None
+    new: str | None = None
+    source: str
+
+
+class GraphJob(SQLModel, table=True):
+    name: str = Field(primary_key=True)
+    last_success: str | None = None
+    last_error: str | None = None
+    last_error_at: str | None = None
+    stats: str | None = None
+    generation: int = 0

@@ -765,3 +765,68 @@ async def test_prune_docker_images_blocking_call_goes_through_to_thread():
 
     assert mock_to_thread.await_args.args[0] is unraid._ssh_prune_sync
     assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# fetch_containers: strict read for the graph
+# ---------------------------------------------------------------------------
+
+def _gql_body(body: dict, status_code: int = 200):
+    resp = MagicMock(status_code=status_code)
+    resp.json.return_value = body
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_containers_shapes_rows():
+    data = {"docker": {"containers": [
+        {"id": "a:b", "names": ["/AdGuard-Home"], "state": "RUNNING", "status": "Up 2 days"},
+        {"id": "c:d", "names": ["/glp-app"], "state": "EXITED", "status": "Exited"},
+    ]}}
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch_containers
+        out = await fetch_containers()
+    assert out == [
+        {"id": "a:b", "name": "AdGuard-Home", "status": "Up 2 days", "state": "RUNNING"},
+        {"id": "c:d", "name": "glp-app", "status": "Exited", "state": "EXITED"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_containers_explicit_empty_is_authoritative():
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response({"docker": {"containers": []}}))
+        from backend.integrations.unraid import fetch_containers
+        assert await fetch_containers() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [{}, {"docker": {}}, {"docker": None}, {"docker": {"containers": None}}])
+async def test_unraid_fetch_containers_incomplete_docker_raises(data):
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_response(data))
+        from backend.integrations.unraid import fetch_containers
+        with pytest.raises(RuntimeError, match="incomplete docker section"):
+            await fetch_containers()
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_containers_graphql_errors_raise_with_message():
+    body = {"data": None, "errors": [{"message": "boom from unraid"}]}
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(_gql_body(body))
+        from backend.integrations.unraid import fetch_containers
+        with pytest.raises(RuntimeError, match="boom from unraid"):
+            await fetch_containers()
+
+
+@pytest.mark.asyncio
+async def test_unraid_fetch_containers_http_error_raises():
+    resp = _gql_response({}, status_code=500)
+    resp.raise_for_status.side_effect = Exception("HTTP 500")
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _post_client(resp)
+        from backend.integrations.unraid import fetch_containers
+        with pytest.raises(RuntimeError, match="Unraid unavailable"):
+            await fetch_containers()
