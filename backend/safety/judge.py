@@ -348,7 +348,7 @@ async def evaluate_action(actor, kind, target, payload, risk, reversibility, *, 
 
         try:
             raw = await asyncio.wait_for(
-                router.run_model(settings.action_judge_model, prompt, label="action_judge"),
+                router.run_model(settings.action_judge_model, prompt, label="action_judge", effort="low"),
                 timeout=settings.action_judge_timeout_s,
             )
         except asyncio.TimeoutError:
