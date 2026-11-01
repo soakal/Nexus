@@ -25,7 +25,7 @@ _INTENT_SCHEMA = {
     "properties": {
         "intent": {
             "type": "string",
-            "enum": ["HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR", "VAULT"],
+            "enum": ["HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR", "VAULT", "TOPOLOGY"],
         },
         "reason": {"type": "string"},
     },
@@ -520,17 +520,18 @@ async def chat(conversation_id: int | None, user_message: str, *, token_queue=No
 User message: "{user_message}"
 
 Return exactly:
-{{"intent": "HOME_CONTROL|TASK|CHAT|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR|VAULT", "reason": "brief reason"}}
+{{"intent": "HOME_CONTROL|TASK|CHAT|NOTE|STATUS|MAIL|MAIL_SEND|CALENDAR|VAULT|TOPOLOGY", "reason": "brief reason"}}
 
 HOME_CONTROL = user is issuing a COMMAND that changes a Home Assistant device — turn on/off/toggle a light/switch/fan/automation, open/close/stop a garage door or cover, lock or unlock a physical door lock, set a thermostat temperature, set a number helper value, or change a select/mode helper. Only use HOME_CONTROL for imperative commands, NOT for asking about device state.
 TASK = a multi-step OPERATION that requires DOING several things in sequence (e.g. "research X then save a note", "summarise my PRs and email me"). Not for a plain question.
-CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) anything about the user's calendar, schedule, appointments, or when an event is happening is CALENDAR, not CHAT. The chat can also search the web.
+CHAT = any question or request for information — including current events, prices, news, versions, weather, homelab status, follow-ups, and general/coding questions. IMPORTANT: (1) asking about the STATE of a device (e.g. "is the back door locked?", "is the garage open?", "are any lights on?") is CHAT — the live snapshot answers these; (2) anything about the user's calendar, schedule, appointments, or when an event is happening is CALENDAR, not CHAT; (3) layout/dependency questions about the homelab (what runs where, what depends on what, what is backed up) are TOPOLOGY, not CHAT. The chat can also search the web.
 NOTE = user wants to SAVE new content to their Obsidian notes/vault — "save this to my vault", "make a note: ...", "remember that ...", "save that to my notes". NOTE is only for WRITING, not for reading or searching existing notes.
 STATUS = user wants a quick homelab status summary — "/status" command or "what's running", "system status", "homelab status".
 MAIL = a question about the user's own email/inbox — "any new email?", "unread emails?", "what did X email me about?", "read the email from X", "what's in my inbox". Reading/searching email, not sending.
 MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "send an email to X about ...", "reply to X and tell them ...".
 CALENDAR = a question about the user's own calendar, schedule, or appointments — "when is my dr appointment?", "what's on my calendar today?", "what do I have this week?", "when is my next meeting?", "am I free Friday?". Reading the calendar only, never creating or changing an event.
-VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain") — their own history, family, pets, health, projects, past decisions ("when did Charlee start medication?", "what do my notes say about X", "pull up my note on Y", "read the Charlee health report", "search my vault for X", "find X in my brain"). Reading only, never saving — saving new content is NOTE."""
+VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain") — their own history, family, pets, health, projects, past decisions ("when did Charlee start medication?", "what do my notes say about X", "pull up my note on Y", "read the Charlee health report", "search my vault for X", "find X in my brain"). Reading only, never saving — saving new content is NOTE.
+TOPOLOGY = a question about how the homelab fits together — what runs on / where something runs, what X depends on or what depends on X, what breaks if X goes down, whether a guest/VM/CT/container is backed up and where, which storage/host something uses ("what runs on CT 209?", "what depends on Unraid?", "is Immich backed up?", "what breaks if the NAS goes down?"). Not for live status/health numbers (that is CHAT/STATUS)."""
 
         # Fast-path: /status command bypasses haiku classify
         _msg_stripped = user_message.strip()
@@ -558,7 +559,7 @@ VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain")
                 if start >= 0 and end > start:
                     parsed = json.loads(raw_intent[start:end])
                     intent = parsed.get("intent", "CHAT")
-                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR", "VAULT"):
+                    if intent not in ("HOME_CONTROL", "TASK", "CHAT", "NOTE", "STATUS", "MAIL", "MAIL_SEND", "CALENDAR", "VAULT", "TOPOLOGY"):
                         intent = "CHAT"
                     route_reason = str(parsed.get("reason") or "")[:300]
             except Exception:
@@ -717,6 +718,44 @@ VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain")
                     raise
                 except Exception as e:
                     reply = f"Couldn't search your vault right now: {e}"
+
+            elif intent == "TOPOLOGY":
+                # Same shape as VAULT: CHAT streams with no client-side tools, so the
+                # graph_topology read tool is only reachable via a run_with_tools lane.
+                from backend.agents.router import SONNET_MODEL, run_with_tools
+                from backend.agents.tools import READ_TOOLS
+
+                _topo_names = ("graph_topology", "vault_search", "vault_read_note")
+                _topo_tools = [t for t in READ_TOOLS if t.name in _topo_names]
+                topo_system = (
+                    "You are Carl, answering a question about how the user's homelab fits together. "
+                    "Call graph_topology first and answer from what it returns. Node ids look like "
+                    "guest:209, host:unraid, storage:VM_BU_NFS, service:immich -- or pass a plain "
+                    "name/alias and the tool resolves it. Use direction up/down/both and depth as "
+                    "needed (what depends on X vs what X depends on). Cite the edge sources the tool "
+                    "reports. If the tool says 'unavailable: graph disabled' or shows a source "
+                    "warning, say so plainly. Use vault_search/vault_read_note only for extra "
+                    "context from notes. Never invent hosts or services the tool did not return."
+                )
+                topo_prompt = (
+                    f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript
+                    else f"User: {user_message}"
+                )
+                try:
+                    reply = await run_with_tools(
+                        model=SONNET_MODEL,
+                        max_tokens=8192,
+                        prompt=topo_prompt,
+                        system=topo_system,
+                        tool_specs=[t.anthropic_spec() for t in _topo_tools],
+                        dispatch={t.name: t.dispatch for t in _topo_tools},
+                        web_search=False,
+                        label="chat_topology",
+                    )
+                except BudgetExceeded:
+                    raise
+                except Exception as e:
+                    reply = f"Couldn't look up the homelab topology right now: {e}"
 
             elif intent == "HOME_CONTROL":
                 from backend.integrations import homeassistant
@@ -1165,7 +1204,7 @@ If a recipient, subject, or body is missing/unclear, return an empty string for 
             await _maybe_summarize(conversation_id, get_settings().chat_history_limit)
 
         # 6. Fact extraction — only for conversational intents (not imperatives/status)
-        if intent in ("CHAT", "TASK", "NOTE", "VAULT"):
+        if intent in ("CHAT", "TASK", "NOTE", "VAULT", "TOPOLOGY"):
             from backend.agents import facts
             await facts.extract_and_store(user_message, conversation_id)
 
