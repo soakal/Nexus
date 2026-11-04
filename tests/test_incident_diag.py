@@ -165,6 +165,7 @@ def _seed_backup_incident():
     store.insert_change("2026-10-31T13:00:00", "guest:105", "cores", "1", "2", "proxmox_api")  # not backed up: out of scope
     store.insert_change("2026-10-31T21:00:00", "guest:104", "memory", "2048", "4096", "proxmox_api")  # == job start
     store.insert_change("2026-10-31T21:30:00", "guest:101", "tags", "[]", '["lab"]', "proxmox_api")  # within lag
+    store.insert_change("2026-10-31T22:45:00", "guest:104", "onboot", "1", "0", "proxmox_api")  # 2nd interval
     store.insert_change("2026-10-31T12:00:00", "guest:104", "hookscript", None, "local:snippets/x.sh", "proxmox_api")
     store.insert_change("2026-10-29T12:00:00", "guest:104", "cores", "2", "4", "proxmox_api")  # > 24 h before: out
     store.insert_change("2026-11-01T07:44:00", "guest:101", "status", "active", "stale", "proxmox_api")  # after: out
@@ -186,6 +187,7 @@ async def test_evidence_scoped_strictly_before_job_start(graph_db):
     before, rest = ev.split("UNCERTAIN")
     assert "guest:104 memory" not in before and "guest:104 memory" in rest  # recorded AT the cutoff: not "before"
     assert "guest:101 tags" in rest  # recorded 30 min after the job start: listed, flagged uncertain
+    assert "guest:104 onboot" in rest  # 105 min after: still inside the two-interval window
     assert "guest:101" in ev.split("Graph scope:")[1] and "guest:105" not in ev  # only backed-up guests in scope
     assert "guest:101 status" not in ev  # recorded ~11 h after the job start: never shown
     assert "cores" not in ev
