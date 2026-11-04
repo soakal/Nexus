@@ -568,6 +568,7 @@ def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
 _CLOSE_SECTION = "flags to close"
 _CLOSE_LINE = re.compile(r"^#(\d+)\s*[—–:-]+\s*(\S.*)$")
 _HEADING = re.compile(r"^#{1,6}\s")
+_FENCE = re.compile(r"^(`{3,}|~{3,})(.*)$")
 MAX_CLOSES_PER_FILE = 50
 
 
@@ -581,19 +582,23 @@ def _flags_to_close(content: str) -> list[tuple[int, str]]:
     section, fenced code is ignored, and a bullet without evidence is skipped, never closed. More than
     MAX_CLOSES_PER_FILE raises: nothing is closed and the digest stays unrelayed (loud, retried)."""
     out: list[tuple[int, str]] = []
-    in_section = in_fence = False
+    in_section = False
+    fence: str | None = None  # opening fence run, e.g. "````"; closer = same char, at least as long, nothing after
     for raw in content.splitlines():
         line = raw.strip()
-        if line.startswith("```") or line.startswith("~~~"):
-            in_fence = not in_fence
+        f = _FENCE.match(line)
+        if fence is None and f:
+            fence = f.group(1)
             continue
-        if in_fence:
+        if fence is not None:
+            if f and f.group(1)[0] == fence[0] and len(f.group(1)) >= len(fence) and not f.group(2).strip():
+                fence = None
             continue
         if _HEADING.match(line):
             in_section = line.startswith("## ") and line[3:].strip().lower() == _CLOSE_SECTION
         elif in_section and _BULLET.match(line):
             m = _CLOSE_LINE.match(_BULLET.sub("", line).strip())
-            if m:
+            if m and any(ch.isalnum() for ch in m.group(2)):
                 out.append((int(m.group(1)), m.group(2).strip()))
             else:
                 print(f"ignoring malformed close line (needs '#<id> — <evidence>'): {line[:80]!r}")

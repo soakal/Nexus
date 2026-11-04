@@ -1259,6 +1259,9 @@ def test_flags_to_close_parses_only_its_section():
         (12, "superseded by #40"),
     ]
     assert relay._flags_to_close("## Other\n- #1 — x\n") == []
+    nested = "## Flags to close\n````\n```\n- #927 — example only\n```\n````\n- #8 — real\n"
+    assert relay._flags_to_close(nested) == [(8, "real")]
+    assert relay._flags_to_close("## Flags to close\n- #927 ---\n- #928 — —\n") == []
 
 
 def test_close_section_is_never_posted_as_a_finding():
