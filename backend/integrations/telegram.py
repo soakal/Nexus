@@ -312,7 +312,144 @@ async def _send_payload(payload: dict) -> tuple[bool, bool]:
         return False, False
 
 
-async def notify(payload: dict, *, not_before: datetime | None = None) -> bool:
+# ------------------------------------------------------------------ G3b send gate (plan §5.3.4)
+# Only payloads that carry flag_id while correlation is ON reach any of this; everything else is today's path.
+
+_LEASE_S = 600
+_GROUPED = "(parent_flag_id IS NOT NULL OR released_from_parent_id IS NOT NULL)"
+_GROUPDEBT = (
+    "((parent_flag_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM outcomeflag p WHERE p.id = outcomeflag.parent_flag_id "
+    "AND p.status IN ('open','needs_follow_up'))) OR (parent_flag_id IS NULL AND released_from_parent_id IS NOT NULL))"
+)
+_ELIGIBLE = "paged_at IS NULL AND status IN ('open','needs_follow_up') AND suppressed = 0"
+_SET_OWNER = "send_claim_id = ?, send_claimed_at = ?, send_attempts = COALESCE(send_attempts, 0) + 1"
+
+
+def _corr_on() -> bool:
+    try:
+        from backend.graph import correlate
+        return correlate.enabled()
+    except Exception:
+        return False
+
+
+def _now_ts() -> str:
+    from backend.agents.g3b import db_ts
+    return db_ts(datetime.utcnow())
+
+
+def _lease_cutoff() -> str:
+    from datetime import timedelta
+    from backend.agents.g3b import db_ts
+    return db_ts(datetime.utcnow() - timedelta(seconds=_LEASE_S))
+
+
+def _gate(variant: str, flag_id: int, surfacing: int, token) -> str:
+    """One gate UPDATE on the short-timeout connection. Returns won|superseded|ungrouped|paged|leased|ineligible."""
+    from backend.agents import g3b
+    import uuid
+
+    mine = getattr(token, "op", None) or uuid.uuid4().hex
+    c = g3b.gate_conn()
+    try:
+        base = f"UPDATE outcomeflag SET {_SET_OWNER} WHERE id = ? AND surfaced_count = ?"
+        args = [mine, _now_ts(), flag_id, surfacing]
+        if variant == "V2":
+            base += f" AND {_GROUPED} AND paged_at IS NULL AND (send_claim_id IS NULL OR send_claimed_at < ?)"
+            args.append(_lease_cutoff())
+        elif variant == "V3":
+            base += f" AND {_ELIGIBLE} AND {_GROUPDEBT} AND (send_claim_id IS NULL OR send_claimed_at < ?)"
+            args.append(_lease_cutoff())
+        if token is not None and token.is_set():
+            return "abandoned"
+        if c.execute(base, args).rowcount == 1:
+            return "won:" + mine
+        r = c.execute("SELECT surfaced_count, parent_flag_id, released_from_parent_id, paged_at, status, suppressed, "
+                      "send_claimed_at FROM outcomeflag WHERE id = ?", (flag_id,)).fetchone()
+        if r is None or r["surfaced_count"] != surfacing:
+            return "superseded"
+        if variant == "V2" and r["parent_flag_id"] is None and r["released_from_parent_id"] is None:
+            return "ungrouped"
+        if r["paged_at"] is not None:
+            return "paged"
+        if r["status"] not in ("open", "needs_follow_up") or r["suppressed"]:
+            return "ineligible"
+        return "leased" if variant != "V1" else "superseded"
+    finally:
+        c.close()
+
+
+def _stamp(flag_id: int, surfacing: int) -> None:
+    from backend.agents import g3b
+    c = g3b.gate_conn()
+    try:
+        c.execute("UPDATE outcomeflag SET paged_at = ?, updated_at = ? WHERE id = ? AND surfaced_count = ? AND paged_at IS NULL",
+                  (_now_ts(), _now_ts(), flag_id, surfacing))
+    finally:
+        c.close()
+
+
+def _give_back(flag_id: int, claim: str) -> None:
+    from backend.agents import g3b
+    c = g3b.gate_conn()
+    try:
+        c.execute("UPDATE outcomeflag SET send_claim_id = NULL WHERE id = ? AND send_claim_id = ?", (flag_id, claim))
+    finally:
+        c.close()
+
+
+def _post_bookkeeping(flag_id: int, surfacing: int, claim: str | None, delivered: bool) -> None:
+    from backend.agents import g3b
+    if delivered:
+        g3b.post(("stamp", flag_id, surfacing), lambda: _stamp(flag_id, surfacing))
+    elif claim:
+        g3b.post(("give_back", flag_id, claim), lambda: _give_back(flag_id, claim))
+
+
+async def _presend_gate(variant: str, payload: dict, deadline: float | None) -> str:
+    """Run a V1/V2 gate inside the pre-send budget. 'error' = fail open (send ungated). Never raises."""
+    from backend.agents import g3b
+    try:
+        flag_id, surfacing = int(payload["flag_id"]), int(payload["flag_surfacing"])
+    except Exception:
+        return "error"
+
+    def late(res):  # a claim committed after the caller gave up: give it back
+        if isinstance(res, str) and res.startswith("won:"):
+            claim = res[4:]
+            g3b.post(("give_back", flag_id, claim), lambda: _give_back(flag_id, claim))
+
+    try:
+        return await g3b.run_presend(_gate, variant, flag_id, surfacing,
+                                     deadline=deadline or g3b.deadline_from_now(), on_late=late)
+    except g3b.FailOpen as e:
+        logger.warning(f"send gate unavailable for flag {flag_id} — sending ungated ({e})")
+        return "error"
+
+
+async def send_release(payload: dict) -> bool:
+    """flag_released pages only (called by outcomes.release_due via notify_phone(release=True)).
+    V3 gate (full eligibility + debt + lease), send, stamp; never queued — the 60 s tick is the retry.
+    Background tick, not a page path of today's code. Never raises."""
+    try:
+        flag_id, surfacing = int(payload["flag_id"]), int(payload["flag_surfacing"])
+        outcome = await asyncio.to_thread(_gate, "V3", flag_id, surfacing, None)
+        if not outcome.startswith("won:"):
+            logger.info(f"release page for flag {flag_id} skipped: {outcome}")
+            return False
+        claim = outcome[4:]
+        delivered, _terminal = await _send_payload(payload)
+        if delivered:
+            await asyncio.to_thread(_stamp, flag_id, surfacing)
+        else:
+            await asyncio.to_thread(_give_back, flag_id, claim)
+        return delivered
+    except Exception as e:
+        logger.warning(f"send_release failed (retried next tick): {e}")
+        return False
+
+
+async def notify(payload: dict, *, not_before: datetime | None = None, flag_deadline: float | None = None) -> bool:
     """Send a phone notification. Payload shape: content/message/text,
     parse_mode, buttons. NEVER raises.
 
@@ -330,7 +467,20 @@ async def notify(payload: dict, *, not_before: datetime | None = None) -> bool:
     if not_before is not None:
         return _queue_delivery(payload, "notify", not_before=not_before)
 
+    claim = None
+    if payload.get("flag_id") and _corr_on():  # G3b V1: in-memory checks only when off
+        try:
+            outcome = await _presend_gate("V1", payload, flag_deadline)
+            claim = outcome[4:] if outcome.startswith("won:") else None
+        except Exception as e:
+            logger.warning(f"send gate error (sending ungated): {e}")
+
     delivered, terminal = await _send_payload(payload)
+    if claim:
+        try:
+            _post_bookkeeping(int(payload["flag_id"]), int(payload["flag_surfacing"]), claim, delivered)
+        except Exception as e:
+            logger.warning(f"g3b bookkeeping not queued: {e}")
     if delivered:
         return True
     if not terminal:
@@ -575,7 +725,25 @@ async def deliver_pending() -> None:
             delivered_ids.append(delivery["id"])
             continue
 
+        claim = None
+        if payload.get("flag_id") and _corr_on():  # G3b V2, fresh budget per payload (plan §5.3.5)
+            try:
+                outcome = await _presend_gate("V2", payload, None)
+            except Exception:
+                outcome = "error"
+            if outcome == "paged":  # this surfacing was already delivered by a coordinated send
+                delivered_ids.append(delivery["id"])
+                continue
+            if outcome == "leased":  # another coordinated sender owns it: leave the row untouched
+                continue
+            claim = outcome[4:] if outcome.startswith("won:") else None
+
         delivered, _terminal = await _send_payload(payload)
+        if claim:
+            try:
+                _post_bookkeeping(int(payload["flag_id"]), int(payload["flag_surfacing"]), claim, delivered)
+            except Exception as e:
+                logger.warning(f"g3b bookkeeping not queued: {e}")
         if delivered:
             delivered_ids.append(delivery["id"])
         else:

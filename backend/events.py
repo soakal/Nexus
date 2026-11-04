@@ -51,7 +51,8 @@ async def publish(event_type: str, payload: dict) -> None:
 
 async def notify_phone(
     content: str, *, kind: str = "autonomy_alert", buttons: list | None = None,
-    not_before=None,
+    not_before=None, flag_id: int | None = None, flag_surfacing: int | None = None,
+    flag_deadline: float | None = None, release: bool = False,
 ) -> bool:
     """Best-effort phone push via NEXUS's own Telegram bot. Gated by phone_notifications_enabled.
 
@@ -66,6 +67,11 @@ async def notify_phone(
     makes this a scheduled reminder instead of an immediate send. See that
     function's own docstring. None (default) is identical to before this
     parameter existed.
+
+    G3b (plan g3/plan-v12-g3b.md §5.3/§5.4): `flag_id`/`flag_surfacing` mark a coordinated first page
+    (only ever passed while GRAPH_CORRELATION_ENABLED is on, via outcomes.coord_kwargs); `flag_deadline`
+    is that page's pre-send budget (never stored); `release=True` sends a flag_released page through
+    telegram.send_release() after every gate below, instead of notify(). Defaults = unchanged behaviour.
 
     NEVER raises (a notify failure must not affect the caller). Returns delivered bool.
     """
@@ -109,6 +115,13 @@ async def notify_phone(
             payload["parse_mode"] = parse_mode
         if buttons:
             payload["buttons"] = buttons
+        if flag_id is not None:
+            payload["flag_id"] = flag_id
+            payload["flag_surfacing"] = flag_surfacing
+        if release:
+            return await telegram.send_release(payload)
+        if flag_id is not None:
+            return await telegram.notify(payload, not_before=not_before, flag_deadline=flag_deadline)
         return await telegram.notify(payload, not_before=not_before)
     except Exception as e:
         logger.debug(f"events.notify_phone failed (ignored): {e}")

@@ -182,6 +182,8 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str, detail
     from backend.agents import outcomes
     severity = "high" if key in ("unraid_array", "vzdump_failed") else "medium"
     d = await outcomes.record_flag_ex("homelab_watch", key, message, severity=severity, detail=detail)
+    if outcomes.is_grouped(d):
+        return False  # latched, silent; its parent's page covers it and it is released when the parent closes
     if d["surface"]:
         buttons = None
         if d["id"] is not None:
@@ -190,7 +192,7 @@ async def _edge_alert(key: str, active: bool, message: str, *, kind: str, detail
                 {"text": "✗ False alarm", "callback_data": f"flag:false_positive:{d['id']}"},
             ]
         from backend import events
-        await events.notify_phone(message, kind=kind, buttons=buttons)
+        await events.notify_phone(message, kind=kind, buttons=buttons, **outcomes.coord_kwargs(d, "homelab_watch", key))
         _paged_alerts.add(key)
         _alert_escalation[key] = {
             "first_wall": datetime.now(), "count": 1,
@@ -228,9 +230,11 @@ async def check_proxmox_vms() -> list[str]:
                     f"NEXUS: VM/LXC '{name}' (id {vmid}) stopped (was running).",
                     kind="homelab_vm_stopped",
                     buttons=[{"text": "▶ Start", "callback_data": f"vm:start:{vmid}"}],
+                    **outcomes.coord_kwargs(d, "homelab_watch", f"vm:{vmid}"),
                 )
                 _paged_alerts.add(f"vm:{vmid}")
-            fired.append(f"vm:{vmid}")
+            if not outcomes.is_grouped(d):  # a grouped child is covered by its parent's page + diagnosis
+                fired.append(f"vm:{vmid}")
         elif prev != "running" and status == "running":
             await _clear_flag_safe(f"vm:{vmid}")
             recovered_name = html.escape(next((vm.get("name") or "" for vm in data.vms if str(vm["vmid"]) == vmid), vmid))
@@ -339,9 +343,11 @@ async def check_docker() -> list[str]:
                     f"NEXUS: Docker container '{html.escape(name)}' stopped.",
                     kind="homelab_docker_stopped",
                     buttons=_docker_restart_button(name),
+                    **outcomes.coord_kwargs(d, "homelab_watch", f"docker:{name}"),
                 )
                 _paged_alerts.add(f"docker:{name}")
-            fired.append(f"docker:{name}")
+            if not outcomes.is_grouped(d):
+                fired.append(f"docker:{name}")
         elif prev != "RUNNING" and state == "RUNNING":
             _pending_restart_verifies.pop(name, None)
             await _clear_flag_safe(f"docker:{name}")

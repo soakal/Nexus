@@ -480,6 +480,25 @@ async def _maybe_group(flag_id: int, source: str, check: str, deadline: float) -
     return res["parent"] if res else None
 
 
+def is_grouped(d: dict) -> bool:
+    """record_flag_ex result says the row was grouped under a parent: the caller must not page it and must not
+    count it as a fresh incident (no incident_diag, no proposer tick) — the parent's page covers it."""
+    return str(d.get("reason") or "").startswith("grouped:")
+
+
+def coord_kwargs(d: dict, source: str, check: str) -> dict:
+    """notify_phone kwargs for a coordinated first page (plan §5.3.1). PURE: settings + string logic, no DB.
+    {} when correlation is off, the tracker gave no id/surfacing, or the row can never be grouped/adopt —
+    so with correlation off every call site passes exactly today's arguments."""
+    from backend.graph import correlate
+
+    if not correlate.enabled() or not d.get("id") or d.get("surfacing") is None:
+        return {}
+    if correlate.node_for_flag(source, check) is None and (source, check) not in correlate.PARENT_CHECKS:
+        return {}
+    return {"flag_id": d["id"], "flag_surfacing": d["surfacing"], "flag_deadline": d.get("presend_deadline")}
+
+
 async def record_flag_ex(
     source: str,
     check: str,
