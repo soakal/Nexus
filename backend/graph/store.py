@@ -250,6 +250,29 @@ def mark_stale(
     return sorted(n), sorted((r.src, r.dst, r.type) for r in e)
 
 
+def purge_stale(source: str, before_ts: str, conn: Connection) -> tuple[list[tuple[str, str]], list[tuple[str, str, str]]]:
+    """Delete this source's rows that are stale AND were last seen before `before_ts` (a destroyed guest, a
+    removed storage), plus this source's other edges touching a deleted node. Edges owned by OTHER sources are
+    never deleted here: one pointing at a purged node shows up as dangling in `doctor` (a manual_edges.toml
+    entry for a destroyed guest is a config fix, not something to delete silently). Returns what was deleted."""
+    p = {"s": source, "b": before_ts}
+    nodes = [(r.id, r.type) for r in conn.execute(text(
+        "SELECT id, type FROM graphnode WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()]
+    ids = [i for i, _ in nodes]
+    edges = {(r.src, r.dst, r.type) for r in conn.execute(text(
+        "SELECT src, dst, type FROM graphedge WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()}
+    for part in _chunks(ids):
+        stmt = text("SELECT src, dst, type FROM graphedge WHERE source = :s AND (src IN :ids OR dst IN :ids)"
+                    ).bindparams(bindparam("ids", expanding=True))
+        edges |= {(r.src, r.dst, r.type) for r in conn.execute(stmt, {"s": source, "ids": part}).all()}
+    if edges:
+        conn.execute(text("DELETE FROM graphedge WHERE source = :s AND src = :src AND dst = :dst AND type = :type"),
+                     [{"s": source, "src": a, "dst": b, "type": t} for a, b, t in edges])
+    for part in _chunks(ids):
+        conn.execute(text("DELETE FROM graphnode WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": part})
+    return sorted(nodes), sorted(edges)
+
+
 def insert_changes(rows: list[dict], conn: Connection | None = None) -> int:
     """rows: {ts, node_id, field, old, new, source}."""
     if not rows:

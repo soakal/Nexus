@@ -247,3 +247,88 @@ async def test_manual_removal_recorded_when_pruned(file_eng, tmp_path):
     await collect(tmp_path, toml=lean)
     assert ("service:immich", "node", "service", None, "manual") in rows()
     assert ("service:immich", "edge:runs_on:guest:209", "active", None, "manual") in rows()
+
+
+async def _collect_at(tmp_path, when: str, **kw):
+    with patch("backend.graph.topology.now_iso", return_value=when):
+        return await collect(tmp_path, **kw)
+
+
+async def test_stale_rows_deleted_after_seven_days(file_eng, tmp_path):
+    only_101 = prox_with(vm(101, "win", "qemu"))
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    await _collect_at(tmp_path, "2026-11-01T01:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-01T02:00:00", prox=only_101)  # guest:209 goes stale (last seen 11-01 00:00)
+    assert store.get_node("guest:209")["status"] == "stale"
+    flag = {}
+    r = await _collect_at(tmp_path, "2026-11-07T23:00:00", prox=only_101, flag=flag)  # 6d23h: kept
+    assert r["purged_stale"] == 0 and store.get_node("guest:209") is not None
+    r = await _collect_at(tmp_path, "2026-11-08T00:00:01", prox=only_101, flag=flag)
+    assert store.get_node("guest:209") is None
+    assert not [e for e in store.edges_of("guest:209") if e["source"] == "proxmox_api"]
+    assert r["stale"] == {"nodes": 0, "edges": 0} and r["purged_stale"] == 4  # node + runs_on/depends_on/backs_up_to
+    flag["clr"].assert_awaited_with("graph", "stale_edges")  # the open stale-edges flag closes itself
+    removed = rows("ts = '2026-11-08T00:00:01'")
+    assert ("guest:209", "node", "guest", None, "proxmox_api") in removed
+    assert ("guest:209", "edge:runs_on:host:pve", "stale", None, "proxmox_api") in removed
+    assert store.get_node("guest:101")["status"] == "active"  # untouched
+
+
+async def test_outage_never_purges(file_eng, tmp_path):
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    for day in range(2, 20):  # proxmox down for weeks: nothing goes stale, so nothing is deleted
+        r = await _collect_at(tmp_path, f"2026-11-{day:02d}T00:00:00", prox=RuntimeError("pve down"))
+        assert r["purged_stale"] == 0
+    assert store.get_node("guest:209")["status"] == "active"
+
+
+async def test_stale_guest_that_returns_is_not_purged(file_eng, tmp_path):
+    only_101 = prox_with(vm(101, "win", "qemu"))
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    await _collect_at(tmp_path, "2026-11-01T01:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-01T02:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-05T00:00:00")  # back before the 7 days are up
+    r = await _collect_at(tmp_path, "2026-11-20T00:00:00")
+    assert r["purged_stale"] == 0 and store.get_node("guest:209")["status"] == "active"
+
+
+async def test_purge_boundaries_and_return_on_purge_tick(file_eng, tmp_path):
+    only_101 = prox_with(vm(101, "win", "qemu"))
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    await _collect_at(tmp_path, "2026-11-01T01:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-01T02:00:00", prox=only_101)
+    r = await _collect_at(tmp_path, "2026-11-08T00:00:00", prox=only_101)  # exactly 7 days: kept (strictly older only)
+    assert r["purged_stale"] == 0
+    r = await _collect_at(tmp_path, "2026-11-09T00:00:00")  # guest:209 is back on the tick that would purge it
+    assert r["purged_stale"] == 0 and store.get_node("guest:209")["status"] == "active"
+
+
+async def test_uptime_targets_never_purged(file_eng, tmp_path):
+    from backend.graph import topology
+
+    with store.batch() as c:  # an endpoint seen once (generation 1), as a real uptime_targets run would leave it
+        g = store.bump_generation("uptime_targets", c)
+        store.upsert_nodes([Node("endpoint:immich", "endpoint", "immich", source="uptime_targets")], "2026-11-01T00:00:00", c, gen=g)
+    # config error -> [] (the reader swallows it, the helper returns []): endpoint goes stale, but is never deleted
+    for when in ("2026-11-01T01:00:00", "2026-11-01T02:00:00", "2026-11-20T00:00:00"):
+        await _collect_at(tmp_path, when)
+    assert store.get_node("endpoint:immich")["status"] == "stale"
+    assert "uptime_targets" not in topology.PURGE_SOURCES
+
+
+async def test_purge_leaves_other_sources_edges(file_eng, tmp_path):
+    """A manual_edges.toml edge to a destroyed guest stays (dangling, visible in doctor); it is not deleted and
+    re-added on every collect. A vault `documents` edge goes away via reconcile_documents as before."""
+    only_101 = prox_with(vm(101, "win", "qemu"))
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    await _collect_at(tmp_path, "2026-11-01T01:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-01T02:00:00", prox=only_101)
+    n = len(rows())
+    await _collect_at(tmp_path, "2026-11-08T00:00:01", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-08T01:00:00", prox=only_101)
+    assert store.get_node("guest:209") is None
+    assert ("service:immich", "guest:209", "runs_on") in store.edge_keys(source="manual")  # TOML edge kept
+    assert store.health()["dangling_edges"] == 1
+    later = rows("id > :n", n=n)
+    assert not [r for r in later if r[4] == "manual"]  # no remove/re-add churn on the manual edge
+    assert all(r[4] == "proxmox_api" for r in later)
