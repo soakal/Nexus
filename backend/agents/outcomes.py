@@ -79,6 +79,7 @@ def _flag_to_dict(f) -> dict:
 def _db_find_active_by_fingerprint(fingerprint: str) -> dict | None:
     """Newest row with this fingerprint in status open|needs_follow_up, or None."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -96,6 +97,7 @@ def _db_find_active_by_fingerprint(fingerprint: str) -> dict | None:
 def _db_latest_by_fingerprint(fingerprint: str) -> dict | None:
     """Newest row with this fingerprint regardless of status, or None."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -139,6 +141,7 @@ def _db_bump_surfaced(
     hint.
     """
     from sqlmodel import Session
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -176,6 +179,7 @@ def _db_insert_flag(
     against ux_goal_fingerprint_active."""
     from sqlalchemy.exc import IntegrityError
     from sqlmodel import Session
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -203,6 +207,7 @@ def _db_insert_flag(
 
 def _db_get_flag(flag_id: int) -> dict | None:
     from sqlmodel import Session
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -212,6 +217,7 @@ def _db_get_flag(flag_id: int) -> dict | None:
 
 def _db_update_flag(flag_id: int, **fields) -> dict | None:
     from sqlmodel import Session
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -232,6 +238,7 @@ def _db_clear_by_fingerprint(fingerprint: str, by: str) -> int:
     """Auto-resolve every still-active (open|needs_follow_up) row for this
     fingerprint. Returns the count of rows resolved."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -259,6 +266,7 @@ def _db_open_flags(limit: int, include_suppressed: bool = False, offset: int = 0
     """Open + needs_follow_up + deferred-past-due, newest first. offset/count: /flags paging (count=True
     returns (rows, total) so a '+N more' line is exact however many rows are open)."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     now = datetime.utcnow()
@@ -279,6 +287,7 @@ def _db_unpaged_grouped() -> list[dict]:
     """G3b rule 3: every open grouped/detached child whose current surfacing never paged. UNCAPPED, newest first:
     whatever the digest caps, these are always listed (plan §6)."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -303,6 +312,7 @@ def group_suffix(f: dict) -> str:
 def _db_recently_closed(cutoff: datetime, limit: int) -> list[dict]:
     """Rows resolved/false_positive'd since cutoff, newest first."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -321,6 +331,7 @@ def _db_recently_closed(cutoff: datetime, limit: int) -> list[dict]:
 def _db_calibration(cutoff: datetime) -> dict:
     """Per-source:check counts by status, for rows created since cutoff."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     with Session(engine) as session:
@@ -345,6 +356,7 @@ def _db_active_hint(fingerprint: str) -> dict | None:
     need not special-case it. Any DB error (missing table, etc.) propagates
     to the caller, which fails open (spec §3.2/§3.4)."""
     from sqlmodel import Session, select
+
     from backend.database import CalibrationHint, engine
 
     with Session(engine) as session:
@@ -370,6 +382,7 @@ def _db_sweep_deferred() -> list[int]:
     """Flip deferred rows whose deferred_until has passed to needs_follow_up.
     Returns the ids flipped."""
     from sqlmodel import Session, select
+
     from backend.database import OutcomeFlag, engine
 
     now = datetime.utcnow()

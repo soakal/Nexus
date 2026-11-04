@@ -910,8 +910,9 @@ async def test_cmd_flags_paging_and_unpaged_grouped_first():
     from datetime import datetime
 
     now_iso = datetime.utcnow().isoformat()
-    row = lambda i, **kw: {"id": i, "severity": "low", "source": "vault_signals", "check": f"c{i}", "summary": f"s{i}",
-                           "created_at": now_iso, **kw}
+    def row(i, **kw):
+        return {"id": i, "severity": "low", "source": "vault_signals", "check": f"c{i}", "summary": f"s{i}",
+                "created_at": now_iso, **kw}
     page1 = [row(i) for i in range(200, 150, -1)]
     unpaged = [row(5, source="homelab_watch", check="docker:demo-app", parent_flag_id=4)]
     with patch("backend.agents.outcomes.open_flags_page", new_callable=AsyncMock, return_value=(page1, 120)) as pg, \

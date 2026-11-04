@@ -1,13 +1,12 @@
 """G3b phase 5, rule 3: nothing drops off the digest (plan §6)."""
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
+from g3b_helpers import _child, _parent, _settings
 from sqlalchemy import text
 
 import backend.database as bd
 from backend.agents import g3b, outcomes
-from test_g3b_grouping import _parent, _settings, db, on  # noqa: F401
-from test_g3b_send import _child
 
 
 def _singles(n):
@@ -19,7 +18,7 @@ def _singles(n):
                 {"ck": f"n{i}", "fp": f"vault_signals:n{i}", "t": g3b.db_ts(datetime.utcnow())})
 
 
-async def test_unpaged_grouped_child_listed_beyond_every_cap(on):
+async def test_unpaged_grouped_child_listed_beyond_every_cap(g3b_on):
     p = _parent()
     kid = _child(parent=p)  # oldest rows...
     _singles(1100)          # ...buried under more than 1000 newer singles
@@ -38,7 +37,7 @@ async def test_unpaged_grouped_child_listed_beyond_every_cap(on):
     assert total == 1100 + 2 and rows  # page 23 reaches rows past 1000
 
 
-async def test_paged_child_not_in_unpaged_section_but_marked(on):
+async def test_paged_child_not_in_unpaged_section_but_marked(g3b_on):
     p = _parent()
     kid = _child(parent=p, paged=True)
     assert await outcomes.unpaged_grouped() == []
@@ -46,7 +45,7 @@ async def test_paged_child_not_in_unpaged_section_but_marked(on):
     assert outcomes.group_suffix(next(r for r in rows if r["id"] == kid)) == f" (under #{p})"
 
 
-async def test_off_views_unchanged(db, monkeypatch):
+async def test_off_views_unchanged(g3b_db, monkeypatch):
     from backend.agents import briefing
 
     _settings(monkeypatch, corr="false")
@@ -57,7 +56,7 @@ async def test_off_views_unchanged(db, monkeypatch):
     assert "(under" not in briefing._build_open_items_section(flags)
 
 
-async def test_evidence_lists_grouped_children(on):
+async def test_evidence_lists_grouped_children(g3b_on):
     from backend.agents import incident_diag
 
     p = _parent()

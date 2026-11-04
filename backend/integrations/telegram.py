@@ -340,14 +340,16 @@ def _now_ts() -> str:
 
 def _lease_cutoff() -> str:
     from datetime import timedelta
+
     from backend.agents.g3b import db_ts
     return db_ts(datetime.utcnow() - timedelta(seconds=_LEASE_S))
 
 
 def _gate(variant: str, flag_id: int, surfacing: int, token) -> str:
     """One gate UPDATE on the short-timeout connection. Returns won|superseded|ungrouped|paged|leased|ineligible."""
-    from backend.agents import g3b
     import uuid
+
+    from backend.agents import g3b
 
     mine = getattr(token, "op", None) or uuid.uuid4().hex
     c = g3b.gate_conn()
@@ -533,7 +535,7 @@ def _load_pending() -> list[dict]:
     hit the dead-letter cap (attempts >= _MAX_ATTEMPTS) or if its exponential-backoff
     window has not yet elapsed. This stops a permanently-failing 'poison' row from
     occupying a delivery slot every cycle and starving newer deliveries."""
-    from sqlmodel import Session, select, or_
+    from sqlmodel import Session, or_, select
 
     from backend.database import PendingDelivery, engine
 
@@ -607,8 +609,9 @@ def delivery_queue_health() -> dict:
     """
     try:
         from sqlmodel import Session, select
-        from backend.database import PendingDelivery, engine
+
         from backend.config import get_settings
+        from backend.database import PendingDelivery, engine
 
         settings = get_settings()
         try:
@@ -650,6 +653,7 @@ def list_reminders(limit: int = 20) -> list[dict]:
     from Telegram. Run via asyncio.to_thread. Never raises."""
     try:
         from sqlmodel import Session, select
+
         from backend.database import PendingDelivery, engine
 
         with Session(engine) as session:
@@ -680,6 +684,7 @@ def cancel_reminder(row_id: int) -> bool:
     Sync — run via asyncio.to_thread. Never raises."""
     try:
         from sqlmodel import Session
+
         from backend.database import PendingDelivery, engine
 
         with Session(engine) as session:

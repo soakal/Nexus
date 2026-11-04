@@ -308,3 +308,40 @@ def mock_emit_event(request):
         return
     with patch("backend.integrations.obsidian.emit_event", new_callable=AsyncMock):
         yield
+
+
+# ---------------------------------------------------------------- G3b (alert grouping) fixtures — opt-in
+
+@pytest.fixture
+def g3b_db(tmp_path, monkeypatch):
+    from sqlalchemy import event
+    from sqlmodel import SQLModel, create_engine
+
+    import backend.database as bd
+
+    path = tmp_path / "nexus.db"
+    monkeypatch.setattr(bd, "DB_PATH", path)
+    e = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False, "timeout": 30})
+    event.listen(e, "connect", bd._set_sqlite_pragmas)
+    monkeypatch.setattr(bd, "engine", e)
+    SQLModel.metadata.create_all(e)
+    from backend.agents import g3b
+    from backend.graph import now_iso, store
+    from backend.graph.store import Edge, Node
+
+    store.upsert_nodes([Node("host:unraid", "host", "unraid"), Node("container:demo-app", "container", "demo-app", source="unraid_api"),
+                        Node("guest:150", "guest", "lab-vm", source="proxmox_api")], now_iso())
+    store.upsert_edges([Edge("container:demo-app", "host:unraid", "runs_on", "unraid_api")], now_iso())
+    store.record_job("collect", ok=True, at=now_iso())
+    g3b.restart()  # another test file's app lifespan may have shut the shared pool down
+    return e
+
+
+@pytest.fixture
+def g3b_on(g3b_db, monkeypatch):
+    from g3b_helpers import _settings
+
+    _settings(monkeypatch)
+    yield
+    import backend.config as config_mod
+    monkeypatch.setattr(config_mod, "_settings_instance", None)

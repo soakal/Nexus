@@ -1,38 +1,17 @@
 """G3b phase 3: send gate in notify / deliver_pending, send_release, homelab call sites (plan §5.3-§5.4)."""
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
-import pytest
+from g3b_helpers import _child, _cols, _parent, _payload, _settings
 from sqlalchemy import text
 
 import backend.database as bd
-from backend.agents import g3b, outcomes
+from backend.agents import g3b
 from backend.integrations import telegram
-from test_g3b_grouping import _parent, _row, _settings, db, on  # noqa: F401  (fixtures)
 
 
-def _child(parent=None, paged=False, surfacing=1, released_from=None, status="open"):
-    with bd.engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO outcomeflag (source, \"check\", fingerprint, summary, severity, status, surfaced_count, last_surfaced_at,"
-            " created_at, updated_at, suppressed, parent_flag_id, released_from_parent_id, paged_at) VALUES ('homelab_watch',"
-            " 'docker:demo-app', 'homelab_watch:docker:demo-app', 'stopped', 'medium', :st, :s, :t, :t, :t, 0, :p, :r, :pg)"),
-            {"st": status, "s": surfacing, "t": g3b.db_ts(datetime.utcnow()), "p": parent, "r": released_from,
-             "pg": g3b.db_ts(datetime.utcnow()) if paged else None})
-        return c.execute(text("SELECT max(id) FROM outcomeflag")).scalar_one()
-
-
-def _cols(fid):
-    with bd.engine.connect() as c:
-        return c.execute(text("SELECT paged_at, send_claim_id, send_attempts FROM outcomeflag WHERE id = :i"), {"i": fid}).one()
-
-
-def _payload(fid, s=1, kind="homelab_docker_stopped"):
-    return {"type": kind, "content": "x", "flag_id": fid, "flag_surfacing": s}
-
-
-async def test_off_notify_never_gates(db, monkeypatch):
+async def test_off_notify_never_gates(g3b_db, monkeypatch):
     _settings(monkeypatch, corr="false")
     fid = _child()
     send = AsyncMock(return_value=(True, False))
@@ -42,7 +21,7 @@ async def test_off_notify_never_gates(db, monkeypatch):
     assert _cols(fid).paged_at is None
 
 
-async def test_v1_wins_sends_and_stamps(on):
+async def test_v1_wins_sends_and_stamps(g3b_on):
     fid = _child()
     with patch.object(telegram, "_send_payload", AsyncMock(return_value=(True, False))):
         assert await telegram.notify(_payload(fid)) is True
@@ -51,7 +30,7 @@ async def test_v1_wins_sends_and_stamps(on):
     assert r.paged_at is not None and r.send_attempts == 1
 
 
-async def test_v1_superseded_sends_without_stamp(on):
+async def test_v1_superseded_sends_without_stamp(g3b_on):
     fid = _child(surfacing=2)
     with patch.object(telegram, "_send_payload", AsyncMock(return_value=(True, False))) as send:
         assert await telegram.notify(_payload(fid, s=1)) is True
@@ -59,7 +38,7 @@ async def test_v1_superseded_sends_without_stamp(on):
     assert g3b.drain_post() and _cols(fid).paged_at is None
 
 
-async def test_v1_gate_error_sends_ungated(on, monkeypatch):
+async def test_v1_gate_error_sends_ungated(g3b_on, monkeypatch):
     fid = _child()
     monkeypatch.setattr(g3b, "gate_conn", lambda: (_ for _ in ()).throw(RuntimeError("db locked")))
     with patch.object(telegram, "_send_payload", AsyncMock(return_value=(True, False))) as send:
@@ -67,7 +46,7 @@ async def test_v1_gate_error_sends_ungated(on, monkeypatch):
     send.assert_awaited_once()
 
 
-async def test_v1_retryable_failure_queues_and_gives_back(on):
+async def test_v1_retryable_failure_queues_and_gives_back(g3b_on):
     fid = _child()
     with patch.object(telegram, "_send_payload", AsyncMock(return_value=(False, False))), \
          patch.object(telegram, "_queue_delivery") as q:
@@ -88,7 +67,7 @@ async def _replay(payload, send_result=(True, False)):
     return send, applied
 
 
-async def test_v2_drops_already_paged_grouped_surfacing(on):
+async def test_v2_drops_already_paged_grouped_surfacing(g3b_on):
     p = _parent()
     fid = _child(parent=p, paged=True)
     send, applied = await _replay(_payload(fid))
@@ -96,14 +75,14 @@ async def test_v2_drops_already_paged_grouped_surfacing(on):
     assert applied["d"] == [77]
 
 
-async def test_v2_ungrouped_row_replays_ungated(on):
+async def test_v2_ungrouped_row_replays_ungated(g3b_on):
     fid = _child(paged=True)  # paged but not grouped: today's replay must flow
     send, applied = await _replay(_payload(fid))
     send.assert_awaited_once()
     assert applied["d"] == [77]
 
 
-async def test_v2_leased_row_left_untouched(on):
+async def test_v2_leased_row_left_untouched(g3b_on):
     p = _parent()
     fid = _child(parent=p)
     with bd.engine.begin() as c:
@@ -114,7 +93,7 @@ async def test_v2_leased_row_left_untouched(on):
     assert applied == {"d": [], "f": []}
 
 
-async def test_off_stale_flag_id_replay_ungated(db, monkeypatch):
+async def test_off_stale_flag_id_replay_ungated(g3b_db, monkeypatch):
     _settings(monkeypatch, corr="false")
     fid = _child(paged=True)
     with patch.object(g3b, "run_presend", AsyncMock()) as rp:
@@ -123,7 +102,7 @@ async def test_off_stale_flag_id_replay_ungated(db, monkeypatch):
     send.assert_awaited_once()
 
 
-async def test_send_release_pages_debt_once_and_never_queues(on):
+async def test_send_release_pages_debt_once_and_never_queues(g3b_on):
     p = _parent(status="resolved")
     fid = _child(parent=p)
     with patch.object(telegram, "_send_payload", AsyncMock(return_value=(False, False))), \
@@ -139,7 +118,7 @@ async def test_send_release_pages_debt_once_and_never_queues(on):
     assert _cols(fid).paged_at is not None
 
 
-async def test_send_release_skips_child_of_open_parent_and_resolved_child(on):
+async def test_send_release_skips_child_of_open_parent_and_resolved_child(g3b_on):
     p = _parent()
     fid = _child(parent=p)
     with patch.object(telegram, "_send_payload", AsyncMock(return_value=(True, False))) as send:
@@ -150,7 +129,7 @@ async def test_send_release_skips_child_of_open_parent_and_resolved_child(on):
     send.assert_not_awaited()
 
 
-async def test_notify_phone_release_route_keeps_gates(on, monkeypatch):
+async def test_notify_phone_release_route_keeps_gates(g3b_on, monkeypatch):
     from backend import events
 
     s = type("S", (), {"phone_notifications_enabled": False})()
@@ -160,7 +139,7 @@ async def test_notify_phone_release_route_keeps_gates(on, monkeypatch):
     sr.assert_not_awaited()
 
 
-async def test_grouped_docker_child_not_paged_not_fired(on, monkeypatch):
+async def test_grouped_docker_child_not_paged_not_fired(g3b_on, monkeypatch):
     from backend.agents import homelab_watch
 
     _parent()
@@ -175,7 +154,7 @@ async def test_grouped_docker_child_not_paged_not_fired(on, monkeypatch):
     assert fired == []
 
 
-async def test_off_docker_page_args_unchanged(db, monkeypatch):
+async def test_off_docker_page_args_unchanged(g3b_db, monkeypatch):
     from backend.agents import homelab_watch
 
     _settings(monkeypatch, corr="false")
