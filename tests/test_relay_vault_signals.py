@@ -1227,3 +1227,88 @@ def test_main_returns_0_when_todays_digest_present(monkeypatch, tmp_path):
     _write_digest(tmp_path, f"{date.today().isoformat()}.md", "- [personal] today\n")
 
     assert relay.main() == 0
+
+
+# ---- "## Flags to close" section (routine-driven closure of its own flags)
+
+_CLOSE_DIGEST = """# Vault Signals Digest
+
+## New / changed since last digest
+
+- [homelab] **Something new** -- details
+
+## Flags to close
+
+- #927 — last night's HA backup ended OK
+- #12: superseded by #40
+- not a flag line
+* #5
+- [homelab] #99 tagged line is not a closure
+```markdown
+- #31 — example only
+```
+### Do not close these
+- #928 — still broken
+"""
+
+
+def test_flags_to_close_parses_only_its_section():
+    # no evidence (#5), fenced example (#31) and the ### sub-section (#928) are never closures
+    assert relay._flags_to_close(_CLOSE_DIGEST) == [
+        (927, "last night's HA backup ended OK"),
+        (12, "superseded by #40"),
+    ]
+    assert relay._flags_to_close("## Other\n- #1 — x\n") == []
+    nested = "## Flags to close\n````\n```\n- #927 — example only\n```\n````\n- #8 — real\n"
+    assert relay._flags_to_close(nested) == [(8, "real")]
+    assert relay._flags_to_close("## Flags to close\n- #927 ---\n- #928 — —\n") == []
+    indented = "## Flags to close\n```\n    ```\n- #927 — example only\n```\n    - #928 — code block\n  - #929 — nested\n- #9 — real\n"
+    assert relay._flags_to_close(indented) == [(9, "real")]
+
+
+def test_close_section_is_never_posted_as_a_finding():
+    tagged = [t for c, t in relay._extract_findings(_CLOSE_DIGEST) if c is not None]
+    assert not any(n in t for t in tagged for n in ("#927", "#12", "#5"))  # untagged: never posted
+
+
+def test_too_many_closures_applies_none_and_keeps_digest_unrelayed(tmp_path, monkeypatch):
+    body = "## Flags to close\n" + "".join(f"- #{i} — fixed\n" for i in range(1, relay.MAX_CLOSES_PER_FILE + 2))
+    path = _write_digest(tmp_path, "2026-11-05.md", body)
+    calls = []
+    monkeypatch.setattr(relay, "_resolve_flag", lambda *a: calls.append(a) or True)
+    assert relay._relay_file(path, "http://x", "k") is False
+    assert calls == []
+
+
+def test_resolve_flag_request_shape_and_status_mapping(monkeypatch):
+    captured = {}
+
+    def ok(req, timeout=30):
+        captured["req"] = req
+        return _FakeUrlopenResponse(200)
+
+    monkeypatch.setattr(urllib.request, "urlopen", ok)
+    assert relay._resolve_flag("http://example.test:8000", "sekret", 927, "why") is True
+    req = captured["req"]
+    assert req.full_url == "http://example.test:8000/api/safety/flags/927/resolve"
+    assert req.get_header("Authorization") == "Bearer sekret"
+    assert json.loads(req.data) == {"status": "resolved", "note": "why", "source": "vault_signals"}
+
+    for code, expected in ((404, True), (409, True), (500, False)):
+        def err(req, timeout=30, code=code):
+            raise urllib.error.HTTPError(req.full_url, code, "x", hdrs=None, fp=None)
+        monkeypatch.setattr(urllib.request, "urlopen", err)
+        assert relay._resolve_flag("http://x", "k", 1, "n") is expected
+
+
+def test_relay_file_resolves_listed_flags_and_fails_on_resolve_error(tmp_path, monkeypatch):
+    path = _write_digest(tmp_path, "2026-11-05.md", _CLOSE_DIGEST)
+    monkeypatch.setattr(relay, "_post_flag", lambda *a: True)
+    calls = []
+    monkeypatch.setattr(relay, "_resolve_flag", lambda b, k, i, n: calls.append((i, n)) or True)
+    assert relay._relay_file(path, "http://x", "k") is True
+    assert [i for i, _ in calls] == [927, 12]
+    assert calls[0][1] == "vault_signals 2026-11-05: last night's HA backup ended OK"
+
+    monkeypatch.setattr(relay, "_resolve_flag", lambda *a: False)
+    assert relay._relay_file(path, "http://x", "k") is False  # file stays unrelayed, retried next run

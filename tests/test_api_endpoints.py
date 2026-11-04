@@ -626,6 +626,16 @@ def test_flags_full_lifecycle(app_client, auth_headers):
     assert calib.status_code == 200
     assert isinstance(calib.json(), dict)
 
+    # `source` guard: a flag from another source is refused (409) and stays open.
+    wrong_src = app_client.post(
+        f"/api/safety/flags/{id1}/resolve", json={"status": "resolved", "source": "vault_signals"}, headers=auth_headers,
+    )
+    assert wrong_src.status_code == 409
+    missing = app_client.post(
+        "/api/safety/flags/999999/resolve", json={"status": "resolved", "source": "vault_signals"}, headers=auth_headers,
+    )
+    assert missing.status_code == 404
+
     # POST /flags/{id}/resolve status-mapping sequence.
     resolved = app_client.post(
         f"/api/safety/flags/{id1}/resolve", json={"status": "resolved"}, headers=auth_headers,
