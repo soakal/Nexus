@@ -114,9 +114,9 @@ def _incident_at(key: str, flag: dict | None, fired_at: datetime | None) -> tupl
 
 def _collect_minutes() -> int:
     try:
-        from backend.config import get_settings
+        from backend.graph import intervals
 
-        return max(15, int(getattr(get_settings(), "graph_collect_minutes", 60)))  # same clamp as scheduler.py's graph_collect job
+        return intervals()["collect"]  # same clamp as the scheduler's graph_collect job
     except (TypeError, ValueError):
         return 60
 
@@ -173,6 +173,11 @@ async def _evidence(key: str, fired_at: datetime | None = None) -> str:
                 f"Changes recorded more than {window} min after the incident time are not listed: a change made before "
                 "the incident is normally recorded within one collect, so they are unlikely causes unless the collector "
                 "was failing (check graph health).")
+        from backend.graph import freshness
+
+        warn = await asyncio.to_thread(freshness.note)
+        if warn:
+            lines.insert(1, warn)
         lines.append(f"Graph scope: {', '.join(ids)}")
         by_node = correlate.flags_by_node(await outcomes.open_flags(limit=1000))
         own = (flag or {}).get("id")

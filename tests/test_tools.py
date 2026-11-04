@@ -922,7 +922,9 @@ async def test_what_changed(graph_db):
     store.insert_change(now_iso(), "guest:207", "cores", "2", "4", "proxmox_api")
     store.insert_change(now_iso(), "host:pve", "status", None, "online", "manual")
     out = await f({"node": "CT 207"})
-    assert out.startswith("changes on guest:207 + 1 ancestor(s) since")
+    warn, head = out.split("\n")[:2]
+    assert warn.startswith("\u26a0 graph data may be incomplete (source:proxmox_api last succeeded never)")  # seeded "pve down"
+    assert head.startswith("changes on guest:207 + 1 ancestor(s) since")
     assert "guest:207 cores: 2 → 4 [proxmox_api]" in out and "host:pve status: ∅ → online [manual]" in out
     out = await f({"node": "guest:207", "include_ancestors": False})
     assert "host:pve" not in out and "cores" in out
@@ -935,7 +937,7 @@ async def test_what_changed(graph_db):
         store.insert_change(now_iso(), "guest:207", "tags", "x" * 400, "y" * 400, "proxmox_api")
     out = await f({"node": "guest:207", "include_ancestors": False})
     assert out.endswith("(more rows not shown; narrow 'since' for older rows)") and len(out) <= 1500
-    shown = out.splitlines()[1:-1]
+    shown = [ln for ln in out.splitlines() if ln[:4].isdigit()]  # row lines only (a freshness warning may lead)
     assert shown and all(ln.endswith("[proxmox_api]") for ln in shown)  # rows shown, none cut mid-line
     store.upsert_nodes([Node("guest:301", "guest", "twin"), Node("guest:302", "guest", "twin")], now_iso())
     assert "unavailable: ambiguous" in await f({"node": "twin"})
