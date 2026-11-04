@@ -84,10 +84,11 @@ def stale_rows(*, source: str, ts: str, node_ids: list[str], edges: list[tuple[s
     ]
 
 
-def removed_rows(*, source: str, ts: str, nodes, edges) -> list[dict]:
-    """Rows a prune deletes outright (manual source: no stale phase). nodes: (id, type) pairs. new=None = removed."""
+def removed_rows(*, source: str, ts: str, nodes, edges, edge_was: str = "active") -> list[dict]:
+    """Rows for things deleted outright: a manual prune (edge_was='active') or a stale purge (edge_was='stale').
+    nodes: (id, type) pairs. new=None = removed."""
     return [_row(ts, i, "node", t, None, source) for i, t in sorted(nodes)] + [
-        _row(ts, s, f"edge:{t}:{d}", "active", None, source) for s, d, t in sorted(edges)
+        _row(ts, s, f"edge:{t}:{d}", edge_was, None, source) for s, d, t in sorted(edges)
     ]
 
 

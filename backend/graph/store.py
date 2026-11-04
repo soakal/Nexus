@@ -250,6 +250,21 @@ def mark_stale(
     return sorted(n), sorted((r.src, r.dst, r.type) for r in e)
 
 
+def purge_stale(source: str, before_ts: str, conn: Connection) -> tuple[list[tuple[str, str]], list[tuple[str, str, str]]]:
+    """Delete this source's rows that are stale AND were last seen before `before_ts` (a destroyed guest, a
+    removed storage). Returns what was deleted: ([(node id, type)], [(src, dst, type)]). Deleting a node also
+    drops every edge touching it (store.delete_nodes)."""
+    p = {"s": source, "b": before_ts}
+    edges = [(r.src, r.dst, r.type) for r in conn.execute(text(
+        "SELECT src, dst, type FROM graphedge WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()]
+    if edges:
+        conn.execute(text("DELETE FROM graphedge WHERE source = :s AND status = 'stale' AND last_seen < :b"), p)
+    nodes = [(r.id, r.type) for r in conn.execute(text(
+        "SELECT id, type FROM graphnode WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()]
+    delete_nodes([i for i, _ in nodes], conn)
+    return sorted(nodes), sorted(edges)
+
+
 def insert_changes(rows: list[dict], conn: Connection | None = None) -> int:
     """rows: {ts, node_id, field, old, new, source}."""
     if not rows:

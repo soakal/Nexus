@@ -107,7 +107,7 @@ def _doctor() -> int:
             parts.append(f"{name} ok")
     line(sources_ok, "sources: " + " · ".join(parts))
     st = h["stale"]
-    line(not (st["nodes"] or st["edges"]), f"stale: nodes={st['nodes']} edges={st['edges']}")
+    line(not (st["nodes"] or st["edges"]), f"stale: nodes={st['nodes']} edges={st['edges']} (deleted after 7 days unseen)")
     ch = h["changes"]
     line(True, f"changes: rows={ch['rows']} oldest={ch['oldest'] or 'none'}")
     dang = store.dangling_edges() if h["dangling_edges"] else []
