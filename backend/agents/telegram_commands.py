@@ -445,19 +445,35 @@ def _format_date(iso_str: str | None) -> str:
         return "?"
 
 
+_FLAGS_PAGE = 50  # today's open_flags() default, so page 1 shows exactly what /flags always showed
+
+
 async def _cmd_flags(args: str, msg: dict) -> str:
     """Open + needs_follow_up + deferred-past-due flags — same shape as
     /goals and /tasks."""
     from backend.agents import outcomes
 
-    rows = await outcomes.open_flags()
-    if not rows:
-        return "No open flags."
-    return "\n".join(
-        f"#{r['id']} [{r['severity']}] {r['source']}:{r['check']} — "
-        f"{r['summary']} ({_format_age(r['created_at'])})"
-        for r in rows
-    )
+    try:
+        page = max(1, int((args or "").strip() or 1))
+    except ValueError:
+        page = 1
+    rows, total = await outcomes.open_flags_page(_FLAGS_PAGE, page)
+    unpaged = await outcomes.unpaged_grouped() if page == 1 else []
+    if not rows and not unpaged:
+        return "No open flags." if page == 1 else f"No more open flags (page {page})."
+    shown = {u["id"] for u in unpaged}
+    lines = []
+    if unpaged:  # G3b rule 3: always listed first, uncapped
+        lines.append(f"Grouped, not yet paged ({len(unpaged)}):")
+        lines += [f"#{u['id']} [{u['severity']}] {u['source']}:{u['check']} — {u['summary']} "
+                  f"({_format_age(u['created_at'])}){outcomes.group_suffix(u)}" for u in unpaged]
+    lines += [f"#{r['id']} [{r['severity']}] {r['source']}:{r['check']} — "
+              f"{r['summary']} ({_format_age(r['created_at'])}){outcomes.group_suffix(r)}"
+              for r in rows if r["id"] not in shown]
+    more = total - page * _FLAGS_PAGE
+    if more > 0:
+        lines.append(f"+{more} more — /flags {page + 1}")
+    return "\n".join(lines)
 
 
 async def _cmd_resolve(args: str, msg: dict) -> str:

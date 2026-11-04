@@ -63,6 +63,9 @@ def _flag_to_dict(f) -> dict:
         "last_surfaced_at": f.last_surfaced_at.isoformat() if f.last_surfaced_at else None,
         "created_at": f.created_at.isoformat() if f.created_at else None,
         "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+        "parent_flag_id": getattr(f, "parent_flag_id", None),
+        "released_from_parent_id": getattr(f, "released_from_parent_id", None),
+        "paged_at": f.paged_at.isoformat() if getattr(f, "paged_at", None) else None,
     }
 
 
@@ -252,8 +255,9 @@ def _db_clear_by_fingerprint(fingerprint: str, by: str) -> int:
         return count
 
 
-def _db_open_flags(limit: int, include_suppressed: bool = False) -> list[dict]:
-    """Open + needs_follow_up + deferred-past-due, newest first."""
+def _db_open_flags(limit: int, include_suppressed: bool = False, offset: int = 0, count: bool = False):
+    """Open + needs_follow_up + deferred-past-due, newest first. offset/count: /flags paging (count=True
+    returns (rows, total) so a '+N more' line is exact however many rows are open)."""
     from sqlmodel import Session, select
     from backend.database import OutcomeFlag, engine
 
@@ -267,7 +271,33 @@ def _db_open_flags(limit: int, include_suppressed: bool = False) -> list[dict]:
                 or (row.status == "deferred" and row.deferred_until is not None and row.deferred_until <= now))
             and (include_suppressed or not row.suppressed)
         ]
-        return [_flag_to_dict(row) for row in out[:limit]]
+        page = [_flag_to_dict(row) for row in out[offset:offset + limit]]
+        return (page, len(out)) if count else page
+
+
+def _db_unpaged_grouped() -> list[dict]:
+    """G3b rule 3: every open grouped/detached child whose current surfacing never paged. UNCAPPED, newest first:
+    whatever the digest caps, these are always listed (plan §6)."""
+    from sqlmodel import Session, select
+    from backend.database import OutcomeFlag, engine
+
+    with Session(engine) as session:
+        stmt = (select(OutcomeFlag)
+                .where((OutcomeFlag.parent_flag_id.is_not(None)) | (OutcomeFlag.released_from_parent_id.is_not(None)))  # type: ignore[union-attr]
+                .where(OutcomeFlag.status.in_(list(_ACTIVE_STATUSES)))  # type: ignore[attr-defined]
+                .where(OutcomeFlag.paged_at.is_(None))  # type: ignore[union-attr]
+                .where(OutcomeFlag.suppressed == False)  # noqa: E712
+                .order_by(OutcomeFlag.id.desc()))  # type: ignore[attr-defined]
+        return [_flag_to_dict(r) for r in session.exec(stmt).all()]
+
+
+def group_suffix(f: dict) -> str:
+    """' (under #N)' / ' (released from #N)' for a grouped row; '' otherwise (so ungrouped output is unchanged)."""
+    if f.get("parent_flag_id"):
+        return f" (under #{f['parent_flag_id']})"
+    if f.get("released_from_parent_id"):
+        return f" (released from #{f['released_from_parent_id']})"
+    return ""
 
 
 def _db_recently_closed(cutoff: datetime, limit: int) -> list[dict]:
@@ -804,6 +834,16 @@ async def clear_flag(source: str, check: str, *, by: str = "auto:condition_clear
 async def open_flags(limit: int = 50, *, include_suppressed: bool = False) -> list[dict]:
     """Open + needs_follow_up + deferred-past-due, newest first."""
     return await asyncio.to_thread(_db_open_flags, limit, include_suppressed)
+
+
+async def open_flags_page(limit: int, page: int = 1) -> tuple[list[dict], int]:
+    """(rows of page `page`, total open) — /flags paging."""
+    return await asyncio.to_thread(_db_open_flags, limit, False, max(0, page - 1) * limit, True)
+
+
+async def unpaged_grouped() -> list[dict]:
+    """See _db_unpaged_grouped. [] whenever nothing is grouped (always, with correlation off)."""
+    return await asyncio.to_thread(_db_unpaged_grouped)
 
 
 async def recently_closed(hours: int = 48, limit: int = 30) -> list[dict]:

@@ -408,14 +408,31 @@ async def _open_flags(_input: dict) -> str:
         from backend.agents import outcomes
         flags = await outcomes.open_flags()
         flags = [f for f in flags if isinstance(f, dict)]
-        if not flags:
+        unpaged = [u for u in await outcomes.unpaged_grouped() if isinstance(u, dict)]
+        if not flags and not unpaged:
             return "No open flags."
-        lines = [
-            f"#{f.get('id')} [{f.get('severity') or 'medium'}] "
-            f"{f.get('source') or '?'}:{f.get('check') or '?'} — {f.get('summary') or ''}"
-            for f in flags
-        ]
-        return _truncate("\n".join(lines))
+
+        def line(f):
+            return (f"#{f.get('id')} [{f.get('severity') or 'medium'}] "
+                    f"{f.get('source') or '?'}:{f.get('check') or '?'} — {f.get('summary') or ''}{outcomes.group_suffix(f)}")
+
+        if not unpaged:
+            return _truncate("\n".join(line(f) for f in flags))
+        # G3b rule 3: unpaged grouped children first, budgeted so their count always survives the 1500-char cap
+        head = f"grouped, not yet paged: {len(unpaged)}"
+        out = head
+        n = 0
+        for u in unpaged:
+            nxt = "\n" + line(u)
+            if len(out) + len(nxt) + 60 > MAX_TOOL_RESULT_CHARS:
+                break
+            out += nxt
+            n += 1
+        if n < len(unpaged):
+            out += f"\n+{len(unpaged) - n} unpaged not shown — /flags"
+        shown = {u.get("id") for u in unpaged}
+        rest = "\n".join(line(f) for f in flags if f.get("id") not in shown)
+        return _truncate(out + ("\n" + rest if rest else ""))
     except Exception as e:
         return _truncate(f"open_flags unavailable: {e}")
 

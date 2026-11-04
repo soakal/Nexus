@@ -523,7 +523,8 @@ async def test_cmd_unmute_reports_kind_was_not_muted():
 
 @pytest.mark.asyncio
 async def test_cmd_flags_no_open_flags():
-    with patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=[]):
+    with patch("backend.agents.outcomes.open_flags_page", new_callable=AsyncMock, return_value=([], 0)), \
+         patch("backend.agents.outcomes.unpaged_grouped", new_callable=AsyncMock, return_value=[]):
         reply = await telegram_commands._cmd_flags("", _msg("/flags"))
     assert reply == "No open flags."
 
@@ -565,10 +566,12 @@ async def test_cmd_flags_lists_each_flag_with_pinned_format():
             "created_at": None,
         },
     ]
-    with patch("backend.agents.outcomes.open_flags", new_callable=AsyncMock, return_value=rows):
+    with patch("backend.agents.outcomes.open_flags_page", new_callable=AsyncMock, return_value=(rows, 2)), \
+         patch("backend.agents.outcomes.unpaged_grouped", new_callable=AsyncMock, return_value=[]):
         reply = await telegram_commands._cmd_flags("", _msg("/flags"))
 
     lines = reply.split("\n")
+    assert "more —" not in reply  # 2 open, all shown: no footer
     assert "#7" in reply
     assert "#3" in reply
     assert "Garage door left open 2h" in reply
@@ -899,3 +902,28 @@ async def test_cmd_reminders_cancel_bad_id_no_broker_call():
         reply = await telegram_commands._cmd_reminders("cancel abc", _msg("/reminders cancel abc"))
     assert "usage" in reply.lower()
     mock_cancel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_flags_paging_and_unpaged_grouped_first():
+    """G3b rule 3: unpaged grouped children are listed first on page 1; '+N more — /flags 2' is exact."""
+    from datetime import datetime
+
+    now_iso = datetime.utcnow().isoformat()
+    row = lambda i, **kw: {"id": i, "severity": "low", "source": "vault_signals", "check": f"c{i}", "summary": f"s{i}",
+                           "created_at": now_iso, **kw}
+    page1 = [row(i) for i in range(200, 150, -1)]
+    unpaged = [row(5, source="homelab_watch", check="docker:demo-app", parent_flag_id=4)]
+    with patch("backend.agents.outcomes.open_flags_page", new_callable=AsyncMock, return_value=(page1, 120)) as pg, \
+         patch("backend.agents.outcomes.unpaged_grouped", new_callable=AsyncMock, return_value=unpaged):
+        reply = await telegram_commands._cmd_flags("", _msg("/flags"))
+    lines = reply.split("\n")
+    assert lines[0] == "Grouped, not yet paged (1):" and lines[1].endswith("(under #4)")
+    assert lines[-1] == "+70 more — /flags 2"
+    pg.assert_awaited_with(telegram_commands._FLAGS_PAGE, 1)
+    with patch("backend.agents.outcomes.open_flags_page", new_callable=AsyncMock, return_value=([row(1)], 120)) as pg, \
+         patch("backend.agents.outcomes.unpaged_grouped", new_callable=AsyncMock, return_value=unpaged) as up:
+        reply = await telegram_commands._cmd_flags("3", _msg("/flags 3"))
+    pg.assert_awaited_with(telegram_commands._FLAGS_PAGE, 3)
+    up.assert_not_awaited()
+    assert "Grouped" not in reply and "more" not in reply
