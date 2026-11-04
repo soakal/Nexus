@@ -91,30 +91,37 @@ async def run_presend(fn: Callable, *args, deadline: float, on_late: Callable[[A
     budget, admission refusal, submit failure, timeout or error. On timeout/error after submission the
     token is abandoned and `on_late(result)` runs once the worker really returns (concurrent future)."""
     remaining = deadline - time.monotonic()
+    token = AbandonToken()  # built before admission: nothing between admit and submit can raise and leak a slot
     if remaining <= 0 or not _admit():
         raise FailOpen("budget expired or admission refused")
-    token = AbandonToken()
     try:
         cf: Future = _POOL.submit(fn, *args, token)
-    except Exception as e:  # shutdown, interpreter teardown
+    except BaseException as e:  # shutdown, interpreter teardown
         _release()
-        raise FailOpen(f"submit failed: {e}") from e
+        raise FailOpen(f"submit failed: {e!r}") from e
     cf.add_done_callback(_release)
-    try:
-        return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(cf)), timeout=remaining)
-    except Exception as e:
+
+    def _abandon() -> None:
         token.abandon()
         if on_late is not None:
             def _late(f: Future) -> None:
                 try:
                     res = f.result()
-                except Exception:
-                    return  # the worker failed: it committed nothing
+                except BaseException:
+                    return  # the worker failed or was cancelled before running: it committed nothing
                 try:
                     on_late(res)
                 except Exception as ex:
                     logger.warning(f"g3b late-completion handler failed: {ex}")
             cf.add_done_callback(_late)
+
+    try:
+        return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(cf)), timeout=remaining)
+    except asyncio.CancelledError:
+        _abandon()  # the caller went away: the worker may still commit, so compensate after it returns
+        raise
+    except Exception as e:
+        _abandon()
         raise FailOpen(f"pre-send work did not finish: {e!r}") from e
 
 

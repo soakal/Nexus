@@ -234,7 +234,7 @@ def _db_update_flag(flag_id: int, **fields) -> dict | None:
         return _flag_to_dict(row)
 
 
-def _db_clear_by_fingerprint(fingerprint: str, by: str) -> int:
+def _db_clear_by_fingerprint(fingerprint: str, by: str, cleared_ids: list | None = None) -> int:
     """Auto-resolve every still-active (open|needs_follow_up) row for this
     fingerprint. Returns the count of rows resolved."""
     from sqlmodel import Session, select
@@ -257,6 +257,8 @@ def _db_clear_by_fingerprint(fingerprint: str, by: str) -> int:
             row.updated_at = now
             session.add(row)
             count += 1
+            if cleared_ids is not None:
+                cleared_ids.append(row.id)
         if count:
             session.commit()
         return count
@@ -523,23 +525,38 @@ async def _maybe_group(flag_id: int, source: str, check: str, deadline: float) -
     return res["parent"] if res else None
 
 
+def _corr_enabled() -> bool:
+    """correlate.enabled() that can never raise into a page path (any error = OFF = today's behaviour)."""
+    try:
+        from backend.graph import correlate
+        return correlate.enabled()
+    except Exception:
+        return False
+
+
 def is_grouped(d: dict) -> bool:
     """record_flag_ex result says the row was grouped under a parent: the caller must not page it and must not
-    count it as a fresh incident (no incident_diag, no proposer tick) — the parent's page covers it."""
-    return str(d.get("reason") or "").startswith("grouped:")
+    count it as a fresh incident (no incident_diag, no proposer tick) — the parent's page covers it.
+    A plain string check; never raises."""
+    try:
+        return str(d.get("reason") or "").startswith("grouped:")
+    except Exception:
+        return False
 
 
 def coord_kwargs(d: dict, source: str, check: str) -> dict:
     """notify_phone kwargs for a coordinated first page (plan §5.3.1). PURE: settings + string logic, no DB.
     {} when correlation is off, the tracker gave no id/surfacing, or the row can never be grouped/adopt —
     so with correlation off every call site passes exactly today's arguments."""
-    from backend.graph import correlate
-
-    if not correlate.enabled() or not d.get("id") or d.get("surfacing") is None:
-        return {}
-    if correlate.node_for_flag(source, check) is None and (source, check) not in correlate.PARENT_CHECKS:
-        return {}
-    return {"flag_id": d["id"], "flag_surfacing": d["surfacing"], "flag_deadline": d.get("presend_deadline")}
+    try:
+        if not _corr_enabled() or not d.get("id") or d.get("surfacing") is None:
+            return {}
+        from backend.graph import correlate
+        if correlate.node_for_flag(source, check) is None and (source, check) not in correlate.PARENT_CHECKS:
+            return {}
+        return {"flag_id": d["id"], "flag_surfacing": d["surfacing"], "flag_deadline": d.get("presend_deadline")}
+    except Exception:
+        return {}  # a coordination error must never change today's page
 
 
 async def record_flag_ex(
@@ -586,8 +603,7 @@ async def record_flag_ex(
 
         fingerprint = f"{source}:{check}"
         now = datetime.utcnow()
-        from backend.graph import correlate
-        corr = correlate.enabled()  # in-memory; False -> everything below is exactly the pre-G3b path
+        corr = _corr_enabled()  # in-memory, never raises; False -> everything below is exactly the pre-G3b path
         deadline = None
         if corr:
             from backend.agents import g3b
@@ -789,7 +805,7 @@ async def resolve_flag(
     if updated is None:
         return "not_found"
 
-    await _release_children_of(row)
+    _release_children_of(row.get("source"), row.get("check"), [flag_id])
 
     if status == "resolved":
         try:
@@ -821,26 +837,38 @@ async def resolve_flag(
     return status
 
 
-async def _release_children_of(row: dict | None) -> None:
-    """G3b: a closing (or parked) parent releases its grouped children now (plan §5.4). Best effort; the 60 s
-    tick is the guarantee. A non-parent row returns before any DB work."""
+_release_tasks: set = set()  # strong refs: asyncio.create_task holds only a weak one
+
+
+def _release_children_of(source: str, check: str, parent_ids) -> None:
+    """G3b: a closing (or parked) parent releases its grouped children soon (plan §5.4). NEVER awaited by the
+    caller — scheduled as a background task, scoped to those parents — and skipped entirely with correlation
+    off (the 60 s retry_deliveries tick releases any leftovers). Never raises, never delays the caller."""
     try:
+        if not _corr_enabled():
+            return
         from backend.graph import correlate
-        if not row or (row.get("source"), row.get("check")) not in correlate.PARENT_CHECKS:
+        if (source, check) not in correlate.PARENT_CHECKS:
             return
         from backend.agents import release
-        await release.release_due(row.get("id"))
+        for pid in parent_ids or ():
+            t = asyncio.get_running_loop().create_task(release.release_due(pid))
+            _release_tasks.add(t)
+            t.add_done_callback(_release_tasks.discard)
     except Exception as e:
-        logger.warning(f"release of grouped children failed (tick will retry): {e}")
+        logger.warning(f"release of grouped children not scheduled (tick will retry): {e}")
 
 
 async def clear_flag(source: str, check: str, *, by: str = "auto:condition_cleared") -> int:
     """Auto-resolve any open/needs_follow_up flag matching this fingerprint.
     Returns the count resolved (0 if none were open)."""
     fingerprint = f"{source}:{check}"
-    n = await asyncio.to_thread(_db_clear_by_fingerprint, fingerprint, by)
+    if not _corr_enabled():
+        return await asyncio.to_thread(_db_clear_by_fingerprint, fingerprint, by)  # exactly today's call
+    ids: list[int] = []
+    n = await asyncio.to_thread(_db_clear_by_fingerprint, fingerprint, by, ids)
     if n:
-        await _release_children_of({"source": source, "check": check, "id": None})
+        _release_children_of(source, check, ids)
     return n
 
 
