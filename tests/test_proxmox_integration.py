@@ -219,7 +219,8 @@ async def test_fetch_backups_picks_newest_ok():
         from backend.integrations.proxmox import fetch_backups
         result = await fetch_backups()
 
-    assert result == {"node": "pve", "status": "ok", "detail": "OK", "endtime": 400}
+    assert result == {"node": "pve", "status": "ok", "detail": "OK", "endtime": 400,
+                      "starttime": "1970-01-01T00:05:00"}  # epoch 300 s as naive UTC
 
 
 @pytest.mark.asyncio

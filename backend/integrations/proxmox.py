@@ -1,6 +1,7 @@
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import httpx
 
@@ -236,6 +237,11 @@ async def fetch_backups() -> dict:
         "status": status,
         "detail": raw_status or "",
         "endtime": latest.get("endtime") or latest.get("starttime"),
+        # G3a: the job START is the incident time incident_diag scopes change evidence to (UTC, naive ISO)
+        "starttime": (
+            datetime.fromtimestamp(int(latest["starttime"]), UTC).replace(tzinfo=None).isoformat()
+            if latest.get("starttime") else None
+        ),
     }
 
 

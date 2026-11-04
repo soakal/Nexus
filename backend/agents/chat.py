@@ -531,7 +531,7 @@ MAIL = a question about the user's own email/inbox — "any new email?", "unread
 MAIL_SEND = an imperative to send/compose an email — "email X saying ...", "send an email to X about ...", "reply to X and tell them ...".
 CALENDAR = a question about the user's own calendar, schedule, or appointments — "when is my dr appointment?", "what's on my calendar today?", "what do I have this week?", "when is my next meeting?", "am I free Friday?". Reading the calendar only, never creating or changing an event.
 VAULT = a question answerable from the user's PERSONAL notes/vault ("the Brain") — their own history, family, pets, health, projects, past decisions ("when did Charlee start medication?", "what do my notes say about X", "pull up my note on Y", "read the Charlee health report", "search my vault for X", "find X in my brain"). Reading only, never saving — saving new content is NOTE.
-TOPOLOGY = a question about how the homelab fits together — what runs on / where something runs, what X depends on or what depends on X, what breaks if X goes down, whether a guest/VM/CT/container is backed up and where, which storage/host something uses ("what runs on CT 209?", "what depends on Unraid?", "is Immich backed up?", "what breaks if the NAS goes down?"). Not for live status/health numbers (that is CHAT/STATUS)."""
+TOPOLOGY = a question about how the homelab fits together — what runs on / where something runs, what X depends on or what depends on X, what breaks if X goes down, whether a guest/VM/CT/container is backed up and where, which storage/host something uses, or what changed on a system recently ("what runs on CT 209?", "what depends on Unraid?", "is Immich backed up?", "what breaks if the NAS goes down?", "what changed on nexus today?"). Not for live status/health numbers (that is CHAT/STATUS)."""
 
         # Fast-path: /status command bypasses haiku classify
         _msg_stripped = user_message.strip()
@@ -725,7 +725,7 @@ TOPOLOGY = a question about how the homelab fits together — what runs on / whe
                 from backend.agents.router import SONNET_MODEL, run_with_tools
                 from backend.agents.tools import READ_TOOLS
 
-                _topo_names = ("graph_topology", "vault_search", "vault_read_note")
+                _topo_names = ("graph_topology", "what_changed", "vault_search", "vault_read_note")
                 _topo_tools = [t for t in READ_TOOLS if t.name in _topo_names]
                 topo_system = (
                     "You are Carl, answering a question about how the user's homelab fits together. "
@@ -735,7 +735,9 @@ TOPOLOGY = a question about how the homelab fits together — what runs on / whe
                     "needed (what depends on X vs what X depends on). Cite the edge sources the tool "
                     "reports. If the tool says 'unavailable: graph disabled' or shows a source "
                     "warning, say so plainly. Use vault_search/vault_read_note only for extra "
-                    "context from notes. Never invent hosts or services the tool did not return."
+                    "context from notes. For 'what changed' / 'what's different since' questions call "
+                    "what_changed (UTC times; only tracked fields are recorded, so 'none recorded' is not proof "
+                    "nothing changed). Never invent hosts or services the tool did not return."
                 )
                 topo_prompt = (
                     f"Conversation so far:\n{transcript}\n\nUser: {user_message}" if transcript

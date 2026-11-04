@@ -11,7 +11,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from backend.graph import INFRA_TYPES, now_iso, store, vault_index
+from backend.graph import INFRA_TYPES, changes, now_iso, store, vault_index
 from backend.graph.store import Edge, Node
 
 logger = logging.getLogger(__name__)
@@ -62,12 +62,25 @@ def storage_for_volume(volume: str, storages: set[str]) -> str | None:
     return sid if sid in storages else None
 
 
+def _running_sha() -> str | None:
+    try:
+        from backend import version
+
+        return version.running_sha()
+    except Exception:
+        return None
+
+
 def build(prox, configs, storages, backup_jobs, containers, targets, manual) -> tuple[list[Node], list[Edge]]:
     man_nodes, man_edges = manual
     nodes: dict[str, Node] = {}
     edges: list[Edge] = []
     for n in man_nodes:
         nodes[n.id] = n
+    sha = _running_sha()
+    if sha and "service:nexus" in nodes:  # G3a: a deploy shows up in what_changed
+        n = nodes["service:nexus"]
+        nodes[n.id] = Node(n.id, n.type, n.name, n.aliases, {**(n.attrs or {}), "sha": sha}, n.source)
     host_ips = {n.attrs["ip"]: n.id for n in man_nodes if n.type == "host" and n.attrs and n.attrs.get("ip")}
 
     if prox is not None and configs is not None and storages is not None and backup_jobs is not None:
@@ -127,14 +140,31 @@ def build(prox, configs, storages, backup_jobs, containers, targets, manual) -> 
     return list(nodes.values()), edges + man_edges
 
 
+def _diff(src, nodes, edges, seen_at, conn) -> list[dict]:
+    """Read this source's stored rows BEFORE its upsert (plan g3/plan-v2 §4.1)."""
+    return changes.diff_source(
+        source=src, ts=seen_at,
+        new_nodes=[n for n in nodes if n.source == src], new_edges=[e for e in edges if e.source == src],
+        stored_nodes=store.list_nodes(source=src, conn=conn),
+        stored_edges=store.edge_keys(source=src, status=None, conn=conn),
+    )
+
+
 def _db_write(manual, nodes, edges, ok_sources, failed, all_ok, seen_at, t0) -> dict:
     pruned = 0
+    n_changes = 0
     with store.batch() as conn:
         for src in ok_sources:
+            rows = _diff(src, nodes, edges, seen_at, conn)
             g = store.bump_generation(src, conn)
             store.upsert_nodes([n for n in nodes if n.source == src], seen_at, conn, gen=g)
             store.upsert_edges([e for e in edges if e.source == src], seen_at, conn, gen=g)
-            store.mark_stale(src, g - STALE_CYCLES, conn)
+            gone_nodes, gone_edges = store.mark_stale(src, g - STALE_CYCLES, conn)
+            rows += changes.stale_rows(source=src, ts=seen_at, node_ids=gone_nodes, edges=gone_edges)
+            n_changes += changes.record(conn, seen_at, rows)
+        # manual rows are diffed every run (never staled; prunes below are not recorded), so a sha bump is
+        # caught even on a tick where another source failed
+        n_changes += changes.record(conn, seen_at, _diff("manual", nodes, edges, seen_at, conn))
         store.upsert_nodes([n for n in nodes if n.source == "manual"], seen_at, conn)
         store.upsert_edges([e for e in edges if e.source == "manual"], seen_at, conn)
         if all_ok:
@@ -149,7 +179,7 @@ def _db_write(manual, nodes, edges, ok_sources, failed, all_ok, seen_at, t0) -> 
             store.record_job(f"source:{src}", ok=True, at=seen_at, conn=conn)
         for src, err in failed.items():
             store.record_job(f"source:{src}", ok=False, error=err, at=seen_at, conn=conn)
-        stats = {"nodes": len(nodes), "edges": len(edges), "pruned_manual": pruned, "seconds": round(time.monotonic() - t0, 3)}
+        stats = {"nodes": len(nodes), "edges": len(edges), "pruned_manual": pruned, "changes": n_changes, "seconds": round(time.monotonic() - t0, 3)}
         store.record_job("collect", ok=True, stats=stats, at=seen_at, conn=conn)
     return stats
 

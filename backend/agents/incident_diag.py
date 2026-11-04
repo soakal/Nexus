@@ -28,8 +28,9 @@ is cheap and acceptable.
 
 import asyncio
 import html
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,9 @@ _SYSTEM = (
     "open outcome flags). Then reply with: (1) most likely cause, one "
     "sentence; (2) evidence, max 3 bullets; (3) recommended action, one "
     "line. Under 120 words total. If evidence is inconclusive, say so "
-    "plainly — never invent a cause."
+    "plainly — never invent a cause. When an EVIDENCE block is given, "
+    "anything that changed after the incident time it states cannot be "
+    "the cause — never blame a change made after the incident."
 )
 
 
@@ -83,6 +86,69 @@ def _user_prompt(key: str) -> str:
     return f"Alert: {key}. Investigate and diagnose."
 
 
+_EVIDENCE_ROWS = 20
+
+
+def _incident_at(key: str, flag: dict | None) -> tuple[str, str]:
+    """(naive-UTC ISO, label). vzdump: the failing job's START, not when NEXUS noticed it."""
+    from backend.graph import now_iso, to_utc_iso
+
+    if key == "vzdump_failed" and flag and flag.get("detail"):
+        try:
+            st = json.loads(flag["detail"]).get("starttime")
+            if st:
+                return to_utc_iso(st), "job start"
+        except (ValueError, TypeError, AttributeError):
+            pass
+    if flag and flag.get("created_at"):
+        return to_utc_iso(flag["created_at"]), "alert raised"
+    return now_iso(), "now"
+
+
+async def _evidence(key: str) -> str:
+    """Deterministic graph facts for the prompt (G3a). "" when the graph is off or knows nothing. Never raises."""
+    try:
+        from backend.agents import outcomes
+        from backend.graph import correlate, enabled, store, to_utc_iso
+
+        if not enabled():
+            return ""
+        node = correlate.node_for_flag("homelab_watch", key)
+        if node is None:
+            return ""
+        flag = await asyncio.to_thread(outcomes._db_find_active_by_fingerprint, f"homelab_watch:{key}")
+        at, label = _incident_at(key, flag)
+        ids = [node] + [i for i, _ in await asyncio.to_thread(store.ancestors, node, 3)]
+        if key == "vzdump_failed":
+            # the job backs up every guest on the host, so the guests' own changes are in scope too
+            ids += [i for i, _ in await asyncio.to_thread(store.descendants, node, 1)]
+        since = to_utc_iso(datetime.fromisoformat(at) - timedelta(hours=24))
+        rows = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, before=at, limit=_EVIDENCE_ROWS))
+        by_node = correlate.flags_by_node(await outcomes.open_flags(limit=1000))
+        own = (flag or {}).get("id")
+        others = [f for i in ids for f in by_node.get(i, []) if f.get("id") != own]
+        docs = await asyncio.to_thread(store.documents_for, ids)
+        lines = [
+            "EVIDENCE (deterministic, from the knowledge graph)",
+            f"Incident at {at}Z UTC ({label}). Tracked changes in the 24 h BEFORE it \u2014 anything that changed "
+            "after this time cannot be the cause:",
+        ]
+        lines += [f"- {r['ts']}Z {r['node_id']} {r['field']}: {r['old']} -> {r['new']} [{r['source']}]" for r in rows] or [
+            "- none recorded (only tracked fields are recorded; this is not proof nothing changed)"]
+        if len(rows) >= _EVIDENCE_ROWS:
+            lines.append(f"- (showing newest {_EVIDENCE_ROWS})")
+        lines.append(f"Graph scope: {', '.join(ids)}")
+        if others:
+            lines.append("Other open flags in scope: " + "; ".join(f"#{f['id']} {f['source']}:{f['check']}" for f in others[:10]))
+        notes = sorted({n for v in docs.values() for n in v})
+        if notes:
+            lines.append("Runbook notes: " + ", ".join(notes[:10]))
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"incident_diag: evidence block failed for {key} (ignored): {e}")
+        return ""
+
+
 async def diagnose(key: str) -> None:
     """Run one read-only investigation for `key` and page the diagnosis.
     Never raises — the caller (maybe_diagnose) fires this as a background
@@ -93,10 +159,11 @@ async def diagnose(key: str) -> None:
         from backend import events
 
         s = get_settings()
+        evidence = await _evidence(key)
         text = await router.run_with_tools(
             s.orchestrator_executor_model,
             1500,
-            _user_prompt(key),
+            f"{evidence}\n\n{_user_prompt(key)}" if evidence else _user_prompt(key),
             system=_SYSTEM,
             tool_specs=tools.tool_specs(),
             dispatch=tools.dispatcher_map(),

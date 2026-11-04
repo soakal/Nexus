@@ -510,7 +510,7 @@ def test_dispatcher_map_keys_match_registry():
         "adguard_status", "channels_status", "weather", "github_status",
         "proxmox_updates", "proxmox_backups", "vault_search", "vault_read_note", "ddg_search",
         "protonmail_inbox", "protonmail_read_email", "protonmail_status",
-        "open_flags", "graph_topology",
+        "open_flags", "graph_topology", "what_changed",
     }
     assert set(dmap.keys()) == expected
     # ITEM 5: the local DuckDuckGo tool was renamed to avoid colliding with the
@@ -901,3 +901,37 @@ async def test_graph_topology_renders(graph_db):
     assert "! source proxmox_api unavailable" in out
     assert "\u2191 1\u00b7host:pve" in out and "\u2193 1\u00b7service:nexus" in out
     assert "notes: note:wiki/Nexus" in out
+
+
+# ---------------------------------------------------------------------------
+# what_changed (G3a)
+# ---------------------------------------------------------------------------
+
+async def test_what_changed(graph_db):
+    from backend.agents.tools import READ_TOOLS, dispatcher_map
+    from backend.graph import now_iso, store
+
+    assert "what_changed" in {t.name for t in READ_TOOLS}
+    f = dispatcher_map()["what_changed"]
+    assert "unavailable: missing 'node'" in await f({})
+    assert "unavailable: unknown node" in await f({"node": "nope"})
+    _seed_graph()
+    assert "unavailable: bad 'since'" in await f({"node": "CT 207", "since": "soon"})
+    assert ": none recorded" in await f({"node": "CT 207"})
+    store.insert_change(now_iso(), "guest:207", "cores", "2", "4", "proxmox_api")
+    store.insert_change(now_iso(), "host:pve", "status", None, "online", "manual")
+    out = await f({"node": "CT 207"})
+    assert out.startswith("changes on guest:207 + 1 ancestor(s) since")
+    assert "guest:207 cores: 2 → 4 [proxmox_api]" in out and "host:pve status: ∅ → online [manual]" in out
+    out = await f({"node": "guest:207", "include_ancestors": False})
+    assert "host:pve" not in out and "cores" in out
+    assert ": none recorded" in await f({"node": "guest:207", "since": "2099-01-01T00:00:00"})
+
+
+async def test_what_changed_disabled(graph_db, monkeypatch):
+    import backend.config as config_mod
+    from backend.agents.tools import dispatcher_map
+
+    monkeypatch.setenv("GRAPH_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    assert "unavailable: graph disabled" in await dispatcher_map()["what_changed"]({"node": "x"})

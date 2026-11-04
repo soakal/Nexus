@@ -48,8 +48,8 @@ callers, for reference when adding a new one:
   (`vault_search`, `vault_read_note`) rather than the full registry, so a vault
   question can't wander into unrelated tool calls.
 - `chat.py`'s TOPOLOGY branch (2026-10-31, PR #183) — same shape as VAULT, scoped to
-  `graph_topology` + `vault_search` + `vault_read_note`, label `chat_topology`, for
-  "what runs on / depends on / is X backed up" questions.
+  `graph_topology` + `what_changed` (G3a, 2026-11-03) + `vault_search` + `vault_read_note`,
+  label `chat_topology`, for "what runs on / depends on / is X backed up / what changed on X" questions.
 
 Adding a new lane that needs tools = add the intent to the classifier prompt
 (`chat.py:425-441`) and the whitelist (`chat.py:467`), add an `elif intent == "X":`

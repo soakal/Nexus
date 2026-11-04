@@ -490,6 +490,49 @@ async def _graph_topology(input: dict) -> str:
         return _truncate(f"graph_topology unavailable: {e}")
 
 
+_WHAT_CHANGED_SCHEMA = {"type": "object", "properties": {
+    "node": {"type": "string", "description": "graph node id ('guest:209', 'service:nexus', 'container:plex') or a name/alias ('CT 209')"},
+    "since": {"type": "string", "description": "window: '24h', '7d', '30m', or an ISO time (default 24h)"},
+    "include_ancestors": {"type": "boolean", "description": "also list changes on what this runs on / depends on, up to 3 hops (default true)"}},
+    "required": ["node"]}
+
+
+async def _what_changed(input: dict) -> str:
+    try:
+        node = str((input or {}).get("node") or "").strip()
+        if not node:
+            return "what_changed unavailable: missing 'node'"
+        from backend.graph import enabled, store, to_utc_iso
+        if not enabled():
+            return "what_changed unavailable: graph disabled"
+        try:
+            since = to_utc_iso(str((input or {}).get("since") or "24h"))
+        except ValueError:
+            return "what_changed unavailable: bad 'since' (use 24h / 7d / 30m or an ISO time)"
+        found = await asyncio.to_thread(store.resolve_node, node)
+        if not found:
+            return "what_changed unavailable: unknown node"
+        if len(found) > 1:
+            return "what_changed unavailable: ambiguous \u2014 " + "; ".join(n["id"] for n in found)
+        nid = found[0]["id"]
+        ids = [nid]
+        if (input or {}).get("include_ancestors", True) is not False:
+            ids += [i for i, _ in await asyncio.to_thread(store.ancestors, nid, 3)]
+        rows = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, limit=50))
+        head = f"changes on {nid}" + (f" + {len(ids) - 1} ancestor(s)" if len(ids) > 1 else "") + f" since {since}Z (UTC)"
+        if not rows:
+            return head + ": none recorded"
+        def v(x):
+            return "\u2205" if x is None else x
+
+        lines = [head + ":"] + [
+            f"{r['ts']}Z {r['node_id']} {r['field']}: {v(r['old'])} \u2192 {v(r['new'])} [{r['source']}]" for r in rows
+        ]
+        return _truncate("\n".join(lines))
+    except Exception as e:
+        return _truncate(f"what_changed unavailable: {e}")
+
+
 READ_TOOLS: list[ReadTool] = [
     ReadTool(
         name="homeassistant_status",
@@ -592,6 +635,12 @@ READ_TOOLS: list[ReadTool] = [
         description="Homelab dependency map from the knowledge graph: what a VM/LXC/container/service/storage runs on and depends on, what depends on it, open flags on each, and runbook notes that document it. Prefer an id ('guest:209') or 'CT 209' over a bare name \u2014 'immich' matches both the service and the guest. READ ONLY.",
         input_schema=_GRAPH_TOPOLOGY_SCHEMA,
         dispatch=_graph_topology,
+    ),
+    ReadTool(
+        name="what_changed",
+        description="Recorded changes from the knowledge graph for a homelab node and (by default) what it runs on: guest status/cores/memory/volumes/IP/tags, container state, storage settings, NEXUS deploys (sha), dependency edges appearing or going stale, vault note title/status edits. Newest first, UTC. Use for 'what changed on X before it broke'. Only tracked fields are recorded \u2014 'none recorded' is not proof nothing changed. READ ONLY.",
+        input_schema=_WHAT_CHANGED_SCHEMA,
+        dispatch=_what_changed,
     ),
     ReadTool(
         # Renamed from "web_search" to avoid colliding with Anthropic's HOSTED

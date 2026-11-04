@@ -17,6 +17,24 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**Knowledge graph G3a — change recording + `what_changed` + incident evidence (2026-11-03)** — plan
+`g3/plan-v2.md` §4 (outside the repo). New `backend/graph/changes.py`: every `collect()`/vault `refresh()`
+diffs each source's new snapshot against the stored rows **of that source only** and writes `graphchange`
+rows for a strict allowlist (`changes.TRACKED`: guest status/onboot/cores/memory/tags/hookscript/volumes/
+net.ip, storage plugintype/server/disabled, container state, `service:nexus.sha`, note title/status/
+category; edges appearing/going stale/reappearing). A node/edge missing from one snapshot writes nothing —
+disappearance is recorded only when `store.mark_stale` actually flips it (it now `RETURNING`s the rows).
+First run / empty source records nothing; `MAX_PER_RUN=500` + one `truncated` row. Manual rows are diffed
+every run (so a deploy's sha row lands even on a tick where Proxmox failed); manual prunes are not recorded.
+Read side: `what_changed` read tool (also in chat's TOPOLOGY lane), `GET /api/graph/changes`, `POST
+/api/graph/changes` (full key; existing nodes only — 404 on an unknown machine, never creates nodes;
+collector source names reserved). All timestamps go through `graph.to_utc_iso` (naive UTC). `incident_diag`
+now prepends a deterministic `EVIDENCE` block (graph changes in the 24 h strictly BEFORE the incident — for
+`vzdump_failed` the failing job's start, carried as `starttime` in the flag `detail` — plus open flags and
+runbook notes in scope) after the 2026-11-01 diagnosis blamed a VM destroyed the morning after the failed
+job. 180-day prune in the nightly retention job. No schema change, no new scheduler job, no paging change;
+gated by the existing `GRAPH_ENABLED`. G3b (alert grouping) is planned separately and not built.
+
 **Quill digest schedule (2026-10-18)** — new job `capture_digest_personal_morning` (07:00, "Personal morning check":
 open tasks due today/overdue OR captured/resurfaced since yesterday's scheduled afternoon digest, fresh first). Personal
 afternoon digest moved 18:00 -> 16:30 ("Personal afternoon review"); work digest is `capture_digest_work_days` (default mon-fri).
