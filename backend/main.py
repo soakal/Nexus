@@ -237,6 +237,15 @@ async def lifespan(app: FastAPI):
             from backend.agents.worker_pool import get_pool
             await get_pool().start()
 
+            # G3b: release any grouped children whose parent closed while we were down (never blocks boot).
+            try:
+                from backend.agents import g3b as _g3b
+                _g3b.restart()
+                from backend.agents import release as _g3b_release
+                _g3b_release._boot_task = asyncio.create_task(_g3b_release.release_due())  # strong ref (create_task holds a weak one)
+            except Exception:
+                pass
+
             # Telegram inbound poller (goal/safety button callbacks) — a pure
             # async task, not a thread (see telegram_poller's module docstring).
             # Returns None (no-op) when disabled or TELEGRAM_BOT_TOKEN is unset,
@@ -290,6 +299,11 @@ async def lifespan(app: FastAPI):
         from backend.scheduler import scheduler
         if scheduler.running:
             scheduler.shutdown()
+    except Exception:
+        pass
+    try:
+        from backend.agents import g3b
+        g3b.shutdown()
     except Exception:
         pass
     try:

@@ -118,6 +118,16 @@ async def run_presend(fn: Callable, *args, deadline: float, on_late: Callable[[A
         raise FailOpen(f"pre-send work did not finish: {e!r}") from e
 
 
+def restart() -> None:
+    """App startup (and tests sharing one process): a fresh pool, admission open."""
+    global _POOL, _shutting_down, _inflight
+    with _inflight_lock:
+        if _shutting_down:
+            _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="g3b")
+        _shutting_down = False
+        _inflight = 0
+
+
 def shutdown() -> None:
     """Lifespan shutdown: refuse new pre-send work and drop queued jobs (never waits)."""
     global _shutting_down

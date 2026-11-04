@@ -26,6 +26,7 @@ def db(tmp_path, monkeypatch):
                         Node("guest:150", "guest", "lab-vm", source="proxmox_api")], now_iso())
     store.upsert_edges([Edge("container:demo-app", "host:unraid", "runs_on", "unraid_api")], now_iso())
     store.record_job("collect", ok=True, at=now_iso())
+    g3b.restart()  # another test file's app lifespan may have shut the shared pool down
     return e
 
 

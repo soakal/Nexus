@@ -746,6 +746,8 @@ async def resolve_flag(
     if updated is None:
         return "not_found"
 
+    await _release_children_of(row)
+
     if status == "resolved":
         try:
             await _maybe_sync_expected_resource(row)
@@ -776,11 +778,27 @@ async def resolve_flag(
     return status
 
 
+async def _release_children_of(row: dict | None) -> None:
+    """G3b: a closing (or parked) parent releases its grouped children now (plan §5.4). Best effort; the 60 s
+    tick is the guarantee. A non-parent row returns before any DB work."""
+    try:
+        from backend.graph import correlate
+        if not row or (row.get("source"), row.get("check")) not in correlate.PARENT_CHECKS:
+            return
+        from backend.agents import release
+        await release.release_due(row.get("id"))
+    except Exception as e:
+        logger.warning(f"release of grouped children failed (tick will retry): {e}")
+
+
 async def clear_flag(source: str, check: str, *, by: str = "auto:condition_cleared") -> int:
     """Auto-resolve any open/needs_follow_up flag matching this fingerprint.
     Returns the count resolved (0 if none were open)."""
     fingerprint = f"{source}:{check}"
-    return await asyncio.to_thread(_db_clear_by_fingerprint, fingerprint, by)
+    n = await asyncio.to_thread(_db_clear_by_fingerprint, fingerprint, by)
+    if n:
+        await _release_children_of({"source": source, "check": check, "id": None})
+    return n
 
 
 async def open_flags(limit: int = 50, *, include_suppressed: bool = False) -> list[dict]:
