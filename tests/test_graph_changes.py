@@ -59,7 +59,7 @@ def test_to_utc_iso():
     want = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24)
     assert abs((got - want).total_seconds()) < 5
     assert to_utc_iso(" 7d ") < to_utc_iso("30m")
-    for bad in ("yesterday", "24x", "", "2026-13-01"):
+    for bad in ("yesterday", "24x", "", "2026-13-01", "999999999999999999999999h", "0001-01-01T00:00:00+01:00"):
         with pytest.raises(ValueError):
             to_utc_iso(bad)
 
@@ -93,12 +93,22 @@ def test_diff_source_scoping_and_empty_before():
     assert [(x["field"], x["old"], x["new"]) for x in r] == [("cores", "2", None)]
 
 
+def test_duplicate_edges_one_row():
+    e = Edge("guest:1", "storage:BU", "backs_up_to", "proxmox_api")  # two backup jobs, same guest + storage
+    stored = [{"id": "guest:1", "type": "guest", "attrs": {}, "status": "active"}]
+    r = changes.diff_source(source="proxmox_api", ts=T, new_nodes=[], new_edges=[e, e], stored_nodes=stored, stored_edges={})
+    assert [x["field"] for x in r] == ["edge:backs_up_to:storage:BU"]
+    r = changes.diff_source(source="proxmox_api", ts=T, new_nodes=[], new_edges=[e, e], stored_nodes=stored,
+                            stored_edges={("guest:1", "storage:BU", "backs_up_to"): "stale"})
+    assert [(x["old"], x["new"]) for x in r] == [("stale", "active")]
+
+
 def test_record_truncates(eng):
     many = [{"ts": T, "node_id": f"guest:{i}", "field": "status", "old": "a", "new": "b", "source": "proxmox_api"}
             for i in range(changes.MAX_PER_RUN + 7)]
     with store.batch() as c:
         assert changes.record(c, T, many) == changes.MAX_PER_RUN + 1
-    assert rows("field = 'truncated'") == [("graph:changes", "truncated", None, "7", "proxmox_api")]
+    assert rows("field = 'truncated'") == [("graph:changes", "truncated", None, "7", "graph")]
 
 
 # ---------------------------------------------------------------- store
@@ -211,3 +221,29 @@ def test_vault_note_changes(eng, tmp_path, monkeypatch):
     refresh()
     assert rows("id > 2") == [("note:wiki/Gamma", "node", None, "note", "vault"),
                               ("note:wiki/Beta", "node", "note", None, "vault")]
+
+
+async def test_cap_is_per_run_not_per_source(file_eng, tmp_path):
+    vms = [vm(5000 + i, f"g{i}") for i in range(300)]
+    ctrs = [{"id": f"c{i}", "name": f"demo-{i}", "state": "RUNNING", "status": "Up"} for i in range(300)]
+    await collect(tmp_path, prox=prox_with(*vms), configs={}, containers=ctrs, jobs=[])
+    await collect(tmp_path, prox=prox_with(*[dict(v, status="stopped") for v in vms]), configs={},
+                  containers=[dict(c, state="EXITED") for c in ctrs], jobs=[])
+    assert len(rows()) == changes.MAX_PER_RUN + 1
+    assert rows("field = 'truncated'") == [("graph:changes", "truncated", None, "100", "graph")]
+
+
+async def test_manual_removal_recorded_when_pruned(file_eng, tmp_path):
+    extra = '\n[[edge]]\nsrc = "service:immich"\ndst = "host:unraid"\ntype = "depends_on"\n'
+    await collect(tmp_path, toml=TOML + extra)
+    await collect(tmp_path, toml=TOML + extra)
+    assert rows() == []
+    await collect(tmp_path, prox=RuntimeError("pve down"))  # edge removed from TOML, but prune is skipped
+    assert rows() == []
+    await collect(tmp_path)
+    assert rows() == [("service:immich", "edge:depends_on:host:unraid", "active", None, "manual")]
+    lean = TOML.replace('[[node]]\nid = "service:immich"\ntype = "service"\nname = "Immich"\naliases = ["immich", "photos"]\n', "")
+    lean = lean[: lean.index("[[edge]]")]
+    await collect(tmp_path, toml=lean)
+    assert ("service:immich", "node", "service", None, "manual") in rows()
+    assert ("service:immich", "edge:runs_on:guest:209", "active", None, "manual") in rows()

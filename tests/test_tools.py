@@ -910,6 +910,7 @@ async def test_graph_topology_renders(graph_db):
 async def test_what_changed(graph_db):
     from backend.agents.tools import READ_TOOLS, dispatcher_map
     from backend.graph import now_iso, store
+    from backend.graph.store import Node
 
     assert "what_changed" in {t.name for t in READ_TOOLS}
     f = dispatcher_map()["what_changed"]
@@ -926,6 +927,12 @@ async def test_what_changed(graph_db):
     out = await f({"node": "guest:207", "include_ancestors": False})
     assert "host:pve" not in out and "cores" in out
     assert ": none recorded" in await f({"node": "guest:207", "since": "2099-01-01T00:00:00"})
+    for i in range(25):
+        store.insert_change(now_iso(), "guest:207", "memory", str(i), str(i + 1), "proxmox_api")
+    out = await f({"node": "guest:207", "include_ancestors": False})
+    assert out.endswith("(newest 20 shown; narrow 'since' for older rows)") and len(out) <= 1500
+    store.upsert_nodes([Node("guest:301", "guest", "twin"), Node("guest:302", "guest", "twin")], now_iso())
+    assert "unavailable: ambiguous" in await f({"node": "twin"})
 
 
 async def test_what_changed_disabled(graph_db, monkeypatch):

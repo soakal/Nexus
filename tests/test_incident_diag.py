@@ -16,6 +16,7 @@ def _settings(**overrides):
     s = MagicMock()
     s.incident_diag_enabled = True
     s.graph_enabled = False  # evidence block has its own tests below
+    s.graph_collect_minutes = 60
     s.orchestrator_executor_model = "claude-sonnet-4-6"
     for k, v in overrides.items():
         setattr(s, k, v)
@@ -156,9 +157,14 @@ def _seed_backup_incident():
     from backend.graph.store import Edge, Node
 
     store.upsert_nodes([Node("host:pve", "host", "pve"), Node("guest:101", "guest", "lab-vm", source="proxmox_api"),
-                        Node("guest:104", "guest", "old-box", source="proxmox_api")], "2026-10-01T00:00:00")
-    store.upsert_edges([Edge("guest:101", "host:pve", "runs_on", "proxmox_api"),
-                        Edge("guest:104", "host:pve", "runs_on", "proxmox_api")], "2026-10-01T00:00:00")
+                        Node("guest:104", "guest", "old-box", source="proxmox_api"),
+                        Node("guest:105", "guest", "no-backup", source="proxmox_api")], "2026-10-01T00:00:00")
+    store.upsert_edges([Edge(f"guest:{g}", "host:pve", "runs_on", "proxmox_api") for g in (101, 104, 105)]
+                       + [Edge(f"guest:{g}", "storage:BU", "backs_up_to", "proxmox_api") for g in (101, 104)],
+                       "2026-10-01T00:00:00")
+    store.insert_change("2026-10-31T13:00:00", "guest:105", "cores", "1", "2", "proxmox_api")  # not backed up: out of scope
+    store.insert_change("2026-10-31T21:00:00", "guest:104", "memory", "2048", "4096", "proxmox_api")  # == job start
+    store.insert_change("2026-10-31T21:30:00", "guest:101", "tags", "[]", '["lab"]', "proxmox_api")  # within lag
     store.insert_change("2026-10-31T12:00:00", "guest:104", "hookscript", None, "local:snippets/x.sh", "proxmox_api")
     store.insert_change("2026-10-29T12:00:00", "guest:104", "cores", "2", "4", "proxmox_api")  # > 24 h before: out
     store.insert_change("2026-11-01T07:44:00", "guest:101", "status", "active", "stale", "proxmox_api")  # after: out
@@ -177,9 +183,13 @@ async def test_evidence_scoped_strictly_before_job_start(graph_db):
     assert ev.startswith("EVIDENCE (deterministic, from the knowledge graph)")
     assert "Incident at 2026-10-31T21:00:00Z UTC (job start)" in ev
     assert "guest:104 hookscript" in ev
-    assert "guest:101" in ev.split("Graph scope:")[1]  # in scope as a backed-up guest ...
-    assert "guest:101 status" not in ev  # ... but its change came after the job started
+    before, rest = ev.split("UNCERTAIN")
+    assert "guest:104 memory" not in before and "guest:104 memory" in rest  # recorded AT the cutoff: not "before"
+    assert "guest:101 tags" in rest  # recorded 30 min after the job start: listed, flagged uncertain
+    assert "guest:101" in ev.split("Graph scope:")[1] and "guest:105" not in ev  # only backed-up guests in scope
+    assert "guest:101 status" not in ev  # recorded ~11 h after the job start: never shown
     assert "cores" not in ev
+    assert "more than 60 min after the incident time cannot be the cause" in ev
 
 
 async def test_evidence_uses_flag_created_at_for_other_keys(graph_db):
@@ -221,3 +231,41 @@ async def test_evidence_never_raises(graph_db):
         assert await incident_diag._evidence("vm:101") == ""
     with patch("backend.config.get_settings", return_value=_settings(graph_enabled=True)):
         assert await incident_diag._evidence("garage_open") == ""  # no graph node for it
+
+
+async def test_evidence_without_reliable_incident_time(graph_db):
+    from datetime import datetime
+
+    from sqlmodel import Session, select
+
+    from backend.database import OutcomeFlag, engine
+
+    _seed_backup_incident()
+    with Session(engine) as s:
+        f = s.exec(select(OutcomeFlag)).one()
+        f.detail = '{"starttime": "garbage"}'
+        s.add(f)
+        s.commit()
+    patches = (patch("backend.config.get_settings", return_value=_settings(graph_enabled=True)),
+               patch("backend.agents.outcomes.open_flags", new=AsyncMock(return_value=[])))
+    with patches[0], patches[1]:
+        ev = await incident_diag._evidence("vzdump_failed", datetime(2026, 11, 1, 9, 0))
+        assert "Incident time unknown (no valid job start time)" in ev and "hookscript" not in ev
+        # a vm alert whose flag is gone (closed / outcome flags off) falls back to the tick that fired it
+        ev = await incident_diag._evidence("vm:101", datetime(2026, 11, 1, 8, 0))
+        assert "Incident at 2026-11-01T08:00:00Z UTC (alert raised)" in ev and "guest:101 status" in ev
+        ev = await incident_diag._evidence("vm:101")
+        assert "Incident time unknown (alert time unknown)" in ev and "guest:101 status" not in ev
+
+
+async def test_maybe_diagnose_passes_fire_time():
+    seen = {}
+
+    async def fake(key, fired_at=None):
+        seen["at"] = fired_at
+
+    with patch("backend.config.get_settings", return_value=_settings()), \
+         patch.object(incident_diag, "diagnose", fake):
+        incident_diag.maybe_diagnose({"vms": ["vm:100"], "docker": [], "array": [], "backups": []})
+        await incident_diag._diag_task
+    assert seen["at"] is not None and seen["at"].tzinfo is None

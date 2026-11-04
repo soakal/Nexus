@@ -152,28 +152,31 @@ def _diff(src, nodes, edges, seen_at, conn) -> list[dict]:
 
 def _db_write(manual, nodes, edges, ok_sources, failed, all_ok, seen_at, t0) -> dict:
     pruned = 0
-    n_changes = 0
+    rows: list[dict] = []
     with store.batch() as conn:
         for src in ok_sources:
-            rows = _diff(src, nodes, edges, seen_at, conn)
+            rows += _diff(src, nodes, edges, seen_at, conn)
             g = store.bump_generation(src, conn)
             store.upsert_nodes([n for n in nodes if n.source == src], seen_at, conn, gen=g)
             store.upsert_edges([e for e in edges if e.source == src], seen_at, conn, gen=g)
             gone_nodes, gone_edges = store.mark_stale(src, g - STALE_CYCLES, conn)
             rows += changes.stale_rows(source=src, ts=seen_at, node_ids=gone_nodes, edges=gone_edges)
-            n_changes += changes.record(conn, seen_at, rows)
-        # manual rows are diffed every run (never staled; prunes below are not recorded), so a sha bump is
-        # caught even on a tick where another source failed
-        n_changes += changes.record(conn, seen_at, _diff("manual", nodes, edges, seen_at, conn))
+        # manual rows are diffed every run (they are never staled), so a sha bump is caught even on a tick where
+        # another source failed; manual removals are recorded below, when the prune actually deletes them
+        rows += _diff("manual", nodes, edges, seen_at, conn)
         store.upsert_nodes([n for n in nodes if n.source == "manual"], seen_at, conn)
         store.upsert_edges([e for e in edges if e.source == "manual"], seen_at, conn)
         if all_ok:
             declared = {(e.src, e.dst, e.type) for e in manual[1]}
+            doomed_edges = [k for k in store.edge_keys(source="manual", status=None, conn=conn) if k not in declared]
             pruned = store.delete_edges(source="manual", not_in=declared, conn=conn)
             ids = {n.id for n in manual[0]}
-            pruned += store.delete_nodes([n["id"] for n in store.list_nodes(source="manual", conn=conn) if n["id"] not in ids], conn)
+            doomed = [(n["id"], n["type"]) for n in store.list_nodes(source="manual", conn=conn) if n["id"] not in ids]
+            pruned += store.delete_nodes([i for i, _ in doomed], conn)
+            rows += changes.removed_rows(source="manual", ts=seen_at, nodes=doomed, edges=doomed_edges)
         else:
             logger.info("prune skipped: %s unavailable", ", ".join(failed))
+        n_changes = changes.record(conn, seen_at, rows)  # one cap per run, not per source
         vault_index.reconcile_documents(seen_at, conn)
         for src in ok_sources:
             store.record_job(f"source:{src}", ok=True, at=seen_at, conn=conn)

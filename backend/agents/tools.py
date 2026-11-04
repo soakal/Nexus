@@ -497,6 +497,9 @@ _WHAT_CHANGED_SCHEMA = {"type": "object", "properties": {
     "required": ["node"]}
 
 
+_WHAT_CHANGED_ROWS = 20  # ~70 chars/row keeps a full answer under MAX_TOOL_RESULT_CHARS
+
+
 async def _what_changed(input: dict) -> str:
     try:
         node = str((input or {}).get("node") or "").strip()
@@ -518,7 +521,9 @@ async def _what_changed(input: dict) -> str:
         ids = [nid]
         if (input or {}).get("include_ancestors", True) is not False:
             ids += [i for i, _ in await asyncio.to_thread(store.ancestors, nid, 3)]
-        rows = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, limit=50))
+        rows = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, limit=_WHAT_CHANGED_ROWS + 1))
+        more = len(rows) > _WHAT_CHANGED_ROWS
+        rows = rows[:_WHAT_CHANGED_ROWS]
         head = f"changes on {nid}" + (f" + {len(ids) - 1} ancestor(s)" if len(ids) > 1 else "") + f" since {since}Z (UTC)"
         if not rows:
             return head + ": none recorded"
@@ -528,6 +533,8 @@ async def _what_changed(input: dict) -> str:
         lines = [head + ":"] + [
             f"{r['ts']}Z {r['node_id']} {r['field']}: {v(r['old'])} \u2192 {v(r['new'])} [{r['source']}]" for r in rows
         ]
+        if more:
+            lines.append(f"(newest {_WHAT_CHANGED_ROWS} shown; narrow 'since' for older rows)")
         return _truncate("\n".join(lines))
     except Exception as e:
         return _truncate(f"what_changed unavailable: {e}")

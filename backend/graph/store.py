@@ -388,6 +388,12 @@ def edge_keys(*, source: str, status: str | None = "active", conn: Connection | 
         return {(r.src, r.dst, r.type): r.status for r in c.execute(text(sql), params).all()}
 
 
+def edge_sources(edge_type: str) -> set[str]:
+    """Nodes with at least one ACTIVE outgoing edge of this type."""
+    with _read() as c:
+        return set(c.execute(text("SELECT DISTINCT src FROM graphedge WHERE type = :t AND status = 'active'"), {"t": edge_type}).scalars())
+
+
 def changes_for(node_ids: Iterable[str], *, since: str, before: str | None = None, limit: int = 100) -> list[dict]:
     """Newest first. ts strings are naive-UTC ISO, so string order == time order."""
     ids = list(dict.fromkeys(node_ids))

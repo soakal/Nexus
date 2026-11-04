@@ -135,7 +135,8 @@ def test_changes_get(gclient):
     assert [c["node_id"] for c in r.json()["changes"]] == ["guest:3101"]
     assert gclient.get("/api/graph/changes", params={"node": "nope"}, headers=AUTH).status_code == 404
     assert gclient.get("/api/graph/changes", params={"node": "dup"}, headers=AUTH).status_code == 409
-    assert gclient.get("/api/graph/changes", params={"node": "guest:3101", "since": "soon"}, headers=AUTH).status_code == 422
+    for bad in ("soon", "999999999999999999999999h", "0001-01-01T00:00:00+01:00"):
+        assert gclient.get("/api/graph/changes", params={"node": "guest:3101", "since": bad}, headers=AUTH).status_code == 422
     for lim in (0, 501):
         assert gclient.get("/api/graph/changes", params={"node": "guest:3101", "limit": lim}, headers=AUTH).status_code == 422
 
@@ -159,6 +160,7 @@ def test_changes_post(gclient):
         ({"node_id": "guest:3101", "field": "x", "source": "proxmox_api"}, 422),
         ({"node_id": "guest:3101", "field": "Bad Field", "source": "kithos"}, 422),
         ({"node_id": "guest:3101", "field": "x", "source": "kithos", "ts": "later"}, 422),
+        ({"node_id": "guest:3101", "field": "x", "source": "kithos", "ts": "0001-01-01T00:00:00+01:00"}, 422),
         ({"node_id": "guest:3101", "field": "x", "source": "kithos", "new": "v" * 501}, 422),
     ]
     for body, code in bad:

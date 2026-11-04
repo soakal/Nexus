@@ -47,8 +47,8 @@ _SYSTEM = (
     "sentence; (2) evidence, max 3 bullets; (3) recommended action, one "
     "line. Under 120 words total. If evidence is inconclusive, say so "
     "plainly — never invent a cause. When an EVIDENCE block is given, "
-    "anything that changed after the incident time it states cannot be "
-    "the cause — never blame a change made after the incident."
+    "never blame a change it says was recorded too late to be the cause; "
+    "changes it marks UNCERTAIN are possible but unconfirmed causes."
 )
 
 
@@ -89,24 +89,45 @@ def _user_prompt(key: str) -> str:
 _EVIDENCE_ROWS = 20
 
 
-def _incident_at(key: str, flag: dict | None) -> tuple[str, str]:
-    """(naive-UTC ISO, label). vzdump: the failing job's START, not when NEXUS noticed it."""
-    from backend.graph import now_iso, to_utc_iso
+def _incident_at(key: str, flag: dict | None, fired_at: datetime | None) -> tuple[str | None, str]:
+    """(naive-UTC ISO or None, label). vzdump: the failing job's START, never when NEXUS noticed it --
+    without a valid start time there is no reliable cutoff, so None (change evidence is then omitted).
+    Other keys: the flag's created_at, else the watcher tick that fired the alert."""
+    from backend.graph import to_utc_iso
 
-    if key == "vzdump_failed" and flag and flag.get("detail"):
+    if key == "vzdump_failed":
         try:
-            st = json.loads(flag["detail"]).get("starttime")
-            if st:
-                return to_utc_iso(st), "job start"
+            st = json.loads((flag or {}).get("detail") or "{}").get("starttime")
+            return (to_utc_iso(st), "job start") if st else (None, "no job start time")
         except (ValueError, TypeError, AttributeError):
-            pass
-    if flag and flag.get("created_at"):
-        return to_utc_iso(flag["created_at"]), "alert raised"
-    return now_iso(), "now"
+            return None, "no valid job start time"
+    for raw in ((flag or {}).get("created_at"), fired_at):
+        if raw:
+            try:
+                return to_utc_iso(raw), "alert raised"
+            except (ValueError, TypeError):
+                continue
+    return None, "alert time unknown"
 
 
-async def _evidence(key: str) -> str:
-    """Deterministic graph facts for the prompt (G3a). "" when the graph is off or knows nothing. Never raises."""
+def _collect_minutes() -> int:
+    try:
+        from backend.config import get_settings
+
+        return max(1, int(getattr(get_settings(), "graph_collect_minutes", 60)))
+    except (TypeError, ValueError):
+        return 60
+
+
+def _change_line(r: dict) -> str:
+    return f"- {r['ts']}Z {r['node_id']} {r['field']}: {r['old']} -> {r['new']} [{r['source']}]"
+
+
+async def _evidence(key: str, fired_at: datetime | None = None) -> str:
+    """Deterministic graph facts for the prompt (G3a). "" when the graph is off or knows nothing. Never raises.
+
+    graphchange.ts is when the COLLECTOR saw a change (every graph_collect_minutes), not when it happened,
+    so rows recorded within one collect interval after the incident are listed separately as uncertain."""
     try:
         from backend.agents import outcomes
         from backend.graph import correlate, enabled, store, to_utc_iso
@@ -117,29 +138,41 @@ async def _evidence(key: str) -> str:
         if node is None:
             return ""
         flag = await asyncio.to_thread(outcomes._db_find_active_by_fingerprint, f"homelab_watch:{key}")
-        at, label = _incident_at(key, flag)
+        at, label = _incident_at(key, flag, fired_at)
         ids = [node] + [i for i, _ in await asyncio.to_thread(store.ancestors, node, 3)]
         if key == "vzdump_failed":
-            # the job backs up every guest on the host, so the guests' own changes are in scope too
-            ids += [i for i, _ in await asyncio.to_thread(store.descendants, node, 1)]
-        since = to_utc_iso(datetime.fromisoformat(at) - timedelta(hours=24))
-        rows = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, before=at, limit=_EVIDENCE_ROWS))
+            # guests on this host that some backup job covers (the failing task's own guest list is not known)
+            backed = await asyncio.to_thread(store.edge_sources, "backs_up_to")
+            ids += [i for i, _ in await asyncio.to_thread(store.descendants, node, 1) if i in backed]
+        lines = ["EVIDENCE (deterministic, from the knowledge graph)"]
+        if at is None:
+            lines.append(f"Incident time unknown ({label}) \u2014 change history omitted, there is no reliable cutoff.")
+        else:
+            lag = _collect_minutes()
+            t = datetime.fromisoformat(at)
+            since = to_utc_iso(t - timedelta(hours=24))
+            until = to_utc_iso(t + timedelta(minutes=lag))
+            before = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, before=at, limit=_EVIDENCE_ROWS))
+            near = await asyncio.to_thread(lambda: store.changes_for(ids, since=at, before=until, limit=_EVIDENCE_ROWS))
+            lines.append(
+                f"Incident at {at}Z UTC ({label}). Tracked changes are RECORDED when the collector next runs "
+                f"(about every {lag} min), not when they happened. Recorded in the 24 h before the incident:")
+            lines += [_change_line(r) for r in before] or [
+                "- none recorded (only tracked fields are recorded; this is not proof nothing changed)"]
+            if len(before) >= _EVIDENCE_ROWS:
+                lines.append(f"- (showing newest {_EVIDENCE_ROWS})")
+            if near:
+                lines.append(f"UNCERTAIN \u2014 recorded within {lag} min AFTER the incident time; may have changed "
+                             "just before it (collector lag) or after it:")
+                lines += [_change_line(r) for r in near]
+            lines.append(f"Anything recorded more than {lag} min after the incident time cannot be the cause.")
+        lines.append(f"Graph scope: {', '.join(ids)}")
         by_node = correlate.flags_by_node(await outcomes.open_flags(limit=1000))
         own = (flag or {}).get("id")
         others = [f for i in ids for f in by_node.get(i, []) if f.get("id") != own]
-        docs = await asyncio.to_thread(store.documents_for, ids)
-        lines = [
-            "EVIDENCE (deterministic, from the knowledge graph)",
-            f"Incident at {at}Z UTC ({label}). Tracked changes in the 24 h BEFORE it \u2014 anything that changed "
-            "after this time cannot be the cause:",
-        ]
-        lines += [f"- {r['ts']}Z {r['node_id']} {r['field']}: {r['old']} -> {r['new']} [{r['source']}]" for r in rows] or [
-            "- none recorded (only tracked fields are recorded; this is not proof nothing changed)"]
-        if len(rows) >= _EVIDENCE_ROWS:
-            lines.append(f"- (showing newest {_EVIDENCE_ROWS})")
-        lines.append(f"Graph scope: {', '.join(ids)}")
         if others:
             lines.append("Other open flags in scope: " + "; ".join(f"#{f['id']} {f['source']}:{f['check']}" for f in others[:10]))
+        docs = await asyncio.to_thread(store.documents_for, ids)
         notes = sorted({n for v in docs.values() for n in v})
         if notes:
             lines.append("Runbook notes: " + ", ".join(notes[:10]))
@@ -149,7 +182,7 @@ async def _evidence(key: str) -> str:
         return ""
 
 
-async def diagnose(key: str) -> None:
+async def diagnose(key: str, fired_at: datetime | None = None) -> None:
     """Run one read-only investigation for `key` and page the diagnosis.
     Never raises — the caller (maybe_diagnose) fires this as a background
     task with no one to propagate to."""
@@ -159,7 +192,7 @@ async def diagnose(key: str) -> None:
         from backend import events
 
         s = get_settings()
-        evidence = await _evidence(key)
+        evidence = await _evidence(key, fired_at)
         text = await router.run_with_tools(
             s.orchestrator_executor_model,
             1500,
@@ -221,4 +254,4 @@ def maybe_diagnose(result: dict) -> None:
     # telegram_poller._message_tasks / homelab_watch._event_propose_task) --
     # the module-level var is what keeps this alive, and also doubles as
     # the already-running guard above.
-    _diag_task = asyncio.create_task(diagnose(key))
+    _diag_task = asyncio.create_task(diagnose(key, now))  # now = the watcher tick that fired it (naive UTC)
