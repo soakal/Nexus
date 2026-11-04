@@ -593,10 +593,7 @@ async def _graph_vault_index():
         r = await asyncio.to_thread(vault_index.refresh)
         logger.info(f"graph_vault_index: {r}")
     except Exception as e:
-        logger.warning(f"graph_vault_index failed: {e}")  # never raises out of the job; never pages
-    from backend.graph import freshness
-
-    await freshness.update_flags()  # a run that keeps failing becomes a low-severity flag (briefing, /flags)
+        logger.warning(f"graph_vault_index failed: {e}")  # never pages; watchdog's graph freshness check flags repeats
 
 
 async def _graph_collect():
@@ -606,9 +603,6 @@ async def _graph_collect():
         logger.info(f"graph_collect: {r}")
     except Exception as e:
         logger.warning(f"graph_collect failed: {e}")
-    from backend.graph import freshness
-
-    await freshness.update_flags()
 
 
 async def _homelab_watch():
@@ -1245,9 +1239,11 @@ def setup_scheduler(briefing_time: str, timezone: str):
         )
         logger.info("Homelab watcher enabled: runs every 60 seconds")
     if getattr(s, "graph_enabled", False) is True:  # `is True`: MagicMock settings in older tests are truthy
+        from backend.graph import freshness as _graph_freshness
         from backend.graph import intervals as _graph_intervals
 
         giv = _graph_intervals(s)
+        _graph_freshness.mark_started()  # never-succeeded jobs are judged from now
         scheduler.add_job(
             _graph_vault_index,
             IntervalTrigger(minutes=giv["vault_index"]),

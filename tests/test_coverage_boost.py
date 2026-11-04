@@ -311,11 +311,14 @@ def test_graph_enabled_registers_vault_index_job(monkeypatch):
     monkeypatch.setenv("UNRAID_BACKUP_PATH", "\\\\test-host\\test-share")
     monkeypatch.setenv("GRAPH_ENABLED", "true")
     monkeypatch.setattr(config_mod, "_settings_instance", None)
+    from backend.graph import freshness
+    monkeypatch.setattr(freshness, "_started", None)
     with patch.object(scheduler, "add_job") as mock_add:
         setup_scheduler("07:30", "America/New_York")
     ids_set = {c.kwargs.get("id") for c in mock_add.call_args_list}
     assert {"graph_vault_index", "graph_collect"} <= ids_set
     assert mock_add.call_count == 43
+    assert freshness._started is not None  # never-succeeded graph jobs are judged from boot
 
 
 def test_morning_briefing_disabled_skips_job(monkeypatch):

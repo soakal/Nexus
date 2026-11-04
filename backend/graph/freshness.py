@@ -2,8 +2,9 @@
 
 A failing collect or vault index only logs a warning, so what_changed and the incident evidence block would
 keep answering "none recorded" from data that stopped updating. This turns "no successful run for STALE_RUNS
-intervals" into (a) a low-severity `graph:stale:<job>` flag that closes itself on recovery and (b) a warning
-line on every answer built from the graph.
+intervals" into (a) a low-severity `graph:stale:<job>` flag, reconciled by the 5-min watchdog (independent of
+the graph jobs themselves), closed on recovery or when the graph is switched off, and (b) a warning line on
+every answer built from the graph.
 """
 from __future__ import annotations
 
@@ -24,22 +25,32 @@ WATCHED = {
 }
 
 
-def stale(jobs: dict[str, dict], minutes: dict[str, int], now: datetime) -> dict[str, dict]:
-    """{job: {"last_success", "last_error"}} for watched jobs with no success in STALE_RUNS intervals.
-    A job with no graphjob row at all is not judged (graph just enabled, or that job never registered)."""
+def stale(jobs: dict[str, dict], minutes: dict[str, int], now: datetime, started: datetime | None) -> dict[str, dict]:
+    """{job: {"last_success", "last_error"}} for watched jobs with no success for STALE_RUNS intervals.
+
+    The clock runs from the job's last success, or -- when it has never succeeded or has no graphjob row at
+    all -- from `started` (when this process began running the graph jobs), so a failed first run after boot
+    gets the same grace as any other. With no `started` (a process that does not run the jobs, e.g. the
+    CLI) a job without a success is not judged."""
     out: dict[str, dict] = {}
     for name, kind in WATCHED.items():
-        j = jobs.get(name)
-        if not j:
-            continue
+        j = jobs.get(name) or {}
         last = j.get("last_success")
-        if last is None:
-            if j.get("last_error"):
-                out[name] = {"last_success": None, "last_error": j["last_error"]}
+        since = datetime.fromisoformat(last) if last else started
+        if since is None:
             continue
-        if now - datetime.fromisoformat(last) > timedelta(minutes=STALE_RUNS * minutes[kind]):
+        if now - since >= timedelta(minutes=STALE_RUNS * minutes[kind]):
             out[name] = {"last_success": last, "last_error": j.get("last_error")}
     return out
+
+
+_started: datetime | None = None
+
+
+def mark_started(at: datetime | None = None) -> None:
+    """Called once when the scheduler registers the graph jobs (process boot)."""
+    global _started
+    _started = at or _now()
 
 
 def _now() -> datetime:
@@ -49,7 +60,7 @@ def _now() -> datetime:
 def current() -> dict[str, dict]:
     from backend.graph import intervals, store
 
-    return stale(store.jobs(), intervals(), _now())
+    return stale(store.jobs(), intervals(), _now(), _started)
 
 
 def note() -> str | None:
@@ -60,25 +71,38 @@ def note() -> str | None:
         return f"⚠ graph freshness unknown ({e}) — recent changes may be missing"
     if not st:
         return None
-    parts = [f"{n} last succeeded {v['last_success'] + 'Z' if v['last_success'] else 'never'}" for n, v in sorted(st.items())]
+    parts = [f"{n} last succeeded {v['last_success'] + 'Z' if v['last_success'] else 'never since restart'}"
+             for n, v in sorted(st.items())]
     return "⚠ graph data may be incomplete (" + "; ".join(parts) + ") — recent changes may be missing"
 
 
-async def update_flags() -> None:
-    """Open/clear graph:stale:<job> flags. Called after every graph job run. Never raises."""
-    try:
-        from backend.agents import outcomes
+_RECONCILE_TIMEOUT_S = 30
 
-        st = await asyncio.to_thread(current)
-        for name in WATCHED:
-            if name in st:
-                v = st[name]
-                since = f"since {v['last_success']}Z" if v["last_success"] else "since it was enabled"
-                err = f" Last error: {v['last_error']}" if v.get("last_error") else ""
-                summary = (f"Knowledge graph: {name} has not succeeded {since} ({STALE_RUNS}+ runs); what_changed "
-                           f"and alert evidence may miss changes. Run `python -m backend.graph doctor`.{err}")[:300]
-                await outcomes.record_flag_ex("graph", f"stale:{name}", summary, severity="low")
-            else:
-                await outcomes.clear_flag("graph", f"stale:{name}")
-    except Exception as e:
-        logger.warning(f"graph freshness flags failed (ignored): {e}")
+
+async def reconcile() -> list[str]:
+    """Watchdog check (independent of the graph jobs, so a hung or unscheduled job is still caught).
+    Graph enabled: open/clear graph:stale:<job> flags and return the stale job names. Graph disabled:
+    clear any left-over flags. Bounded; never raises."""
+    try:
+        return await asyncio.wait_for(_reconcile(), _RECONCILE_TIMEOUT_S)
+    except Exception as e:  # incl. TimeoutError
+        logger.warning(f"graph freshness check failed (ignored): {e!r}")
+        return []
+
+
+async def _reconcile() -> list[str]:
+    from backend.agents import outcomes
+    from backend.graph import enabled
+
+    st = await asyncio.to_thread(current) if enabled() else {}
+    for name in WATCHED:
+        if name in st:
+            v = st[name]
+            since = f"since {v['last_success']}Z" if v["last_success"] else "since NEXUS restarted"
+            err = f" Last error: {v['last_error']}" if v.get("last_error") else ""
+            summary = (f"Knowledge graph: {name} has not succeeded {since} ({STALE_RUNS}+ runs); what_changed "
+                       f"and alert evidence may miss changes. Run `python -m backend.graph doctor`.{err}")[:300]
+            await outcomes.record_flag_ex("graph", f"stale:{name}", summary, severity="low")
+        else:
+            await outcomes.clear_flag("graph", f"stale:{name}")
+    return sorted(st)

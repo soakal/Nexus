@@ -922,8 +922,7 @@ async def test_what_changed(graph_db):
     store.insert_change(now_iso(), "guest:207", "cores", "2", "4", "proxmox_api")
     store.insert_change(now_iso(), "host:pve", "status", None, "online", "manual")
     out = await f({"node": "CT 207"})
-    warn, head = out.split("\n")[:2]
-    assert warn.startswith("\u26a0 graph data may be incomplete (source:proxmox_api last succeeded never)")  # seeded "pve down"
+    head = next(ln for ln in out.splitlines() if ln.startswith("changes on"))  # a freshness warning may lead
     assert head.startswith("changes on guest:207 + 1 ancestor(s) since")
     assert "guest:207 cores: 2 → 4 [proxmox_api]" in out and "host:pve status: ∅ → online [manual]" in out
     out = await f({"node": "guest:207", "include_ancestors": False})
