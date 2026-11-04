@@ -314,7 +314,8 @@ def _format_open_flags_for_memory(flags: list) -> str:
         source = f.get("source") or "?"
         check = f.get("check") or "?"
         summary = f.get("summary") or ""
-        lines.append(f"#{f.get('id')} [{severity}] {source}:{check} — {summary}")
+        from backend.agents.outcomes import group_suffix
+        lines.append(f"#{f.get('id')} [{severity}] {source}:{check} — {summary}{group_suffix(f)}")
     return "\n".join(lines)
 
 

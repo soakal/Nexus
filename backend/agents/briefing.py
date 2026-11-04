@@ -248,7 +248,7 @@ def _format_flag_age(iso_str) -> str:
     return f"{days}d ago"
 
 
-def _build_open_items_section(flags: list) -> str:
+def _build_open_items_section(flags: list, unpaged: list | None = None) -> str:
     """Deterministic, post-LLM '## Open Items' section (rollout step 6, spec
     §4.2) -- assembled in Python from a fresh outcomes.open_flags() read (or
     the pre-LLM list on a fresh-read failure), never fed back through the
@@ -257,15 +257,24 @@ def _build_open_items_section(flags: list) -> str:
     facts-extracts a flag summary. Never raises -- non-dict elements are
     dropped defensively."""
     lines = ["## Open Items"]
+    from backend.agents.outcomes import group_suffix
+    # G3b rule 3: grouped children that never paged are always listed first, uncapped
+    unpaged = [u for u in (unpaged or []) if isinstance(u, dict)]
+    shown = {u.get("id") for u in unpaged}
+    if unpaged:
+        lines.append(f"Grouped under an incident, not yet paged ({len(unpaged)}):")
+        for u in unpaged:
+            lines.append(f"- #{u.get('id')} [{u.get('severity') or 'medium'}] {u.get('source') or '?'}:{u.get('check') or '?'}"
+                         f" — {u.get('summary') or ''} ({_format_flag_age(u.get('created_at'))}){group_suffix(u)}")
     for f in flags:
-        if not isinstance(f, dict):
+        if not isinstance(f, dict) or f.get("id") in shown:
             continue
         severity = f.get("severity") or "medium"
         source = f.get("source") or "?"
         check = f.get("check") or "?"
         summary = f.get("summary") or ""
         age = _format_flag_age(f.get("created_at"))
-        lines.append(f"- #{f.get('id')} [{severity}] {source}:{check} — {summary} ({age})")
+        lines.append(f"- #{f.get('id')} [{severity}] {source}:{check} — {summary} ({age}){group_suffix(f)}")
     if len(lines) == 1:
         lines.append("No open items.")
     return "\n".join(lines)
@@ -888,7 +897,12 @@ async def run_briefing() -> str:
         except Exception as e:
             logger.warning(f"open_items section: fresh read failed, using pre-LLM list: {e}")
             fresh_open_flags = open_flags_list
-        briefing_text = briefing_text + "\n\n" + _build_open_items_section(fresh_open_flags)
+        try:
+            unpaged_grouped = await outcomes.unpaged_grouped()
+        except Exception as e:
+            logger.warning(f"open_items section: unpaged-grouped read failed: {e}")
+            unpaged_grouped = []
+        briefing_text = briefing_text + "\n\n" + _build_open_items_section(fresh_open_flags, unpaged_grouped)
 
         # Deterministic '## Claude Usage' section, same "assembled in Python,
         # appended after the LLM call" discipline as Proton Mail/Open Items

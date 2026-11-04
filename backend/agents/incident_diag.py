@@ -184,6 +184,10 @@ async def _evidence(key: str, fired_at: datetime | None = None) -> str:
         others = [f for i in ids for f in by_node.get(i, []) if f.get("id") != own]
         if others:
             lines.append("Other open flags in scope: " + "; ".join(f"#{f['id']} {f['source']}:{f['check']}" for f in others[:10]))
+        if own:  # G3b: children grouped under this incident share its one diagnosis
+            kids = [f for f in await outcomes.open_flags(limit=1000) if f.get("parent_flag_id") == own]
+            if kids:
+                lines.append("Grouped under this incident: " + ", ".join(f"#{f['id']} {f['source']}:{f['check']}" for f in kids[:20]))
         docs = await asyncio.to_thread(store.documents_for, ids)
         notes = sorted({n for v in docs.values() for n in v})
         if notes:

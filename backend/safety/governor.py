@@ -252,6 +252,8 @@ _NEVER_MUTABLE_NOTIFY_KINDS = frozenset({
     # Same billing-problem severity class as anthropic_credit_exhausted (2026-08-21) --
     # see router._maybe_alert_provider_exhausted.
     "anthropic_usage_limit_exceeded",
+    # G3b: the page that ends a grouped child's silence; muting it would re-create the silent-child hole.
+    "flag_released",
 })
 
 

@@ -1,0 +1,167 @@
+"""G3b phase 2: the grouping decision in record_flag_ex (plan g3/plan-v12-g3b.md §5.1-5.2, §5.3.7)."""
+import asyncio
+import time
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from g3b_helpers import _parent, _row, _settings
+from sqlalchemy import text
+
+import backend.database as bd
+from backend.agents import g3b, outcomes
+from backend.graph import store
+
+
+async def test_off_result_unchanged_and_no_g3b_work(g3b_db, monkeypatch):
+    _settings(monkeypatch, corr="false")
+    _parent()
+    with patch.object(g3b, "run_presend", AsyncMock()) as rp:
+        d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert set(d) == {"id", "surface", "reason"} and d["surface"] is True
+    rp.assert_not_awaited()
+    assert _row(d["id"]).parent_flag_id is None
+
+
+async def test_child_grouped_under_paged_parent(g3b_on):
+    p = _parent()
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert d["surface"] is False and d["reason"] == f"grouped:{p}" and d["surfacing"] == 1
+    r = _row(d["id"])
+    assert r.parent_flag_id == p and r.attach_op
+
+
+async def test_no_parent_pages_with_budget(g3b_on):
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert d["surface"] is True and d["surfacing"] == 1 and d["presend_deadline"] > time.monotonic() - 5
+
+
+@pytest.mark.parametrize("kw", [{"paged": False}, {"suppressed": True}, {"status": "resolved"}, {"age_min": 45}])
+async def test_ineligible_parent_never_adopts(g3b_on, kw):
+    _parent(**kw)
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert d["surface"] is True and _row(d["id"]).parent_flag_id is None
+
+
+async def test_not_a_descendant_not_grouped(g3b_on):
+    _parent()
+    d = await outcomes.record_flag_ex("homelab_watch", "vm:150", "stopped")  # guest:150 has no edge to host:unraid
+    assert d["surface"] is True
+
+
+async def test_stale_collect_pauses_grouping(g3b_on):
+    _parent()
+    store.record_job("collect", ok=True, at=(datetime.utcnow() - timedelta(hours=4)).replace(microsecond=0).isoformat())
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert d["surface"] is True
+
+
+async def test_parent_itself_and_graph_flags_never_grouped(g3b_on):
+    _parent()
+    d = await outcomes.record_flag_ex("graph", "stale:collect", "graph stale", severity="low")
+    assert "grouped" not in str(d.get("reason"))
+
+
+async def test_budget_expiry_fails_open_and_undoes_late_attach(g3b_on, monkeypatch):
+    p = _parent()
+    from backend.graph import correlate
+
+    real = correlate.find_parent_on
+
+    def slow(*a, **k):
+        time.sleep(0.4)
+        return real(*a, **k)
+
+    monkeypatch.setattr(correlate, "find_parent_on", slow)
+    monkeypatch.setattr(g3b, "PRESEND_BUDGET_S", 0.1)
+    # make the worker commit despite the abandon (the check->COMMIT window): token never reports abandoned
+    monkeypatch.setattr(g3b.AbandonToken, "is_set", lambda self: False)
+    t0 = time.monotonic()
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert d["surface"] is True and time.monotonic() - t0 < 0.35  # page proceeds inside the budget
+    await asyncio.sleep(0.6)  # worker finishes and commits; the late handler queues the undo
+    assert g3b.drain_post()
+    assert _row(d["id"]).parent_flag_id is None  # compensated
+    assert p
+
+
+async def test_admission_refused_fails_open(g3b_on, monkeypatch):
+    _parent()
+    monkeypatch.setattr(g3b, "_admit", lambda: False)
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert d["surface"] is True and _row(d["id"]).parent_flag_id is None
+
+
+async def test_refire_resets_delivery_for_new_surfacing(g3b_on):
+    d1 = await outcomes.record_flag_ex("homelab_watch", "vm:150", "stopped")
+    with bd.engine.begin() as c:
+        c.execute(text("UPDATE outcomeflag SET paged_at = '2026-01-01 00:00:00.000000', send_claim_id = 'x' WHERE id = :i"),
+                  {"i": d1["id"]})
+    d2 = await outcomes.record_flag_ex("homelab_watch", "vm:150", "stopped again")
+    assert d2["id"] == d1["id"] and d2["surfacing"] == 2
+    r = _row(d1["id"])
+    assert r.paged_at is None and r.surfaced_count == 2
+
+
+async def test_undo_only_touches_its_own_attach(g3b_on):
+    p = _parent()
+    d = await outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped")
+    assert _row(d["id"]).parent_flag_id == p
+    outcomes._undo_attach(d["id"], "some-other-operation")
+    assert _row(d["id"]).parent_flag_id == p  # a different attach_op is never undone
+
+
+async def test_cancelled_caller_still_compensates(g3b_on, monkeypatch):
+    p = _parent()
+    from backend.graph import correlate
+
+    real = correlate.find_parent_on
+
+    def slow(*a, **k):
+        time.sleep(0.4)
+        return real(*a, **k)
+
+    monkeypatch.setattr(correlate, "find_parent_on", slow)
+    monkeypatch.setattr(g3b.AbandonToken, "is_set", lambda self: False)  # worker commits despite the abandon
+    t = asyncio.ensure_future(outcomes.record_flag_ex("homelab_watch", "docker:demo-app", "stopped"))
+    await asyncio.sleep(0.1)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    await asyncio.sleep(0.6)
+    assert g3b.drain_post()
+    with bd.engine.connect() as c:
+        r = c.execute(text("SELECT parent_flag_id FROM outcomeflag WHERE \"check\" = 'docker:demo-app'")).one()
+    assert r.parent_flag_id is None and p
+
+
+async def test_admission_slots_released_after_timeouts(g3b_on, monkeypatch):
+    from backend.graph import correlate
+
+    monkeypatch.setattr(correlate, "find_parent_on", lambda *a, **k: time.sleep(0.2))
+    monkeypatch.setattr(g3b, "PRESEND_BUDGET_S", 0.01)
+    for i in range(12):  # more than the admission cap
+        await outcomes.record_flag_ex("homelab_watch", f"docker:x{i}", "stopped")
+    await asyncio.sleep(1.5)
+    assert g3b._inflight == 0
+
+
+def test_post_queue_coalesces_and_drops_when_full(monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    ran = []
+    monkeypatch.setattr(g3b, "_post_q", __import__("queue").Queue(maxsize=2))
+    monkeypatch.setattr(g3b, "_post_keys", set())
+    monkeypatch.setattr(g3b, "_post_thread", None)
+    before = g3b.post_drops
+    g3b.post(("block",), gate.wait)  # occupies the worker
+    time.sleep(0.05)
+    g3b.post(("a", 1), lambda: ran.append("a"))
+    g3b.post(("a", 1), lambda: ran.append("a2"))  # coalesced
+    g3b.post(("b", 1), lambda: ran.append("b"))
+    g3b.post(("c", 1), lambda: ran.append("c"))  # queue full -> dropped and counted
+    assert g3b.post_drops == before + 1
+    gate.set()
+    assert g3b.drain_post()
+    assert ran == ["a", "b"]

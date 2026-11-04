@@ -750,6 +750,15 @@ class OutcomeFlag(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     suppressed: bool = False              # written by record_flag when a hint gated it
     suppressed_reason: str | None = None  # "calibration:homelab_watch:garage_open fp_rate=0.71 n=7"
+    # G3b alert grouping (plan g3/plan-v12-g3b.md §3). All NULL unless GRAPH_CORRELATION_ENABLED touched the row.
+    parent_flag_id: int | None = Field(default=None, index=True)  # parent this row is CURRENTLY grouped under
+    released_from_parent_id: int | None = None   # parent it was detached from by `python -m backend.graph ungroup`
+    paged_at: datetime | None = None              # accepted Telegram send for the CURRENT surfacing; reset on re-surface
+    send_claimed_at: datetime | None = None       # start of the current send lease
+    send_claim_id: str | None = None              # send owner token (uuid4 hex)
+    send_attempts: int | None = None              # gated _send_payload invocations; NULL == 0
+    debt_since: datetime | None = None            # first time the row was seen as release debt
+    attach_op: str | None = None                  # id of the attach/adoption that set parent_flag_id (fences compensation)
 
 
 # Expected-delivery heartbeat tracker (2026-08-21) — closes the blind spot
@@ -910,11 +919,45 @@ class CaptureItem(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+G3B_OUTCOMEFLAG_COLUMNS = {
+    "parent_flag_id": "INTEGER", "released_from_parent_id": "INTEGER", "paged_at": "TIMESTAMP",
+    "send_claimed_at": "TIMESTAMP", "send_claim_id": "VARCHAR", "send_attempts": "INTEGER",
+    "debt_since": "TIMESTAMP", "attach_op": "VARCHAR",
+}
+
+
 def _ensure_outcomeflag_columns():
-    """Idempotently add the calibration-loop columns to an OutcomeFlag table
-    that predates them. Best-effort — never fatal to startup."""
+    """Idempotently add the calibration-loop and G3b columns to an OutcomeFlag table
+    that predates them. Best-effort — never fatal to startup; missing_g3b_columns() +
+    `python -m backend.graph doctor` turn a failed migration into a hard deploy stop
+    (SQLModel selects every mapped column, so a missing one breaks every flag write)."""
     _safe_add_column("outcomeflag", "suppressed", "BOOLEAN DEFAULT 0")
     _safe_add_column("outcomeflag", "suppressed_reason", "VARCHAR")
+    for name, sqltype in G3B_OUTCOMEFLAG_COLUMNS.items():
+        _safe_add_column("outcomeflag", name, sqltype)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_outcomeflag_parent_flag_id ON outcomeflag(parent_flag_id)"))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"_ensure_outcomeflag_columns index create failed: {e}")
+    missing = missing_g3b_columns()
+    if missing:
+        logger.error(f"outcomeflag migration incomplete: missing {missing}")
+
+
+def missing_g3b_columns() -> list[str]:
+    """G3b columns (and the parent index) absent from the live outcomeflag table; [] when complete."""
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(outcomeflag)"))}
+            idx = {row[1] for row in conn.execute(text("PRAGMA index_list(outcomeflag)"))}
+    except Exception as e:
+        return [f"unreadable: {e}"]
+    missing = [c for c in G3B_OUTCOMEFLAG_COLUMNS if c not in cols]
+    if "ix_outcomeflag_parent_flag_id" not in idx:
+        missing.append("ix_outcomeflag_parent_flag_id")
+    return missing
 
 
 def _ensure_briefing_columns():

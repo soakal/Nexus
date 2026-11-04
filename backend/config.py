@@ -404,6 +404,9 @@ class Settings(BaseSettings):
     graph_enabled: bool = False
     graph_vault_index_minutes: int = 15
     graph_collect_minutes: int = 60
+    # G3b alert grouping: read once at boot (a change needs a restart; turning it off needs
+    # `python -m backend.graph ungroup` after the restart). Ships off.
+    graph_correlation_enabled: bool = False
 
     # Homelab watcher (backend/agents/homelab_watch.py) — 60s edge-alert loop.
     # Interval is hardcoded at 60s in scheduler.py (matches retry_deliveries/

@@ -646,6 +646,9 @@ async def test_cal32_open_flags_excludes_suppressed_by_default_and_includes_on_o
         ).bindparams(now=now))
         conn.commit()
 
+    import backend.database as bd
+    bd._ensure_outcomeflag_columns()  # boot migration (adds the G3b columns; leaves suppressed NULL)
+
     with e.connect() as conn:
         row = conn.execute(text("SELECT suppressed FROM outcomeflag WHERE id = 3")).fetchone()
     assert row[0] is None

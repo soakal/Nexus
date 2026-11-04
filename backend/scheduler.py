@@ -220,6 +220,13 @@ async def _retry_pending_deliveries():
     except Exception as e:
         logger.error(f"Retry delivery error: {e}")
         raise
+    finally:
+        # G3b release reconciler rides this unconditional 60 s job (plan §5.4); never raises.
+        try:
+            from backend.agents import release
+            await release.release_due()
+        except Exception as e:
+            logger.warning(f"release_due error (ignored): {e}")
 
 
 async def _ingest_brain_spend():

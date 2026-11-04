@@ -17,6 +17,26 @@ Production-grade personal AI OS. FastAPI backend + React/Vite frontend, a multi-
 > Windows-specific ones (tray/Task Scheduler/registry/PowerShell-only content) as
 > historical/`windows-archive`-only.
 
+**Knowledge graph G3b — alert grouping, ships OFF (2026-11-04)** — plan `g3/plan-v12-g3b.md` (outside the repo;
+Astra SHIP-PLAN after 10 rounds). Behind `GRAPH_CORRELATION_ENABLED` (default **false**, read once at boot). When ON, a
+new groupable homelab flag (docker/vm/lxc/expected) whose node sits under the node of an open, **already-paged**
+`homelab_watch:unraid_array` flag (the only parent kind, `correlate.PARENT_CHECKS`; 30 min window, depth 3, paused when
+the topology collect is stale) is attached to it and **not paged**; when the parent closes, the child gets one
+`flag_released` page (never-mutable kind) with its fix button. Hard rule: **G3b must never stop or delay a page today's
+code sends** — with the switch OFF no G3b code runs in any send path (`outcomes.coord_kwargs` returns `{}`,
+`notify`/`deliver_pending` only test two in-memory conditions) and the release tick does one read-only `EXISTS` when
+nothing is grouped. ON: all pre-send G3b work (grouping decision in `record_flag_ex`, the V1 send gate) runs on
+`backend/agents/g3b.py`'s dedicated 2-thread pool (admission cap 8) under ONE 1 s elapsed-time budget per page, then
+fails open; late writes are compensated from the concurrent future's done-callback (`attach_op` / claim token fences);
+stamps/give-backs go to a bounded daemon post queue that is never awaited. Release pages: `backend/agents/release.py`
+(derived debt, `debt_since`, adoption of children that paged before their parent) via `notify_phone(release=True)` →
+`telegram.send_release` (V3 gate, never queued), from the 60 s `retry_deliveries` job, boot, and parent resolve/clear.
+Rule 3: `outcomes.unpaged_grouped()` (uncapped) is listed first in the briefing, `/flags [page]` (real paging +
+exact `+N more`), the `open_flags` tool and chat memory. Rollback = switch off + restart + `python -m backend.graph
+ungroup` (durable detach + page, exit 0 only when stamped). `doctor` shows the switch, a hard ✗ if the 8 outcomeflag
+columns are missing, release debt and overdue debt (> 30 min). Enable only after the synthetic `drill` and the owner's
+`phone_suppressed_kinds` check (must not contain `flag_released`).
+
 **Knowledge graph G3a — change recording + `what_changed` + incident evidence (2026-11-03)** — plan
 `g3/plan-v2.md` §4 (outside the repo). New `backend/graph/changes.py`: every `collect()`/vault `refresh()`
 diffs each source's new snapshot against the stored rows **of that source only** and writes `graphchange`
