@@ -47,8 +47,10 @@ _SYSTEM = (
     "sentence; (2) evidence, max 3 bullets; (3) recommended action, one "
     "line. Under 120 words total. If evidence is inconclusive, say so "
     "plainly — never invent a cause. When an EVIDENCE block is given, "
-    "never blame a change it says was recorded too late to be the cause; "
-    "changes it marks UNCERTAIN are possible but unconfirmed causes."
+    "treat changes recorded long after the incident time (also via "
+    "what_changed) as unlikely causes, and never present one as the cause "
+    "without other evidence; changes it marks UNCERTAIN are possible but "
+    "unconfirmed causes."
 )
 
 
@@ -114,7 +116,7 @@ def _collect_minutes() -> int:
     try:
         from backend.config import get_settings
 
-        return max(1, int(getattr(get_settings(), "graph_collect_minutes", 60)))
+        return max(15, int(getattr(get_settings(), "graph_collect_minutes", 60)))  # same clamp as scheduler.py's graph_collect job
     except (TypeError, ValueError):
         return 60
 
@@ -127,7 +129,7 @@ async def _evidence(key: str, fired_at: datetime | None = None) -> str:
     """Deterministic graph facts for the prompt (G3a). "" when the graph is off or knows nothing. Never raises.
 
     graphchange.ts is when the COLLECTOR saw a change (every graph_collect_minutes), not when it happened,
-    so rows recorded within one collect interval after the incident are listed separately as uncertain."""
+    so rows recorded within two collect intervals after the incident are listed separately as uncertain."""
     try:
         from backend.agents import outcomes
         from backend.graph import correlate, enabled, store, to_utc_iso
@@ -141,7 +143,8 @@ async def _evidence(key: str, fired_at: datetime | None = None) -> str:
         at, label = _incident_at(key, flag, fired_at)
         ids = [node] + [i for i, _ in await asyncio.to_thread(store.ancestors, node, 3)]
         if key == "vzdump_failed":
-            # guests on this host that some backup job covers (the failing task's own guest list is not known)
+            # shortcut: guests covered by ANY backup job, not just the failing task (fetch_backups does not return the
+            # task's vmids); fine while there is one all-guests job, read the task log when jobs become selective
             backed = await asyncio.to_thread(store.edge_sources, "backs_up_to")
             ids += [i for i, _ in await asyncio.to_thread(store.descendants, node, 1) if i in backed]
         lines = ["EVIDENCE (deterministic, from the knowledge graph)"]
@@ -149,9 +152,10 @@ async def _evidence(key: str, fired_at: datetime | None = None) -> str:
             lines.append(f"Incident time unknown ({label}) \u2014 change history omitted, there is no reliable cutoff.")
         else:
             lag = _collect_minutes()
+            window = 2 * lag  # tolerates one failed/missed collect; not a hard bound
             t = datetime.fromisoformat(at)
             since = to_utc_iso(t - timedelta(hours=24))
-            until = to_utc_iso(t + timedelta(minutes=lag))
+            until = to_utc_iso(t + timedelta(minutes=window))
             before = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, before=at, limit=_EVIDENCE_ROWS))
             near = await asyncio.to_thread(lambda: store.changes_for(ids, since=at, before=until, limit=_EVIDENCE_ROWS))
             lines.append(
@@ -162,10 +166,13 @@ async def _evidence(key: str, fired_at: datetime | None = None) -> str:
             if len(before) >= _EVIDENCE_ROWS:
                 lines.append(f"- (showing newest {_EVIDENCE_ROWS})")
             if near:
-                lines.append(f"UNCERTAIN \u2014 recorded within {lag} min AFTER the incident time; may have changed "
+                lines.append(f"UNCERTAIN \u2014 recorded within {window} min AFTER the incident time; may have changed "
                              "just before it (collector lag) or after it:")
                 lines += [_change_line(r) for r in near]
-            lines.append(f"Anything recorded more than {lag} min after the incident time cannot be the cause.")
+            lines.append(
+                f"Changes recorded more than {window} min after the incident time are not listed: a change made before "
+                "the incident is normally recorded within one collect, so they are unlikely causes unless the collector "
+                "was failing (check graph health).")
         lines.append(f"Graph scope: {', '.join(ids)}")
         by_node = correlate.flags_by_node(await outcomes.open_flags(limit=1000))
         own = (flag or {}).get("id")

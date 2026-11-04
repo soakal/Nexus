@@ -189,7 +189,8 @@ async def test_evidence_scoped_strictly_before_job_start(graph_db):
     assert "guest:101" in ev.split("Graph scope:")[1] and "guest:105" not in ev  # only backed-up guests in scope
     assert "guest:101 status" not in ev  # recorded ~11 h after the job start: never shown
     assert "cores" not in ev
-    assert "more than 60 min after the incident time cannot be the cause" in ev
+    assert "recorded within 120 min AFTER" in ev  # two collect intervals
+    assert "more than 120 min after the incident time are not listed" in ev
 
 
 async def test_evidence_uses_flag_created_at_for_other_keys(graph_db):
@@ -269,3 +270,9 @@ async def test_maybe_diagnose_passes_fire_time():
         incident_diag.maybe_diagnose({"vms": ["vm:100"], "docker": [], "array": [], "backups": []})
         await incident_diag._diag_task
     assert seen["at"] is not None and seen["at"].tzinfo is None
+
+
+def test_collect_minutes_matches_scheduler_clamp():
+    for configured, effective in ((5, 15), (60, 60)):
+        with patch("backend.config.get_settings", return_value=_settings(graph_collect_minutes=configured)):
+            assert incident_diag._collect_minutes() == effective

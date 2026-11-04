@@ -930,7 +930,12 @@ async def test_what_changed(graph_db):
     for i in range(25):
         store.insert_change(now_iso(), "guest:207", "memory", str(i), str(i + 1), "proxmox_api")
     out = await f({"node": "guest:207", "include_ancestors": False})
-    assert out.endswith("(newest 20 shown; narrow 'since' for older rows)") and len(out) <= 1500
+    assert out.endswith("(more rows not shown; narrow 'since' for older rows)") and len(out) <= 1500
+    for _ in range(20):
+        store.insert_change(now_iso(), "guest:207", "tags", "x" * 400, "y" * 400, "proxmox_api")
+    out = await f({"node": "guest:207", "include_ancestors": False})
+    assert out.endswith("(more rows not shown; narrow 'since' for older rows)") and len(out) <= 1500
+    assert all(ln.endswith("[proxmox_api]") for ln in out.splitlines()[1:-1])  # no row cut mid-line
     store.upsert_nodes([Node("guest:301", "guest", "twin"), Node("guest:302", "guest", "twin")], now_iso())
     assert "unavailable: ambiguous" in await f({"node": "twin"})
 

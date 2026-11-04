@@ -528,14 +528,16 @@ async def _what_changed(input: dict) -> str:
         if not rows:
             return head + ": none recorded"
         def v(x):
-            return "\u2205" if x is None else x
+            return "\u2205" if x is None else (x if len(x) <= 120 else x[:117] + "...")
 
-        lines = [head + ":"] + [
-            f"{r['ts']}Z {r['node_id']} {r['field']}: {v(r['old'])} \u2192 {v(r['new'])} [{r['source']}]" for r in rows
-        ]
-        if more:
-            lines.append(f"(newest {_WHAT_CHANGED_ROWS} shown; narrow 'since' for older rows)")
-        return _truncate("\n".join(lines))
+        notice = "(more rows not shown; narrow 'since' for older rows)"
+        out = head + ":"
+        for r in rows:
+            line = f"\n{r['ts']}Z {r['node_id']} {r['field']}: {v(r['old'])} \u2192 {v(r['new'])} [{r['source']}]"
+            if len(out) + len(line) + len(notice) + 1 > MAX_TOOL_RESULT_CHARS:
+                return out + "\n" + notice  # budget by length: never cut a row or drop the notice
+            out += line
+        return out + ("\n" + notice if more else "")
     except Exception as e:
         return _truncate(f"what_changed unavailable: {e}")
 

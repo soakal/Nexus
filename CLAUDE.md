@@ -32,7 +32,10 @@ collector source names reserved). All timestamps go through `graph.to_utc_iso` (
 now prepends a deterministic `EVIDENCE` block (graph changes in the 24 h strictly BEFORE the incident — for
 `vzdump_failed` the failing job's start, carried as `starttime` in the flag `detail` — plus open flags and
 runbook notes in scope) after the 2026-11-01 diagnosis blamed a VM destroyed the morning after the failed
-job. 180-day prune in the nightly retention job. No schema change, no new scheduler job, no paging change;
+job. `graphchange.ts` is when the collector SAW a change (every `max(15, graph_collect_minutes)`), so rows
+recorded within two collect intervals after the incident are listed as UNCERTAIN, later ones are left out
+(not declared impossible); no trustworthy incident time → change history omitted. vzdump scope = guests
+with any `backs_up_to` edge (shortcut: not the failing task's own guests). 180-day prune in the nightly retention job. No schema change, no new scheduler job, no paging change;
 gated by the existing `GRAPH_ENABLED`. G3b (alert grouping) is planned separately and not built.
 
 **Quill digest schedule (2026-10-18)** — new job `capture_digest_personal_morning` (07:00, "Personal morning check":
