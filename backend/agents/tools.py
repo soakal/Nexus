@@ -524,7 +524,10 @@ async def _what_changed(input: dict) -> str:
         rows = await asyncio.to_thread(lambda: store.changes_for(ids, since=since, limit=_WHAT_CHANGED_ROWS + 1))
         more = len(rows) > _WHAT_CHANGED_ROWS
         rows = rows[:_WHAT_CHANGED_ROWS]
-        head = f"changes on {nid}" + (f" + {len(ids) - 1} ancestor(s)" if len(ids) > 1 else "") + f" since {since}Z (UTC)"
+        from backend.graph import freshness
+
+        warn = await asyncio.to_thread(freshness.note)
+        head = (warn + "\n" if warn else "") + f"changes on {nid}" + (f" + {len(ids) - 1} ancestor(s)" if len(ids) > 1 else "") + f" since {since}Z (UTC)"
         if not rows:
             return head + ": none recorded"
         def v(x):

@@ -54,7 +54,7 @@ def _fresh(job: dict | None, minutes: int) -> tuple[bool, str]:
 
 def _doctor() -> int:
     from backend.config import get_settings
-    from backend.graph import enabled, store
+    from backend.graph import enabled, intervals, store
 
     s = get_settings()
     h = store.health()
@@ -72,7 +72,7 @@ def _doctor() -> int:
         line(True, "tables present: graphnode graphedge graphchange graphjob")
     jobs = h["jobs"]
     vj = jobs.get("vault_index")
-    mins = max(5, s.graph_vault_index_minutes)
+    mins = intervals(s)["vault_index"]
     ok, msg = _fresh(vj, mins)
     line(ok, f"vault index fresh: {msg}" if ok or vj else "vault index fresh: vault_index never ran")
     err = (vj or {}).get("last_error")
@@ -90,7 +90,7 @@ def _doctor() -> int:
         pct = 100 * h["edges"].get("links_to", 0) / total
         line(pct >= _RESOLVED_MIN_PCT, f"links resolved {pct:.0f}% ({extra})")
     cj = jobs.get("collect")
-    ok, msg = _fresh(cj, max(15, s.graph_collect_minutes))
+    ok, msg = _fresh(cj, intervals(s)["collect"])
     line(ok, f"topology fresh: {msg}" if ok or cj else "topology fresh: collect never ran")
     cerr = (cj or {}).get("last_error")
     line(not cerr, f"collect last_error: {cerr or 'none'}")

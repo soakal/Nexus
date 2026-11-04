@@ -1881,3 +1881,20 @@ async def test_run_watchdog_includes_mail_sender_filter_key(eng):
          patch("backend.events.notify_phone", AsyncMock(return_value=True)):
         result = await watchdog.run_watchdog()
     assert result["mail_sender_filter"] is False
+
+
+async def test_run_watchdog_includes_graph_stale_key(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from backend.agents import watchdog
+
+    s = MagicMock(watchdog_enabled=True)
+    with patch("backend.config.get_settings", return_value=s), \
+         patch.object(watchdog, "check_graph_freshness", AsyncMock(return_value=["collect"])) as g:
+        for name in ("check_scheduler_stalls", "check_failing_jobs", "check_dead_letters", "check_budget_warning",
+                     "check_auth_failure_burst", "check_integration_contracts", "check_deferred_flags",
+                     "check_deploy_drift", "check_expected_deliveries", "check_mail_sender_filter"):
+            monkeypatch.setattr(watchdog, name, AsyncMock(return_value=None))
+        result = await watchdog.run_watchdog()
+    g.assert_awaited_once()
+    assert result["graph_stale"] == ["collect"]

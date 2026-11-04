@@ -36,3 +36,15 @@ def to_utc_iso(value: str | datetime) -> str:
     except OverflowError as e:  # '9999999999h', '0001-01-01T00:00:00+01:00': bad input, not a server error
         raise ValueError(f"time out of range: {value!r}") from e
     return dt.replace(tzinfo=None, microsecond=0).isoformat()
+
+
+def intervals(settings=None) -> dict[str, int]:
+    """Effective job intervals in minutes -- the scheduler, freshness checks and incident evidence share these clamps."""
+    if settings is None:
+        from backend.config import get_settings
+
+        settings = get_settings()
+    return {
+        "collect": max(15, int(getattr(settings, "graph_collect_minutes", 60))),
+        "vault_index": max(5, int(getattr(settings, "graph_vault_index_minutes", 15))),
+    }

@@ -843,10 +843,19 @@ async def check_expected_deliveries(*, cooldown_s: int) -> list[str]:
         return []
 
 
+async def check_graph_freshness() -> list[str]:
+    """Eleventh check (2026-11-03): knowledge-graph jobs with no success for 3 intervals -> low-severity
+    graph:stale:<job> flags (briefing + /flags, not a page), cleared on recovery or when the graph is off.
+    Lives here, not in the graph jobs, so a hung or unscheduled job is still caught. Never raises."""
+    from backend.graph import freshness
+
+    return await freshness.reconcile()
+
+
 async def run_watchdog() -> dict:
     """Top-level entry point called by the scheduler every 5 minutes.
 
-    Gated by settings.watchdog_enabled.  Runs all ten checks and returns a
+    Gated by settings.watchdog_enabled.  Runs all eleven checks and returns a
     summary dict.  NEVER raises — any exception is caught and logged.
     """
     try:
@@ -869,6 +878,7 @@ async def run_watchdog() -> dict:
         drift = await check_deploy_drift(cooldown_s=cooldown_s)
         stale_deliveries = await check_expected_deliveries(cooldown_s=cooldown_s)
         mail_filter = await check_mail_sender_filter(cooldown_s=cooldown_s)
+        graph_stale = await check_graph_freshness()
 
         return {
             "stalled": stalled,
@@ -881,6 +891,7 @@ async def run_watchdog() -> dict:
             "deploy_drift": drift,
             "stale_deliveries": stale_deliveries,
             "mail_sender_filter": mail_filter,
+            "graph_stale": graph_stale,
         }
     except Exception as exc:
         logger.error(f"run_watchdog error (ignored): {exc}")
@@ -895,4 +906,5 @@ async def run_watchdog() -> dict:
             "deploy_drift": False,
             "stale_deliveries": [],
             "mail_sender_filter": False,
+            "graph_stale": [],
         }
