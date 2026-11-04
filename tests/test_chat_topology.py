@@ -47,8 +47,8 @@ async def test_topology_intent_routes_through_run_with_tools(monkeypatch):
     assert kwargs["label"] == "chat_topology"
     assert kwargs["web_search"] is False
     tool_names = {spec["name"] for spec in kwargs["tool_specs"]}
-    assert tool_names == {"graph_topology", "vault_search", "vault_read_note"}
-    assert set(kwargs["dispatch"].keys()) == {"graph_topology", "vault_search", "vault_read_note"}
+    assert tool_names == {"graph_topology", "what_changed", "vault_search", "vault_read_note"}
+    assert set(kwargs["dispatch"].keys()) == {"graph_topology", "what_changed", "vault_search", "vault_read_note"}
     assert "what runs on CT 209?" in kwargs["prompt"]
     # TOPOLOGY is a conversational intent -- fact extraction still runs, same as CHAT/NOTE/TASK.
     mock_facts.assert_awaited_once()

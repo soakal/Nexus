@@ -548,14 +548,17 @@ async def _prune_retention():
             prune_old_trend_snapshots,
             prune_old_traces,
             prune_old_outcome_flags,
+            prune_old_graph_changes,
         )
         uptime_deleted = await asyncio.to_thread(prune_old_uptime_samples)
         trend_deleted = await asyncio.to_thread(prune_old_trend_snapshots)
         trace_deleted = await asyncio.to_thread(prune_old_traces)
         outcome_flags_deleted = await asyncio.to_thread(prune_old_outcome_flags)
+        graph_changes_deleted = await asyncio.to_thread(prune_old_graph_changes)
         logger.info(
             f"Retention prune: {uptime_deleted} uptime sample(s), {trend_deleted} trend snapshot(s), "
-            f"{trace_deleted} trace(s), {outcome_flags_deleted} outcome flag(s)"
+            f"{trace_deleted} trace(s), {outcome_flags_deleted} outcome flag(s), "
+            f"{graph_changes_deleted} graph change(s)"
         )
     except Exception as e:
         logger.error(f"Retention prune job error: {e}")

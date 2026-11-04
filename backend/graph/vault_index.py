@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import backend.api.vault as _vault_api
-from backend.graph import now_iso, store
+from backend.graph import changes, now_iso, store
 from backend.graph.store import Edge, Node
 from backend.integrations import obsidian
 
@@ -254,9 +254,23 @@ def _refresh(full: bool, seen_at: str, t0: float) -> dict:
         store.upsert_edges(edges, seen_at, conn)
         store.delete_nodes(removed, conn)
         store.delete_orphan_tags(conn)
+        result["changes"] = changes.record(conn, seen_at, _note_changes(stored, nodes, removed, seen_at))
         result["seconds"] = round(time.monotonic() - t0, 3)
         store.record_job("vault_index", ok=True, stats=result, at=seen_at, conn=conn)
     return result
+
+
+def _note_changes(stored: dict[str, dict], nodes: list[Node], removed: set[str], ts: str) -> list[dict]:
+    """G3a: title/status/category edits, new notes (not on a first index), removed notes. Never vault edges."""
+    rows: list[dict] = []
+    for n in nodes:
+        if n.id in stored:
+            rows += [{"ts": ts, "node_id": n.id, "field": f, "old": o, "new": w, "source": "vault"}
+                     for f, o, w in changes.diff_nodes("note", stored[n.id], n.attrs)]
+        elif stored:
+            rows.append({"ts": ts, "node_id": n.id, "field": "node", "old": None, "new": "note", "source": "vault"})
+    rows += [{"ts": ts, "node_id": i, "field": "node", "old": "note", "new": None, "source": "vault"} for i in sorted(removed)]
+    return rows
 
 
 def reconcile_documents(seen_at: str, conn) -> int:

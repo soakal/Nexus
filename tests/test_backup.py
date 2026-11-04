@@ -601,3 +601,23 @@ def test_make_backup_ok_false_when_copy_corrupt(tmp_path, monkeypatch):
     result = make_backup()
     assert result["ok"] is False
     assert result["integrity"] == "corrupt"
+
+
+def test_prune_old_graph_changes_keeps_180_days(tmp_path, monkeypatch):
+    from backend.agents.backup import GRAPH_CHANGE_RETENTION_DAYS, prune_old_graph_changes
+    from backend.graph import store, to_utc_iso
+
+    engine = _make_sample_engine(tmp_path / "nexus.db")
+    monkeypatch.setattr("backend.database.engine", engine)
+    now = datetime.utcnow()
+    store.insert_change(to_utc_iso(now - timedelta(days=GRAPH_CHANGE_RETENTION_DAYS + 1)), "guest:1", "status", "a", "b", "proxmox_api")
+    store.insert_change(to_utc_iso(now - timedelta(days=GRAPH_CHANGE_RETENTION_DAYS - 1)), "guest:1", "status", "b", "c", "proxmox_api")
+    assert prune_old_graph_changes() == 1
+    assert [r["new"] for r in store.changes_for(["guest:1"], since="2000-01-01T00:00:00")] == ["c"]
+
+
+def test_prune_old_graph_changes_tolerates_missing_table(tmp_path, monkeypatch):
+    from backend.agents.backup import prune_old_graph_changes
+
+    monkeypatch.setattr("backend.database.engine", create_engine(f"sqlite:///{tmp_path / 'empty.db'}"))
+    assert prune_old_graph_changes() == 0

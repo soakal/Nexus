@@ -1076,6 +1076,18 @@ async def test_backup_failed_fires_once_and_rearms():
 
 
 @pytest.mark.asyncio
+async def test_backup_failed_flag_carries_job_starttime():
+    """G3a: incident_diag scopes change evidence to the failing job's start, read back from the flag detail."""
+    import json
+    failed = {"node": "pve", "status": "failed", "detail": "job errors", "starttime": "2026-10-31T21:00:00"}
+    rec = AsyncMock(return_value={"id": None, "surface": False, "reason": "test"})
+    with patch("backend.integrations.proxmox.fetch_backups", new_callable=AsyncMock, return_value=failed), \
+         patch("backend.agents.outcomes.record_flag_ex", rec):
+        await homelab_watch.check_backups()
+    assert json.loads(rec.await_args.kwargs["detail"]) == {"starttime": "2026-10-31T21:00:00"}
+
+
+@pytest.mark.asyncio
 async def test_backup_running_or_none_status_not_a_breach():
     for status in ("running", "none"):
         homelab_watch.reset()

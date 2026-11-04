@@ -121,7 +121,8 @@ def test_generation_and_mark_stale(eng):
     store.upsert_nodes([N("g:4", source="unraid_api")], T, gen=1)
     store.upsert_nodes([N("g:5", source="proxmox_api")], T, gen=None)  # NULL gen never flips
     store.upsert_edges([E("g:1", "g:2")], T, gen=2)
-    assert store.mark_stale("proxmox_api", 2) == (1, 1)
+    assert store.mark_stale("proxmox_api", 2) == (["g:1"], [("g:1", "g:2", "runs_on")])  # only the rows it flipped
+    assert store.mark_stale("proxmox_api", 2) == ([], [])
     assert {n["id"]: n["status"] for n in store.list_nodes()} == {
         "g:1": "stale", "g:2": "active", "g:3": "active", "g:4": "active", "g:5": "active"}
     assert store.stale_counts() == {"nodes": 1, "edges": 1}

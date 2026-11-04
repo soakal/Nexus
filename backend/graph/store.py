@@ -227,16 +227,57 @@ def bump_generation(source: str, conn: Connection) -> int:
     ).scalar_one()
 
 
-def mark_stale(source: str, max_gen: int, conn: Connection | None = None) -> tuple[int, int]:
+def mark_stale(
+    source: str, max_gen: int, conn: Connection | None = None
+) -> tuple[list[str], list[tuple[str, str, str]]]:
+    """Rows that transitioned active -> stale in this call (node ids, (src, dst, type) edges)."""
     p = {"source": source, "g": max_gen}
     with _use(conn) as c:
         n = c.execute(
-            text("UPDATE graphnode SET status = 'stale' WHERE source = :source AND status = 'active' AND gen <= :g"), p
-        ).rowcount
+            text(
+                "UPDATE graphnode SET status = 'stale' WHERE source = :source AND status = 'active' AND gen <= :g "
+                "RETURNING id"
+            ),
+            p,
+        ).scalars().all()
         e = c.execute(
-            text("UPDATE graphedge SET status = 'stale' WHERE source = :source AND status = 'active' AND gen <= :g"), p
-        ).rowcount
-    return n, e
+            text(
+                "UPDATE graphedge SET status = 'stale' WHERE source = :source AND status = 'active' AND gen <= :g "
+                "RETURNING src, dst, type"
+            ),
+            p,
+        ).all()
+    return sorted(n), sorted((r.src, r.dst, r.type) for r in e)
+
+
+def insert_changes(rows: list[dict], conn: Connection | None = None) -> int:
+    """rows: {ts, node_id, field, old, new, source}."""
+    if not rows:
+        return 0
+    stmt = text(
+        "INSERT INTO graphchange(ts, node_id, field, old, new, source) VALUES(:ts, :node_id, :field, :old, :new, :source)"
+    )
+    with _use(conn) as c:
+        for part in _chunks(rows):
+            c.execute(stmt, part)
+    return len(rows)
+
+
+def insert_change(ts: str, node_id: str, field: str, old: str | None, new: str | None, source: str,
+                  conn: Connection | None = None) -> int:
+    with _use(conn) as c:
+        return c.execute(
+            text(
+                "INSERT INTO graphchange(ts, node_id, field, old, new, source) "
+                "VALUES(:ts, :n, :f, :o, :w, :s) RETURNING id"
+            ),
+            {"ts": ts, "n": node_id, "f": field, "o": old, "w": new, "s": source},
+        ).scalar_one()
+
+
+def prune_changes(before_ts: str) -> int:
+    with batch() as c:
+        return c.execute(text("DELETE FROM graphchange WHERE ts < :b"), {"b": before_ts}).rowcount
 
 
 def record_job(
@@ -335,6 +376,41 @@ def list_nodes(
     stmt = text(sql).bindparams(*stmt_binds)
     with _read(conn) as c:
         return [_node_row(r) for r in c.execute(stmt, params).all()]
+
+
+def edge_keys(*, source: str, status: str | None = "active", conn: Connection | None = None) -> dict[tuple[str, str, str], str]:
+    sql = "SELECT src, dst, type, status FROM graphedge WHERE source = :source"
+    params = {"source": source}
+    if status is not None:
+        sql += " AND status = :status"
+        params["status"] = status
+    with _read(conn) as c:
+        return {(r.src, r.dst, r.type): r.status for r in c.execute(text(sql), params).all()}
+
+
+def edge_sources(edge_type: str) -> set[str]:
+    """Nodes with at least one ACTIVE outgoing edge of this type."""
+    with _read() as c:
+        return set(c.execute(text("SELECT DISTINCT src FROM graphedge WHERE type = :t AND status = 'active'"), {"t": edge_type}).scalars())
+
+
+def changes_for(node_ids: Iterable[str], *, since: str, before: str | None = None, limit: int = 100) -> list[dict]:
+    """Newest first. ts strings are naive-UTC ISO, so string order == time order."""
+    ids = list(dict.fromkeys(node_ids))
+    if not ids:
+        return []
+    sql = "SELECT id, ts, node_id, field, old, new, source FROM graphchange WHERE node_id IN :ids AND ts >= :since"
+    params: dict = {"since": since, "limit": limit}
+    if before is not None:
+        sql += " AND ts < :before"
+        params["before"] = before
+    stmt = text(sql + " ORDER BY ts DESC, id DESC LIMIT :limit").bindparams(bindparam("ids", expanding=True))
+    out: list[dict] = []
+    with _read() as c:
+        for part in _chunks(ids):
+            out += [dict(r._mapping) for r in c.execute(stmt, {**params, "ids": part}).all()]
+    out.sort(key=lambda r: (r["ts"], r["id"]), reverse=True)
+    return out[:limit]
 
 
 _VMID_REF = re.compile(r"^\s*(?:ct|vm|lxc|qemu)?\s*(\d+)\s*$", re.IGNORECASE)
@@ -458,6 +534,7 @@ def health() -> dict:
         "jobs": {},
         "vault": {"notes": 0, "unresolved_links": 0, "ambiguous_stems": 0, "skipped_oversize": 0, "unreadable": 0},
         "dangling_edges": 0,
+        "changes": {"rows": 0, "oldest": None},
     }
     try:
         with _read() as c:
@@ -483,6 +560,7 @@ def health() -> dict:
                     "OR NOT EXISTS (SELECT 1 FROM graphnode WHERE id = e.dst)"
                 )
             ).scalar_one()
+            ch = c.execute(text("SELECT COUNT(*) AS n, MIN(ts) AS oldest FROM graphchange")).one()
         stale = stale_counts()
     except OperationalError:
         return {"tables_missing": True, **empty}
@@ -502,6 +580,7 @@ def health() -> dict:
             "unreadable": vstats.get("unreadable", 0),
         },
         "dangling_edges": dangling,
+        "changes": {"rows": ch.n, "oldest": ch.oldest},
     }
 
 

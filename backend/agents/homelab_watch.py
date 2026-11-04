@@ -504,6 +504,7 @@ async def check_backups() -> list[str]:
         bad,
         f"NEXUS: latest Proxmox backup failed ({html.escape(str(data.get('detail', '')))}).",
         kind="homelab_backup_failed",
+        detail=json.dumps({"starttime": data.get("starttime")}) if data.get("starttime") else None,
     )
     return ["vzdump_failed"] if fired else []
 

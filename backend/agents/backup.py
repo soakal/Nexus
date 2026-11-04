@@ -355,6 +355,20 @@ def prune_old_outcome_flags() -> int:
     return _prune_outcome_flags_by_cutoff(cutoff)
 
 
+GRAPH_CHANGE_RETENTION_DAYS = 180
+
+
+def prune_old_graph_changes() -> int:
+    """Delete graphchange rows older than GRAPH_CHANGE_RETENTION_DAYS. Never raises (a missing
+    table after `graph drop` is fine)."""
+    try:
+        from backend.graph import store, to_utc_iso
+        return store.prune_changes(to_utc_iso(datetime.utcnow() - timedelta(days=GRAPH_CHANGE_RETENTION_DAYS)))
+    except Exception as e:
+        logger.warning(f"prune_old_graph_changes failed: {e}")
+        return 0
+
+
 def restore_from(backup_path: str) -> dict:
     """Restore nexus.db from a backup directory (a backups/<ts> dir or the
     Unraid share root). STOP NEXUS FIRST — restoring under a live engine
