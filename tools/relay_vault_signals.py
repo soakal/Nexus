@@ -62,6 +62,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.error
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -564,6 +565,51 @@ def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
         return False
 
 
+_CLOSE_SECTION = "flags to close"
+_CLOSE_LINE = re.compile(r"^#(\d+)\b\s*(?:[—–:-]+\s*)?(.*)$")
+MAX_CLOSES_PER_FILE = 30
+
+
+def _flags_to_close(content: str) -> list[tuple[int, str]]:
+    """`#NNN — reason` bullets under the digest's `## Flags to close` section (untagged, so
+    _relay_file never posts them as findings)."""
+    out: list[tuple[int, str]] = []
+    in_section = False
+    for raw in content.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            in_section = line[3:].strip().lower() == _CLOSE_SECTION
+        elif in_section and _BULLET.match(line):
+            m = _CLOSE_LINE.match(_BULLET.sub("", line).strip())
+            if m:
+                out.append((int(m.group(1)), m.group(2).strip()))
+    return out[:MAX_CLOSES_PER_FILE]
+
+
+def _resolve_flag(base_url: str, key: str, flag_id: int, note: str) -> bool:
+    """Resolve one vault_signals flag. 200, 404 (gone) and 409 (already closed, or not a
+    vault_signals flag: never ours to close) all count as done; anything else is retried."""
+    body = json.dumps({"status": "resolved", "note": note, "source": "vault_signals"}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/safety/flags/{flag_id}/resolve",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 409):
+            print(f"flag #{flag_id} not closed ({e.code}): skipped")
+            return True
+        print(f"resolve #{flag_id} failed: {e}")
+        return False
+    except Exception as e:
+        print(f"resolve #{flag_id} failed: {e}")
+        return False
+
+
 def _relay_file(path: Path, base_url: str, key: str) -> bool:
     """Relay every TAGGED finding in one digest file. Returns True as long as
     EVERY tagged finding's POST succeeded -- callers must only mark this
@@ -603,6 +649,14 @@ def _relay_file(path: Path, base_url: str, key: str) -> bool:
         else:
             all_ok = False
     print(f"{path.name}: {posted}/{len(findings)} finding(s) posted ({skipped} skipped, untagged)")
+    for flag_id, reason in _flags_to_close(content):
+        note = f"vault_signals {path.stem}: {reason or 'reported settled'}"[:500]
+        try:
+            ok = _resolve_flag(base_url, key, flag_id, note)
+        except Exception as e:
+            print(f"resolve #{flag_id} failed for {path.name}: {e}")
+            ok = False
+        all_ok = all_ok and ok
     return all_ok
 
 

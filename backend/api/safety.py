@@ -302,15 +302,25 @@ async def resolve_flag_route(
     flag_id: int,
     body: dict = Body(...),
     _=Depends(require_api_key),
+    session: Session = Depends(get_session),
 ):
     """Close (or park) an open/needs_follow_up/deferred flag. Body:
-    {status, note?, defer_days?}. Status codes mirror confirm_action:
+    {status, note?, defer_days?, source?}. Status codes mirror confirm_action:
       200  — resolved (applied status in body)
       404  — flag not found
-      409  — already closed
+      409  — already closed, or `source` given and the flag's source differs
       400  — invalid target status, or a vault_signals false_positive with no note
     """
     from backend.agents import outcomes
+
+    # Optional guard for automated closers (vault_signals relay): only close a flag from the stated source.
+    want_source = body.get("source")
+    if want_source is not None:
+        flag = session.get(OutcomeFlag, flag_id)
+        if flag is None:
+            raise HTTPException(status_code=404, detail="Flag not found")
+        if flag.source != want_source:
+            raise HTTPException(status_code=409, detail=f"Flag source is {flag.source!r}, not {want_source!r}")
 
     defer_days = body.get("defer_days")
     if defer_days is not None:

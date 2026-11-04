@@ -1227,3 +1227,70 @@ def test_main_returns_0_when_todays_digest_present(monkeypatch, tmp_path):
     _write_digest(tmp_path, f"{date.today().isoformat()}.md", "- [personal] today\n")
 
     assert relay.main() == 0
+
+
+# ---- "## Flags to close" section (routine-driven closure of its own flags)
+
+_CLOSE_DIGEST = """# Vault Signals Digest
+
+## New / changed since last digest
+
+- [homelab] **Something new** -- details
+
+## Flags to close
+
+- #927 — last night's HA backup ended OK
+- #12: superseded by #40
+- not a flag line
+* #5
+- [homelab] #99 tagged line is not a closure
+"""
+
+
+def test_flags_to_close_parses_only_its_section():
+    assert relay._flags_to_close(_CLOSE_DIGEST) == [
+        (927, "last night's HA backup ended OK"),
+        (12, "superseded by #40"),
+        (5, ""),
+    ]
+    assert relay._flags_to_close("## Other\n- #1 — x\n") == []
+
+
+def test_close_section_is_never_posted_as_a_finding():
+    tagged = [t for c, t in relay._extract_findings(_CLOSE_DIGEST) if c is not None]
+    assert not any(n in t for t in tagged for n in ("#927", "#12", "#5"))  # untagged: never posted
+
+
+def test_resolve_flag_request_shape_and_status_mapping(monkeypatch):
+    captured = {}
+
+    def ok(req, timeout=30):
+        captured["req"] = req
+        return _FakeUrlopenResponse(200)
+
+    monkeypatch.setattr(urllib.request, "urlopen", ok)
+    assert relay._resolve_flag("http://example.test:8000", "sekret", 927, "why") is True
+    req = captured["req"]
+    assert req.full_url == "http://example.test:8000/api/safety/flags/927/resolve"
+    assert req.get_header("Authorization") == "Bearer sekret"
+    assert json.loads(req.data) == {"status": "resolved", "note": "why", "source": "vault_signals"}
+
+    for code, expected in ((404, True), (409, True), (500, False)):
+        def err(req, timeout=30, code=code):
+            raise urllib.error.HTTPError(req.full_url, code, "x", hdrs=None, fp=None)
+        monkeypatch.setattr(urllib.request, "urlopen", err)
+        assert relay._resolve_flag("http://x", "k", 1, "n") is expected
+
+
+def test_relay_file_resolves_listed_flags_and_fails_on_resolve_error(tmp_path, monkeypatch):
+    path = _write_digest(tmp_path, "2026-11-05.md", _CLOSE_DIGEST)
+    monkeypatch.setattr(relay, "_post_flag", lambda *a: True)
+    calls = []
+    monkeypatch.setattr(relay, "_resolve_flag", lambda b, k, i, n: calls.append((i, n)) or True)
+    assert relay._relay_file(path, "http://x", "k") is True
+    assert [i for i, _ in calls] == [927, 12, 5]
+    assert calls[0][1] == "vault_signals 2026-11-05: last night's HA backup ended OK"
+    assert calls[2][1] == "vault_signals 2026-11-05: reported settled"
+
+    monkeypatch.setattr(relay, "_resolve_flag", lambda *a: False)
+    assert relay._relay_file(path, "http://x", "k") is False  # file stays unrelayed, retried next run
