@@ -566,24 +566,40 @@ def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
 
 
 _CLOSE_SECTION = "flags to close"
-_CLOSE_LINE = re.compile(r"^#(\d+)\b\s*(?:[—–:-]+\s*)?(.*)$")
-MAX_CLOSES_PER_FILE = 30
+_CLOSE_LINE = re.compile(r"^#(\d+)\s*[—–:-]+\s*(\S.*)$")
+_HEADING = re.compile(r"^#{1,6}\s")
+MAX_CLOSES_PER_FILE = 50
+
+
+class TooManyClosures(Exception):
+    pass
 
 
 def _flags_to_close(content: str) -> list[tuple[int, str]]:
-    """`#NNN — reason` bullets under the digest's `## Flags to close` section (untagged, so
-    _relay_file never posts them as findings)."""
+    """`- #NNN — evidence` bullets directly under the digest's `## Flags to close` section. Untagged, so
+    _relay_file never posts them as findings. Any other heading (including a `###` sub-heading) ends the
+    section, fenced code is ignored, and a bullet without evidence is skipped, never closed. More than
+    MAX_CLOSES_PER_FILE raises: nothing is closed and the digest stays unrelayed (loud, retried)."""
     out: list[tuple[int, str]] = []
-    in_section = False
+    in_section = in_fence = False
     for raw in content.splitlines():
         line = raw.strip()
-        if line.startswith("## "):
-            in_section = line[3:].strip().lower() == _CLOSE_SECTION
+        if line.startswith("```") or line.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if _HEADING.match(line):
+            in_section = line.startswith("## ") and line[3:].strip().lower() == _CLOSE_SECTION
         elif in_section and _BULLET.match(line):
             m = _CLOSE_LINE.match(_BULLET.sub("", line).strip())
             if m:
                 out.append((int(m.group(1)), m.group(2).strip()))
-    return out[:MAX_CLOSES_PER_FILE]
+            else:
+                print(f"ignoring malformed close line (needs '#<id> — <evidence>'): {line[:80]!r}")
+    if len(out) > MAX_CLOSES_PER_FILE:
+        raise TooManyClosures(f"{len(out)} closures requested (max {MAX_CLOSES_PER_FILE}); none applied")
+    return out
 
 
 def _resolve_flag(base_url: str, key: str, flag_id: int, note: str) -> bool:
@@ -649,8 +665,13 @@ def _relay_file(path: Path, base_url: str, key: str) -> bool:
         else:
             all_ok = False
     print(f"{path.name}: {posted}/{len(findings)} finding(s) posted ({skipped} skipped, untagged)")
-    for flag_id, reason in _flags_to_close(content):
-        note = f"vault_signals {path.stem}: {reason or 'reported settled'}"[:500]
+    try:
+        closes = _flags_to_close(content)
+    except TooManyClosures as e:
+        print(f"{path.name}: {e}")
+        return False
+    for flag_id, reason in closes:
+        note = f"vault_signals {path.stem}: {reason}"[:500]
         try:
             ok = _resolve_flag(base_url, key, flag_id, note)
         except Exception as e:

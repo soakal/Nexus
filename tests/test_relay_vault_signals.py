@@ -1244,14 +1244,19 @@ _CLOSE_DIGEST = """# Vault Signals Digest
 - not a flag line
 * #5
 - [homelab] #99 tagged line is not a closure
+```markdown
+- #31 — example only
+```
+### Do not close these
+- #928 — still broken
 """
 
 
 def test_flags_to_close_parses_only_its_section():
+    # no evidence (#5), fenced example (#31) and the ### sub-section (#928) are never closures
     assert relay._flags_to_close(_CLOSE_DIGEST) == [
         (927, "last night's HA backup ended OK"),
         (12, "superseded by #40"),
-        (5, ""),
     ]
     assert relay._flags_to_close("## Other\n- #1 — x\n") == []
 
@@ -1259,6 +1264,15 @@ def test_flags_to_close_parses_only_its_section():
 def test_close_section_is_never_posted_as_a_finding():
     tagged = [t for c, t in relay._extract_findings(_CLOSE_DIGEST) if c is not None]
     assert not any(n in t for t in tagged for n in ("#927", "#12", "#5"))  # untagged: never posted
+
+
+def test_too_many_closures_applies_none_and_keeps_digest_unrelayed(tmp_path, monkeypatch):
+    body = "## Flags to close\n" + "".join(f"- #{i} — fixed\n" for i in range(1, relay.MAX_CLOSES_PER_FILE + 2))
+    path = _write_digest(tmp_path, "2026-11-05.md", body)
+    calls = []
+    monkeypatch.setattr(relay, "_resolve_flag", lambda *a: calls.append(a) or True)
+    assert relay._relay_file(path, "http://x", "k") is False
+    assert calls == []
 
 
 def test_resolve_flag_request_shape_and_status_mapping(monkeypatch):
@@ -1288,9 +1302,8 @@ def test_relay_file_resolves_listed_flags_and_fails_on_resolve_error(tmp_path, m
     calls = []
     monkeypatch.setattr(relay, "_resolve_flag", lambda b, k, i, n: calls.append((i, n)) or True)
     assert relay._relay_file(path, "http://x", "k") is True
-    assert [i for i, _ in calls] == [927, 12, 5]
+    assert [i for i, _ in calls] == [927, 12]
     assert calls[0][1] == "vault_signals 2026-11-05: last night's HA backup ended OK"
-    assert calls[2][1] == "vault_signals 2026-11-05: reported settled"
 
     monkeypatch.setattr(relay, "_resolve_flag", lambda *a: False)
     assert relay._relay_file(path, "http://x", "k") is False  # file stays unrelayed, retried next run

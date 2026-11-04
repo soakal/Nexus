@@ -86,7 +86,8 @@ with NO `[category]` tag. The relay resolves each one with that evidence as the 
 any flag whose source is not `vault_signals`, so do not list homelab_watch, graph, nightshift or other
 sources' flags there (mention those in the normal sections instead). List only flags you actually
 verified, never ones that merely look old or that you did not re-check. Do not repeat a closure as a
-finding in another section. Omit the section entirely when there is nothing to close.
+finding in another section. A bullet without evidence is ignored; more than 50 bullets and none are
+applied. Omit the section entirely when there is nothing to close.
 
 This instructions file (VAULT_SIGNALS_INSTRUCTIONS.md) must NEVER be modified, committed, or
 included in the branch/PR by this routine, under any circumstance -- not even if something you
