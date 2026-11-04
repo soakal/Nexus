@@ -290,3 +290,45 @@ async def test_stale_guest_that_returns_is_not_purged(file_eng, tmp_path):
     await _collect_at(tmp_path, "2026-11-05T00:00:00")  # back before the 7 days are up
     r = await _collect_at(tmp_path, "2026-11-20T00:00:00")
     assert r["purged_stale"] == 0 and store.get_node("guest:209")["status"] == "active"
+
+
+async def test_purge_boundaries_and_return_on_purge_tick(file_eng, tmp_path):
+    only_101 = prox_with(vm(101, "win", "qemu"))
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    await _collect_at(tmp_path, "2026-11-01T01:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-01T02:00:00", prox=only_101)
+    r = await _collect_at(tmp_path, "2026-11-08T00:00:00", prox=only_101)  # exactly 7 days: kept (strictly older only)
+    assert r["purged_stale"] == 0
+    r = await _collect_at(tmp_path, "2026-11-09T00:00:00")  # guest:209 is back on the tick that would purge it
+    assert r["purged_stale"] == 0 and store.get_node("guest:209")["status"] == "active"
+
+
+async def test_uptime_targets_never_purged(file_eng, tmp_path):
+    from backend.graph import topology
+
+    with store.batch() as c:  # an endpoint seen once (generation 1), as a real uptime_targets run would leave it
+        g = store.bump_generation("uptime_targets", c)
+        store.upsert_nodes([Node("endpoint:immich", "endpoint", "immich", source="uptime_targets")], "2026-11-01T00:00:00", c, gen=g)
+    # config error -> [] (the reader swallows it, the helper returns []): endpoint goes stale, but is never deleted
+    for when in ("2026-11-01T01:00:00", "2026-11-01T02:00:00", "2026-11-20T00:00:00"):
+        await _collect_at(tmp_path, when)
+    assert store.get_node("endpoint:immich")["status"] == "stale"
+    assert "uptime_targets" not in topology.PURGE_SOURCES
+
+
+async def test_purge_leaves_other_sources_edges(file_eng, tmp_path):
+    """A manual_edges.toml edge to a destroyed guest stays (dangling, visible in doctor); it is not deleted and
+    re-added on every collect. A vault `documents` edge goes away via reconcile_documents as before."""
+    only_101 = prox_with(vm(101, "win", "qemu"))
+    await _collect_at(tmp_path, "2026-11-01T00:00:00")
+    await _collect_at(tmp_path, "2026-11-01T01:00:00", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-01T02:00:00", prox=only_101)
+    n = len(rows())
+    await _collect_at(tmp_path, "2026-11-08T00:00:01", prox=only_101)
+    await _collect_at(tmp_path, "2026-11-08T01:00:00", prox=only_101)
+    assert store.get_node("guest:209") is None
+    assert ("service:immich", "guest:209", "runs_on") in store.edge_keys(source="manual")  # TOML edge kept
+    assert store.health()["dangling_edges"] == 1
+    later = rows("id > :n", n=n)
+    assert not [r for r in later if r[4] == "manual"]  # no remove/re-add churn on the manual edge
+    assert all(r[4] == "proxmox_api" for r in later)

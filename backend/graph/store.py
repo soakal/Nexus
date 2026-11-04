@@ -252,16 +252,24 @@ def mark_stale(
 
 def purge_stale(source: str, before_ts: str, conn: Connection) -> tuple[list[tuple[str, str]], list[tuple[str, str, str]]]:
     """Delete this source's rows that are stale AND were last seen before `before_ts` (a destroyed guest, a
-    removed storage). Returns what was deleted: ([(node id, type)], [(src, dst, type)]). Deleting a node also
-    drops every edge touching it (store.delete_nodes)."""
+    removed storage), plus this source's other edges touching a deleted node. Edges owned by OTHER sources are
+    never deleted here: one pointing at a purged node shows up as dangling in `doctor` (a manual_edges.toml
+    entry for a destroyed guest is a config fix, not something to delete silently). Returns what was deleted."""
     p = {"s": source, "b": before_ts}
-    edges = [(r.src, r.dst, r.type) for r in conn.execute(text(
-        "SELECT src, dst, type FROM graphedge WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()]
-    if edges:
-        conn.execute(text("DELETE FROM graphedge WHERE source = :s AND status = 'stale' AND last_seen < :b"), p)
     nodes = [(r.id, r.type) for r in conn.execute(text(
         "SELECT id, type FROM graphnode WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()]
-    delete_nodes([i for i, _ in nodes], conn)
+    ids = [i for i, _ in nodes]
+    edges = {(r.src, r.dst, r.type) for r in conn.execute(text(
+        "SELECT src, dst, type FROM graphedge WHERE source = :s AND status = 'stale' AND last_seen < :b"), p).all()}
+    for part in _chunks(ids):
+        stmt = text("SELECT src, dst, type FROM graphedge WHERE source = :s AND (src IN :ids OR dst IN :ids)"
+                    ).bindparams(bindparam("ids", expanding=True))
+        edges |= {(r.src, r.dst, r.type) for r in conn.execute(stmt, {"s": source, "ids": part}).all()}
+    if edges:
+        conn.execute(text("DELETE FROM graphedge WHERE source = :s AND src = :src AND dst = :dst AND type = :type"),
+                     [{"s": source, "src": a, "dst": b, "type": t} for a, b, t in edges])
+    for part in _chunks(ids):
+        conn.execute(text("DELETE FROM graphnode WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": part})
     return sorted(nodes), sorted(edges)
 
 

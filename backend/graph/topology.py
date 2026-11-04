@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 MANUAL_PATH = Path(__file__).with_name("manual_edges.toml")
 STALE_CYCLES = 2
 STALE_DELETE_DAYS = 7  # a stale row (gone from a source that IS answering) not seen for this long is deleted
+# Only sources whose readers RAISE on failure may purge: uptime targets come from _parse_uptime_targets, which
+# returns [] on a config error, so "missing" there does not prove "gone". Ages use collect's wall clock (now_iso).
+PURGE_SOURCES = ("proxmox_api", "unraid_api")
 _SOURCES = ("proxmox_api", "unraid_api", "uptime_targets")
 _EDGE_TYPES = frozenset({"links_to", "tagged", "runs_on", "depends_on", "backs_up_to", "resolves_via", "documents", "mentions"})
 _NODE_KEYS = {"id", "type", "name", "aliases", "attrs"}
@@ -164,9 +167,10 @@ def _db_write(manual, nodes, edges, ok_sources, failed, all_ok, seen_at, t0) -> 
             store.upsert_edges([e for e in edges if e.source == src], seen_at, conn, gen=g)
             gone_nodes, gone_edges = store.mark_stale(src, g - STALE_CYCLES, conn)
             rows += changes.stale_rows(source=src, ts=seen_at, node_ids=gone_nodes, edges=gone_edges)
-            purged_nodes, purged_edges = store.purge_stale(src, purge_before, conn)
-            purged += len(purged_nodes) + len(purged_edges)
-            rows += changes.removed_rows(source=src, ts=seen_at, nodes=purged_nodes, edges=purged_edges, edge_was="stale")
+            if src in PURGE_SOURCES:
+                purged_nodes, purged_edges = store.purge_stale(src, purge_before, conn)
+                purged += len(purged_nodes) + len(purged_edges)
+                rows += changes.removed_rows(source=src, ts=seen_at, nodes=purged_nodes, edges=purged_edges, edge_was="stale")
         # manual rows are diffed every run (they are never staled), so a sha bump is caught even on a tick where
         # another source failed; manual removals are recorded below, when the prune actually deletes them
         rows += _diff("manual", nodes, edges, seen_at, conn)
