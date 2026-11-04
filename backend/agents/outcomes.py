@@ -107,7 +107,7 @@ def _db_latest_by_fingerprint(fingerprint: str) -> dict | None:
 
 
 def _db_bump_surfaced(
-    flag_id: int, *, summary: str, detail: str | None, severity: str,
+    flag_id: int, *, summary: str, detail: str | None, severity: str, reset_delivery: bool = False,
 ) -> dict | None:
     """Bump surfaced_count/last_surfaced_at on an already-open row AND refresh
     the caller's per-occurrence fields to THIS occurrence's values.
@@ -149,6 +149,9 @@ def _db_bump_surfaced(
         row.surfaced_count += 1
         row.last_surfaced_at = now
         row.updated_at = now
+        if reset_delivery:  # G3b: a new surfacing is undelivered and unowned (same commit as the bump)
+            row.paged_at = None
+            row.send_claim_id = None
         session.add(row)
         session.commit()
         session.refresh(row)
@@ -414,6 +417,69 @@ async def should_page(source: str, check: str, severity: str = "medium") -> tupl
         return True, None
 
 
+def _decide_and_attach(flag_id: int, child_node: str, token) -> dict | None:
+    """G3b worker job: find an eligible parent and attach (plan §5.1-5.2). Runs on the g3b pool with a
+    short-timeout connection; commits only if the caller has not abandoned it. Never touches the shared engine."""
+    from backend.agents import g3b
+    from backend.graph import correlate
+
+    now = datetime.utcnow()
+    c = g3b.gate_conn()
+    try:
+        parent = correlate.find_parent_on(c, child_node, flag_id, now)
+        if parent is None:
+            return None
+        window_start = g3b.db_ts(now - timedelta(minutes=correlate.GROUP_WINDOW_MIN))
+        c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(
+            "UPDATE outcomeflag SET parent_flag_id = ?, attach_op = ?, updated_at = ? "
+            "WHERE id = ? AND parent_flag_id IS NULL AND released_from_parent_id IS NULL "
+            "AND status IN ('open','needs_follow_up') AND EXISTS (SELECT 1 FROM outcomeflag q WHERE q.id = ? "
+            "AND q.status IN ('open','needs_follow_up') AND q.suppressed = 0 AND q.paged_at IS NOT NULL AND q.created_at >= ?)",
+            (parent, token.op, g3b.db_ts(now), flag_id, parent, window_start),
+        )
+        if cur.rowcount == 1 and not token.is_set():
+            c.execute("COMMIT")
+            return {"parent": parent, "op": token.op}
+        c.execute("ROLLBACK")
+        return None
+    finally:
+        c.close()
+
+
+def _undo_attach(flag_id: int, op: str) -> None:
+    """Compensation (plan §5.3.7): undo exactly THAT attach, only if the row is still unpaged."""
+    from backend.agents import g3b
+
+    c = g3b.gate_conn()
+    try:
+        c.execute("UPDATE outcomeflag SET parent_flag_id = NULL, attach_op = NULL WHERE id = ? AND attach_op = ? "
+                  "AND paged_at IS NULL", (flag_id, op))
+    finally:
+        c.close()
+
+
+async def _maybe_group(flag_id: int, source: str, check: str, deadline: float) -> int | None:
+    """Branch-4 grouping decision inside the pre-send budget. Returns the parent id, or None = page as today."""
+    from backend.agents import g3b
+    from backend.graph import correlate
+
+    node = correlate.node_for_flag(source, check)
+    if node is None or (source, check) in correlate.PARENT_CHECKS:
+        return None
+
+    def late(res):  # the caller already paged normally: undo a late attach
+        if res:
+            g3b.post(("undo_attach", flag_id, res["op"]), lambda: _undo_attach(flag_id, res["op"]))
+
+    try:
+        res = await g3b.run_presend(_decide_and_attach, flag_id, node, deadline=deadline, on_late=late)
+    except g3b.FailOpen as e:
+        logger.info(f"g3b: grouping decision for flag {flag_id} failed open: {e}")
+        return None
+    return res["parent"] if res else None
+
+
 async def record_flag_ex(
     source: str,
     check: str,
@@ -458,17 +524,32 @@ async def record_flag_ex(
 
         fingerprint = f"{source}:{check}"
         now = datetime.utcnow()
+        from backend.graph import correlate
+        corr = correlate.enabled()  # in-memory; False -> everything below is exactly the pre-G3b path
+        deadline = None
+        if corr:
+            from backend.agents import g3b
+            deadline = g3b.deadline_from_now()  # one pre-send budget for this page (plan §5.1)
         page, page_reason = await should_page(source, check, severity)
 
         # Branch 1 — already raised and still open/needs_follow_up.
         active = await asyncio.to_thread(_db_find_active_by_fingerprint, fingerprint)
         if active:
-            bumped = await asyncio.to_thread(
-                _db_bump_surfaced, active["id"],
-                summary=summary, detail=detail, severity=severity,
-            )
+            if corr:
+                bumped = await asyncio.to_thread(
+                    _db_bump_surfaced, active["id"],
+                    summary=summary, detail=detail, severity=severity, reset_delivery=page,
+                )
+            else:
+                bumped = await asyncio.to_thread(
+                    _db_bump_surfaced, active["id"],
+                    summary=summary, detail=detail, severity=severity,
+                )
             flag_id = bumped["id"] if bumped else active["id"]
-            return {"id": flag_id, "surface": page, "reason": None if page else page_reason}
+            out = {"id": flag_id, "surface": page, "reason": None if page else page_reason}
+            if corr:
+                out.update(surfacing=(bumped or {}).get("surfaced_count"), presend_deadline=deadline)
+            return out
 
         latest = await asyncio.to_thread(_db_latest_by_fingerprint, fingerprint)
         if latest:
@@ -518,7 +599,15 @@ async def record_flag_ex(
             await asyncio.to_thread(
                 _db_update_flag, flag_id, suppressed=True, suppressed_reason=page_reason,
             )
-        return {"id": flag_id, "surface": page, "reason": None if page else page_reason}
+        if corr and page and inserted is not None:
+            grouped = await _maybe_group(flag_id, source, check, deadline)
+            if grouped is not None:
+                return {"id": flag_id, "surface": False, "reason": f"grouped:{grouped}", "surfacing": 1,
+                        "presend_deadline": deadline}
+        out = {"id": flag_id, "surface": page, "reason": None if page else page_reason}
+        if corr:
+            out.update(surfacing=1 if inserted is not None else None, presend_deadline=deadline)
+        return out
     except Exception as e:
         logger.warning(f"record_flag_ex failed (source={source!r}, check={check!r}): {e}")
         return {"id": None, "surface": True, "reason": None}
