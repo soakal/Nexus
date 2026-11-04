@@ -201,6 +201,10 @@ async def test_resolve_and_clear_never_wait_for_release(g3b_on, monkeypatch):
     t0 = time.monotonic()
     assert await outcomes.clear_flag("homelab_watch", "unraid_array") == 1
     assert time.monotonic() - t0 < 0.5  # the watcher tick is not held up by the release
+    p2 = _parent()
+    t0 = time.monotonic()
+    assert await outcomes.resolve_flag(p2, "resolved", note="x", by="test") == "resolved"
+    assert time.monotonic() - t0 < 0.5  # nor is a Telegram resolve tap
     for t in list(outcomes._release_tasks):
         t.cancel()
     assert p
