@@ -1262,6 +1262,8 @@ def test_flags_to_close_parses_only_its_section():
     nested = "## Flags to close\n````\n```\n- #927 — example only\n```\n````\n- #8 — real\n"
     assert relay._flags_to_close(nested) == [(8, "real")]
     assert relay._flags_to_close("## Flags to close\n- #927 ---\n- #928 — —\n") == []
+    indented = "## Flags to close\n```\n    ```\n- #927 — example only\n```\n    - #928 — code block\n  - #929 — nested\n- #9 — real\n"
+    assert relay._flags_to_close(indented) == [(9, "real")]
 
 
 def test_close_section_is_never_posted_as_a_finding():

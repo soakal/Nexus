@@ -578,7 +578,7 @@ class TooManyClosures(Exception):
 
 def _flags_to_close(content: str) -> list[tuple[int, str]]:
     """`- #NNN — evidence` bullets directly under the digest's `## Flags to close` section. Untagged, so
-    _relay_file never posts them as findings. Any other heading (including a `###` sub-heading) ends the
+    _relay_file never posts them as findings. Only unindented bullets count. Any other heading (including a `###` sub-heading) ends the
     section, fenced code is ignored, and a bullet without evidence is skipped, never closed. More than
     MAX_CLOSES_PER_FILE raises: nothing is closed and the digest stays unrelayed (loud, retried)."""
     out: list[tuple[int, str]] = []
@@ -586,7 +586,8 @@ def _flags_to_close(content: str) -> list[tuple[int, str]]:
     fence: str | None = None  # opening fence run, e.g. "````"; closer = same char, at least as long, nothing after
     for raw in content.splitlines():
         line = raw.strip()
-        f = _FENCE.match(line)
+        indent = len(raw) - len(raw.lstrip(" \t"))
+        f = _FENCE.match(line) if indent <= 3 and "\t" not in raw[:indent] else None  # 4+ spaces = code, not a fence
         if fence is None and f:
             fence = f.group(1)
             continue
@@ -596,7 +597,7 @@ def _flags_to_close(content: str) -> list[tuple[int, str]]:
             continue
         if _HEADING.match(line):
             in_section = line.startswith("## ") and line[3:].strip().lower() == _CLOSE_SECTION
-        elif in_section and _BULLET.match(line):
+        elif in_section and indent == 0 and _BULLET.match(line):  # only unindented bullets: indented = code/nested
             m = _CLOSE_LINE.match(_BULLET.sub("", line).strip())
             if m and any(ch.isalnum() for ch in m.group(2)):
                 out.append((int(m.group(1)), m.group(2).strip()))
