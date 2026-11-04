@@ -24,6 +24,7 @@ NOTIFY_KINDS: frozenset[str] = frozenset({
     "autonomy_alert", "autonomy_digest", "backup_failed", "budget_warn",
     "calibration_suppress", "capture_digest", "circuit_breaker", "contract_breach",
     "council_postmortem", "dead_letter", "deploy_drift", "external_flag", "flag_followup",
+    "flag_released",
     "goal_criteria_failed", "goal_failed", "goal_proposed", "homelab_array",
     "homelab_backup_failed", "homelab_digest", "homelab_disk_temp",
     "homelab_docker_restart_failed",

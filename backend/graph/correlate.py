@@ -1,7 +1,21 @@
 """Map open flags to graph nodes (plan-v3 §3.7). Pure; Phase 3 grows it."""
 from __future__ import annotations
 
-_NEVER_GROUP_SOURCES = frozenset({"watchdog", "contracts", "cron_heartbeat", "vault_signals", "obligation", "manual", "nightshift"})
+_NEVER_GROUP_SOURCES = frozenset({"watchdog", "contracts", "cron_heartbeat", "vault_signals", "obligation", "manual", "nightshift",
+                                  "graph"})  # graph:* flags describe the graph itself; never a parent or a child
+
+# G3b (plan g3/plan-v12-g3b.md §5): the only flags that mean "this node is down for everything on it".
+PARENT_CHECKS = frozenset({("homelab_watch", "unraid_array")})
+GROUP_WINDOW_MIN = 30
+GROUP_DEPTH = 3
+
+
+def enabled() -> bool:
+    """G3b grouping on? Needs the graph too. In-memory only (settings), safe in any send path."""
+    from backend.config import get_settings
+    from backend.graph import enabled as graph_enabled
+
+    return graph_enabled() and getattr(get_settings(), "graph_correlation_enabled", False) is True
 
 
 def node_for_flag(source: str, check: str) -> str | None:
