@@ -60,7 +60,7 @@ def _now() -> datetime:
 def current() -> dict[str, dict]:
     from backend.graph import intervals, store
 
-    return stale(store.jobs(), intervals(), _now(), _started)
+    return stale(store.jobs(strict=True), intervals(), _now(), _started)  # a read error raises: flags kept, note says unknown
 
 
 def note() -> str | None:

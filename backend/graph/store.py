@@ -327,13 +327,16 @@ def stale_counts() -> dict[str, int]:
         }
 
 
-def jobs() -> dict[str, dict]:
+def jobs(*, strict: bool = False) -> dict[str, dict]:
+    """strict=True raises on a read error instead of returning {} (freshness must not mistake 'unreadable' for 'fine')."""
     try:
         with _read() as c:
             rows = c.execute(
                 text("SELECT name, last_success, last_error, last_error_at, stats, generation FROM graphjob")
             ).all()
     except OperationalError:
+        if strict:
+            raise
         return {}
     return {
         r.name: {

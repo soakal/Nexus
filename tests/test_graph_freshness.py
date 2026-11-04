@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
@@ -155,3 +156,37 @@ async def test_what_changed_and_evidence_carry_the_warning(eng, graph_on):
     with patch("backend.agents.outcomes.open_flags", new=AsyncMock(return_value=[])):
         ev = await incident_diag._evidence("vm:42", datetime(2026, 11, 4, 11, 0))
     assert ev.splitlines()[1].startswith("⚠ graph data may be incomplete")
+
+
+async def test_unreadable_status_keeps_flags_and_warns(eng, graph_on):
+    from sqlalchemy.exc import OperationalError
+
+    boom = OperationalError("SELECT", {}, Exception("database is locked"))
+    rec, clr = AsyncMock(), AsyncMock()
+    with patch("backend.graph.store.jobs", side_effect=boom), \
+         patch("backend.agents.outcomes.record_flag_ex", rec), patch("backend.agents.outcomes.clear_flag", clr):
+        assert await freshness.reconcile() == []
+        assert freshness.note().startswith("\u26a0 graph freshness unknown")
+    rec.assert_not_awaited()
+    clr.assert_not_awaited()  # existing stale flags survive a failed read
+    import backend.database as bd
+
+    with bd.engine.begin() as c:
+        c.execute(text("DROP TABLE graphjob"))
+    with pytest.raises(OperationalError):
+        store.jobs(strict=True)
+    assert store.jobs() == {}  # the lenient read used by health()/doctor is unchanged
+
+
+async def test_real_flag_cleared_after_graph_switched_off(eng, graph_on, monkeypatch):
+    import backend.config as config_mod
+    from backend.agents import outcomes
+
+    _fresh_all()
+    store.record_job("collect", ok=True, at="2026-11-04T07:00:00")
+    await freshness.reconcile()
+    assert [f["check"] for f in await outcomes.open_flags(limit=50) if f["source"] == "graph"] == ["stale:collect"]
+    monkeypatch.setenv("GRAPH_ENABLED", "false")
+    monkeypatch.setattr(config_mod, "_settings_instance", None)
+    await freshness.reconcile()
+    assert not [f for f in await outcomes.open_flags(limit=50) if f["source"] == "graph"]
