@@ -414,6 +414,15 @@ class Settings(BaseSettings):
     # doorbell/camera (declined by Brian) and NEXUS's own liveness check (a
     # process can't monitor its own death — needs external monitoring).
     homelab_watch_enabled: bool = True
+    # VM/LXC ids Brian starts only on demand (e.g. Windows VMs, test VMs). Their running->stopped transition is
+    # not flagged or paged; status and the Dashboard/Telegram Start button still work, and every other guest
+    # still alerts. Override in .env as comma-separated: HOMELAB_ON_DEMAND_VMIDS=101,102,110,901
+    # Plain str on purpose: pydantic-settings 2.6 JSON-decodes set[...] env values before validators run, so a
+    # comma list would fail to load. Read it through on_demand_vmids().
+    homelab_on_demand_vmids: str = ""
+
+    def on_demand_vmids(self) -> set[str]:
+        return {k.strip() for k in self.homelab_on_demand_vmids.split(",") if k.strip()}
     homelab_disk_temp_warn_c: int = 45
     # ponytail: first-guess threshold, not a manufacturer spec — the USW Pro
     # 24 PoE switch was reading 44C at the time this was added, and vault

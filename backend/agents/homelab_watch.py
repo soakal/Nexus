@@ -213,10 +213,14 @@ async def check_proxmox_vms() -> list[str]:
         logger.warning(f"check_proxmox_vms: fetch failed (ignored): {e}")
         return fired
 
+    from backend.config import get_settings
+    on_demand = get_settings().on_demand_vmids()
     current = {str(vm["vmid"]): vm.get("status", "unknown") for vm in data.vms}
     for vmid, status in current.items():
         prev = _vm_states.get(vmid)
-        if prev == "running" and status != "running":
+        if prev == "running" and status != "running" and vmid in on_demand:
+            logger.info(f"check_proxmox_vms: on-demand guest {vmid} stopped; not flagged (HOMELAB_ON_DEMAND_VMIDS)")
+        elif prev == "running" and status != "running":
             name = html.escape(next((vm.get("name") or "" for vm in data.vms if str(vm["vmid"]) == vmid), vmid))
             from backend.agents import outcomes
             d = await outcomes.record_flag_ex(

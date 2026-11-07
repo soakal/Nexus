@@ -36,8 +36,10 @@ async def _section_proxmox() -> str:
         f"memory: {data.mem_used_gb}/{data.mem_total_gb} GB",
         f"storage: {data.storage_used_gb}/{data.storage_total_gb} GB",
     ]
+    from backend.config import get_settings
+    on_demand = get_settings().on_demand_vmids()
     vm_lines = [
-        f"{'🟢' if vm.get('status') == 'running' else '🔴'} "
+        f"{'🟢' if vm.get('status') == 'running' else ('⚪' if str(vm.get('vmid')) in on_demand else '🔴')} "
         f"{'VM' if vm.get('type') == 'qemu' else 'LXC'} {vm.get('vmid')}: "
         f"{html.escape(str(vm.get('name') or ''))} ({html.escape(str(vm.get('status')))})"
         for vm in data.vms
