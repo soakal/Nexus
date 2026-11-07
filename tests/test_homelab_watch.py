@@ -1406,3 +1406,31 @@ async def test_maybe_propose_on_alert_noop_when_proposer_disabled():
 
     assert homelab_watch._event_propose_task is None
     tick_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_demand_vm_stop_is_not_flagged_but_others_still_are():
+    """HOMELAB_ON_DEMAND_VMIDS: an on-demand guest stopping is silent; a normal guest stopping still pages."""
+    from backend.config import get_settings
+    running = _proxmox_data([{"vmid": 101, "name": "win", "status": "running", "type": "qemu"},
+                             {"vmid": 207, "name": "nexus", "status": "running", "type": "lxc"}])
+    stopped = _proxmox_data([{"vmid": 101, "name": "win", "status": "stopped", "type": "qemu"},
+                             {"vmid": 207, "name": "nexus", "status": "stopped", "type": "lxc"}])
+    with patch.object(get_settings(), "homelab_on_demand_vmids", "101"), \
+         patch("backend.integrations.proxmox.fetch", new_callable=AsyncMock, side_effect=[running, stopped]), \
+         patch("backend.events.notify_phone", new_callable=AsyncMock, return_value=True) as mock_notify:
+        await homelab_watch.check_proxmox_vms()
+        fired = await homelab_watch.check_proxmox_vms()
+
+    assert fired == ["vm:207"]
+    mock_notify.assert_awaited_once()
+    assert "207" in mock_notify.await_args.args[0]
+
+
+def test_on_demand_vmids_from_real_env_var(monkeypatch):
+    """Through the real EnvSettingsSource path: a comma list must load (a set[...] field would JSON-decode and fail)."""
+    from backend.config import Settings
+    monkeypatch.setenv("HOMELAB_ON_DEMAND_VMIDS", "101, 102,,110")
+    assert Settings(_env_file=None).on_demand_vmids() == {"101", "102", "110"}
+    monkeypatch.delenv("HOMELAB_ON_DEMAND_VMIDS")
+    assert Settings(_env_file=None).on_demand_vmids() == set()
