@@ -957,14 +957,13 @@ async def test_automated_garage_light_goal_dropped_daytime(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 12b — Known-hardware-issue backstop (2026-07-09): the porch light
-# circuit has water damage and is only reliably operable via the physical
-# switch -- a goal about it must be dropped unconditionally (not just at
-# night, unlike NIGHT_EXEMPT), even if Haiku proposes it anyway.
+# Test 12b — Porch lights back in service (2026-11-14): the July 2026
+# water-damage exemption is gone, so a DAYTIME porch-light goal is proposed
+# normally (the night exemption still covers them overnight -- Test 12).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_known_hardware_issue_light_goal_dropped(eng, monkeypatch):
+async def test_porch_light_daytime_goal_not_dropped(eng, monkeypatch):
     import datetime as dt_module
     from backend.agents import proposer
 
@@ -1016,18 +1015,15 @@ async def test_known_hardware_issue_light_goal_dropped(eng, monkeypatch):
             result = await proposer.propose_goals_tick()
 
     assert result["status"] == "ok"
-    assert result["count_proposed"] == 1
+    assert result["count_proposed"] == 2
 
     goals_rows = _all_goals(eng)
-    assert len(goals_rows) == 1
-    assert "Docker" in goals_rows[0].title
-    assert not any("porch" in g.title.lower() for g in goals_rows)
-    assert result["count_filtered"] == 1
-    assert result["filtered"][0]["reason"] == "hardware_issue"
+    assert any("porch" in g.title.lower() for g in goals_rows)
+    assert not any(f["reason"] == "hardware_issue" for f in result.get("filtered", []))
 
 
 @pytest.mark.asyncio
-async def test_proposer_prompt_mentions_known_hardware_issue(eng, monkeypatch):
+async def test_proposer_prompt_no_porch_hardware_exemption(eng, monkeypatch):
     _seed_state(eng, autonomy=True)
     _mock_integrations(monkeypatch)
 
@@ -1038,8 +1034,8 @@ async def test_proposer_prompt_mentions_known_hardware_issue(eng, monkeypatch):
 
     assert result["status"] == "ok"
     prompt = haiku_mock.call_args[0][0]
-    assert "KNOWN HARDWARE" in prompt
-    assert "light.left_porch_light" in prompt
+    assert "KNOWN HARDWARE" not in prompt
+    assert "water damage" not in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ def mock_ha_response():
         {"entity_id": "light.kitchen", "state": "on"},
         {"entity_id": "cover.garage_door_garage_door", "state": "unavailable"},
         {"entity_id": "sensor.temp", "state": "unavailable"},
+        {"entity_id": "light.left_porch_light", "state": "unavailable"},
     ]
 
 
@@ -25,10 +26,12 @@ async def test_homeassistant_fetch(mock_ha_response):
 
         from backend.integrations.homeassistant import fetch
         data = await fetch()
-        assert len(data.entities) == 3
+        assert len(data.entities) == 4
         # allowlist: only monitored entities appear in alerts
         assert "cover.garage_door_garage_door" in data.alerts
         assert "sensor.temp" not in data.alerts
+        # porch lights back in service 2026-11-14: alerted on again
+        assert "light.left_porch_light" in data.alerts
 
 
 @pytest.mark.asyncio
