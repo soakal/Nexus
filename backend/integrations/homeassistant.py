@@ -62,11 +62,12 @@ _ALERT_ALLOWLIST = frozenset({
     # tall_light_lr_christmas_tree_plug (light.* + switch.*) intentionally excluded
     # (Brian, 2026-07-14): an HA automation turns it off nightly at 11:59pm, so it
     # doesn't need to surface as a NEXUS alert either. Mirrors the proposer WATCH
-    # exclusion — this is the SECOND surface, same as the porch-light two-layer fix.
-    # light.left_porch_light / light.right_porch_light intentionally excluded:
-    # fixtures are powered off due to water damage (Brian, 2026-07-11) — orphaned
-    # from the ZHA/Zigbee mesh since 2026-07-08, expected "unavailable" until
-    # physically repaired. Re-add once the fixtures are back in service.
+    # exclusion — this is the SECOND surface of that exclusion.
+    # Porch lights back in service 2026-11-14 (Brian: fixtures working, new Third
+    # Reality Zigbee bulbs took over the same entity ids) — re-added after the
+    # July water-damage exclusion.
+    "light.left_porch_light",
+    "light.right_porch_light",
     "light.left_garage_light",
     "light.right_garage_light",
     # Garage door

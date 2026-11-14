@@ -156,25 +156,15 @@ WATCH = {
 NIGHT_EXEMPT_LABELS = {"porch_light_left", "porch_light_right"}
 NIGHT_EXEMPT_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in NIGHT_EXEMPT_LABELS}
 
-# PERMANENT (Brian, 2026-09-14): both garage lights run on an automated
-# dusk-to-dawn Home Assistant schedule -- their on/off state at any hour
-# reflects that automation, not something left on by accident. Unconditional,
-# not gated by time of day (unlike NIGHT_EXEMPT above) -- never propose a
-# goal about either garage light.
-AUTOMATED_GARAGE_LIGHT_LABELS: set[str] = {"garage_light_left", "garage_light_right"}
-AUTOMATED_GARAGE_LIGHT_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in AUTOMATED_GARAGE_LIGHT_LABELS}
+# PERMANENT: both garage lights (Brian, 2026-09-14) and both porch lights (2026-11-14,
+# back in service after the July water damage) run on the Home Assistant schedule
+# (on 6 PM, off 4 AM, plus a match-the-schedule-after-power-loss automation) -- their
+# on/off state at any hour reflects that automation, not something left on by accident.
+# Unconditional, not gated by time of day (unlike NIGHT_EXEMPT above: 6 PM is daylight
+# in summer) -- never propose a goal about any of the four.
+AUTOMATED_SCHEDULE_LIGHT_LABELS: set[str] = {"garage_light_left", "garage_light_right", "porch_light_left", "porch_light_right"}
+AUTOMATED_SCHEDULE_LIGHT_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in AUTOMATED_SCHEDULE_LIGHT_LABELS}
 
-# TEMPORARY (added 2026-07-09, Brian): the porch light circuit has water damage
-# and is only reliably operable via the physical wall switch right now -- HA
-# service calls against it are unreliable (this is why goal #59, "turn off
-# left/right porch lights", failed verification: the executor's turn_off calls
-# got an ambiguous empty response and the lights were still on/unreachable
-# minutes later). Both left/right are exempted since it's unclear which one
-# Brian means by "front porch light" and both currently show state=unavailable
-# in HA. Suppresses BOTH goal proposals and the resulting failure notifications
-# until Brian says it's fixed -- REMOVE this exemption then, don't leave it.
-KNOWN_HARDWARE_ISSUE_LABELS: set[str] = {"porch_light_left", "porch_light_right"}
-KNOWN_HARDWARE_ISSUE_ENTITY_IDS = {eid for eid, label in WATCH.items() if label in KNOWN_HARDWARE_ISSUE_LABELS}
 # Fallback only — used when the sun.sun entity is missing/unavailable. A fixed
 # clock hour is a poor stand-in for dawn (Detroit sunrise ranges ~6am midsummer
 # to ~8am midwinter), so the live sun.sun entity (below_horizon/above_horizon)
@@ -504,15 +494,11 @@ async def propose_goals_tick() -> dict:
             "KNOWN FACTS may imply a low-risk maintenance goal (e.g. 'back door lock needs battery'\n"
             "-> propose replacing it) — only propose from a fact when it clearly needs action; most\n"
             "facts are just background context, not a todo.\n"
-            "The porch lights (light.left_porch_light, light.right_porch_light) have a KNOWN HARDWARE\n"
-            "ISSUE (water damage, operable only via the physical wall switch right now) — do NOT\n"
-            "propose ANYTHING about these two lights (turning off, investigating, or otherwise),\n"
-            "even if HA ENTITY STATES shows them on/unavailable. This is temporary until Brian\n"
-            "confirms the repair.\n"
-            "The garage lights (light.left_garage_light, light.right_garage_light) run on an\n"
-            "automated dusk-to-dawn Home Assistant schedule — do NOT propose ANYTHING about these\n"
-            "two lights (turning off, investigating, or otherwise), regardless of what HA ENTITY\n"
-            "STATES shows or what time of day it is. This is permanent, not a night-only rule.\n"
+            "The garage and porch lights (light.left_garage_light, light.right_garage_light,\n"
+            "light.left_porch_light, light.right_porch_light) run on an automated Home Assistant\n"
+            "schedule (on 6 PM, off 4 AM) — do NOT propose ANYTHING about these four lights\n"
+            "(turning off, investigating, or otherwise), regardless of what HA ENTITY STATES shows\n"
+            "or what time of day it is. This is permanent, not a night-only rule.\n"
             + (
                 "It is currently NIGHTTIME (local time {:%H:%M}). Brian leaves the porch lights on\n"
                 "overnight ON PURPOSE as security lighting — do NOT propose turning off\n"
@@ -591,8 +577,8 @@ async def propose_goals_tick() -> dict:
             # Deterministic backstop — never rely on the LLM alone to honor the
             # nighttime-lighting instruction above. If it's night and the goal
             # text references an exempt porch/garage light, drop it outright.
+            haystack = f"{title} {description}".lower()  # shared by the backstops below
             if is_night:
-                haystack = f"{title} {description}".lower()
                 if any(tok in haystack for tok in NIGHT_EXEMPT_ENTITY_IDS | NIGHT_EXEMPT_LABELS):
                     logger.info(
                         "proposer: dropped night-exempt light goal: %r", title
@@ -600,23 +586,12 @@ async def propose_goals_tick() -> dict:
                     filtered.append({"title": title[:80], "reason": "night_exempt"})
                     continue
 
-            # Deterministic backstop for the known-hardware-issue porch lights
-            # (see KNOWN_HARDWARE_ISSUE_LABELS above) -- unconditional, not
+            # Deterministic backstop for the scheduled garage + porch lights
+            # (see AUTOMATED_SCHEDULE_LIGHT_LABELS above) -- unconditional, not
             # gated by time of day. Never rely on the LLM alone to honor this.
-            haystack = f"{title} {description}".lower()
-            if any(tok in haystack for tok in KNOWN_HARDWARE_ISSUE_ENTITY_IDS | KNOWN_HARDWARE_ISSUE_LABELS):
+            if any(tok in haystack for tok in AUTOMATED_SCHEDULE_LIGHT_ENTITY_IDS | AUTOMATED_SCHEDULE_LIGHT_LABELS):
                 logger.info(
-                    "proposer: dropped known-hardware-issue light goal: %r", title
-                )
-                filtered.append({"title": title[:80], "reason": "hardware_issue"})
-                continue
-
-            # Deterministic backstop for the automated-schedule garage lights
-            # (see AUTOMATED_GARAGE_LIGHT_LABELS above) -- unconditional, not
-            # gated by time of day. Never rely on the LLM alone to honor this.
-            if any(tok in haystack for tok in AUTOMATED_GARAGE_LIGHT_ENTITY_IDS | AUTOMATED_GARAGE_LIGHT_LABELS):
-                logger.info(
-                    "proposer: dropped automated-garage-light goal: %r", title
+                    "proposer: dropped scheduled-light goal: %r", title
                 )
                 filtered.append({"title": title[:80], "reason": "automated_light"})
                 continue

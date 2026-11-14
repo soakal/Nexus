@@ -48,7 +48,7 @@ bad patch when it's really a stale base.
 Compare against the known pre-existing baseline (as of 2026-08-16): 4 flaky/pre-existing
 failures unrelated to any real change — two hardcoded scheduler-job-count-29-vs-28 tests in
 `tests/test_coverage_boost.py`, and `tests/test_proposer.py::test_known_hardware_issue_light_goal_dropped`
-(time-of-day-flaky). Anything beyond that baseline is a real regression from your change. Check
+(time-of-day-flaky; replaced 2026-11-14 by `test_porch_light_daytime_goal_dropped_as_automated`, which pins daytime). Anything beyond that baseline is a real regression from your change. Check
 `CLAUDE.md`'s own dated entries for whether that baseline count has since changed.
 
 ## When this doesn't apply
