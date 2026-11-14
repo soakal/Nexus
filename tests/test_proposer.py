@@ -886,10 +886,10 @@ async def test_night_exempt_light_goal_dropped(eng, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 12c — Automated-schedule backstop (2026-09-14): the garage lights run
-# on a dusk-to-dawn Home Assistant automation, so a goal about either one must
-# be dropped unconditionally -- including in broad daytime, unlike the porch
-# lights' NIGHT_EXEMPT rule above. Real incident: goal #108 proposed "turn off
+# Test 12c — Automated-schedule backstop (2026-09-14): the garage lights (and,
+# since 2026-11-14, the porch lights) run on the 6 PM on / 4 AM off Home
+# Assistant schedule, so a goal about any of them must be dropped
+# unconditionally -- including in broad daytime, unlike the NIGHT_EXEMPT rule. Real incident: goal #108 proposed "turn off
 # right garage light" at 5pm because the LLM correctly read it as daytime and
 # NIGHT_EXEMPT no longer covered garage lights at all.
 # ---------------------------------------------------------------------------
