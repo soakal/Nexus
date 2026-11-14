@@ -41,11 +41,14 @@ crontab) -- deliberately not scheduled less often than that, since running
 it more often only affects how quickly a newly-overdue job gets caught, not
 whether false alarms fire before a job is genuinely overdue.
 
-Known limitation, not solved here: this script is itself a cron job subject
-to the same "cron stops running entirely" failure class it exists to catch.
-Nothing currently watches the watcher. That's judged out of scope -- an
-external ping (e.g. Uptime Kuma hitting a dead-man's-switch endpoint) would
-close it, but wasn't asked for and adds a dependency this fix doesn't need.
+Watching the watcher (Kithos K3 plan-v6-small section 2.4): at the end of a
+run in which EVERY NEXUS API call succeeded (the open-flags GET, each flag
+POST, each resolve POST), this pings the healthchecks.io check
+"devbox-cron-checker" (6 h period, 2 h grace). If devbox, cron or this
+script stops, healthchecks.io emails Brian on its own. Any API failure means
+no ping and exit 1 (cron_run's heartbeat records it). The ping URL lives
+only in the `secret` store as HC_DEVBOX_CRON_CHECKER_URL and reaches curl
+via stdin config, never argv or logs; a failed ping is logged, not fatal.
 
 Usage: python3 tools/check_cron_heartbeats.py
 """
@@ -118,14 +121,15 @@ _CHECK_KINDS = ("missing_heartbeat", "unreadable_heartbeat", "overdue", "failed"
 _LIVE_STATUSES = {"open", "needs_follow_up", "deferred"}
 
 
-def _open_flags(base_url: str, key: str) -> dict[str, int]:
+def _open_flags(base_url: str, key: str) -> dict[str, int] | None:
     """check -> flag id for every still-live cron_heartbeat flag, via the
     existing GET /api/safety/flags. There is no clear-by-fingerprint HTTP
     endpoint, and outcomes.clear_flag is in-process only (this script runs
     on devbox, the API on nexus-lxc) -- so recovery is a GET + a resolve
     POST on the two routes that already exist, not a new channel.
-    Returns {} on any failure -- never raises: a dead API means "cleared
-    nothing this run", never a skipped check."""
+    Returns None on any failure -- never raises: a dead API means "cleared
+    nothing this run" (the caller treats it as {}), never a skipped check,
+    but the run is then not "successful" and the dead-man ping is withheld."""
     req = urllib.request.Request(
         f"{base_url}/api/safety/flags?source=cron_heartbeat&limit=200",
         headers={"Authorization": f"Bearer {key}"},
@@ -135,9 +139,9 @@ def _open_flags(base_url: str, key: str) -> dict[str, int]:
             rows = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         print(f"GET /api/safety/flags failed, clearing nothing this run: {e}")
-        return {}
+        return None
     if not isinstance(rows, list):
-        return {}
+        return None
     return {
         r["check"]: r["id"]
         for r in rows
@@ -213,17 +217,45 @@ def _diagnose(job: str, expected_hours: int) -> tuple[str, str] | None:
 
 
 def _check_one(job: str, expected_hours: int, base_url: str, key: str,
-               open_flags: dict[str, int]) -> None:
+               open_flags: dict[str, int]) -> bool:
+    """True if every API call this job needed succeeded."""
+    ok = True
     problem = _diagnose(job, expected_hours)
     if problem is not None:
         kind, summary = problem
-        _post_flag(base_url, key, f"{kind}:{job}", summary)
+        ok = _post_flag(base_url, key, f"{kind}:{job}", summary) and ok
     for kind in _CHECK_KINDS:
         if problem is not None and kind == problem[0]:
             continue  # still true -- record_flag_ex's own dedup owns that row
         flag_id = open_flags.get(f"{kind}:{job}")
         if flag_id is not None:
-            _resolve_flag(base_url, key, flag_id, f"{kind}:{job}")
+            ok = _resolve_flag(base_url, key, flag_id, f"{kind}:{job}") and ok
+    return ok
+
+
+def _hc_ping() -> bool:
+    """Ping the devbox-cron-checker healthchecks.io check. The URL is a secret:
+    `secret run` injects it into a child shell only, and curl reads it from a
+    stdin config (never argv). cron has no desktop session env, so point the
+    keyring client at the user's session bus. Never raises."""
+    import subprocess
+    uid = os.getuid()
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+    cmd = ["secret", "run", "HC_DEVBOX_CRON_CHECKER_URL", "--", "sh", "-c",
+           'printf \'url = "%s"\\n\' "$HC_DEVBOX_CRON_CHECKER_URL" '
+           '| curl -fsS --proto =https --max-time 20 --retry 3 -o /dev/null -K -']
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=90)
+    except Exception as e:
+        print(f"healthchecks ping not sent: {type(e).__name__}")
+        return False
+    if r.returncode != 0:
+        print(f"healthchecks ping failed (exit {r.returncode})")  # no stderr: it could echo a URL fragment
+        return False
+    print("healthchecks ping sent")
+    return True
 
 
 def main() -> None:
@@ -233,8 +265,13 @@ def main() -> None:
         raise SystemExit(1)
     base_url = os.environ.get("NEXUS_BASE_URL", _DEFAULT_BASE_URL)
     open_flags = _open_flags(base_url, key)
+    all_ok = open_flags is not None
     for job, hours in EXPECTED_INTERVAL_HOURS.items():
-        _check_one(job, hours, base_url, key, open_flags)
+        all_ok = _check_one(job, hours, base_url, key, open_flags or {}) and all_ok
+    if not all_ok:
+        print("check_cron_heartbeats: a NEXUS API call failed -- no healthchecks ping, exiting 1")
+        raise SystemExit(1)
+    _hc_ping()
 
 
 if __name__ == "__main__":

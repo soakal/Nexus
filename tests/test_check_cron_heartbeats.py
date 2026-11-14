@@ -27,6 +27,19 @@ hb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hb)
 
 
+import pytest
+
+
+_REAL_HC_PING = hb._hc_ping  # kept for the one test that exercises it (with subprocess.run stubbed)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_healthchecks_ping(monkeypatch):
+    """Tests must never ping the real healthchecks.io check (main() pings on a
+    fully successful run). Tests that care about the ping re-patch _hc_ping."""
+    monkeypatch.setattr(hb, "_hc_ping", lambda: True)
+
+
 def _patch_state(monkeypatch, tmp_path, jobs=None):
     monkeypatch.setattr(hb, "STATE_DIR", tmp_path)
     monkeypatch.setattr(hb, "EXPECTED_INTERVAL_HOURS", jobs or {"job_a": 24})
@@ -116,9 +129,10 @@ def test_healthy_job_no_open_flags_is_a_silent_noop(monkeypatch, tmp_path):
 
 
 def test_open_flags_get_failure_still_lets_checks_run_and_post(monkeypatch, tmp_path):
-    """If GET /api/safety/flags itself fails, _open_flags degrades to {} --
-    the per-job checks must still run (and still post on a real problem),
-    just clearing nothing this run."""
+    """If GET /api/safety/flags itself fails, the per-job checks must still
+    run (and still post on a real problem), just clearing nothing this run.
+    Since the K3 dead-man ping, the run then exits 1 and sends no
+    healthchecks ping (an API failure is not a successful run)."""
     _patch_state(monkeypatch, tmp_path)
     _patch_key(monkeypatch)
     _write_heartbeat(tmp_path, "job_a", exit_code=1)
@@ -131,10 +145,17 @@ def test_open_flags_get_failure_still_lets_checks_run_and_post(monkeypatch, tmp_
     resolves = []
     monkeypatch.setattr(hb, "_resolve_flag", lambda *a: resolves.append(a) or True)
 
-    hb.main()  # must not raise
+    pings = []
+    monkeypatch.setattr(hb, "_hc_ping", lambda: pings.append(1) or True)
+    try:
+        hb.main()
+        code = None
+    except SystemExit as e:
+        code = e.code
 
     assert posts == ["failed:job_a"]
     assert resolves == []
+    assert code == 1 and pings == []
 
 
 def test_resolve_flag_returns_true_on_409_conflict(monkeypatch):
@@ -171,3 +192,75 @@ def test_resolve_flag_sends_correct_request_shape(monkeypatch):
     body = json.loads(req.data)
     assert body["status"] == "resolved"
     assert "note" in body
+
+
+# ---- dead-man ping (Kithos K3 plan-v6-small section 2.4) -------------------------------
+
+def _run_main(monkeypatch, tmp_path, *, open_flags=None, post_ok=True, resolve_ok=True, exit_code=0):
+    """Drive main() with every API call stubbed; returns (pings, exit_code_or_None)."""
+    _patch_state(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    _write_heartbeat(tmp_path, "job_a", exit_code=exit_code)
+    pings = []
+    monkeypatch.setattr(hb, "_open_flags", lambda *a: open_flags)
+    monkeypatch.setattr(hb, "_post_flag", lambda *a: post_ok)
+    monkeypatch.setattr(hb, "_resolve_flag", lambda *a: resolve_ok)
+    monkeypatch.setattr(hb, "_hc_ping", lambda: pings.append(1) or True)
+    try:
+        hb.main()
+        return pings, None
+    except SystemExit as e:
+        return pings, e.code
+
+
+def test_successful_run_pings_healthchecks(monkeypatch, tmp_path):
+    pings, code = _run_main(monkeypatch, tmp_path, open_flags={})
+    assert pings == [1] and code is None
+
+
+def test_open_flags_get_failure_suppresses_ping_and_exits_1(monkeypatch, tmp_path):
+    pings, code = _run_main(monkeypatch, tmp_path, open_flags=None)
+    assert pings == [] and code == 1
+
+
+def test_flag_post_failure_suppresses_ping_and_exits_1(monkeypatch, tmp_path):
+    # a failed job needs a POST; make it fail
+    pings, code = _run_main(monkeypatch, tmp_path, open_flags={}, post_ok=False, exit_code=1)
+    assert pings == [] and code == 1
+
+
+def test_resolve_failure_suppresses_ping_and_exits_1(monkeypatch, tmp_path):
+    # healthy job with a stale open flag needs a resolve; make it fail
+    pings, code = _run_main(monkeypatch, tmp_path, open_flags={"failed:job_a": 7}, resolve_ok=False)
+    assert pings == [] and code == 1
+
+
+def test_open_flags_returns_none_on_api_failure(monkeypatch):
+    def boom(req, timeout=30):
+        raise OSError("down")
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert hb._open_flags("http://example.test:8000", "k") is None
+
+
+def test_hc_ping_never_puts_the_url_on_argv_and_never_raises(monkeypatch):
+    seen = {}
+
+    class R:
+        returncode = 0
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        seen["env"] = kw.get("env", {})
+        return R()
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _REAL_HC_PING() is True
+    flat = " ".join(seen["cmd"])
+    assert "hc-ping.com" not in flat and "HC_DEVBOX_CRON_CHECKER_URL" in flat and "-K -" in flat
+    assert "DBUS_SESSION_BUS_ADDRESS" in seen["env"]
+
+    def raising_run(cmd, **kw):
+        raise FileNotFoundError("secret")
+    monkeypatch.setattr(subprocess, "run", raising_run)
+    assert _REAL_HC_PING() is False
