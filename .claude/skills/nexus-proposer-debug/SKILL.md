@@ -138,13 +138,14 @@ a deterministic backstop drops any proposal whose title+description mentions
 `NIGHT_EXEMPT_ENTITY_IDS | NIGHT_EXEMPT_LABELS` (`filtered` reason `night_exempt`). Never rely on
 the prompt alone here.
 
-### 6. Hardcoded porch-light exclusion — unconditional
+### 6. Scheduled garage + porch lights — unconditional
 
-`KNOWN_HARDWARE_ISSUE_LABELS = {"porch_light_left", "porch_light_right"}` (`proposer.py:143`).
-Water damage; operable only from the physical wall switch. **Any** proposal mentioning these two —
-turning off, investigating, anything — is dropped regardless of time of day (`filtered` reason
-`hardware_issue`). This is temporary until Brian confirms the repair; if you're wondering why
-NEXUS ignores an obviously-on porch light, this is why, and it is not a bug.
+`AUTOMATED_SCHEDULE_LIGHT_LABELS` covers both garage lights (2026-09-14) and both porch lights
+(2026-11-14). All four run on the HA schedule (on 6 PM, off 4 AM, plus an automation that puts a
+light back on schedule after a power cut), so **any** proposal mentioning them is dropped regardless
+of time of day (`filtered` reason `automated_light`). The July 2026 water-damage exclusion
+(`KNOWN_HARDWARE_ISSUE_*`, reason `hardware_issue`) was removed 2026-11-14 when Brian confirmed the
+porch fixtures work again; NEXUS alerts on the porch lights again if they go unavailable.
 
 ## Reading a tick's own record
 
@@ -164,7 +165,7 @@ PY
 ```
 
 The `filtered` reasons map one-to-one onto the mechanisms above: `no_success_criteria`,
-`night_exempt`, `hardware_issue`, `similar_to_rejected`. **If the goal you're asking about appears
+`night_exempt`, `automated_light`, `similar_to_rejected` (`hardware_issue` existed until 2026-11-14). **If the goal you're asking about appears
 there, the model did propose it and a deterministic filter dropped it — that is a completely
 different investigation from a model miss**, and it's why step 0 comes first.
 
