@@ -54,6 +54,11 @@ def test_health_ok(client):
     assert resp.json()["status"] == "ok"
 
 
+def test_health_reports_running_sha_key(client):
+    body = client.get("/api/health").json()
+    assert "running_sha" in body  # str or None; the kithos doctor reads it without a key
+
+
 def test_health_no_auth_required(client):
     resp = client.get("/api/health")
     assert resp.status_code == 200

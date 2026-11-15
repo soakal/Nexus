@@ -353,7 +353,9 @@ async def health():
         return JSONResponse({"status": "vault_missing"})
     if not vault_exists:
         return JSONResponse({"status": "vault_empty"})
-    return {"status": "ok"}
+    # running_sha: the commit captured at boot (public repo, not sensitive). Lets the kithos doctor
+    # compare running vs checked-out code with no API key; None if the checkout wasn't readable.
+    return {"status": "ok", "running_sha": version.running_sha()}
 
 
 # Register all routers
