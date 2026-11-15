@@ -31,8 +31,8 @@ bumps the existing flag's surfaced_count rather than spamming duplicates --
 though page_now still re-pages on every run while the problem persists,
 which is intentional escalation, not a bug: an unresolved "your automation
 pipeline is dead" is exactly the kind of thing worth being re-annoyed about
-until it's fixed. Once the condition clears, the flag is auto-resolved on
-the next run (see _check_one / _resolve_flag) -- a recovered job must not
+until it's fixed. Once the job is fully healthy (no problem of any kind), its
+open flags are auto-resolved on the next run (see _check_one / _resolve_flag) -- a recovered job must not
 leave a page-worthy flag sitting open, which it did for a solid week before
 this was added (flag 431, 2026-09-15..22).
 
@@ -58,7 +58,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,6 +72,8 @@ EXPECTED_INTERVAL_HOURS = {
     "relay_claude_digest": 24,
     "vault_signals_routine": 24,
     "relay_vault_signals": 24,
+    "kithos_doctor_devbox": 1,
+    "kithos_doctor_nexus": 1,
 }
 
 
@@ -113,7 +115,8 @@ def _post_flag(base_url: str, key: str, check: str, summary: str) -> bool:
 
 
 # Every check kind this script can raise, per job. _check_one clears the
-# ones that DON'T currently apply, so a recovered job's flag closes itself
+# open ones ONLY when _diagnose returns None (job healthy); a live problem
+# clears nothing. So a recovered job's flag closes itself
 # instead of sitting open forever -- flag 431 (failed:vault_signals_routine)
 # sat open for a week after the job started exiting 0 again, because this
 # script only ever posted, never cleared.
@@ -184,15 +187,14 @@ def _resolve_flag(base_url: str, key: str, flag_id: int, check: str) -> bool:
 
 def _diagnose(job: str, expected_hours: int) -> tuple[str, str] | None:
     """The ONE problem (check_kind, summary) this job currently has, or None
-    if it's healthy. Split out of _check_one so the caller can both raise
-    the live problem and clear every OTHER kind's stale flag."""
+    if it's healthy. Split out of _check_one so the caller can tell "healthy"
+    (None: open flags for this job are cleared) from "has a problem" (post it,
+    clear nothing)."""
     path = STATE_DIR / f"{job}.json"
     now = datetime.now(timezone.utc)
 
     if not path.exists():
-        return ("missing_heartbeat",
-                f"Cron job '{job}' has never written a heartbeat file ({path}). "
-                f"Either it has never run via bin/cron_run.sh, or it predates this check.")
+        return ("missing_heartbeat", f"Cron job '{job}' has no heartbeat file")
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -200,19 +202,18 @@ def _diagnose(job: str, expected_hours: int) -> tuple[str, str] | None:
         if finished_at.tzinfo is None:
             finished_at = finished_at.replace(tzinfo=timezone.utc)
         exit_code = int(data["exit_code"])
-    except Exception as e:
-        return ("unreadable_heartbeat",
-                f"Cron job '{job}'s heartbeat file is unreadable/malformed: {e}")
+    except Exception:
+        return ("unreadable_heartbeat", f"Cron job '{job}' heartbeat unreadable")
+    if finished_at > now + timedelta(minutes=5):  # clock skew / forged future stamp
+        return ("unreadable_heartbeat", f"Cron job '{job}' heartbeat unreadable")
 
     age_hours = (now - finished_at).total_seconds() / 3600
     if age_hours > expected_hours * 2:
         return ("overdue",
                 f"Cron job '{job}' last finished {age_hours:.1f}h ago "
-                f"(expected every ~{expected_hours}h) -- it has likely stopped running.")
+                f"(expected every ~{expected_hours}h)")
     if exit_code != 0:
-        return ("failed",
-                f"Cron job '{job}'s last run (finished {finished_at.isoformat()}) "
-                f"exited with code {exit_code}.")
+        return ("failed", f"Cron job '{job}' last run exited with code {exit_code}")
     return None
 
 
@@ -223,10 +224,9 @@ def _check_one(job: str, expected_hours: int, base_url: str, key: str,
     problem = _diagnose(job, expected_hours)
     if problem is not None:
         kind, summary = problem
-        ok = _post_flag(base_url, key, f"{kind}:{job}", summary) and ok
+        # a live problem closes nothing: its own kind is deduped, others may still be real
+        return _post_flag(base_url, key, f"{kind}:{job}", summary)
     for kind in _CHECK_KINDS:
-        if problem is not None and kind == problem[0]:
-            continue  # still true -- record_flag_ex's own dedup owns that row
         flag_id = open_flags.get(f"{kind}:{job}")
         if flag_id is not None:
             ok = _resolve_flag(base_url, key, flag_id, f"{kind}:{job}") and ok
