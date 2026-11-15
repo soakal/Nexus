@@ -89,10 +89,9 @@ def test_healthy_job_clears_a_stale_failed_flag(monkeypatch, tmp_path):
     assert resolves == [(431, "failed:job_a")]
 
 
-def test_failed_job_posts_and_clears_only_the_other_kind(monkeypatch, tmp_path):
-    """A job that's `failed` with an open `overdue` flag AND an open `failed`
-    flag: the still-true `failed` kind must be posted (bumped) and NOT
-    resolved, while the no-longer-true `overdue` kind must be resolved."""
+def test_failed_job_posts_and_clears_nothing(monkeypatch, tmp_path):
+    """A live problem posts its own kind and clears NOTHING (other kinds may
+    still be real; only a fully healthy job closes flags)."""
     _patch_state(monkeypatch, tmp_path)
     _patch_key(monkeypatch)
     _write_heartbeat(tmp_path, "job_a", exit_code=1)
@@ -108,7 +107,7 @@ def test_failed_job_posts_and_clears_only_the_other_kind(monkeypatch, tmp_path):
     hb.main()
 
     assert posts == ["failed:job_a"]
-    assert resolves == [(1, "overdue:job_a")]
+    assert resolves == []
 
 
 def test_healthy_job_no_open_flags_is_a_silent_noop(monkeypatch, tmp_path):
@@ -264,3 +263,96 @@ def test_hc_ping_never_puts_the_url_on_argv_and_never_raises(monkeypatch):
         raise FileNotFoundError("secret")
     monkeypatch.setattr(subprocess, "run", raising_run)
     assert _REAL_HC_PING() is False
+
+
+def test_failed_to_overdue_keeps_failed_flag(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    _patch_state(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    _write_heartbeat(tmp_path, "job_a", exit_code=1,
+                     finished_at=(datetime.now(timezone.utc) - timedelta(hours=60)).isoformat())
+    posts, resolves = [], []
+    monkeypatch.setattr(hb, "_post_flag", lambda *a: posts.append(a[2]) or True)
+    monkeypatch.setattr(hb, "_open_flags", lambda *a: {"failed:job_a": 5})
+    monkeypatch.setattr(hb, "_resolve_flag", lambda b, k, i, c: resolves.append(c) or True)
+    hb.main()
+    assert posts == ["overdue:job_a"] and resolves == []
+
+
+def test_future_finished_at_is_unreadable(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    _patch_state(monkeypatch, tmp_path)
+    _write_heartbeat(tmp_path, "job_a",
+                     finished_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+    assert hb._diagnose("job_a", 24)[0] == "unreadable_heartbeat"
+
+
+def test_small_future_skew_within_tolerance_is_healthy(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    _patch_state(monkeypatch, tmp_path)
+    _write_heartbeat(tmp_path, "job_a", exit_code=0,
+                     finished_at=(datetime.now(timezone.utc) + timedelta(minutes=3)).isoformat())
+    assert hb._diagnose("job_a", 24) is None
+
+
+def test_summaries_carry_no_exception_text_or_paths(monkeypatch, tmp_path):
+    _patch_state(monkeypatch, tmp_path)
+    kind, summary = hb._diagnose("job_a", 24)
+    assert kind == "missing_heartbeat" and str(tmp_path) not in summary
+    (tmp_path / "job_a.json").write_text('{"finished_at": "SECRET-xyz", "exit_code": 0}')
+    kind, summary = hb._diagnose("job_a", 24)
+    assert kind == "unreadable_heartbeat"
+    assert summary == "Cron job 'job_a' heartbeat unreadable"
+
+
+def test_real_api_failures_suppress_ping_and_exit_1(monkeypatch, tmp_path):
+    """GET, flag POST and resolve POST failing via the REAL helpers."""
+    _patch_state(monkeypatch, tmp_path)
+    _patch_key(monkeypatch)
+    pings = []
+    monkeypatch.setattr(hb, "_hc_ping", lambda: pings.append(1) or True)
+
+    def boom(req, timeout=30):
+        raise OSError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+    def run(open_flags_stub, exit_code):
+        _write_heartbeat(tmp_path, "job_a", exit_code=exit_code)
+        monkeypatch.setattr(hb, "_open_flags", open_flags_stub)
+        with pytest.raises(SystemExit) as e:
+            hb.main()
+        assert e.value.code == 1
+
+    run(hb._open_flags, 0)                       # GET fails
+    run(lambda *a: {}, 1)                        # flag POST fails
+    run(lambda *a: {"failed:job_a": 3}, 0)       # resolve POST fails
+    assert pings == []
+
+
+def test_kithos_jobs_registered():
+    assert hb.EXPECTED_INTERVAL_HOURS["kithos_doctor_devbox"] == 1
+    assert hb.EXPECTED_INTERVAL_HOURS["kithos_doctor_nexus"] == 1
+
+
+def test_open_flags_queries_each_live_status_separately(monkeypatch):
+    # An unfiltered GET returns the newest 200 rows incl. resolved; live flags can fall out of it.
+    seen = []
+
+    class _Resp:
+        def __init__(self, body): self._b = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._b
+
+    def fake_urlopen(req, timeout=0):
+        url = req.full_url
+        seen.append(url)
+        status = url.split("status=")[1].split("&")[0]
+        rows = {"open": [{"id": 1, "check": "failed:j", "status": "open"}],
+                "deferred": [{"id": 2, "check": "overdue:j", "status": "deferred"}]}.get(status, [])
+        return _Resp(json.dumps(rows).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert hb._open_flags("http://x", "k") == {"failed:j": 1, "overdue:j": 2}
+    assert len(seen) == 3 and all("source=cron_heartbeat" in u for u in seen)

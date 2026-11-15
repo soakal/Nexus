@@ -34,6 +34,15 @@ LOG_DIR="$REPO_DIR/logs"
 STATE_DIR="$REPO_DIR/state/heartbeat"
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
+if [[ "${CRON_RUN_PRIVATE_LOG:-}" == "1" ]]; then
+    # Opt-in: log may hold sensitive output. umask is restored afterwards so git and the job keep the default.
+    old_umask="$(umask)"
+    umask 077
+    : >> "$LOG_DIR/${JOB_NAME}.log"
+    chmod 600 "$LOG_DIR/${JOB_NAME}.log" || { echo "cron_run: cannot make log private, refusing to run" >&2; exit 1; }
+    umask "$old_umask"
+fi
+
 exec >> "$LOG_DIR/${JOB_NAME}.log" 2>&1
 
 echo "=== $(date -Iseconds) cron_run: starting $JOB_NAME ==="
@@ -59,14 +68,14 @@ cd "$REPO_DIR" || { echo "cron_run: cannot cd to $REPO_DIR"; EXIT_CODE=1; exit 1
 CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
     echo "cron_run: WARNING -- repo was on branch '${CURRENT_BRANCH:-<detached>}', not main (this is exactly the 2026-09-06 trigger). Self-healing: checking out main."
-    if ! git checkout main; then
+    if ! timeout -k 10 60 git checkout main; then
         echo "cron_run: FATAL -- could not check out main, refusing to run $JOB_NAME"
         EXIT_CODE=1
         exit 1
     fi
 fi
 
-if ! git pull --quiet; then
+if ! timeout -k 10 60 git pull --quiet; then
     echo "cron_run: git pull failed for $JOB_NAME"
     EXIT_CODE=1
     exit 1
@@ -78,7 +87,7 @@ fi
 # is unreachable or the secret isn't set yet, CLAUDE_CODE_OAUTH_TOKEN just
 # stays unset and `claude` falls back to its normal shared-session auth,
 # same as before this existed.
-if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+if [[ "${CRON_RUN_NO_SECRETS:-}" != "1" && -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
     if token="$(python3 "$REPO_DIR/bin/infisical_secret.py" get cred:devbox:claude_code_oauth_token 2>>"$LOG_DIR/${JOB_NAME}.log")"; then
         export CLAUDE_CODE_OAUTH_TOKEN="$token"
     fi

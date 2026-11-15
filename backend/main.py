@@ -29,6 +29,7 @@ logging.basicConfig(
 # secrets to the (persistent) journal on every single call.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 # ...and mask any such URL a caller logs itself (exception text, tracebacks).
+from backend import version  # noqa: E402  (pure-stdlib leaf; /api/health reads running_sha)
 from backend.log_redact import install as _install_log_redaction  # noqa: E402
 _install_log_redaction("uvicorn", "uvicorn.access")
 logger = logging.getLogger(__name__)
@@ -199,7 +200,6 @@ async def lifespan(app: FastAPI):
             # after a git pull with no restart. Best-effort: a failure here just
             # degrades that check to a permanent no-op, never blocks boot.
             try:
-                from backend import version
                 boot_sha = await asyncio.to_thread(version.capture_running_sha)
                 logger.info(f"Running SHA at boot: {boot_sha or 'unknown (no .git resolution)'}")
             except Exception as e:
@@ -353,7 +353,9 @@ async def health():
         return JSONResponse({"status": "vault_missing"})
     if not vault_exists:
         return JSONResponse({"status": "vault_empty"})
-    return {"status": "ok"}
+    # running_sha: the commit captured at boot (public repo, not sensitive). Lets the kithos doctor
+    # compare running vs checked-out code with no API key; None if the checkout wasn't readable.
+    return {"status": "ok", "running_sha": version.running_sha()}
 
 
 # Register all routers
