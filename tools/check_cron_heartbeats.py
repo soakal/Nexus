@@ -133,18 +133,23 @@ def _open_flags(base_url: str, key: str) -> dict[str, int] | None:
     Returns None on any failure -- never raises: a dead API means "cleared
     nothing this run" (the caller treats it as {}), never a skipped check,
     but the run is then not "successful" and the dead-man ping is withheld."""
-    req = urllib.request.Request(
-        f"{base_url}/api/safety/flags?source=cron_heartbeat&limit=200",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            rows = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"GET /api/safety/flags failed, clearing nothing this run: {e}")
-        return None
-    if not isinstance(rows, list):
-        return None
+    # One GET per live status: a single unfiltered GET returns the newest 200 rows
+    # INCLUDING resolved ones, so an old live flag could fall outside the window.
+    rows = []
+    for status in sorted(_LIVE_STATUSES):
+        req = urllib.request.Request(
+            f"{base_url}/api/safety/flags?source=cron_heartbeat&status={status}&limit=200",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                part = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"GET /api/safety/flags failed, clearing nothing this run: {e}")
+            return None
+        if not isinstance(part, list):
+            return None
+        rows.extend(part)
     return {
         r["check"]: r["id"]
         for r in rows
@@ -205,7 +210,7 @@ def _diagnose(job: str, expected_hours: int) -> tuple[str, str] | None:
     except Exception:
         return ("unreadable_heartbeat", f"Cron job '{job}' heartbeat unreadable")
     if finished_at > now + timedelta(minutes=5):  # clock skew / forged future stamp
-        return ("unreadable_heartbeat", f"Cron job '{job}' heartbeat unreadable")
+        return ("unreadable_heartbeat", f"Cron job '{job}' heartbeat timestamp is in the future")
 
     age_hours = (now - finished_at).total_seconds() / 3600
     if age_hours > expected_hours * 2:
@@ -213,7 +218,7 @@ def _diagnose(job: str, expected_hours: int) -> tuple[str, str] | None:
                 f"Cron job '{job}' last finished {age_hours:.1f}h ago "
                 f"(expected every ~{expected_hours}h)")
     if exit_code != 0:
-        return ("failed", f"Cron job '{job}' last run exited with code {exit_code}")
+        return ("failed", f"Cron job '{job}' last run exited with code {exit_code} -- see logs/{job}.log on devbox")
     return None
 
 

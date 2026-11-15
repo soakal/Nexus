@@ -35,9 +35,12 @@ STATE_DIR="$REPO_DIR/state/heartbeat"
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
 if [[ "${CRON_RUN_PRIVATE_LOG:-}" == "1" ]]; then
-    # Opt-in: log may hold sensitive output. umask also applies to the job (fine).
+    # Opt-in: log may hold sensitive output. umask is restored afterwards so git and the job keep the default.
+    old_umask="$(umask)"
     umask 077
-    [[ -e "$LOG_DIR/${JOB_NAME}.log" ]] && chmod 600 "$LOG_DIR/${JOB_NAME}.log"
+    : >> "$LOG_DIR/${JOB_NAME}.log"
+    chmod 600 "$LOG_DIR/${JOB_NAME}.log" || { echo "cron_run: cannot make log private, refusing to run" >&2; exit 1; }
+    umask "$old_umask"
 fi
 
 exec >> "$LOG_DIR/${JOB_NAME}.log" 2>&1
@@ -65,14 +68,14 @@ cd "$REPO_DIR" || { echo "cron_run: cannot cd to $REPO_DIR"; EXIT_CODE=1; exit 1
 CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
 if [[ "$CURRENT_BRANCH" != "main" ]]; then
     echo "cron_run: WARNING -- repo was on branch '${CURRENT_BRANCH:-<detached>}', not main (this is exactly the 2026-09-06 trigger). Self-healing: checking out main."
-    if ! timeout 60 git checkout main; then
+    if ! timeout -k 10 60 git checkout main; then
         echo "cron_run: FATAL -- could not check out main, refusing to run $JOB_NAME"
         EXIT_CODE=1
         exit 1
     fi
 fi
 
-if ! timeout 60 git pull --quiet; then
+if ! timeout -k 10 60 git pull --quiet; then
     echo "cron_run: git pull failed for $JOB_NAME"
     EXIT_CODE=1
     exit 1

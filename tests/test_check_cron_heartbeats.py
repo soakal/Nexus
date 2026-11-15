@@ -333,3 +333,26 @@ def test_real_api_failures_suppress_ping_and_exit_1(monkeypatch, tmp_path):
 def test_kithos_jobs_registered():
     assert hb.EXPECTED_INTERVAL_HOURS["kithos_doctor_devbox"] == 1
     assert hb.EXPECTED_INTERVAL_HOURS["kithos_doctor_nexus"] == 1
+
+
+def test_open_flags_queries_each_live_status_separately(monkeypatch):
+    # An unfiltered GET returns the newest 200 rows incl. resolved; live flags can fall out of it.
+    seen = []
+
+    class _Resp:
+        def __init__(self, body): self._b = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._b
+
+    def fake_urlopen(req, timeout=0):
+        url = req.full_url
+        seen.append(url)
+        status = url.split("status=")[1].split("&")[0]
+        rows = {"open": [{"id": 1, "check": "failed:j", "status": "open"}],
+                "deferred": [{"id": 2, "check": "overdue:j", "status": "deferred"}]}.get(status, [])
+        return _Resp(json.dumps(rows).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert hb._open_flags("http://x", "k") == {"failed:j": 1, "overdue:j": 2}
+    assert len(seen) == 3 and all("source=cron_heartbeat" in u for u in seen)
