@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # already-cross-checked fetch(), never narrated or fact-extracted.
 _UNVERIFIED_FACT_SECTIONS = (
     "Priority Actions", "Inbox", "Proton Mail", "Open Items", "Claude Usage", "OpenRouter",
+    "Energy (DTE)",
 )
 
 
@@ -419,6 +420,52 @@ def _build_openrouter_section(result) -> str:
 # check) so a genuinely-bad status (e.g. "failed"/a running check) is never
 # silently swallowed by loosening this set later.
 _UNRAID_PARITY_HEALTHY_STATUSES = {"idle", "disk_ok"}
+
+
+# HA sensors behind '## Energy (DTE)': the same month totals HA's Energy page shows (homelab-power energy_month.yaml +
+# the Energy Bridge utility meters). Gas comes from DTE's daily feed, ~5 days late; its data_through attribute says how far.
+_ENERGY_SENSORS = {
+    "elec_kwh": "sensor.home_energy_monthly", "elec_cost": "sensor.home_cost_monthly",
+    "gas_ccf": "sensor.gas_this_month", "gas_cost": "sensor.gas_cost_this_month",
+    "gas_ccf_last": "sensor.gas_last_month", "gas_cost_last": "sensor.gas_cost_last_month",
+    "elec_kwh_last": "sensor.electric_last_month", "elec_cost_last": "sensor.electric_cost_last_month",
+}
+
+
+def _build_energy_section(ha) -> str:
+    """Deterministic '## Energy (DTE)' month-to-date section from Home Assistant, appended after the LLM call like
+    Claude Usage. `ha` is HAData or an Exception. Never raises: a missing/unavailable sensor reads 'n/a', never 0."""
+    entities = getattr(ha, "entities", None)
+    if isinstance(ha, Exception) or not isinstance(entities, list):
+        return "## Energy (DTE)\nHome Assistant unavailable -- no energy totals."
+    by_id = {e.get("entity_id"): e for e in entities if isinstance(e, dict)}
+
+    def num(key):
+        try:
+            return float(by_id[_ENERGY_SENSORS[key]]["state"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def kwh(v): return "n/a" if v is None else f"{v:,.0f} kWh"
+    def ccf(v): return "n/a" if v is None else f"{v:,.1f} CCF"
+    def usd(v): return "n/a" if v is None else f"${v:,.2f}"
+
+    gas = by_id.get(_ENERGY_SENSORS["gas_ccf"]) or {}
+    through = (gas.get("attributes") or {}).get("data_through")
+    through = f", DTE data through {through}" if through and through != "n/a" else ""
+    lines = ["## Energy (DTE)",
+             f"- Electric this month: {kwh(num('elec_kwh'))}, {usd(num('elec_cost'))}",
+             f"- Gas this month: {ccf(num('gas_ccf'))}, {usd(num('gas_cost'))} est.{through}",
+             # summed here, not sensor.energy_cost_this_month (15-min refresh), so the lines always add up
+             f"- Total so far: {usd(None if None in (num('elec_cost'), num('gas_cost')) else num('elec_cost') + num('gas_cost'))}"]
+    last = []
+    if num("elec_kwh_last") is not None or num("elec_cost_last") is not None:
+        last.append(f"electric {kwh(num('elec_kwh_last'))}, {usd(num('elec_cost_last'))}")
+    if num("gas_ccf_last") is not None or num("gas_cost_last") is not None:
+        last.append(f"gas {ccf(num('gas_ccf_last'))}, {usd(num('gas_cost_last'))}")
+    if last:
+        lines.append("- Last month: " + "; ".join(last))
+    return "\n".join(lines)
 
 
 def _build_docker_status_line(docker_containers: list, expected_rows: list) -> str:
@@ -912,6 +959,9 @@ async def run_briefing() -> str:
         # Deterministic '## OpenRouter' section, same discipline as Claude
         # Usage above -- see _build_openrouter_section's own docstring.
         briefing_text = briefing_text + "\n\n" + _build_openrouter_section(openrouter_result)
+
+        # Deterministic '## Energy (DTE)' month totals from HA -- see _build_energy_section.
+        briefing_text = briefing_text + "\n\n" + _build_energy_section(ha)
 
         # Fact extraction from briefing content was removed 2026-08-23: briefing
         # facts are unverified and BRIEFING_CONFIDENCE_CAP (0.15) sits below
