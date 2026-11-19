@@ -1245,14 +1245,15 @@ def test_build_energy_section_month_totals_and_last_month():
         "## Energy (DTE)",
         "- Electric this month: 254 kWh, $57.36",
         "- Gas this month: 26.8 CCF, $26.44 est., DTE data through Nov 16",
-        "- Total so far: $83.80",
-        "- Last month: gas 39.8 CCF, $39.23",
+        "- Total so far: $83.80 est. (gas through Nov 16)",
+        "- Last month: gas 39.8 CCF, $39.23 est.",
     ]
 
 
 def test_build_energy_section_missing_reads_na_never_zero():
     out = _build_energy_section(_ha({"sensor.gas_this_month": "unavailable"}))
-    assert "- Gas this month: n/a, n/a est., DTE data through Nov 16" in out
+    assert "- Gas this month: n/a, n/a, DTE data through Nov 16" in out
+    assert "- Total so far: n/a\n" in out + "\n"
     assert "$0" not in out and "Last month" not in out
 
 
@@ -1263,3 +1264,23 @@ def test_build_energy_section_exception_never_raises():
 
 def test_strip_unverified_sections_drops_llm_energy():
     assert "## Energy (DTE)" not in _strip_unverified_sections("## Energy (DTE)\n- made up\n## Other\nx")
+
+
+def test_build_energy_section_non_finite_reads_na():
+    out = _build_energy_section(_ha({"sensor.home_energy_monthly": "nan", "sensor.home_cost_monthly": "inf",
+                                     "sensor.gas_this_month": "-inf", "sensor.gas_cost_this_month": "1e999"}))
+    assert "nan" not in out.lower() and "inf" not in out.lower()
+    assert "- Electric this month: n/a, n/a" in out and "- Total so far: n/a" in out
+
+
+def test_build_energy_section_malformed_shapes_never_raise():
+    from types import SimpleNamespace
+    bad = SimpleNamespace(entities=[
+        {"entity_id": ["not", "hashable"], "state": "1"},
+        {"entity_id": "sensor.gas_this_month", "state": "5", "attributes": ["list"]},
+        "not a dict", None,
+        {"entity_id": "sensor.gas_cost_this_month", "state": {"x": 1}},
+    ])
+    out = _build_energy_section(bad)
+    assert out.startswith("## Energy (DTE)")
+    assert "- Gas this month: 5.0 CCF, n/a" in out and "data through" not in out

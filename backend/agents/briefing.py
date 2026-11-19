@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -434,38 +435,50 @@ _ENERGY_SENSORS = {
 
 def _build_energy_section(ha) -> str:
     """Deterministic '## Energy (DTE)' month-to-date section from Home Assistant, appended after the LLM call like
-    Claude Usage. `ha` is HAData or an Exception. Never raises: a missing/unavailable sensor reads 'n/a', never 0."""
+    Claude Usage. `ha` is HAData or an Exception. Never raises: a missing/unavailable/non-numeric/non-finite sensor
+    reads 'n/a', never 0; any unexpected shape degrades to the one-line unavailable message. Costs are estimates
+    (usage x current price, fixed monthly charges excluded), and gas runs ~5 days behind, so both are labelled."""
+    unavailable = "## Energy (DTE)\nHome Assistant unavailable -- no energy totals."
     entities = getattr(ha, "entities", None)
     if isinstance(ha, Exception) or not isinstance(entities, list):
-        return "## Energy (DTE)\nHome Assistant unavailable -- no energy totals."
-    by_id = {e.get("entity_id"): e for e in entities if isinstance(e, dict)}
+        return unavailable
+    try:
+        by_id = {e["entity_id"]: e for e in entities if isinstance(e, dict) and isinstance(e.get("entity_id"), str)}
 
-    def num(key):
-        try:
-            return float(by_id[_ENERGY_SENSORS[key]]["state"])
-        except (KeyError, TypeError, ValueError):
-            return None
+        def num(key):
+            try:
+                v = float(by_id[_ENERGY_SENSORS[key]]["state"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+            return v if math.isfinite(v) else None
 
-    def kwh(v): return "n/a" if v is None else f"{v:,.0f} kWh"
-    def ccf(v): return "n/a" if v is None else f"{v:,.1f} CCF"
-    def usd(v): return "n/a" if v is None else f"${v:,.2f}"
+        def kwh(v): return "n/a" if v is None else f"{v:,.0f} kWh"
+        def ccf(v): return "n/a" if v is None else f"{v:,.1f} CCF"
+        def usd(v, est=False): return "n/a" if v is None else f"${v:,.2f}" + (" est." if est else "")
 
-    gas = by_id.get(_ENERGY_SENSORS["gas_ccf"]) or {}
-    through = (gas.get("attributes") or {}).get("data_through")
-    through = f", DTE data through {through}" if through and through != "n/a" else ""
-    lines = ["## Energy (DTE)",
-             f"- Electric this month: {kwh(num('elec_kwh'))}, {usd(num('elec_cost'))}",
-             f"- Gas this month: {ccf(num('gas_ccf'))}, {usd(num('gas_cost'))} est.{through}",
-             # summed here, not sensor.energy_cost_this_month (15-min refresh), so the lines always add up
-             f"- Total so far: {usd(None if None in (num('elec_cost'), num('gas_cost')) else num('elec_cost') + num('gas_cost'))}"]
-    last = []
-    if num("elec_kwh_last") is not None or num("elec_cost_last") is not None:
-        last.append(f"electric {kwh(num('elec_kwh_last'))}, {usd(num('elec_cost_last'))}")
-    if num("gas_ccf_last") is not None or num("gas_cost_last") is not None:
-        last.append(f"gas {ccf(num('gas_ccf_last'))}, {usd(num('gas_cost_last'))}")
-    if last:
-        lines.append("- Last month: " + "; ".join(last))
-    return "\n".join(lines)
+        attrs = (by_id.get(_ENERGY_SENSORS["gas_ccf"]) or {}).get("attributes")
+        through = attrs.get("data_through") if isinstance(attrs, dict) else None
+        through = through if isinstance(through, str) and through and through != "n/a" else None
+        gas_note = f", DTE data through {through}" if through else ""
+        ec, gc = num("elec_cost"), num("gas_cost")
+        # summed here, not sensor.energy_cost_this_month (15-min refresh), so the lines always add up
+        total = None if ec is None or gc is None else ec + gc
+        total_note = f" (gas through {through})" if through and total is not None else ""
+        lines = ["## Energy (DTE)",
+                 f"- Electric this month: {kwh(num('elec_kwh'))}, {usd(ec)}",
+                 f"- Gas this month: {ccf(num('gas_ccf'))}, {usd(gc, est=True)}{gas_note}",
+                 f"- Total so far: {usd(total, est=True)}{total_note}"]
+        last = []
+        if num("elec_kwh_last") is not None or num("elec_cost_last") is not None:
+            last.append(f"electric {kwh(num('elec_kwh_last'))}, {usd(num('elec_cost_last'))}")
+        if num("gas_ccf_last") is not None or num("gas_cost_last") is not None:
+            last.append(f"gas {ccf(num('gas_ccf_last'))}, {usd(num('gas_cost_last'), est=True)}")
+        if last:
+            lines.append("- Last month: " + "; ".join(last))
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"energy section: unexpected HA data shape: {e}")
+        return unavailable
 
 
 def _build_docker_status_line(docker_containers: list, expected_rows: list) -> str:
