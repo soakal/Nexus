@@ -463,6 +463,8 @@ def _build_energy_section(ha) -> str:
         ec, gc = num("elec_cost"), num("gas_cost")
         # summed here, not sensor.energy_cost_this_month (15-min refresh), so the lines always add up
         total = None if ec is None or gc is None else ec + gc
+        if total is not None and not math.isfinite(total):  # two huge finite costs can still overflow
+            total = None
         total_note = f" (gas through {through})" if through and total is not None else ""
         lines = ["## Energy (DTE)",
                  f"- Electric this month: {kwh(num('elec_kwh'))}, {usd(ec)}",

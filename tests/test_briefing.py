@@ -1284,3 +1284,8 @@ def test_build_energy_section_malformed_shapes_never_raise():
     out = _build_energy_section(bad)
     assert out.startswith("## Energy (DTE)")
     assert "- Gas this month: 5.0 CCF, n/a" in out and "data through" not in out
+
+
+def test_build_energy_section_total_overflow_reads_na():
+    out = _build_energy_section(_ha({"sensor.home_cost_monthly": "1e308", "sensor.gas_cost_this_month": "1e308"}))
+    assert "- Total so far: n/a" in out and "inf" not in out.lower()
