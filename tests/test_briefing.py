@@ -10,6 +10,7 @@ from backend.agents.briefing import (
     _build_protonmail_section,
     _build_claude_usage_section,
     _build_openrouter_section,
+    _build_energy_section,
     _build_docker_status_line,
     _format_calibration_line,
 )
@@ -1224,3 +1225,67 @@ async def test_calibration_line_caps_at_ten_and_follows_recently_closed():
     calibration_idx = prompt_arg.index("Flag calibration (30d):")
     produce_idx = prompt_arg.index("Produce a morning brief")
     assert closed_idx < calibration_idx < produce_idx
+
+
+def _ha(states):
+    from types import SimpleNamespace
+    return SimpleNamespace(entities=[
+        {"entity_id": k, "state": v, "attributes": ({"data_through": "Nov 16"} if k == "sensor.gas_this_month" else {})}
+        for k, v in states.items()])
+
+
+def test_build_energy_section_month_totals_and_last_month():
+    out = _build_energy_section(_ha({
+        "sensor.home_energy_monthly": "254.254", "sensor.home_cost_monthly": "57.3612",
+        "sensor.gas_this_month": "26.84", "sensor.gas_cost_this_month": "26.44",
+        "sensor.gas_last_month": "39.82",
+        "sensor.gas_cost_last_month": "39.23", "sensor.electric_last_month": "unavailable",
+        "sensor.electric_cost_last_month": "unavailable"}))
+    assert out.splitlines() == [
+        "## Energy (DTE)",
+        "- Electric this month: 254 kWh, $57.36",
+        "- Gas this month: 26.8 CCF, $26.44 est., DTE data through Nov 16",
+        "- Total so far: $83.80 est. (gas through Nov 16)",
+        "- Last month: gas 39.8 CCF, $39.23 est.",
+    ]
+
+
+def test_build_energy_section_missing_reads_na_never_zero():
+    out = _build_energy_section(_ha({"sensor.gas_this_month": "unavailable"}))
+    assert "- Gas this month: n/a, n/a, DTE data through Nov 16" in out
+    assert "- Total so far: n/a\n" in out + "\n"
+    assert "$0" not in out and "Last month" not in out
+
+
+def test_build_energy_section_exception_never_raises():
+    assert _build_energy_section(RuntimeError("down")) == "## Energy (DTE)\nHome Assistant unavailable -- no energy totals."
+    assert "unavailable" in _build_energy_section(None)
+
+
+def test_strip_unverified_sections_drops_llm_energy():
+    assert "## Energy (DTE)" not in _strip_unverified_sections("## Energy (DTE)\n- made up\n## Other\nx")
+
+
+def test_build_energy_section_non_finite_reads_na():
+    out = _build_energy_section(_ha({"sensor.home_energy_monthly": "nan", "sensor.home_cost_monthly": "inf",
+                                     "sensor.gas_this_month": "-inf", "sensor.gas_cost_this_month": "1e999"}))
+    assert "nan" not in out.lower() and "inf" not in out.lower()
+    assert "- Electric this month: n/a, n/a" in out and "- Total so far: n/a" in out
+
+
+def test_build_energy_section_malformed_shapes_never_raise():
+    from types import SimpleNamespace
+    bad = SimpleNamespace(entities=[
+        {"entity_id": ["not", "hashable"], "state": "1"},
+        {"entity_id": "sensor.gas_this_month", "state": "5", "attributes": ["list"]},
+        "not a dict", None,
+        {"entity_id": "sensor.gas_cost_this_month", "state": {"x": 1}},
+    ])
+    out = _build_energy_section(bad)
+    assert out.startswith("## Energy (DTE)")
+    assert "- Gas this month: 5.0 CCF, n/a" in out and "data through" not in out
+
+
+def test_build_energy_section_total_overflow_reads_na():
+    out = _build_energy_section(_ha({"sensor.home_cost_monthly": "1e308", "sensor.gas_cost_this_month": "1e308"}))
+    assert "- Total so far: n/a" in out and "inf" not in out.lower()

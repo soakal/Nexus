@@ -91,7 +91,8 @@ async def test_trace_opened_and_closed_ok(eng):
         "## Proton Mail\nNothing needing attention.\n\n"
         "## Open Items\nNo open items.\n\n"
         "## Claude Usage\nNo Claude Code session captured yet.\n\n"
-        "## OpenRouter\nOpenRouter usage data unavailable."
+        "## OpenRouter\nOpenRouter usage data unavailable.\n\n"
+        "## Energy (DTE)\n- Electric this month: n/a, n/a\n- Gas this month: n/a, n/a\n- Total so far: n/a"
     )
 
     with Session(eng) as s:
